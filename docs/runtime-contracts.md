@@ -293,6 +293,12 @@ Read the relevant section before changing feature policy, ownership, restoration
   explicit application service and never enters the automatic recovery journal. Its optional
   long/short-running thread scheduling policies stay outside Adaptive Engine processor profiles;
   built-in presets preserve current policies, and custom presets can select optional overrides.
+- Advanced Power Plan Tuning captures the target plan's GUID, live values, and
+  normalized draft in the review. The same review gates page Apply and any save
+  that includes tuning edits. A fresh read must match the reviewed values before
+  the staged write starts.
+  A stale review or failed preflight read preserves the draft and requires a new
+  review. Readback verifies the outcome and reports any partial application.
 - `src/backend/self_power.rs` owns Winderust's hidden-to-tray priority and Power
   Throttling lifecycle, including strict baseline capture, verification, compensation, retry, and
   clean shutdown. Visibility changes apply synchronously; a process-lifetime

@@ -519,6 +519,21 @@ fn navigation_search_panel<'a>(
         .style(widgets::surface)
 }
 
+fn centered_modal<'a>(
+    background: Element<'a, Message>,
+    modal: Element<'a, Message>,
+) -> Element<'a, Message> {
+    iced::widget::stack![
+        super::modal::background(background),
+        iced::widget::opaque(super::scrolling::modal_backdrop()),
+        container(iced::widget::opaque(modal))
+            .padding(16)
+            .center_x(Fill)
+            .center_y(Fill)
+    ]
+    .into()
+}
+
 fn navigation_search_overlay<'a>(
     background: Element<'a, Message>,
     search: impl Into<Element<'a, Message>>,
@@ -752,14 +767,14 @@ impl WinderustApp {
         status: iced::event::Status,
     ) -> Task<Message> {
         use iced::keyboard::{key::Named, Key};
-        if self.closing
-            || self.hidden
-            || self.preferences.show_update
-            || !self.error_message.is_empty()
+        let review_open = self.power_tuning.review_origin().is_some();
+        if self.hidden
+            || !review_open
+                && (self.closing || self.preferences.show_update || !self.error_message.is_empty())
         {
             return Task::none();
         }
-        if self.page == Page::WinderustBehaviour {
+        if !review_open && self.page == Page::WinderustBehaviour {
             if let Some(slot) = self.preferences.hotkey_capture {
                 if !repeat {
                     if key == Key::Named(Named::Escape) {
@@ -776,7 +791,7 @@ impl WinderustApp {
                 return Task::none();
             }
         }
-        if self.navigation_search_open {
+        if !review_open && self.navigation_search_open {
             match key.as_ref() {
                 Key::Named(Named::Escape) => return self.update(Message::CloseNavigationSearch),
                 Key::Named(Named::ArrowUp | Named::ArrowDown)
@@ -796,7 +811,10 @@ impl WinderustApp {
                 _ => return Task::none(),
             }
         }
-        let cancel_rule = match self.page {
+        let cancel_dialog = match self.page {
+            _ if review_open => Some(Message::PowerTuning(
+                advanced_power_plan_tuning::Message::CancelApply,
+            )),
             Page::Watchdog if self.watchdog.has_pending_editor() => {
                 Some(Message::Watchdog(watchdog::Message::CancelRule))
             }
@@ -819,10 +837,10 @@ impl WinderustApp {
             )),
             _ => None,
         };
-        if let Some(cancel_rule) = cancel_rule {
+        if let Some(cancel_dialog) = cancel_dialog {
             return match key {
                 Key::Named(Named::Escape) if !repeat && status == iced::event::Status::Ignored => {
-                    self.update(cancel_rule)
+                    self.update(cancel_dialog)
                 }
                 Key::Named(Named::Tab) if status == iced::event::Status::Ignored => {
                     if modifiers.shift() {
@@ -1390,6 +1408,12 @@ impl WinderustApp {
                 message,
             ),
             Message::PrioritySeparation(message) => self.priority_separation.update(message),
+            Message::PowerTuning(advanced_power_plan_tuning::Message::ConfirmApply)
+                if self.power_tuning.review_origin()
+                    == Some(advanced_power_plan_tuning::ApplyOrigin::Save) =>
+            {
+                return self.save_settings();
+            }
             Message::PowerTuning(message) => self.settings.edit_with_presets(|settings| {
                 self.power_tuning.update(
                     &mut settings.advanced_power_plan_tuning_presets,
@@ -2039,6 +2063,7 @@ impl WinderustApp {
                 }
             }
             Message::Close => {
+                self.power_tuning.cancel_apply_review();
                 if !self.closing {
                     self.error_message.clear();
                 }
@@ -2087,21 +2112,16 @@ impl WinderustApp {
             {
                 self.error_message = t!("unsaved.message").to_string();
             }
-            Message::Save => match self.settings.save() {
-                Ok(outcome) => {
-                    if let Some(error) = outcome.startup_registration_error() {
-                        self.error_message = error.to_string();
-                    }
-                    self.publish_settings();
-                    if self.power_tuning.dirty && !self.power_tuning.apply() {
-                        self.error_message = self.power_tuning.status.clone();
-                        return Task::none();
-                    }
-                    self.reset_editors();
-                    return self.finish_save();
+            Message::Save if self.power_tuning.dirty => {
+                match self.power_tuning.review_apply(
+                    &self.power_plans,
+                    advanced_power_plan_tuning::ApplyOrigin::Save,
+                ) {
+                    Ok(()) => self.error_message.clear(),
+                    Err(error) => self.error_message = error,
                 }
-                Err(error) => self.error_message = error.to_string(),
-            },
+            }
+            Message::Save => return self.save_settings(),
             Message::Cancel => {
                 self.power_plan_control.selected_guid = None;
                 self.settings.cancel();
@@ -2188,6 +2208,27 @@ impl WinderustApp {
             || self.power_tuning.dirty
             || self.pending_editor()
             || self.invalid_inputs()
+    }
+
+    fn save_settings(&mut self) -> Task<Message> {
+        let outcome = match self.settings.save() {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                self.power_tuning.cancel_apply_review();
+                self.error_message = error.to_string();
+                return Task::none();
+            }
+        };
+        if let Some(error) = outcome.startup_registration_error() {
+            self.error_message = error.to_string();
+        }
+        self.publish_settings();
+        if self.power_tuning.dirty && !self.power_tuning.confirm_apply() {
+            self.error_message = self.power_tuning.status.clone();
+            return Task::none();
+        }
+        self.reset_editors();
+        self.finish_save()
     }
 
     fn finish_save(&mut self) -> Task<Message> {
@@ -2485,6 +2526,7 @@ impl WinderustApp {
     fn view(&self, _window: iced::window::Id) -> Element<'_, Message> {
         let picker_open = !self.navigation_search_open
             && !self.closing
+            && self.power_tuning.review_origin().is_none()
             && self.error_message.is_empty()
             && match self.page {
                 Page::ByTime => self.time_rules.picker_open(),
@@ -2500,6 +2542,9 @@ impl WinderustApp {
 
     fn view_workspace(&self) -> Element<'_, Message> {
         let content = self.view_content();
+        if let Some(modal) = self.power_tuning.apply_review_modal() {
+            return centered_modal(content, modal.map(Message::PowerTuning));
+        }
         if self.closing || !self.error_message.is_empty() {
             let mut actions =
                 row![iced::widget::Space::new().width(Fill)].spacing(design::space::SMALL);
@@ -3081,15 +3126,7 @@ impl WinderustApp {
             _ => None,
         };
         if let Some(modal) = modal {
-            return iced::widget::stack![
-                super::modal::background(layout),
-                iced::widget::opaque(super::scrolling::modal_backdrop()),
-                container(iced::widget::opaque(modal))
-                    .padding(16)
-                    .center_x(Fill)
-                    .center_y(Fill)
-            ]
-            .into();
+            return centered_modal(layout, modal);
         }
         let settings_are_pending = self.pending_settings_changes();
         iced::widget::stack![

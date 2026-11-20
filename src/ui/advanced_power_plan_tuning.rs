@@ -1,6 +1,6 @@
 use super::design;
 use super::widgets::{action_button, button, icon_button, pick_list, slider, text_input};
-use crate::application::AdvancedPowerPlanTuningService;
+use crate::application::{AdvancedPowerPlanTuningError, AdvancedPowerPlanTuningService};
 use crate::config::AdvancedPowerPlanTuningPreset;
 use crate::power::{
     AdvancedPowerPlanTuningSourceValues, AdvancedPowerPlanTuningValues, EffectivePowerMode,
@@ -21,6 +21,7 @@ pub(super) struct Editor {
     pub(super) dirty: bool,
     pub(super) status: String,
     preset: Option<PresetEditor>,
+    review: Option<ApplyReview>,
     expanded: [bool; 2],
     selected_presets: [Option<PresetChoice>; 2],
 }
@@ -51,12 +52,66 @@ struct PresetEditor {
     name: String,
     values: AdvancedPowerPlanTuningValues,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ApplyOrigin {
+    Page,
+    Save,
+}
+
+struct ApplyReview {
+    guid: String,
+    name: String,
+    current: AdvancedPowerPlanTuningSourceValues,
+    requested: AdvancedPowerPlanTuningSourceValues,
+    origin: ApplyOrigin,
+}
+
+impl ApplyReview {
+    fn changes(&self, source: Source) -> impl Iterator<Item = (&'static str, String, String)> {
+        let (current, requested) = match source {
+            Source::Ac => (self.current.ac, self.requested.ac),
+            Source::Battery => (self.current.battery, self.requested.battery),
+        };
+        let percentages = fields(current)
+            .into_iter()
+            .zip(fields(requested))
+            .filter(|((_, _, before), (_, _, after))| before != after)
+            .map(|((_, label, before), (_, _, after))| {
+                (label, format!("{before}%"), format!("{after}%"))
+            });
+        let (before, after) = (current.processor.boost_mode, requested.processor.boost_mode);
+        let boost = (before != after).then(|| {
+            (
+                "processor_power.boost_mode",
+                BoostChoice(before).to_string(),
+                BoostChoice(after).to_string(),
+            )
+        });
+        let scheduling = scheduling_fields(current)
+            .into_iter()
+            .zip(scheduling_fields(requested))
+            .filter_map(|((_, label, before), (_, _, after))| {
+                let after = after?;
+                (before != Some(after)).then(|| {
+                    let before = before
+                        .map(|value| SchedulingChoice(Some(value)).to_string())
+                        .unwrap_or_else(|| t!("common.unavailable").to_string());
+                    (label, before, SchedulingChoice(Some(after)).to_string())
+                })
+            });
+        percentages.chain(boost).chain(scheduling)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(super) enum Message {
     Plan(String),
     Group(Source),
     Refresh,
-    Apply,
+    ReviewApply,
+    ConfirmApply,
+    CancelApply,
     Value(Source, Field, u32),
     ValueText(Source, Field, String),
     Boost(Source, ProcessorBoostMode),
@@ -92,12 +147,15 @@ impl Editor {
     }
 
     pub(super) fn has_pending_editor(&self) -> bool {
-        self.preset
-            .as_ref()
-            .is_some_and(|p| matches!(p.target, PresetTarget::Custom(_)))
+        self.review.is_some()
+            || self
+                .preset
+                .as_ref()
+                .is_some_and(|p| matches!(p.target, PresetTarget::Custom(_)))
     }
     pub(super) fn discard_editor(&mut self) {
         self.preset = None;
+        self.cancel_apply_review();
     }
 
     pub(super) fn ensure_plan(&mut self, plans: &[PowerPlan]) {
@@ -124,6 +182,7 @@ impl Editor {
     }
 
     pub(super) fn refresh(&mut self) {
+        self.cancel_apply_review();
         let Some(guid) = &self.target else {
             self.values = None;
             self.status = t!("processor_power.no_active_plan").to_string();
@@ -149,12 +208,72 @@ impl Editor {
             }
         }
     }
-    pub(super) fn apply(&mut self) -> bool {
+    pub(super) fn review_apply(
+        &mut self,
+        plans: &[PowerPlan],
+        origin: ApplyOrigin,
+    ) -> Result<(), String> {
+        if self.review.is_some() || !self.dirty {
+            return Ok(());
+        }
         let (Some(guid), Some(values)) = (&self.target, self.values) else {
-            self.status = t!("processor_power.no_active_plan").to_string();
+            return Err(t!("processor_power.no_active_plan").to_string());
+        };
+        let name = plans
+            .iter()
+            .find(|plan| plan.guid.eq_ignore_ascii_case(guid))
+            .map(|plan| plan.name.clone())
+            .ok_or_else(|| t!("processor_power.no_active_plan").to_string())?;
+        let current = self
+            .service
+            .read_values(guid)
+            .map_err(|error| error.to_string())?;
+        self.review = Some(ApplyReview {
+            guid: guid.clone(),
+            name,
+            current,
+            requested: values.normalized(),
+            origin,
+        });
+        Ok(())
+    }
+
+    pub(super) fn review_origin(&self) -> Option<ApplyOrigin> {
+        self.review.as_ref().map(|review| review.origin)
+    }
+
+    pub(super) fn cancel_apply_review(&mut self) {
+        self.review = None;
+    }
+
+    pub(super) fn confirm_apply(&mut self) -> bool {
+        let Some(review) = self.review.take() else {
             return false;
         };
-        let outcome = self.service.apply_values(guid, values);
+        if self.target.as_ref() != Some(&review.guid)
+            || self
+                .values
+                .map(AdvancedPowerPlanTuningSourceValues::normalized)
+                != Some(review.requested)
+        {
+            self.status = t!("processor_power.review_stale").to_string();
+            return false;
+        }
+        let outcome =
+            match self
+                .service
+                .apply_reviewed_values(&review.guid, review.current, review.requested)
+            {
+                Ok(outcome) => outcome,
+                Err(AdvancedPowerPlanTuningError::ValuesChanged) => {
+                    self.status = t!("processor_power.review_stale").to_string();
+                    return false;
+                }
+                Err(error) => {
+                    self.status = error.to_string();
+                    return false;
+                }
+            };
         self.values = outcome.actual_values;
         self.dirty = self.values.is_some() && !outcome.applied;
         match outcome.error {
@@ -164,7 +283,7 @@ impl Editor {
             }
             None => {
                 self.dirty = false;
-                self.status = t!("processor_power.applied_custom", plan = guid).to_string();
+                self.status = t!("processor_power.applied_custom", plan = &review.guid).to_string();
                 true
             }
         }
@@ -190,9 +309,15 @@ impl Editor {
                 }
             }
             Message::Refresh => self.refresh(),
-            Message::Apply => {
-                self.apply();
+            Message::ReviewApply => {
+                if let Err(error) = self.review_apply(plans, ApplyOrigin::Page) {
+                    self.status = error;
+                }
             }
+            Message::ConfirmApply => {
+                self.confirm_apply();
+            }
+            Message::CancelApply => self.cancel_apply_review(),
             Message::Value(source, field, value) => {
                 if let Some(values) = self.values.as_mut() {
                     set_field(source_values(values, source), field, value);
@@ -491,7 +616,7 @@ impl Editor {
                     action_button(t!("settings.apply").to_string())
                         .style(super::widgets::primary_button)
                         .on_press_maybe(
-                            (self.values.is_some() && self.dirty).then_some(Message::Apply)
+                            (self.values.is_some() && self.dirty).then_some(Message::ReviewApply)
                         )
                 ]
                 .spacing(design::space::SMALL)
@@ -500,6 +625,74 @@ impl Editor {
             .push(text(&self.status));
         scrollable(body).height(Fill).width(Fill).into()
     }
+    pub(super) fn apply_review_modal(&self) -> Option<Element<'_, Message>> {
+        use super::widgets;
+        let review = self.review.as_ref()?;
+        let review_row = |label: &str, value: String| {
+            row![
+                widgets::heading(t!(label).to_string(), design::typography::BODY).width(Fill),
+                text(value)
+                    .width(iced::Length::FillPortion(2))
+                    .align_x(iced::Right)
+                    .wrapping(text::Wrapping::WordOrGlyph)
+            ]
+            .spacing(design::space::MEDIUM)
+            .align_y(iced::Center)
+        };
+        let mut body = column![widgets::settings_card(review_row(
+            "processor_power.target_plan",
+            review.name.clone()
+        ))]
+        .spacing(widgets::CARD_GAP);
+        let mut has_changes = false;
+        for (source, title) in [
+            (Source::Ac, "power_source.plugged_in"),
+            (Source::Battery, "power_source.on_battery"),
+        ] {
+            let rows = review
+                .changes(source)
+                .map(|(label, before, after)| {
+                    review_row(label, format!("{before} → {after}")).into()
+                })
+                .collect::<Vec<Element<'_, Message>>>();
+            if !rows.is_empty() {
+                has_changes = true;
+                body = body
+                    .push(widgets::heading(
+                        t!(title).to_string(),
+                        design::typography::BODY,
+                    ))
+                    .push(widgets::settings_card(widgets::settings_rows(rows)));
+            }
+        }
+        if !has_changes {
+            body = body
+                .push(text(t!("processor_power.no_changes").to_string()).style(text::secondary));
+        }
+        Some(widgets::modal_frame(
+            row![
+                widgets::heading(
+                    t!("processor_power.review_changes").to_string(),
+                    design::typography::DIALOG_TITLE
+                )
+                .width(Fill),
+                icon_button("icons/x.svg").on_press(Message::CancelApply)
+            ]
+            .align_y(iced::Center),
+            scrollable(body).height(Fill),
+            row![
+                action_button(t!("common.cancel").to_string())
+                    .style(widgets::tertiary_button)
+                    .on_press(Message::CancelApply),
+                action_button(t!("settings.apply").to_string())
+                    .style(widgets::primary_button)
+                    .on_press(Message::ConfirmApply)
+            ]
+            .spacing(design::space::SMALL),
+            (720, 620),
+        ))
+    }
+
     pub(super) fn preset_modal<'a>(
         &'a self,
         presets: &'a [AdvancedPowerPlanTuningPreset],
@@ -861,6 +1054,89 @@ mod tests {
     use super::*;
 
     #[test]
+    fn review_shows_only_normalized_changes_for_each_power_source() {
+        let mut current = AdvancedPowerPlanTuningSourceValues::same(
+            AdvancedPowerPlanTuningValues::for_preset(ProcessorPowerPreset::Balanced),
+        );
+        current.ac.processor.performance_max = 70;
+        current.ac.scheduling_policy = Some(ProcessorSchedulingPolicy::Automatic);
+        let mut draft = current;
+        draft.ac.processor.performance_min = 80;
+        draft.ac.scheduling_policy = None;
+        draft.battery.processor.boost_policy = 35;
+        draft.battery.processor.boost_mode = ProcessorBoostMode::Disabled;
+        draft.battery.short_scheduling_policy = Some(ProcessorSchedulingPolicy::AllProcessors);
+        let review = ApplyReview {
+            guid: "plan".into(),
+            name: "Balanced".into(),
+            current,
+            requested: draft.normalized(),
+            origin: ApplyOrigin::Page,
+        };
+        assert_eq!(
+            review.changes(Source::Ac).collect::<Vec<_>>(),
+            vec![
+                ("processor_power.processor_min", "5%".into(), "80%".into()),
+                ("processor_power.processor_max", "70%".into(), "80%".into())
+            ]
+        );
+        assert_eq!(
+            review
+                .changes(Source::Battery)
+                .map(|(label, _, _)| label)
+                .collect::<Vec<_>>(),
+            vec![
+                "processor_power.boost_policy",
+                "processor_power.boost_mode",
+                "processor_power.short_scheduling_policy"
+            ]
+        );
+    }
+
+    #[test]
+    fn apply_requires_current_review_and_cancel_keeps_draft() {
+        let current = AdvancedPowerPlanTuningSourceValues::same(
+            AdvancedPowerPlanTuningValues::for_preset(ProcessorPowerPreset::Balanced),
+        );
+        let mut draft = current;
+        draft.ac.processor.performance_min = 35;
+        let mut editor = Editor {
+            target: Some("first-plan".into()),
+            values: Some(draft),
+            dirty: true,
+            ..Default::default()
+        };
+        assert!(!editor.confirm_apply());
+        let review = || ApplyReview {
+            guid: "first-plan".into(),
+            name: "Balanced".into(),
+            current,
+            requested: draft,
+            origin: ApplyOrigin::Save,
+        };
+
+        editor.review = Some(review());
+        editor.update(&mut vec![], &[], Message::CancelApply);
+        assert!(!editor.confirm_apply());
+        assert_eq!(editor.values, Some(draft));
+        assert!(editor.dirty);
+
+        editor.review = Some(review());
+        editor.target = Some("second-plan".into());
+        assert!(!editor.confirm_apply());
+        assert_eq!(editor.status, t!("processor_power.review_stale"));
+        assert_eq!(editor.values, Some(draft));
+        assert!(editor.dirty);
+
+        editor.review = Some(review());
+        editor.target = Some("first-plan".into());
+        editor.values = Some(current);
+        assert!(!editor.confirm_apply());
+        assert_eq!(editor.status, t!("processor_power.review_stale"));
+        assert_eq!(editor.values, Some(current));
+    }
+
+    #[test]
     fn preset_matching_does_not_normalize_actual_readback() {
         let mut preset = AdvancedPowerPlanTuningValues::for_preset(ProcessorPowerPreset::Balanced);
         preset.processor.performance_min = 75;
@@ -1009,7 +1285,7 @@ mod tests {
                 Message::Value(Source::Ac, Field::Minimum, 25),
             );
             assert!(!editor.dirty);
-            assert!(!editor.apply());
+            assert!(!editor.confirm_apply());
         }
     }
 

@@ -95,6 +95,33 @@ fn successful_apply_is_followed_by_readback() {
 }
 
 #[test]
+fn reviewed_apply_rejects_stale_values_and_rechecks_before_writing() {
+    let actual = values(75);
+    let store = FakeStore::new(actual);
+    let service = AdvancedPowerPlanTuningService::with_store(Box::new(store.clone()));
+
+    assert_eq!(
+        service.apply_reviewed_values("plan", values(70), actual),
+        Err(AdvancedPowerPlanTuningError::ValuesChanged)
+    );
+    assert_eq!(store.calls(), vec!["read"]);
+
+    let outcome = service
+        .apply_reviewed_values("plan", actual, actual)
+        .unwrap();
+    assert!(outcome.applied);
+    assert_eq!(store.calls(), vec!["read", "read", "apply", "read"]);
+
+    let deleted_plan = AdvancedPowerPlanTuningError::ReadValues("Plan deleted".into());
+    store.state.lock().expect("power tuning lock").values = Err(deleted_plan.clone());
+    assert_eq!(
+        service.apply_reviewed_values("plan", actual, actual),
+        Err(deleted_plan)
+    );
+    assert_eq!(store.calls(), vec!["read", "read", "apply", "read", "read"]);
+}
+
+#[test]
 fn apply_requires_matching_values_for_both_power_sources() {
     use crate::power::ProcessorSchedulingPolicy;
 

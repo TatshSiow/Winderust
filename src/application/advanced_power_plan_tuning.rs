@@ -10,6 +10,8 @@ pub(crate) enum AdvancedPowerPlanTuningError {
     ReadValues(String),
     #[error("Failed to read power plan personality: {0}")]
     ReadPersonality(String),
+    #[error("Power plan values changed after review.")]
+    ValuesChanged,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -109,7 +111,19 @@ impl AdvancedPowerPlanTuningService {
         self.store.read_personality(guid)
     }
 
-    pub(crate) fn apply_values(
+    pub(crate) fn apply_reviewed_values(
+        &self,
+        guid: &str,
+        reviewed_current: AdvancedPowerPlanTuningSourceValues,
+        values: AdvancedPowerPlanTuningSourceValues,
+    ) -> Result<AdvancedPowerPlanTuningApplyOutcome, AdvancedPowerPlanTuningError> {
+        if self.read_values(guid)? != reviewed_current {
+            return Err(AdvancedPowerPlanTuningError::ValuesChanged);
+        }
+        Ok(self.apply_values(guid, values))
+    }
+
+    fn apply_values(
         &self,
         guid: &str,
         values: AdvancedPowerPlanTuningSourceValues,

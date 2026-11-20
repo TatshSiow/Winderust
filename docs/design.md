@@ -228,6 +228,9 @@ hover/press; background shading supplies feedback.
 - Built-in presets keep current scheduling policies; custom presets can capture
   choices or keep current. Re-read after every Apply attempt, including partial
   failure. Adaptive Engine does not own these persistent writes.
+- Apply and Save open the same review for pending tuning edits. Show the target
+  plan and only changed values, grouped by Plugged In and On Battery. Cancel
+  keeps the tuning draft.
 
 ### Watchdog
 
