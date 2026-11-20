@@ -3249,9 +3249,6 @@ impl WinderustApp {
             t!(title).to_string(),
             design::typography::BODY
         )];
-        if settings || plan.is_none() {
-            notice = notice.push(text(t!("unsaved.message").to_string()));
-        }
         if let Some(guid) = plan {
             let plan = power_plan_control::plan_name(&self.power_plans, guid);
             notice = notice.push(text(
