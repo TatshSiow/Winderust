@@ -253,10 +253,12 @@ impl<M> Widget<M, Theme, Renderer> for Motion<'_, M> {
                 viewport,
             );
             let checkbox = child.children().next().unwrap().bounds();
-            let status = if interactive {
-                iced::widget::checkbox::Status::Active { is_checked: true }
-            } else {
+            let status = if !interactive {
                 iced::widget::checkbox::Status::Disabled { is_checked: true }
+            } else if cursor.is_over(child.bounds()) {
+                iced::widget::checkbox::Status::Hovered { is_checked: true }
+            } else {
+                iced::widget::checkbox::Status::Active { is_checked: true }
             };
             let color = super::widgets::checkbox_style(theme, status).icon_color;
             let inset = 2.0;

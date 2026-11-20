@@ -169,7 +169,7 @@ pub(super) fn item_style(
         super::widgets::quiet(theme, status)
     };
     if focused {
-        style.border.color = theme.palette().primary;
+        style.border.color = super::widgets::accent_text(theme, style.background);
         style.border.width = 2.0;
     }
     style
@@ -416,7 +416,10 @@ pub(super) fn icon<'a, Message: 'a>(page: Page, selected: bool) -> Element<'a, M
     .height(design::ICON_SIZE)
     .style(move |theme: &Theme, _| iced::widget::svg::Style {
         color: Some(if selected {
-            theme.palette().primary
+            super::widgets::accent_text(
+                theme,
+                Some(theme.palette().primary.scale_alpha(0.22).into()),
+            )
         } else {
             super::widgets::muted_color(theme)
         }),

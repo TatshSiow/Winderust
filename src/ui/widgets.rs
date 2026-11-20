@@ -239,7 +239,14 @@ pub(super) fn active_indicator<'a, M: 'a>(active: bool) -> Element<'a, M> {
             .width(3)
             .height(18)
             .style(move |theme: &iced::Theme| iced::widget::container::Style {
-                background: Some(theme.palette().primary.scale_alpha(progress.get()).into()),
+                background: Some(
+                    accent_text(
+                        theme,
+                        Some(theme.palette().primary.scale_alpha(0.20).into()),
+                    )
+                    .scale_alpha(progress.get())
+                    .into(),
+                ),
                 border: iced::border::rounded(2),
                 ..Default::default()
             }),
@@ -291,7 +298,7 @@ pub(super) fn tab_style(
     }
     style.border.width = 1.0;
     style.border.color = if active {
-        theme.palette().primary.scale_alpha(0.6)
+        accent_text(theme, style.background)
     } else {
         iced::Color::TRANSPARENT
     };
@@ -304,22 +311,9 @@ pub(super) fn preset_footer<'a, M: Clone + 'a>(label: String, message: M) -> Ele
         iced::widget::container(
             button(
                 iced::widget::container(
-                    row![
-                        iced::widget::svg(
-                            super::assets::iced_icon("icons/plus.svg")
-                                .expect("Every UI icon is bundled")
-                        )
-                        .width(design::ICON_SIZE)
-                        .height(design::ICON_SIZE)
-                        .style(|theme: &iced::Theme, _| {
-                            iced::widget::svg::Style {
-                                color: Some(theme.extended_palette().primary.base.text),
-                            }
-                        }),
-                        text(label)
-                    ]
-                    .spacing(design::space::SMALL)
-                    .align_y(iced::Center)
+                    row![text("+").size(design::ICON_SIZE), text(label)]
+                        .spacing(design::space::SMALL)
+                        .align_y(iced::Center)
                 )
                 .center_x(Fill)
                 .center_y(Fill)
@@ -350,17 +344,18 @@ pub(super) fn rule_status_chip(theme: &iced::Theme, key: &str) -> iced::widget::
 }
 
 pub(super) fn indicator_chip(theme: &iced::Theme, active: bool) -> iced::widget::container::Style {
+    let background = if active {
+        theme.palette().primary.scale_alpha(0.15)
+    } else {
+        theme.extended_palette().background.neutral.color
+    };
     iced::widget::container::Style {
         text_color: Some(if active {
-            theme.palette().primary
+            accent_text(theme, Some(background.into()))
         } else {
             muted_color(theme)
         }),
-        background: Some(if active {
-            theme.palette().primary.scale_alpha(0.15).into()
-        } else {
-            theme.extended_palette().background.neutral.color.into()
-        }),
+        background: Some(background.into()),
         border: iced::border::rounded(design::CONTROL_RADIUS),
         ..Default::default()
     }
@@ -368,6 +363,22 @@ pub(super) fn indicator_chip(theme: &iced::Theme, active: bool) -> iced::widget:
 
 pub(super) fn muted_color(theme: &iced::Theme) -> iced::Color {
     theme.extended_palette().secondary.base.color
+}
+
+pub(super) fn accent_text(theme: &iced::Theme, fill: Option<iced::Background>) -> iced::Color {
+    let palette = theme.extended_palette();
+    let surface = if palette.is_dark {
+        palette.background.neutral.color
+    } else {
+        palette.background.weaker.color
+    };
+    let background = match fill {
+        Some(iced::Background::Color(color)) => {
+            super::animated_controls::color(surface, color, color.a)
+        }
+        _ => surface,
+    };
+    design::readable_on(theme.palette().primary, background)
 }
 
 fn control_border(theme: &iced::Theme) -> iced::Color {
@@ -407,6 +418,9 @@ pub(super) fn primary_button(
     status: iced::widget::button::Status,
 ) -> iced::widget::button::Style {
     let mut style = iced::widget::button::primary(theme, status);
+    if status == iced::widget::button::Status::Hovered {
+        style.text_color = theme.extended_palette().primary.strong.text;
+    }
     style.border.radius = design::CONTROL_RADIUS.into();
     style.border.width = 1.0;
     style
@@ -421,15 +435,13 @@ pub(super) fn secondary_button(
     let disabled = status == Status::Disabled;
     style.border.width = 1.0;
     style.border.color = control_border(theme).scale_alpha(if disabled { 0.35 } else { 0.75 });
-    style.text_color = theme
-        .palette()
-        .primary
-        .scale_alpha(if disabled { 0.35 } else { 1.0 });
     style.background = match status {
         Status::Hovered => Some(theme.palette().primary.scale_alpha(0.08).into()),
         Status::Pressed => Some(theme.palette().primary.scale_alpha(0.14).into()),
         _ => None,
     };
+    style.text_color =
+        accent_text(theme, style.background).scale_alpha(if disabled { 0.35 } else { 1.0 });
     style
 }
 
@@ -546,15 +558,14 @@ pub(super) fn select_field(
     style.text_color = theme.palette().text;
     style.handle_color = muted_color(theme);
     style.border.radius = design::CONTROL_RADIUS.into();
-    style.border.color = match status {
-        Status::Active => control_border(theme),
-        Status::Hovered => theme.palette().primary.scale_alpha(0.55),
-        Status::Opened { .. } => theme.palette().primary,
-    };
     if matches!(status, Status::Hovered) {
         style.background =
             iced::theme::palette::mix(background, theme.palette().primary, 0.08).into();
     }
+    style.border.color = match status {
+        Status::Active => control_border(theme),
+        Status::Hovered | Status::Opened { .. } => accent_text(theme, Some(style.background)),
+    };
     style
 }
 
@@ -600,6 +611,8 @@ pub(super) fn checkbox_style(
         style.border.color = control_border(theme);
         style.background = theme.extended_palette().background.weak.color.into();
         style.text_color = Some(muted_color(theme));
+    } else if let iced::Background::Color(background) = style.background {
+        style.icon_color = design::readable_on(style.icon_color, background);
     }
     style
 }
@@ -1616,7 +1629,6 @@ pub(super) fn selected(
 ) -> iced::widget::button::Style {
     let mut style = quiet(theme, status);
     if status != iced::widget::button::Status::Disabled {
-        style.text_color = theme.palette().primary;
         style.background = Some(
             theme
                 .palette()
@@ -1628,6 +1640,7 @@ pub(super) fn selected(
                 })
                 .into(),
         );
+        style.text_color = accent_text(theme, style.background);
     }
     style
 }
@@ -1793,10 +1806,7 @@ mod tests {
                     assert_eq!(inactive.text_color, quiet(theme, status).text_color);
                     assert_eq!(active.text_color, inactive.text_color);
                     assert_eq!(active.background, selected(theme, status).background);
-                    assert_eq!(
-                        active.border.color,
-                        theme.palette().primary.scale_alpha(0.6)
-                    );
+                    assert_eq!(active.border.color, accent_text(theme, active.background));
                 }
                 let field = select_field(theme, iced::widget::pick_list::Status::Active);
                 let hover = select_field(theme, iced::widget::pick_list::Status::Hovered);
@@ -1818,17 +1828,71 @@ mod tests {
     }
 
     #[test]
+    fn extreme_accents_keep_control_text_and_selection_readable() {
+        use iced::{Background, Color};
+
+        for accent in [Color::BLACK, Color::WHITE, Color::from_rgb8(255, 235, 20)] {
+            for theme in [
+                Theme::custom_with_fn(
+                    "light",
+                    design::palette(true, Some(accent)),
+                    design::extended_palette,
+                ),
+                Theme::custom_with_fn(
+                    "dark",
+                    design::palette(false, Some(accent)),
+                    design::extended_palette,
+                ),
+                design::amoled_theme(Some(accent)),
+            ] {
+                let colors = theme.extended_palette();
+                for status in [Status::Active, Status::Hovered, Status::Pressed] {
+                    let primary = primary_button(&theme, status);
+                    let Some(Background::Color(fill)) = primary.background else {
+                        panic!("primary buttons use a solid fill");
+                    };
+                    assert!(primary.text_color.relative_contrast(fill) >= 4.5);
+                    let tab = tab_style(&theme, status, true);
+                    for surface in [
+                        colors.background.weaker.color,
+                        colors.background.weak.color,
+                        colors.background.neutral.color,
+                    ] {
+                        let painted = |fill| match fill {
+                            Some(Background::Color(tint)) => {
+                                super::super::animated_controls::color(surface, tint, tint.a)
+                            }
+                            _ => surface,
+                        };
+                        for style in [secondary_button(&theme, status), selected(&theme, status)] {
+                            assert!(
+                                style
+                                    .text_color
+                                    .relative_contrast(painted(style.background))
+                                    >= 4.5
+                            );
+                        }
+                        assert!(tab.border.color.relative_contrast(painted(tab.background)) >= 3.0);
+                    }
+                }
+                for status in [
+                    iced::widget::checkbox::Status::Active { is_checked: true },
+                    iced::widget::checkbox::Status::Hovered { is_checked: true },
+                ] {
+                    let checkbox = checkbox_style(&theme, status);
+                    let Background::Color(fill) = checkbox.background else {
+                        panic!("checkboxes use a solid fill");
+                    };
+                    assert!(checkbox.icon_color.relative_contrast(fill) >= 3.0);
+                }
+            }
+        }
+    }
+
+    #[test]
     fn interactive_surfaces_distinguish_hover_press_selection_and_disabled() {
         for theme in [Theme::CatppuccinLatte, Theme::CatppuccinMocha] {
             assert_ne!(selected(&theme, Status::Active).background, None);
-            assert_eq!(
-                selected(&theme, Status::Active).text_color,
-                theme.palette().primary
-            );
-            assert_eq!(
-                selected(&theme, Status::Hovered).text_color,
-                theme.palette().primary
-            );
             for style in [quiet, selected, card, control_button, selected_control] {
                 let active = style(&theme, Status::Active);
                 let hovered = style(&theme, Status::Hovered);

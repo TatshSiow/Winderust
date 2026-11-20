@@ -119,7 +119,7 @@ impl Widget<Message, Theme, Renderer> for Anchor<'_> {
                 renderer::Quad {
                     bounds: layout.bounds(),
                     border: iced::Border {
-                        color: theme.palette().primary,
+                        color: theme.palette().text,
                         width: 2.0,
                         radius: super::design::CONTROL_RADIUS.into(),
                     },

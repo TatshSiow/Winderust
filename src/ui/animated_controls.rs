@@ -108,7 +108,15 @@ impl<'a, M: 'a> Button<'a, M> {
                 b.background.unwrap_or(iced::Color::TRANSPARENT.into()),
                 t,
             ));
-            result.text_color = color(a.text_color, b.text_color, t);
+            let text_color = color(a.text_color, b.text_color, t);
+            result.text_color = match result.background {
+                Some(iced::Background::Color(fill))
+                    if fill.a == 1.0 && a.text_color != b.text_color =>
+                {
+                    super::design::readable_on(text_color, fill)
+                }
+                _ => text_color,
+            };
             result.border.color = color(a.border.color, b.border.color, t);
             result.border.width = a.border.width + (b.border.width - a.border.width) * t;
             result.shadow.color = color(a.shadow.color, b.shadow.color, t);

@@ -432,12 +432,12 @@ impl Model {
                 text(format!("{first}: {first_value}"))
                     .size(design::typography::SECTION)
                     .style(|theme| text::Style {
-                        color: Some(chart_colors(theme)[0])
+                        color: Some(chart_text_color(theme, 0))
                     }),
                 text(format!("{second}: {second_value}"))
                     .size(design::typography::SECTION)
                     .style(|theme| text::Style {
-                        color: Some(chart_colors(theme)[1])
+                        color: Some(chart_text_color(theme, 1))
                     }),
             ]
             .spacing(design::space::TIGHT)
@@ -472,7 +472,7 @@ impl Model {
                     super::widgets::heading(right_value, design::typography::DIALOG_TITLE).style(
                         move |theme: &Theme| text::Style {
                             color: Some(if kind == ChartKind::Cpu {
-                                chart_colors(theme)[1]
+                                chart_text_color(theme, 1)
                             } else {
                                 theme.palette().text
                             }),
@@ -761,6 +761,13 @@ fn chart_colors(theme: &Theme) -> [iced::Color; 2] {
         theme.palette().primary,
         iced::theme::palette::mix(theme.palette().primary, theme.palette().text, 0.5),
     ]
+}
+
+fn chart_text_color(theme: &Theme, series: usize) -> iced::Color {
+    design::readable_on(
+        chart_colors(theme)[series],
+        theme.extended_palette().background.weak.color,
+    )
 }
 
 impl Chart {

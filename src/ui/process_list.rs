@@ -1460,7 +1460,10 @@ impl ProcessList {
                                                             .color
                                                     }
                                                     "process_list.resume_process" => {
-                                                        theme.palette().primary
+                                                        super::widgets::accent_text(
+                                                            theme,
+                                                            style.background,
+                                                        )
                                                     }
                                                     "process_list.stop_process"
                                                     | "process_list.stop_process_tree" => {
@@ -1809,7 +1812,12 @@ fn status_cell(key: &str) -> Element<'static, Message> {
     let color: fn(&iced::Theme) -> iced::Color = match key {
         "process_list.status_suspended" => |theme| theme.palette().warning,
         "process_list.status_efficiency_mode" => |theme| theme.palette().success,
-        "process_list.status_active" => |theme| theme.palette().primary,
+        "process_list.status_active" => |theme| {
+            super::widgets::accent_text(
+                theme,
+                Some(theme.palette().primary.scale_alpha(0.20).into()),
+            )
+        },
         _ => super::widgets::muted_color,
     };
     let label = t!(key);
