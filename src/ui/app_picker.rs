@@ -42,6 +42,21 @@ pub(super) fn is_path_query(query: &str) -> bool {
     query.contains(['\\', '/', ':'])
 }
 
+pub(super) fn path_format_hint<'a>() -> iced::widget::Text<'a> {
+    text(t!("common.executable_path_format_hint").to_string())
+        .style(text::danger)
+        .wrapping(text::Wrapping::WordOrGlyph)
+}
+
+pub(super) fn path_readd_hint<'a, M: 'a>() -> iced::widget::Container<'a, M> {
+    container(
+        text(t!("common.executable_path_readd").to_string())
+            .style(text::secondary)
+            .wrapping(text::Wrapping::WordOrGlyph),
+    )
+    .padding(iced::Padding::new(widgets::CARD_PADDING as f32).top(0.0))
+}
+
 pub(super) fn view<'a, M: Clone + 'static>(
     query: &str,
     candidates: &'a [Candidate],

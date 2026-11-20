@@ -16,7 +16,7 @@ use crate::{
     },
     power::PowerPlan,
     rules::decision_engine::matching_by_focus_rule,
-    ui::{design, scrolling::scrollable, tasks, widgets},
+    ui::{app_picker, design, scrolling::scrollable, tasks, widgets},
 };
 
 #[derive(Debug, Clone)]
@@ -245,7 +245,7 @@ impl FocusPreview {
         ]
         .spacing(widgets::CARD_GAP);
         if check.is_none() && self.check.is_none() && !self.path.trim().is_empty() {
-            body = body.push(super::path_format_hint());
+            body = body.push(app_picker::path_format_hint());
         }
         if let Some(pending) = &self.check {
             let result = match &pending.result {

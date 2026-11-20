@@ -1,5 +1,6 @@
 use super::{app_picker, design, widgets};
 use crate::config::{SleepPreventionRule, SleepPreventionSettings};
+use crate::control::instance_limits::validate_path;
 use crate::sleep_prevention::SleepPreventionSnapshot;
 use crate::ui::process_rules::{can_add_process_candidate, process_setting_matches};
 use iced::{
@@ -26,11 +27,12 @@ pub(super) enum Message {
 
 impl Editor {
     fn can_add(settings: &SleepPreventionSettings, path: &str) -> bool {
-        can_add_process_candidate(
-            path,
-            |path| settings.contains_rule_for(path),
-            crate::features::power_plan_control::by_running_app::is_builtin_excluded,
-        )
+        validate_path(path.trim()).is_ok()
+            && can_add_process_candidate(
+                path,
+                |path| settings.contains_rule_for(path),
+                crate::features::power_plan_control::by_running_app::is_builtin_excluded,
+            )
     }
 
     pub(super) fn update(&mut self, settings: &mut SleepPreventionSettings, message: Message) {
@@ -75,35 +77,53 @@ impl Editor {
             .iter()
             .enumerate()
             .map(|(index, rule)| {
+                let header = widgets::process_rule_header(
+                    &rule.executable_path,
+                    candidates,
+                    widgets::checkbox(rule.enabled)
+                        .on_toggle(move |value| Message::RuleEnabled(index, value))
+                        .into(),
+                    Some(
+                        text(indicator(status, rule))
+                            .size(design::typography::SECONDARY)
+                            .into(),
+                    ),
+                    vec![widgets::checkbox(rule.keep_display_on)
+                        .on_toggle(move |value| Message::KeepDisplayOn(index, value))
+                        .into()],
+                    iced::widget::container(widgets::rule_delete_button(Some(Message::Remove(
+                        index,
+                    ))))
+                    .center_x(80)
+                    .into(),
+                );
+                let mut row = column![header];
+                if validate_path(rule.executable_path.trim()).is_err() {
+                    row = row.push(app_picker::path_readd_hint());
+                }
                 (
                     widgets::stable_key(&rule.executable_path),
-                    column![
-                        widgets::process_rule_header(
-                            &rule.executable_path,
-                            candidates,
-                            widgets::checkbox(rule.enabled)
-                                .on_toggle(move |value| Message::RuleEnabled(index, value))
-                                .into(),
-                            Some(
-                                text(indicator(status, rule))
-                                    .size(design::typography::SECONDARY)
-                                    .into()
-                            ),
-                            vec![widgets::checkbox(rule.keep_display_on)
-                                .on_toggle(move |value| Message::KeepDisplayOn(index, value))
-                                .into()],
-                            iced::widget::container(widgets::rule_delete_button(Some(
-                                Message::Remove(index)
-                            )))
-                            .center_x(80)
-                            .into(),
-                        ),
-                        widgets::settings_divider(),
-                    ]
-                    .into(),
+                    row.push(widgets::settings_divider()).into(),
                 )
             })
             .collect();
+        let can_add = Self::can_add(settings, &self.path);
+        let mut picker = column![app_picker::view(
+            &self.path,
+            candidates,
+            true,
+            Message::Path,
+            Message::Browse,
+            can_add.then_some(Message::Add),
+            |path| Self::can_add(settings, path).then_some(true),
+        )]
+        .spacing(design::space::SMALL);
+        if !can_add
+            && app_picker::is_path_query(&self.path)
+            && validate_path(self.path.trim()).is_err()
+        {
+            picker = picker.push(app_picker::path_format_hint());
+        }
         super::scrolling::scrollable(
             column![
                 widgets::toggle_card(
@@ -112,15 +132,7 @@ impl Editor {
                     Some(Message::Enabled)
                 ),
                 widgets::setting_title("common.rules"),
-                app_picker::view(
-                    &self.path,
-                    candidates,
-                    true,
-                    Message::Path,
-                    Message::Browse,
-                    Self::can_add(settings, &self.path).then_some(Message::Add),
-                    |path| Self::can_add(settings, path).then_some(true),
-                ),
+                picker,
                 widgets::process_rules_table_with_actions(
                     [t!("sleep_prevention.keep_display_on").to_string()],
                     rules,
@@ -161,6 +173,28 @@ fn indicator(status: &SleepPreventionSnapshot, rule: &SleepPreventionRule) -> St
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn adding_a_rule_requires_a_full_drive_or_network_path() {
+        let mut settings = SleepPreventionSettings::default();
+        let mut editor = Editor::default();
+        for path in [
+            r"C:\Apps\.\worker.exe",
+            r"C:\Apps\child\..\worker.exe",
+            r"\\?\C:\Apps\worker.exe",
+            r" C:\Apps\worker.exe ",
+            r" \\server\share\worker.exe ",
+        ] {
+            editor.update(&mut settings, Message::Path(path.into()));
+            editor.update(&mut settings, Message::Add);
+        }
+        let paths: Vec<_> = settings
+            .rules
+            .iter()
+            .map(|rule| rule.executable_path.as_str())
+            .collect();
+        assert_eq!(paths, [r"C:\Apps\worker.exe", r"\\server\share\worker.exe"]);
+    }
 
     #[test]
     fn rule_status_distinguishes_accepted_requests_and_sleep_suppression() {

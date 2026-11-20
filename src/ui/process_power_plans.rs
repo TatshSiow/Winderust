@@ -212,7 +212,7 @@ impl Editor {
                         && app_picker::is_path_query(&self.path)
                         && validate_path(self.path.trim()).is_err()
                     {
-                        picker = picker.push(path_format_hint());
+                        picker = picker.push(app_picker::path_format_hint());
                     }
                     picker.into()
                 };
@@ -274,14 +274,7 @@ impl Editor {
                         .into(),
                     )];
                     if is_path && validate_path(target).is_err() {
-                        card = card.push(
-                            iced::widget::container(
-                                text(t!("power_plan_control.executable_path_readd").to_string())
-                                    .style(text::secondary)
-                                    .wrapping(text::Wrapping::WordOrGlyph),
-                            )
-                            .padding(iced::Padding::new(widgets::CARD_PADDING as f32).top(0.0)),
-                        );
+                        card = card.push(app_picker::path_readd_hint());
                     }
                     cards.push((
                         widgets::stable_key(&(is_path, target)),
@@ -326,12 +319,6 @@ impl Editor {
             ),
         }
     }
-}
-
-fn path_format_hint<'a>() -> iced::widget::Text<'a> {
-    text(t!("common.executable_path_format_hint").to_string())
-        .style(text::danger)
-        .wrapping(text::Wrapping::WordOrGlyph)
 }
 
 #[cfg(test)]
