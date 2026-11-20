@@ -1,12 +1,14 @@
 use super::design;
 use super::widgets::{action_button, button, icon_button, pick_list, slider, text_input};
-use crate::application::{AdvancedPowerPlanTuningError, AdvancedPowerPlanTuningService};
+use crate::application::{
+    AdvancedPowerPlanTuningApplyError, AdvancedPowerPlanTuningError, AdvancedPowerPlanTuningService,
+};
 use crate::config::AdvancedPowerPlanTuningPreset;
 use crate::power::{
     AdvancedPowerPlanTuningReadback, AdvancedPowerPlanTuningSourceValues,
     AdvancedPowerPlanTuningValues, EditableTuningValues, EffectivePowerMode, PowerPlan,
     PowerPlanPersonality, PowerSettingReadback, ProcessorBoostMode, ProcessorPowerPreset,
-    ProcessorSchedulingPolicy,
+    ProcessorPowerValues, ProcessorSchedulingPolicy,
 };
 use crate::ui::scrolling::scrollable;
 use iced::widget::{column, row, text};
@@ -37,6 +39,15 @@ pub(super) struct Editor {
 pub(super) enum Source {
     Ac,
     Battery,
+}
+
+impl Source {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Ac => "power_source.plugged_in",
+            Self::Battery => "power_source.on_battery",
+        }
+    }
 }
 #[derive(Debug, Clone, Copy)]
 pub(super) enum Field {
@@ -126,44 +137,11 @@ impl ApplyReview {
     }
 
     fn changes(&self, source: Source) -> impl Iterator<Item = (&'static str, String, String)> {
-        let current = self.current.writable();
-        let (current, requested) = match source {
-            Source::Ac => (current.ac, self.requested.ac),
-            Source::Battery => (current.battery, self.requested.battery),
-        };
-        let percentages = fields(current)
-            .into_iter()
-            .zip(fields(requested))
-            .filter(|((_, _, before), (_, _, after))| before != after)
-            .map(|((_, label, before), (_, _, after))| {
-                (label, format!("{before}%"), format!("{after}%"))
-            });
-        let boost = requested.processor.boost_mode.and_then(|after| {
-            let before = current.processor.boost_mode;
-            (before != Some(after)).then(|| {
-                (
-                    "processor_power.boost_mode",
-                    before.map_or_else(
-                        || t!("common.unavailable").to_string(),
-                        |mode| BoostChoice(mode).to_string(),
-                    ),
-                    BoostChoice(after).to_string(),
-                )
-            })
-        });
-        let scheduling = scheduling_fields(current)
-            .into_iter()
-            .zip(scheduling_fields(requested))
-            .filter_map(|((_, label, before), (_, _, after))| {
-                let after = after?;
-                (before != Some(after)).then(|| {
-                    let before = before
-                        .map(|value| SchedulingChoice(Some(value)).to_string())
-                        .unwrap_or_else(|| t!("common.unavailable").to_string());
-                    (label, before, SchedulingChoice(Some(after)).to_string())
-                })
-            });
-        percentages.chain(boost).chain(scheduling)
+        readback_changes(
+            self.current,
+            self.current.with_requested(self.requested),
+            source,
+        )
     }
 }
 
@@ -434,27 +412,40 @@ impl Editor {
             };
         self.set_readback(outcome.actual_values);
         self.dirty = !restoring && self.values.is_some() && !outcome.applied;
-        match outcome.error {
-            Some(error) => {
-                self.status = error.to_string();
-                false
+        let mismatch_summary = if restoring {
+            "processor_power.restore_not_verified"
+        } else {
+            "processor_power.apply_not_verified"
+        };
+        let error = match (outcome.error, self.readback) {
+            (Some(AdvancedPowerPlanTuningApplyError::Verification), _) => {
+                Some(t!(mismatch_summary).to_string())
             }
-            None => {
-                if !self
-                    .readback
-                    .is_some_and(|actual| self.remember_verified_write(&review, actual))
-                {
-                    self.status = t!("processor_power.restore_not_verified").to_string();
-                    return false;
-                }
-                self.status = if restoring {
-                    t!("processor_power.restored_previous", plan = &review.name).to_string()
-                } else {
-                    t!("processor_power.applied_custom", plan = &review.guid).to_string()
-                };
-                true
+            (Some(error), _) => Some(error.to_string()),
+            (None, Some(actual)) if self.remember_verified_write(&review, actual) => None,
+            (None, _) => Some(t!(mismatch_summary).to_string()),
+        };
+        if let Some(mut message) = error {
+            let expected = if restoring {
+                self.restore_points
+                    .get(&review.guid)
+                    .map(|point| point.previous)
+            } else {
+                self.readback
+                    .map(|actual| actual.with_requested(review.requested))
+            };
+            if let Some((expected, actual)) = expected.zip(self.readback) {
+                append_readback_differences(&mut message, expected, actual);
             }
+            self.status = message;
+            return false;
         }
+        self.status = if restoring {
+            t!("processor_power.restored_previous", plan = &review.name).to_string()
+        } else {
+            t!("processor_power.applied_custom", plan = &review.guid).to_string()
+        };
+        true
     }
     pub(super) fn update(
         &mut self,
@@ -737,7 +728,7 @@ impl Editor {
                     .placeholder(t!("common.custom").to_string())
                     .width(280);
                 let mut controls = Vec::new();
-                for (field, label, value) in fields(values) {
+                for (field, label, value) in fields(values.processor) {
                     controls.push(
                         row![
                             text(super::widgets::label_with_unit(&t!(label), "%")).width(Fill),
@@ -822,7 +813,7 @@ impl Editor {
         }
         body = body
             .push(super::widgets::settings_card(actions))
-            .push(text(&self.status));
+            .push(text(&self.status).wrapping(text::Wrapping::WordOrGlyph));
         scrollable(body).height(Fill).width(Fill).into()
     }
     pub(super) fn apply_review_modal(&self) -> Option<Element<'_, Message>> {
@@ -845,10 +836,7 @@ impl Editor {
         ))]
         .spacing(widgets::CARD_GAP);
         let mut has_changes = false;
-        for (source, title) in [
-            (Source::Ac, "power_source.plugged_in"),
-            (Source::Battery, "power_source.on_battery"),
-        ] {
+        for source in [Source::Ac, Source::Battery] {
             let rows = review
                 .changes(source)
                 .map(|(label, before, after)| {
@@ -859,7 +847,7 @@ impl Editor {
                 has_changes = true;
                 body = body
                     .push(widgets::heading(
-                        t!(title).to_string(),
+                        t!(source.label()).to_string(),
                         design::typography::BODY,
                     ))
                     .push(widgets::settings_card(widgets::settings_rows(rows)));
@@ -931,7 +919,7 @@ impl Editor {
         ]
         .spacing(widgets::CARD_GAP);
         let mut values = Vec::new();
-        for (field, label, value) in fields(p.values) {
+        for (field, label, value) in fields(p.values.processor) {
             values.push(
                 widgets::setting_row_with_unit(
                     label,
@@ -1159,15 +1147,27 @@ fn tuning_choice<'a, T>(
     draft: Option<T>,
     pick: impl FnOnce(T) -> Element<'a, Message>,
 ) -> Element<'a, Message> {
+    show_setting_readback(
+        readback,
+        |value| pick(draft.unwrap_or(value)),
+        |status| text(status).style(text::secondary).into(),
+    )
+}
+
+fn show_setting_readback<T, R>(
+    readback: PowerSettingReadback<T>,
+    known: impl FnOnce(T) -> R,
+    unavailable: impl FnOnce(String) -> R,
+) -> R {
     let status = match readback {
-        PowerSettingReadback::Known(value) => return pick(draft.unwrap_or(value)),
+        PowerSettingReadback::Known(value) => return known(value),
         PowerSettingReadback::Missing => t!("processor_power.setting_missing"),
         PowerSettingReadback::Unreadable => t!("processor_power.setting_unreadable"),
         PowerSettingReadback::Unknown(value) => {
             t!("processor_power.setting_unknown", value = value)
         }
     };
-    text(status.to_string()).style(text::secondary).into()
+    unavailable(status.to_string())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1190,8 +1190,7 @@ impl std::fmt::Display for SchedulingChoice {
     }
 }
 
-fn fields<B>(v: AdvancedPowerPlanTuningValues<B>) -> [(Field, &'static str, u32); 4] {
-    let v = v.processor;
+fn fields<B>(v: ProcessorPowerValues<B>) -> [(Field, &'static str, u32); 4] {
     [
         (
             Field::Parking,
@@ -1210,6 +1209,80 @@ fn fields<B>(v: AdvancedPowerPlanTuningValues<B>) -> [(Field, &'static str, u32)
         ),
         (Field::Boost, "processor_power.boost_policy", v.boost_policy),
     ]
+}
+
+fn readback_changes(
+    before: AdvancedPowerPlanTuningReadback,
+    after: AdvancedPowerPlanTuningReadback,
+    source: Source,
+) -> impl Iterator<Item = (&'static str, String, String)> {
+    let (before, after) = match source {
+        Source::Ac => (before.ac, after.ac),
+        Source::Battery => (before.battery, after.battery),
+    };
+    let percentages = fields(before.processor)
+        .into_iter()
+        .zip(fields(after.processor))
+        .filter(|((_, _, before), (_, _, after))| before != after)
+        .map(|((_, label, before), (_, _, after))| {
+            (label, format!("{before}%"), format!("{after}%"))
+        });
+    let scheduling_label = |policy| SchedulingChoice(Some(policy)).to_string();
+    percentages.chain(
+        [
+            readback_setting_change(
+                "processor_power.boost_mode",
+                before.processor.boost_mode,
+                after.processor.boost_mode,
+                |mode| BoostChoice(mode).to_string(),
+            ),
+            readback_setting_change(
+                "processor_power.scheduling_policy",
+                before.scheduling_policy,
+                after.scheduling_policy,
+                scheduling_label,
+            ),
+            readback_setting_change(
+                "processor_power.short_scheduling_policy",
+                before.short_scheduling_policy,
+                after.short_scheduling_policy,
+                scheduling_label,
+            ),
+        ]
+        .into_iter()
+        .flatten(),
+    )
+}
+
+fn readback_setting_change<T: Eq>(
+    label: &'static str,
+    before: PowerSettingReadback<T>,
+    after: PowerSettingReadback<T>,
+    known: impl Fn(T) -> String,
+) -> Option<(&'static str, String, String)> {
+    (before != after).then(|| {
+        let value = |status| show_setting_readback(status, &known, std::convert::identity);
+        (label, value(before), value(after))
+    })
+}
+
+fn append_readback_differences(
+    message: &mut String,
+    expected: AdvancedPowerPlanTuningReadback,
+    actual: AdvancedPowerPlanTuningReadback,
+) {
+    for source in [Source::Ac, Source::Battery] {
+        for (setting, requested, actual) in readback_changes(expected, actual, source) {
+            message.push('\n');
+            message.push_str(&t!(
+                "processor_power.readback_difference",
+                source = t!(source.label()),
+                setting = t!(setting),
+                requested = requested,
+                actual = actual
+            ));
+        }
+    }
 }
 fn set_field<B>(values: &mut AdvancedPowerPlanTuningValues<B>, field: Field, value: u32) {
     let values = &mut values.processor;
@@ -1290,6 +1363,46 @@ fn mode_label(mode: EffectivePowerMode) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn readback_details_include_requested_values_and_exact_restore_differences() {
+        let values = AdvancedPowerPlanTuningSourceValues::same(
+            AdvancedPowerPlanTuningValues::for_preset(ProcessorPowerPreset::Balanced),
+        );
+        let mut previous: AdvancedPowerPlanTuningReadback = values.into();
+        previous.ac.scheduling_policy = PowerSettingReadback::Unknown(30);
+        let mut actual = previous;
+        actual.ac.scheduling_policy = PowerSettingReadback::Unknown(31);
+        actual.battery.processor.boost_mode = PowerSettingReadback::Unreadable;
+
+        let battery_difference = t!(
+            "processor_power.readback_difference",
+            source = t!("power_source.on_battery"),
+            setting = t!("processor_power.boost_mode"),
+            requested = BoostChoice(ProcessorBoostMode::Enabled).to_string(),
+            actual = t!("processor_power.setting_unreadable"),
+        );
+        let mut apply = String::from("Write failed");
+        append_readback_differences(&mut apply, actual.with_requested(values), actual);
+        assert_eq!(apply, format!("Write failed\n{battery_difference}"));
+
+        let ac_difference = t!(
+            "processor_power.readback_difference",
+            source = t!("power_source.plugged_in"),
+            setting = t!("processor_power.scheduling_policy"),
+            requested = t!("processor_power.setting_unknown", value = 30),
+            actual = t!("processor_power.setting_unknown", value = 31),
+        );
+        let mut restore = t!("processor_power.restore_not_verified").to_string();
+        append_readback_differences(&mut restore, previous, actual);
+        assert_eq!(
+            restore,
+            format!(
+                "{}\n{ac_difference}\n{battery_difference}",
+                t!("processor_power.restore_not_verified")
+            ),
+        );
+    }
 
     #[test]
     fn review_shows_only_normalized_changes_for_each_power_source() {

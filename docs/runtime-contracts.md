@@ -304,14 +304,17 @@ Read the relevant section before changing feature policy, ownership, restoration
   and Restore skip missing, unreadable, and unknown boost modes and scheduling
   policies.
   A stale review or failed preflight read preserves the draft and requires a new
-  review. Readback verifies the outcome and reports any partial application.
+  review. Readback verifies the outcome. Each mismatch identifies the power
+  source, setting, requested value, and actual value. When a write stage fails,
+  the report includes the stage error and any differences from a successful readback.
 - Restore previous tuning values keeps one in-memory restore point per plan GUID
   after a verified Apply that changed values. It captures the pre-apply values
   only when the writer can reproduce the editable values exactly and preserve
   the unavailable boost mode and scheduling states. Restore requires a
   clean editor, an unmanaged plan, and live values that match the verified Apply
   readback. It uses the same explicit confirmation and consumes the point after
-  exact readback of the previous values. Exit clears the points.
+  exact readback of the previous values, including unavailable settings and raw
+  unknown indices. Exit clears the points.
 - `src/backend/self_power.rs` owns Winderust's hidden-to-tray priority and Power
   Throttling lifecycle, including strict baseline capture, verification, compensation, retry, and
   clean shutdown. Visibility changes apply synchronously; a process-lifetime

@@ -180,16 +180,19 @@ fn apply_requires_matching_values_for_both_power_sources() {
 
 #[test]
 fn apply_verifies_requested_settings_but_preserves_unowned_fields() {
-    let mut actual = values(75);
-    actual.ac.scheduling_policy = Some(ProcessorSchedulingPolicy::PerformanceProcessors);
-    actual.battery.short_scheduling_policy = Some(ProcessorSchedulingPolicy::Automatic);
+    let mut actual = AdvancedPowerPlanTuningReadback::from(values(75));
+    actual.ac.scheduling_policy = PowerSettingReadback::Unknown(42);
+    actual.battery.scheduling_policy = PowerSettingReadback::Unreadable;
+    actual.battery.short_scheduling_policy =
+        PowerSettingReadback::Known(ProcessorSchedulingPolicy::Automatic);
     let service = AdvancedPowerPlanTuningService::with_store(Box::new(FakeStore::new(actual)));
     let mut unowned = values(75);
     unowned.ac.processor.boost_mode = None;
-    for requested in [unowned, actual] {
+    for requested in [unowned, actual.writable()] {
+        assert_eq!(actual.with_requested(requested), actual);
         let outcome = service.apply_values("plan", requested);
         assert!(outcome.applied);
-        assert_eq!(outcome.actual_values, Some(actual.into()));
+        assert_eq!(outcome.actual_values, Some(actual));
         assert!(outcome.error.is_none());
     }
 }

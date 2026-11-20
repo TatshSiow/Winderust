@@ -1,8 +1,7 @@
 use crate::power::{
     apply_processor_power_values_staged, powercfg::validate_tuning_plan, read_plan_personality,
     read_processor_power_values, AdvancedPowerPlanTuningReadback,
-    AdvancedPowerPlanTuningSourceValues, EditableTuningValues, PowerPlanPersonality,
-    ProcessorPowerApplyError,
+    AdvancedPowerPlanTuningSourceValues, PowerPlanPersonality, ProcessorPowerApplyError,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -152,9 +151,7 @@ impl AdvancedPowerPlanTuningService {
 
         match (apply_error, readback) {
             (None, Ok(actual_values)) => {
-                let actual = actual_values.writable();
-                let applied = tuning_matches(values.ac, actual.ac)
-                    && tuning_matches(values.battery, actual.battery);
+                let applied = actual_values == actual_values.with_requested(values);
                 AdvancedPowerPlanTuningApplyOutcome {
                     applied,
                     actual_values: Some(actual_values),
@@ -181,20 +178,6 @@ impl AdvancedPowerPlanTuningService {
             },
         }
     }
-}
-
-fn tuning_matches(requested: EditableTuningValues, actual: EditableTuningValues) -> bool {
-    requested.processor.with_boost_mode(()) == actual.processor.with_boost_mode(())
-        && requested
-            .processor
-            .boost_mode
-            .is_none_or(|value| actual.processor.boost_mode == Some(value))
-        && requested
-            .scheduling_policy
-            .is_none_or(|value| actual.scheduling_policy == Some(value))
-        && requested
-            .short_scheduling_policy
-            .is_none_or(|value| actual.short_scheduling_policy == Some(value))
 }
 
 #[cfg(test)]

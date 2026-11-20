@@ -244,6 +244,23 @@ impl AdvancedPowerPlanTuningSourceReadback {
             short_scheduling_policy: self.short_scheduling_policy.known(),
         }
     }
+
+    fn with_requested(self, requested: EditableTuningValues) -> Self {
+        Self {
+            processor: requested.processor.with_boost_mode(
+                requested
+                    .processor
+                    .boost_mode
+                    .map_or(self.processor.boost_mode, PowerSettingReadback::Known),
+            ),
+            scheduling_policy: requested
+                .scheduling_policy
+                .map_or(self.scheduling_policy, PowerSettingReadback::Known),
+            short_scheduling_policy: requested
+                .short_scheduling_policy
+                .map_or(self.short_scheduling_policy, PowerSettingReadback::Known),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -257,6 +274,13 @@ impl AdvancedPowerPlanTuningReadback {
         AdvancedPowerPlanTuningSourceValues {
             ac: self.ac.writable(),
             battery: self.battery.writable(),
+        }
+    }
+
+    pub(crate) fn with_requested(self, requested: AdvancedPowerPlanTuningSourceValues) -> Self {
+        Self {
+            ac: self.ac.with_requested(requested.ac),
+            battery: self.battery.with_requested(requested.battery),
         }
     }
 }

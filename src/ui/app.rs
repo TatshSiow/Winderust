@@ -2616,7 +2616,8 @@ impl WinderustApp {
                 );
             }
             if !self.exiting && !self.error_message.is_empty() {
-                body = body.push(text(&self.error_message));
+                let details = text(&self.error_message).wrapping(text::Wrapping::WordOrGlyph);
+                body = body.push(container(scrollable(details)).max_height(320));
             }
             if !self.exiting {
                 body = body.push(actions);

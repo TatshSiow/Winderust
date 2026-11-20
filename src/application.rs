@@ -3,7 +3,7 @@ pub mod settings;
 mod win32_priority_separation;
 
 pub(crate) use advanced_power_plan_tuning::{
-    AdvancedPowerPlanTuningError, AdvancedPowerPlanTuningService,
+    AdvancedPowerPlanTuningApplyError, AdvancedPowerPlanTuningError, AdvancedPowerPlanTuningService,
 };
 pub(crate) use settings::SettingsEditor;
 pub(crate) use win32_priority_separation::{
