@@ -10,7 +10,7 @@ use rust_i18n::t;
 #[derive(Default)]
 pub(super) struct Editor {
     pub(super) path: String,
-    editing: Option<(usize, String)>,
+    drafts: Vec<Option<String>>,
 }
 #[derive(Debug, Clone)]
 pub(super) enum Message {
@@ -26,9 +26,10 @@ pub(super) enum Message {
 }
 impl Editor {
     pub(super) fn has_invalid_inputs(&self) -> bool {
-        self.editing
-            .as_ref()
-            .is_some_and(|(_, value)| parse_resolution(value, 1_000, 10_000_000).is_none())
+        self.drafts
+            .iter()
+            .flatten()
+            .any(|value| parse_resolution(value, 1_000, 10_000_000).is_none())
     }
 
     pub(super) fn update(
@@ -37,6 +38,13 @@ impl Editor {
         status: &TimerResolutionSnapshot,
         m: Message,
     ) {
+        let parse = |value: &str| {
+            parse_resolution(
+                value,
+                status.minimum_100ns.unwrap_or(1_000),
+                status.maximum_100ns.unwrap_or(10_000_000),
+            )
+        };
         match m {
             Message::Enabled(v) => s.enabled = v,
             Message::Path(v) => self.path = v,
@@ -50,32 +58,30 @@ impl Editor {
                     r.enabled = v;
                 }
             }
-            Message::Resolution(i, v) => {
-                self.editing = Some((i, v.clone()));
-                self.update(s, status, Message::Commit(i));
-                self.editing = Some((i, v));
+            Message::Resolution(i, value) => {
+                let rule_count = s.rules.len();
+                if let Some(rule) = s.rules.get_mut(i) {
+                    if let Some(resolution) = parse(&value) {
+                        rule.desired_100ns = resolution;
+                    }
+                    self.drafts.resize(rule_count, None);
+                    self.drafts[i] = Some(value);
+                }
             }
             Message::Commit(i) => {
-                if let Some((index, value)) = &self.editing {
-                    if *index == i {
-                        if let (Some(r), Some(v)) = (
-                            s.rules.get_mut(i),
-                            parse_resolution(
-                                value,
-                                status.minimum_100ns.unwrap_or(1_000),
-                                status.maximum_100ns.unwrap_or(10_000_000),
-                            ),
-                        ) {
-                            r.desired_100ns = v;
-                            self.editing = None;
-                        }
+                if let (Some(rule), Some(draft)) = (s.rules.get_mut(i), self.drafts.get_mut(i)) {
+                    if let Some(resolution) = draft.as_deref().and_then(parse) {
+                        rule.desired_100ns = resolution;
+                        *draft = None;
                     }
                 }
             }
             Message::Remove(i) => {
                 if i < s.rules.len() {
                     s.rules.remove(i);
-                    self.editing = None;
+                    if i < self.drafts.len() {
+                        self.drafts.remove(i);
+                    }
                 }
             }
 
@@ -108,19 +114,16 @@ impl Editor {
         .spacing(super::widgets::CARD_GAP);
         let mut cards = Vec::new();
         for (i, r) in s.rules.iter().enumerate() {
-            let value = self
-                .editing
-                .as_ref()
-                .filter(|(index, _)| *index == i)
-                .map(|(_, v)| v.clone())
-                .unwrap_or_else(|| {
-                    crate::timer_resolution::format_resolution_ms(r.desired_100ns)
-                        .trim_end_matches(" ms")
-                        .to_owned()
-                });
-            let controls = text_input("", &value)
+            let formatted;
+            let value = if let Some(draft) = self.drafts.get(i).and_then(Option::as_deref) {
+                draft
+            } else {
+                formatted = crate::timer_resolution::format_resolution_ms(r.desired_100ns);
+                formatted.trim_end_matches(" ms")
+            };
+            let controls = text_input("", value)
                 .align_x(iced::alignment::Horizontal::Center)
-                .on_input_maybe(Some(move |v| Message::Resolution(i, v)))
+                .on_input(move |v| Message::Resolution(i, v))
                 .on_submit(Message::Commit(i))
                 .width(design::STANDALONE_NUMERIC_WIDTH);
             cards.push((
@@ -199,6 +202,32 @@ mod tests {
         editor.update(&mut settings, &status, Message::Resolution(0, "".into()));
         assert!(editor.has_invalid_inputs());
         assert_eq!(settings.rules[0].desired_100ns, 20_000);
+    }
+    #[test]
+    fn invalid_input_survives_other_rule_edits_and_removal() {
+        let mut editor = Editor::default();
+        let mut settings = TimerResolutionSettings::default();
+        settings.rules.extend([
+            new_timer_resolution_rule(r"C:\Apps\first.exe", 20_000),
+            new_timer_resolution_rule(r"C:\Apps\middle.exe", 30_000),
+            new_timer_resolution_rule(r"C:\Apps\last.exe", 40_000),
+        ]);
+        let status = TimerResolutionSnapshot::default();
+        editor.update(&mut settings, &status, Message::Resolution(1, "".into()));
+        editor.update(&mut settings, &status, Message::Resolution(2, "5.5".into()));
+        assert!(editor.has_invalid_inputs());
+        assert_eq!(settings.rules[1].desired_100ns, 30_000);
+        assert_eq!(settings.rules[2].desired_100ns, 60_000);
+
+        editor.update(&mut settings, &status, Message::Remove(2));
+        editor.update(&mut settings, &status, Message::Remove(0));
+        assert!(editor.has_invalid_inputs());
+        assert_eq!(editor.drafts[0].as_deref(), Some(""));
+        assert_eq!(settings.rules[0].desired_100ns, 30_000);
+
+        editor.update(&mut settings, &status, Message::Resolution(0, "7.5".into()));
+        assert!(!editor.has_invalid_inputs());
+        assert_eq!(settings.rules[0].desired_100ns, 80_000);
     }
     #[test]
     fn timer_input_is_bounded_and_rejects_nonfinite() {
