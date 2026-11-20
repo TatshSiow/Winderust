@@ -20,6 +20,7 @@ const HISTORY_WINDOW: std::time::Duration =
 // One-second sampling is dispatched on 250ms UI ticks; allow dispatch and worker jitter.
 const MAX_SAMPLE_GAP: std::time::Duration = std::time::Duration::from_millis(1500);
 const CHART_AXIS_WIDTH: f32 = 64.0;
+const CHART_FILL_ALPHA: f32 = 0.08;
 
 struct DashboardLayout {
     columns: usize,
@@ -757,10 +758,30 @@ struct ChartState {
     drawn: std::cell::RefCell<Option<(Chart, Theme, Option<usize>)>>,
 }
 fn chart_colors(theme: &Theme) -> [iced::Color; 2] {
-    [
-        theme.palette().primary,
-        iced::theme::palette::mix(theme.palette().primary, theme.palette().text, 0.5),
+    let palette = theme.palette();
+    let background = theme.extended_palette().background.neutral.color;
+    let [first, second] = [
+        palette.primary,
+        iced::theme::palette::mix(palette.primary, palette.text, 0.5),
     ]
+    .map(|color| {
+        // Leave room for 8-bit rounding and both translucent area fills.
+        if color.relative_contrast(background) >= 3.5 {
+            color
+        } else {
+            design::readable_on(color, background)
+        }
+    });
+    if first.relative_contrast(second) >= 1.25 {
+        return [first, second];
+    }
+    let muted = super::widgets::muted_color(theme);
+    let second = if first.relative_contrast(muted) > first.relative_contrast(palette.text) {
+        muted
+    } else {
+        palette.text
+    };
+    [first, second]
 }
 
 fn chart_text_color(theme: &Theme, series: usize) -> iced::Color {
@@ -973,7 +994,8 @@ impl Chart {
             });
         }
         let series_count = if self.kind == ChartKind::Memory { 1 } else { 2 };
-        for series in 0..series_count {
+        let colors = chart_colors(theme);
+        for (series, color) in colors.into_iter().take(series_count).enumerate() {
             for run in self
                 .samples
                 .chunk_by(|previous, next| match (previous, next) {
@@ -991,10 +1013,7 @@ impl Chart {
                     continue;
                 };
                 let Some(last) = line.next_back() else {
-                    frame.fill(
-                        &canvas::Path::circle(first, 2.0),
-                        chart_colors(theme)[series],
-                    );
+                    frame.fill(&canvas::Path::circle(first, 2.0), color);
                     continue;
                 };
                 let area = canvas::Path::new(|path| {
@@ -1005,7 +1024,7 @@ impl Chart {
                     path.line_to(Point::new(last.x, height));
                     path.close();
                 });
-                frame.fill(&area, chart_colors(theme)[series].scale_alpha(0.08));
+                frame.fill(&area, color.scale_alpha(CHART_FILL_ALPHA));
                 let path = canvas::Path::new(|path| {
                     path.move_to(first);
                     for point in points().skip(1) {
@@ -1014,9 +1033,7 @@ impl Chart {
                 });
                 frame.stroke(
                     &path,
-                    canvas::Stroke::default()
-                        .with_width(1.8)
-                        .with_color(chart_colors(theme)[series]),
+                    canvas::Stroke::default().with_width(1.8).with_color(color),
                 );
             }
         }
@@ -1033,12 +1050,12 @@ impl Chart {
                         ..canvas::Stroke::default().with_color(super::widgets::muted_color(theme))
                     },
                 );
-                for series in 0..series_count {
+                for (series, color) in colors.into_iter().take(series_count).enumerate() {
                     let Some(point) = sample.point(series, width, height, self.maximum) else {
                         continue;
                     };
                     let marker = canvas::Path::circle(point, 4.0);
-                    frame.fill(&marker, chart_colors(theme)[series]);
+                    frame.fill(&marker, color);
                     frame.stroke(
                         &marker,
                         canvas::Stroke::default()
@@ -2400,6 +2417,22 @@ mod tests {
             (74.0, None, red, 200.0, Memory, small),
             (74.0, None, amoled.clone(), 200.0, Memory, small),
             (74.0, None, amoled, 200.0, Memory, small),
+            (
+                74.0,
+                Some(12),
+                accent_theme(iced::Color::WHITE),
+                200.0,
+                Cpu,
+                small,
+            ),
+            (
+                74.0,
+                Some(12),
+                design::amoled_theme(Some(iced::Color::BLACK)),
+                200.0,
+                Cpu,
+                small,
+            ),
         ]
         .into_iter()
         .enumerate()
@@ -2511,10 +2544,64 @@ mod tests {
         assert!(move_to(320.0, 100.0));
         assert!(!move_to(320.0, 100.0));
         assert_eq!(state.hovered, None);
-        let colors = chart_colors(&Theme::Dark);
-        assert_ne!(colors[0], colors[1]);
-        assert_eq!(colors[0].a, 1.0);
-        assert_eq!(colors[1].a, 1.0);
+    }
+
+    #[test]
+    fn chart_series_stay_distinct_and_visible_with_extreme_accents() {
+        use iced::Color;
+
+        let theme = |light, accent| {
+            Theme::custom_with_fn(
+                "accent",
+                design::palette(light, accent),
+                design::extended_palette,
+            )
+        };
+        for accent in [
+            Color::BLACK,
+            Color::WHITE,
+            Color::from_rgb8(255, 235, 20),
+            Color::from_rgb8(24, 24, 24),
+            Color::from_rgb8(187, 187, 187),
+            Color::from_rgb8(0, 136, 255),
+        ] {
+            for theme in [
+                theme(true, Some(accent)),
+                theme(false, Some(accent)),
+                design::amoled_theme(Some(accent)),
+            ] {
+                let [first, second] = chart_colors(&theme);
+                assert_ne!(first.into_rgba8(), second.into_rgba8());
+                assert!(first.relative_contrast(second) >= 1.25);
+                let background = theme.extended_palette().background;
+                for color in [first, second] {
+                    assert_eq!(color.a, 1.0);
+                    assert!(color.relative_contrast(background.weak.color) >= 3.0);
+                    assert!(color.relative_contrast(background.neutral.color) >= 3.0);
+                }
+                let blend = |base, fill| {
+                    super::super::animated_controls::color(base, fill, CHART_FILL_ALPHA)
+                };
+                let quantize = |color: Color| {
+                    let [r, g, b, _] = color.into_rgba8();
+                    Color::from_rgb8(r, g, b)
+                };
+                let overlap = quantize(blend(blend(background.weak.color, first), second));
+                assert!(quantize(blend(first, second)).relative_contrast(overlap) >= 3.0);
+                assert!(quantize(second).relative_contrast(overlap) >= 3.0);
+            }
+        }
+        for light in [false, true] {
+            let theme = theme(light, None);
+            let palette = theme.palette();
+            assert_eq!(
+                chart_colors(&theme),
+                [
+                    palette.primary,
+                    iced::theme::palette::mix(palette.primary, palette.text, 0.5)
+                ]
+            );
+        }
     }
 
     #[test]
