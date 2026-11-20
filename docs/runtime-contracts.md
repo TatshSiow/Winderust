@@ -360,6 +360,9 @@ Read the relevant section before changing feature policy, ownership, restoration
   three seconds. Each pass checks current pressure and eligibility, and starts
   after the last attempted PID before wrapping to lower PIDs. Trim Now can
   attempt all eligible processes in one pass.
+- Failure suppression is tracked by executable path. A successful trim clears
+  prior failures after the pass if no attempt for the same path failed or was
+  deferred. Waiting for pressure or observing idleness keeps the failure count.
 - Before/after working-set reduction is not measured system RAM reclaimed.
   Unavailable readback remains unknown; trimming cannot restore discarded pages.
 

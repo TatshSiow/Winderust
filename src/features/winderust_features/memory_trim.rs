@@ -343,6 +343,8 @@ impl MemoryTrimManager {
         let mut failures = MemoryTrimFailures::default();
         let mut trimmed_apps = BTreeSet::new();
         let mut auto_excluded_processes = BTreeSet::new();
+        let mut successful_trim_paths = BTreeSet::new();
+        let mut unresolved_trim_paths = BTreeSet::new();
         let now = Instant::now();
 
         let mut remaining_attempts =
@@ -377,16 +379,12 @@ impl MemoryTrimManager {
                 remaining_attempts.as_mut(),
                 now,
             ) {
-                Ok(ProcessUpdate::Waiting) => {
-                    self.clear_process_failure(&executable_path);
-                }
-                Ok(ProcessUpdate::Candidate) => {
-                    candidate_processes += 1;
-                    self.clear_process_failure(&executable_path);
-                }
+                Ok(ProcessUpdate::Waiting) => {}
+                Ok(ProcessUpdate::Candidate) => candidate_processes += 1,
                 Ok(ProcessUpdate::Deferred) => {
                     candidate_processes += 1;
                     has_deferred_candidates = true;
+                    unresolved_trim_paths.insert(process_failure_key(&executable_path));
                 }
                 Ok(ProcessUpdate::Trimmed {
                     working_set_reduction_bytes,
@@ -394,7 +392,7 @@ impl MemoryTrimManager {
                     candidate_processes += 1;
                     trimmed_processes += 1;
                     trimmed_apps.insert(process_name.clone());
-                    self.clear_process_failure(&executable_path);
+                    successful_trim_paths.insert(process_failure_key(&executable_path));
                     action_log.record(
                         ActionLogFeature::MemoryTrim,
                         Some(process_id),
@@ -409,6 +407,7 @@ impl MemoryTrimManager {
                 }
                 Err(ProcessControlError::AccessDenied(_)) => {
                     skipped_processes += 1;
+                    unresolved_trim_paths.insert(process_failure_key(&executable_path));
                     self.failure_suppression
                         .suppress_process_failure(&executable_path);
                     action_log.record(
@@ -420,10 +419,16 @@ impl MemoryTrimManager {
                     );
                 }
                 Err(err) => {
-                    self.record_process_failure(&executable_path);
+                    let key = process_failure_key(&executable_path);
+                    self.failure_suppression.record_key_failure(&key);
+                    unresolved_trim_paths.insert(key);
                     failures.record(process_id, &process_name, err, action_log);
                 }
             }
+        }
+        // A successful trim cannot clear an unresolved attempt from a same-path sibling.
+        for key in successful_trim_paths.difference(&unresolved_trim_paths) {
+            self.failure_suppression.clear_key_failure(key);
         }
 
         MemoryTrimSnapshot {
@@ -575,15 +580,6 @@ impl MemoryTrimManager {
         }
 
         true
-    }
-
-    fn record_process_failure(&mut self, process_name: &str) {
-        self.failure_suppression
-            .record_process_failure(process_name);
-    }
-
-    fn clear_process_failure(&mut self, process_name: &str) {
-        self.failure_suppression.clear_process_failure(process_name);
     }
 }
 

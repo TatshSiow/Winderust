@@ -151,6 +151,52 @@ fn automatic_trim_defers_after_failed_attempts_and_rechecks_pressure() {
 }
 
 #[test]
+fn sibling_success_and_pressure_gaps_preserve_trim_failures() {
+    let mut manager = MemoryTrimManager::default();
+    let mut processes = batch_processes(2);
+    processes[0].image_path = Some(r"C:\Apps\worker.exe".into());
+    processes[1].image_path = Some("C:/Apps/worker.exe".into());
+    let start = Instant::now();
+    let run = |manager: &mut MemoryTrimManager, elapsed_seconds, pressure| {
+        run_batch_pass(
+            manager,
+            &processes,
+            MemoryTrimMode::Automatic,
+            BatchTestPlatform {
+                sampled_at: start + Duration::from_secs(elapsed_seconds),
+                fail_before_pid: processes[1].id,
+            },
+            pressure,
+        )
+    };
+
+    run(&mut manager, 0, 90);
+    let first = run(&mut manager, 1, 90);
+    assert_eq!(first.failed_processes, 1);
+    assert_eq!(first.trimmed_processes, 1);
+    run(&mut manager, 2, 70);
+    let sample_only = run(&mut manager, 3, 90);
+    assert_eq!(sample_only.failed_processes, 0);
+    assert_eq!(sample_only.trimmed_processes, 0);
+
+    let limit = u64::from(execution_failure_suppression_threshold());
+    for attempt in 1..limit {
+        assert_eq!(run(&mut manager, 3 + attempt, 90).failed_processes, 1);
+    }
+    let suppressed = run(&mut manager, 3 + limit, 90);
+    assert_eq!(suppressed.failed_processes, 0);
+    assert_eq!(suppressed.skipped_processes, 2);
+    assert_eq!(suppressed.auto_excluded_processes.len(), 1);
+    assert_eq!(
+        process_failure_key(&suppressed.auto_excluded_processes[0]),
+        r"C:\Apps\worker.exe"
+    );
+    assert!(run(&mut manager, 4 + limit, 90)
+        .auto_excluded_processes
+        .is_empty());
+}
+
+#[test]
 fn temporary_loss_of_process_metadata_does_not_rearm_memory_trim() {
     let mut manager = MemoryTrimManager::default();
     let mut processes = batch_processes(1);
@@ -243,8 +289,12 @@ fn repeated_process_failures_suppress_memory_trim_retries() {
     let mut log = ActionLog::new(8);
     let executable_path = r"C:\Apps\app.exe";
 
-    manager.record_process_failure(executable_path);
-    manager.record_process_failure(r"C:/Apps/app.exe");
+    manager
+        .failure_suppression
+        .record_process_failure(executable_path);
+    manager
+        .failure_suppression
+        .record_process_failure(r"C:/Apps/app.exe");
     assert!(!manager.is_process_suppressed(
         42,
         "app.exe",
@@ -253,7 +303,9 @@ fn repeated_process_failures_suppress_memory_trim_retries() {
         &mut BTreeSet::new()
     ));
 
-    manager.record_process_failure(executable_path);
+    manager
+        .failure_suppression
+        .record_process_failure(executable_path);
     assert!(manager.is_process_suppressed(
         42,
         "app.exe",
@@ -277,30 +329,51 @@ fn repeated_process_failures_suppress_memory_trim_retries() {
 }
 
 #[test]
-fn successful_process_clears_memory_trim_failure_suppression() {
+fn successful_trim_clears_failures_after_deferred_sibling_is_attempted() {
     let mut manager = MemoryTrimManager::default();
-    let mut log = ActionLog::new(8);
-    let executable_path = r"C:\Apps\app.exe";
+    let limit = AUTOMATIC_TRIM_ATTEMPT_LIMIT;
+    let mut processes = batch_processes(limit + 1);
+    processes[0].image_path = Some(r"C:\Apps\worker.exe".into());
+    processes[limit].image_path = Some("C:/Apps/worker.exe".into());
+    let key = r"C:\Apps\worker.exe";
+    let start = Instant::now();
 
-    manager.record_process_failure(executable_path);
-    manager.record_process_failure(executable_path);
-    manager.record_process_failure(executable_path);
-    assert!(manager.is_process_suppressed(
-        42,
-        "app.exe",
-        executable_path,
-        &mut log,
-        &mut BTreeSet::new()
-    ));
+    let failed = run_batch_pass(
+        &mut manager,
+        &processes[limit..],
+        MemoryTrimMode::Manual,
+        BatchTestPlatform {
+            sampled_at: start,
+            fail_before_pid: processes[limit].id + 1,
+        },
+        70,
+    );
+    assert_eq!(failed.failed_processes, 1);
+    assert!(manager.failure_suppression.has_key_failure(key));
 
-    manager.clear_process_failure(r"C:/Apps/app.exe");
-    assert!(!manager.is_process_suppressed(
-        42,
-        "app.exe",
-        executable_path,
-        &mut log,
-        &mut BTreeSet::new()
-    ));
+    let run = |manager: &mut MemoryTrimManager, elapsed_seconds| {
+        run_batch_pass(
+            manager,
+            &processes,
+            MemoryTrimMode::Automatic,
+            BatchTestPlatform {
+                sampled_at: start + Duration::from_secs(elapsed_seconds),
+                fail_before_pid: 0,
+            },
+            90,
+        )
+    };
+
+    run(&mut manager, 1);
+    let deferred = run(&mut manager, 2);
+    assert_eq!(deferred.trimmed_processes, limit);
+    assert!(deferred.has_deferred_candidates);
+    assert!(manager.failure_suppression.has_key_failure(key));
+
+    let recovered = run(&mut manager, 3);
+    assert_eq!(recovered.trimmed_processes, 1);
+    assert!(!recovered.has_deferred_candidates);
+    assert!(!manager.failure_suppression.has_key_failure(key));
 }
 
 #[test]
