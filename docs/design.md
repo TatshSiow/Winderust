@@ -181,6 +181,9 @@ hover/press; background shading supplies feedback.
   restoration controls. By CPU Load retains Target plan and optional Else plan;
   By Activity retains Idle plan and Active plan. These local choices remain
   visible independently of the shared restoration switch.
+- The Power Plan Control side panel's Status tab shows the active Windows plan,
+  the current automation decision, and lower-priority modes that also selected
+  a plan in the same pass. The current-plan card stays compact.
 - By Running App defaults to matching an executable path. Executable name rules
   opt in to matching the same filename across paths. Preview matches lists the
   processes each rule covers, same-name copies outside path rules, and processes

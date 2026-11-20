@@ -42,6 +42,12 @@ pub(super) fn view<'a>(
     runtime: &'a RuntimeStatusSnapshot,
     plans: &[PowerPlan],
 ) -> Option<Element<'a, Message>> {
+    if page == Page::PowerPlanControl {
+        return Some(super::power_plan_control::status_view(
+            &runtime.power_plan_status,
+            plans,
+        ));
+    }
     let settings = saved_runtime_settings(settings, crate::backend::power_source::is_plugged_in());
     let power_feature = match page {
         Page::ByActivity => Some(ActionLogFeature::ByActivity),

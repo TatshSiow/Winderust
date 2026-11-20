@@ -218,7 +218,7 @@ common:
   rule_count: "%{count} 個規則"
   seconds_ago: "%{count} 秒前"
   power_plan_priority: "優先順序：焦點電源計畫 > 執行中應用程式電源計畫 > CPU 負載偵測 > 操作狀態排程 > 時間規則。"
-  power_plan_pause_priority: "停止條件會覆蓋所有偵測：主開關關閉、手動覆蓋，或插電時暫停。"
+  power_plan_pause_priority: "關閉自動化、使用 AC 電源時暫停切換，或由自適應引擎管理目前的電源計畫時，這些規則不會切換電源計畫。"
 
 theme:
   system: "跟隨系統"
@@ -1092,6 +1092,7 @@ update_channel:
   pre_release: "預覽版"
 power_plan_control:
   automation: "自動化"
+  other_matches: "其他符合條件的模式"
   requested_plan: "要求使用 %{plan}"
   automation_switch_failed: "無法切換至 %{plan}"
   processor_power_settings: "處理器電源設定"

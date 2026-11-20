@@ -77,6 +77,57 @@ pub(super) fn view(
     widgets::settings_card(column![selector, status].spacing(design::space::TINY)).into()
 }
 
+pub(super) fn status_view<M: 'static>(
+    status: &PowerPlanStatus,
+    plans: &[PowerPlan],
+) -> Element<'static, M> {
+    let current = current_plan_guid(status, plans);
+    let active = current.map_or_else(
+        || t!("common.unknown").to_string(),
+        |guid| plan_name(plans, guid),
+    );
+    let (automation, failed) = if status.owner == Some(PowerPlanOwner::AdaptiveEngine) {
+        (t!("nav.adaptive_engine").to_string(), false)
+    } else {
+        automation_detail(status, plans, current)
+    };
+    let mut body = column![widgets::settings_card(
+        column![
+            widgets::setting_title("common.current_power_plan"),
+            text(active).wrapping(text::Wrapping::WordOrGlyph),
+            widgets::setting_title("power_plan_control.automation"),
+            text(automation)
+                .style(if failed { text::danger } else { text::default })
+                .wrapping(text::Wrapping::WordOrGlyph),
+        ]
+        .spacing(design::space::SMALL)
+    )]
+    .spacing(widgets::CARD_GAP);
+    if !status.competing_modes.is_empty() {
+        let mut matches = column![widgets::setting_title("power_plan_control.other_matches")]
+            .spacing(design::space::MEDIUM);
+        for candidate in &status.competing_modes {
+            let Some(mode) = plan_mode_label(candidate.state) else {
+                continue;
+            };
+            let label = indexed_mode_label(mode, candidate.rule_index);
+            let plan = plan_name(plans, &candidate.target_guid);
+            let plan = if candidate.cpu_load_else {
+                format!("{} · {plan}", t!("by_cpu_load.else_plan"))
+            } else {
+                plan
+            };
+            matches = matches.push(
+                column![text(label), text(plan).style(text::secondary)]
+                    .spacing(design::space::TIGHT)
+                    .width(Fill),
+            );
+        }
+        body = body.push(widgets::settings_card(matches));
+    }
+    super::scrolling::scrollable(body).height(Fill).into()
+}
+
 pub(super) fn current_plan_guid<'a>(
     status: &'a PowerPlanStatus,
     plans: &'a [PowerPlan],
@@ -133,34 +184,47 @@ fn rule_description(status: &PowerPlanStatus, current_known: bool) -> String {
     if status.restoring_previous {
         return t!("power_plan_control.previous_plan_restoration").to_string();
     }
-    let mode = match status.decision_state {
-        Some(DecisionState::ByFocus) => "nav.by_focus",
-        Some(DecisionState::ByRunningApp) => "nav.by_running_app",
-        Some(DecisionState::ByCpuLoad) => "nav.by_cpu_load",
-        Some(DecisionState::ByTime) => "nav.by_time",
-        Some(state @ (DecisionState::ByActivityIdle | DecisionState::ByActivityActive))
-            if status.owner == Some(PowerPlanOwner::OrdinaryAutomation) =>
-        {
-            let selection = if state == DecisionState::ByActivityIdle {
-                t!("by_activity.idle_plan")
-            } else {
-                t!("by_activity.active_plan")
-            };
-            return format!("{} · {selection}", t!("nav.by_activity"));
-        }
+    let ordinary = status.owner == Some(PowerPlanOwner::OrdinaryAutomation);
+    let mode = status.decision_state.and_then(|state| match state {
+        DecisionState::ByActivityIdle | DecisionState::ByActivityActive if !ordinary => None,
+        _ => plan_mode_label(state),
+    });
+    if let Some(mode) = mode {
+        return indexed_mode_label(mode, status.rule_index.filter(|_| ordinary));
+    }
+    t!(match status.decision_state {
         Some(DecisionState::PausedWhilePluggedIn) => "power_plan_control.paused_on_ac",
         Some(DecisionState::Disabled) => "common.disabled",
         Some(_) => "power_plan_control.no_rule_selects_plan",
         None if current_known => "power_plan_control.no_rule_selects_plan",
         None => "common.unknown",
+    })
+    .to_string()
+}
+
+fn plan_mode_label(state: DecisionState) -> Option<String> {
+    let key = match state {
+        DecisionState::ByFocus => "nav.by_focus",
+        DecisionState::ByRunningApp => "nav.by_running_app",
+        DecisionState::ByCpuLoad => "nav.by_cpu_load",
+        DecisionState::ByTime => "nav.by_time",
+        DecisionState::ByActivityIdle | DecisionState::ByActivityActive => {
+            let selection = if state == DecisionState::ByActivityIdle {
+                t!("by_activity.idle_plan")
+            } else {
+                t!("by_activity.active_plan")
+            };
+            return Some(format!("{} · {selection}", t!("nav.by_activity")));
+        }
+        _ => return None,
     };
-    let mode = t!(mode);
-    match status
-        .rule_index
-        .filter(|_| status.owner == Some(PowerPlanOwner::OrdinaryAutomation))
-    {
+    Some(t!(key).to_string())
+}
+
+fn indexed_mode_label(mode: String, rule_index: Option<usize>) -> String {
+    match rule_index {
         Some(index) => format!("{mode} · {}", t!("common.rule", number = index + 1)),
-        None => mode.to_string(),
+        None => mode,
     }
 }
 

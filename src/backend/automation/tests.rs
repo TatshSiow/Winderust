@@ -247,6 +247,7 @@ fn power_plan_status_is_published_as_an_independent_runtime_segment() {
         target_guid: Some("target".to_owned()),
         decision_state: Some(crate::rules::DecisionState::ByTime),
         reason: Some("test".to_owned()),
+        competing_modes: Vec::new(),
     };
 
     update_power_plan_status(&automation.shared, status.clone());

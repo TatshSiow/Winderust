@@ -9,7 +9,7 @@ use crate::{
         duplicate_adaptive_plan, initialize_adaptive_plan, set_active, AdaptivePowerBoostValues,
         AdaptivePowerProfile, ProcessorPowerSourceValues, ProcessorPowerValues,
     },
-    rules::{DecisionOutcome, DecisionState, ExecutionFailureTracker},
+    rules::{DecisionOutcome, DecisionState, ExecutionFailureTracker, QualifiedPowerPlan},
 };
 
 const ACTIVE_PLAN_REFRESH_INTERVAL: Duration = Duration::from_secs(10);
@@ -41,6 +41,7 @@ pub(crate) struct PowerPlanStatus {
     pub(crate) target_guid: Option<String>,
     pub(crate) decision_state: Option<DecisionState>,
     pub(crate) reason: Option<String>,
+    pub(crate) competing_modes: Vec<QualifiedPowerPlan>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -315,6 +316,12 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
         self.restoring_previous = false;
     }
 
+    fn clear_competing_modes(&mut self) {
+        if let Some(decision) = &mut self.last_decision {
+            decision.competing_modes.clear();
+        }
+    }
+
     pub(crate) fn status(&self) -> PowerPlanStatus {
         let adaptive_target = self
             .current_guid
@@ -351,18 +358,30 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
                 .last_decision
                 .as_ref()
                 .map(|decision| decision.reason.clone()),
+            competing_modes: self
+                .last_decision
+                .as_ref()
+                .filter(|_| owner != Some(PowerPlanOwner::AdaptiveEngine))
+                .map(|decision| decision.competing_modes.clone())
+                .unwrap_or_default(),
         }
     }
 
     pub(crate) fn refresh_active_plan(&mut self, now: Instant) -> Result<(), String> {
         self.next_active_plan_refresh = None;
-        let actual_guid = self.platform.active_guid()?;
+        let actual_guid = self
+            .platform
+            .active_guid()
+            .inspect_err(|_| self.clear_competing_modes())?;
         self.observe_active_plan(&actual_guid)?;
         self.next_active_plan_refresh = Some(now + ACTIVE_PLAN_REFRESH_INTERVAL);
         self.cleanup_inactive_adaptive_plan()
     }
 
     fn observe_active_plan(&mut self, actual_guid: &str) -> Result<(), String> {
+        if self.is_managed_adaptive_plan(actual_guid) {
+            self.clear_competing_modes();
+        }
         if self.ownership_release_pending {
             self.relinquish_ownership()?;
             self.current_guid = Some(actual_guid.to_owned());
@@ -471,6 +490,7 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
 
     fn finish_manual_switch(&mut self, target_guid: &str) -> Result<(), String> {
         self.current_guid = Some(target_guid.to_owned());
+        self.clear_competing_modes();
         self.relinquish_ownership().map_err(|error| {
             format!("Confirming the manual power-plan selection failed: {error}")
         })?;
@@ -610,11 +630,11 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
         }
         self.last_decision = Some(decision);
         self.restoring_previous = false;
-        if self.adaptive_active()
-            && !self.ownership_release_pending
-            && self.uncertain_switch.is_none()
-        {
-            return Ok(false);
+        if self.adaptive_active() {
+            self.clear_competing_modes();
+            if !self.ownership_release_pending && self.uncertain_switch.is_none() {
+                return Ok(false);
+            }
         }
         self.refresh_active_plan_if_due(now)?;
 
@@ -792,6 +812,7 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
             self.setup_cleanup_due = None;
             self.current_guid = Some(plan_guid.clone());
             self.last_verified_application = Some(plan_guid.clone());
+            self.clear_competing_modes();
             self.adaptive_plan = Some(ActiveAdaptivePowerPlan {
                 original_guid: transition.previous_guid,
                 plan_guid,
@@ -1777,6 +1798,7 @@ mod tests {
             running_app_known: true,
             cpu_load_known: true,
             activity_known: true,
+            competing_modes: Vec::new(),
         }
     }
 
@@ -1793,6 +1815,17 @@ mod tests {
         decision.focus.known = true;
         decision.focus.process_id = Some(process_id);
         decision.restore_previous_plan = true;
+        decision
+    }
+
+    fn competing_focus_decision(target: &str) -> DecisionOutcome {
+        let mut decision = focus_decision(target, 10);
+        decision.competing_modes.push(QualifiedPowerPlan {
+            state: DecisionState::ByTime,
+            rule_index: Some(0),
+            target_guid: "schedule".into(),
+            cpu_load_else: false,
+        });
         decision
     }
 
@@ -2479,6 +2512,30 @@ mod tests {
     }
 
     #[test]
+    fn adaptive_ownership_discards_competing_ordinary_plans_until_next_decision() {
+        let now = Instant::now();
+        let mut controller = PowerPlanController::with_platform(FakePlatform::new("original"));
+        let focused = competing_focus_decision("focused");
+        controller.reconcile_ordinary(focused.clone(), now).unwrap();
+        assert_eq!(controller.status().competing_modes, focused.competing_modes);
+
+        controller
+            .reconcile_adaptive(adaptive_request(), now)
+            .unwrap();
+        assert_eq!(
+            controller.status().owner,
+            Some(PowerPlanOwner::AdaptiveEngine)
+        );
+        assert!(controller.status().competing_modes.is_empty());
+
+        controller.release_adaptive(now).unwrap();
+        assert_eq!(controller.status().current_guid.as_deref(), Some("focused"));
+        assert!(controller.status().competing_modes.is_empty());
+        controller.reconcile_ordinary(focused.clone(), now).unwrap();
+        assert_eq!(controller.status().competing_modes, focused.competing_modes);
+    }
+
+    #[test]
     fn disabling_restoration_during_adaptive_ownership_abandons_the_old_episode() {
         let now = Instant::now();
         let mut controller = PowerPlanController::with_platform(FakePlatform::new("original"));
@@ -2533,6 +2590,7 @@ mod tests {
             running_app_known: true,
             cpu_load_known: true,
             activity_known: true,
+            competing_modes: Vec::new(),
         }
     }
 
@@ -3068,8 +3126,9 @@ mod tests {
             let now = Instant::now();
             let mut controller = PowerPlanController::with_platform(FakePlatform::new("original"));
             controller
-                .reconcile_ordinary(temporary_decision("automatic", DecisionState::ByTime), now)
+                .reconcile_ordinary(competing_focus_decision("automatic"), now)
                 .unwrap();
+            assert_eq!(controller.status().competing_modes.len(), 1);
             controller.platform.failure = Some(FailurePoint::Commit);
 
             assert!(matches!(
@@ -3084,6 +3143,9 @@ mod tests {
                 controller.cancel_temporary_restoration();
                 assert!(!controller.switch_manual("manual", now).unwrap());
                 assert!(controller.ordinary_original_guid.is_none());
+                let status = controller.status();
+                assert_eq!(status.decision_state, Some(DecisionState::ByFocus));
+                assert!(status.competing_modes.is_empty());
             }
             controller.shutdown(now).unwrap();
             assert_eq!(controller.platform.active, "manual");
@@ -3153,7 +3215,10 @@ mod tests {
     fn failed_active_plan_query_is_retried_before_using_the_cached_plan() {
         let start = Instant::now();
         let mut controller = PowerPlanController::with_platform(FakePlatform::new("original"));
-        controller.refresh_active_plan_if_due(start).unwrap();
+        let mut focused = competing_focus_decision("original");
+        focused.restore_previous_plan = false;
+        controller.reconcile_ordinary(focused, start).unwrap();
+        assert_eq!(controller.status().competing_modes.len(), 1);
         controller.platform.active = "external".into();
         controller
             .platform
@@ -3162,6 +3227,9 @@ mod tests {
         let failed_at = start + ACTIVE_PLAN_REFRESH_INTERVAL;
 
         assert!(controller.refresh_active_plan_if_due(failed_at).is_err());
+        let status = controller.status();
+        assert_eq!(status.target_guid.as_deref(), Some("original"));
+        assert!(status.competing_modes.is_empty());
         controller
             .refresh_active_plan_if_due(failed_at + Duration::from_secs(1))
             .unwrap();

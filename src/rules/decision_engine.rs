@@ -51,6 +51,15 @@ pub struct DecisionOutcome {
     pub running_app_known: bool,
     pub cpu_load_known: bool,
     pub activity_known: bool,
+    pub competing_modes: Vec<QualifiedPowerPlan>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QualifiedPowerPlan {
+    pub state: DecisionState,
+    pub rule_index: Option<usize>,
+    pub target_guid: String,
+    pub cpu_load_else: bool,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -117,6 +126,7 @@ fn decide_plan(settings: &Settings, input: DecisionInput) -> DecisionOutcome {
         );
     }
 
+    let mut winner = None;
     let foreground_executable_path = input.foreground_executable_path.as_deref();
 
     if let Some(foreground_executable_path) =
@@ -130,16 +140,19 @@ fn decide_plan(settings: &Settings, input: DecisionInput) -> DecisionOutcome {
                 )
             {
                 if let Some(power_plan_guid) = rule.power_plan_guid.clone() {
-                    let mut outcome = DecisionOutcome::with_power_plan(
-                        Some(power_plan_guid),
+                    consider_plan(
+                        &mut winner,
                         DecisionState::ByFocus,
-                        format!(
-                            "{foreground_executable_path} matched By Focus rule '{}'.",
-                            rule.name
-                        ),
+                        Some(rule_index),
+                        power_plan_guid,
+                        false,
+                        || {
+                            format!(
+                                "{foreground_executable_path} matched By Focus rule '{}'.",
+                                rule.name
+                            )
+                        },
                     );
-                    outcome.rule_index = Some(rule_index);
-                    return outcome;
                 }
                 break;
             }
@@ -147,29 +160,35 @@ fn decide_plan(settings: &Settings, input: DecisionInput) -> DecisionOutcome {
     }
 
     if let Some(by_running_app) = input.by_running_app {
-        let mut outcome = DecisionOutcome::with_power_plan(
-            Some(by_running_app.power_plan_guid),
+        consider_plan(
+            &mut winner,
             DecisionState::ByRunningApp,
-            format!(
-                "{} is running and matched By Running App rule '{}'.",
-                by_running_app.process_name, by_running_app.rule_name
-            ),
+            Some(by_running_app.rule_index),
+            by_running_app.power_plan_guid,
+            false,
+            || {
+                format!(
+                    "{} is running and matched By Running App rule '{}'.",
+                    by_running_app.process_name, by_running_app.rule_name
+                )
+            },
         );
-        outcome.rule_index = Some(by_running_app.rule_index);
-        return outcome;
     }
 
     if let Some(by_cpu_load_decision) = input.by_cpu_load {
-        let mut outcome = DecisionOutcome::with_power_plan(
-            Some(by_cpu_load_decision.power_plan_guid),
+        consider_plan(
+            &mut winner,
             DecisionState::ByCpuLoad,
-            format!(
-                "CPU load is {:.1}% and selected By CPU Load rule '{}'.",
-                by_cpu_load_decision.usage_percent, by_cpu_load_decision.rule_name
-            ),
+            Some(by_cpu_load_decision.rule_index),
+            by_cpu_load_decision.power_plan_guid,
+            by_cpu_load_decision.is_else,
+            || {
+                format!(
+                    "CPU load is {:.1}% and selected By CPU Load rule '{}'.",
+                    by_cpu_load_decision.usage_percent, by_cpu_load_decision.rule_name
+                )
+            },
         );
-        outcome.rule_index = Some(by_cpu_load_decision.rule_index);
-        return outcome;
     }
 
     let deferred_activity_outcome = if settings.by_activity.enabled {
@@ -204,31 +223,57 @@ fn decide_plan(settings: &Settings, input: DecisionInput) -> DecisionOutcome {
                 "Input activity could not be detected.",
             ),
         };
-        if outcome.power_plan_guid.is_some() {
-            return outcome;
+        if let Some(target_guid) = outcome.power_plan_guid {
+            consider_plan(&mut winner, outcome.state, None, target_guid, false, || {
+                outcome.reason
+            });
+            None
+        } else {
+            Some(outcome)
         }
-        Some(outcome)
     } else {
         None
     };
 
     if let Some(by_time_decision) = input.by_time {
-        let mut outcome = DecisionOutcome::with_power_plan(
-            Some(by_time_decision.power_plan_guid),
+        consider_plan(
+            &mut winner,
             DecisionState::ByTime,
-            format!("By Time rule '{}' is active.", by_time_decision.rule_name),
+            Some(by_time_decision.rule_index),
+            by_time_decision.power_plan_guid,
+            false,
+            || format!("By Time rule '{}' is active.", by_time_decision.rule_name),
         );
-        outcome.rule_index = Some(by_time_decision.rule_index);
-        return outcome;
     }
 
-    if let Some(outcome) = deferred_activity_outcome {
-        return outcome;
+    winner.or(deferred_activity_outcome).unwrap_or_else(|| {
+        DecisionOutcome::without_power_plan(
+            DecisionState::NoPowerPlanSelected,
+            "No enabled power-plan rule currently applies.",
+        )
+    })
+}
+
+fn consider_plan(
+    winner: &mut Option<DecisionOutcome>,
+    state: DecisionState,
+    rule_index: Option<usize>,
+    target_guid: String,
+    cpu_load_else: bool,
+    reason: impl FnOnce() -> String,
+) {
+    if let Some(winner) = winner {
+        winner.competing_modes.push(QualifiedPowerPlan {
+            state,
+            rule_index,
+            target_guid,
+            cpu_load_else,
+        });
+    } else {
+        let mut outcome = DecisionOutcome::with_power_plan(Some(target_guid), state, reason());
+        outcome.rule_index = rule_index;
+        *winner = Some(outcome);
     }
-    DecisionOutcome::without_power_plan(
-        DecisionState::NoPowerPlanSelected,
-        "No enabled power-plan rule currently applies.",
-    )
 }
 
 impl DecisionOutcome {
@@ -252,6 +297,7 @@ impl DecisionOutcome {
             running_app_known: true,
             cpu_load_known: true,
             activity_known: true,
+            competing_modes: Vec::new(),
         }
     }
 
@@ -266,6 +312,7 @@ impl DecisionOutcome {
             running_app_known: true,
             cpu_load_known: true,
             activity_known: true,
+            competing_modes: Vec::new(),
         }
     }
 }
@@ -914,7 +961,7 @@ mod tests {
     }
 
     #[test]
-    fn focus_rule_overrides_by_running_app_when_both_match() {
+    fn qualified_lower_priority_modes_follow_winner_order() {
         let mut settings = test_settings();
         settings.by_focus.rules = vec![ByFocusRule {
             enabled: true,
@@ -923,29 +970,84 @@ mod tests {
             power_plan_guid: Some("foreground-guid".to_owned()),
         }];
 
-        let outcome = decide(
-            &settings,
-            DecisionInput {
-                activity_state: ActivityState::Idle,
-                foreground_executable_path: Some("game.exe".to_owned()),
-                foreground_process_id: None,
-                by_running_app_known: true,
-                cpu_load_known: true,
-                plugged_in: None,
-                by_running_app: Some(ByRunningAppDecision {
-                    rule_index: 0,
-                    rule_name: "Game running".to_owned(),
-                    process_name: "game.exe".to_owned(),
-                    power_plan_guid: "by-running-app-guid".to_owned(),
-                }),
-                by_time: None,
-                by_cpu_load: None,
-            },
-        );
+        let input = DecisionInput {
+            activity_state: ActivityState::Idle,
+            foreground_executable_path: Some("game.exe".to_owned()),
+            plugged_in: Some(true),
+            by_running_app: Some(ByRunningAppDecision {
+                rule_index: 3,
+                rule_name: "Game running".into(),
+                process_name: "game.exe".into(),
+                power_plan_guid: "running-guid".into(),
+            }),
+            by_time: Some(ByTimeDecision {
+                rule_index: 1,
+                rule_name: "Work hours".into(),
+                power_plan_guid: "schedule-guid".into(),
+            }),
+            by_cpu_load: Some(ByCpuLoadDecision {
+                is_else: true,
+                rule_index: 2,
+                rule_name: "CPU load".into(),
+                power_plan_guid: "cpu-else-guid".into(),
+                usage_percent: 12.0,
+            }),
+            ..inactive_input()
+        };
+
+        let outcome = decide(&settings, input.clone());
 
         assert_eq!(outcome.state, DecisionState::ByFocus);
         assert_eq!(outcome.rule_index, Some(0));
         assert_eq!(outcome.power_plan_guid.as_deref(), Some("foreground-guid"));
+        assert_eq!(
+            outcome.reason,
+            "game.exe matched By Focus rule 'Game focus'."
+        );
+        let competing_modes: Vec<_> = outcome
+            .competing_modes
+            .iter()
+            .map(|plan| {
+                (
+                    plan.state,
+                    plan.rule_index,
+                    plan.target_guid.as_str(),
+                    plan.cpu_load_else,
+                )
+            })
+            .collect();
+        assert_eq!(
+            competing_modes,
+            [
+                (DecisionState::ByRunningApp, Some(3), "running-guid", false),
+                (DecisionState::ByCpuLoad, Some(2), "cpu-else-guid", true),
+                (DecisionState::ByActivityIdle, None, "idle-guid", false),
+                (DecisionState::ByTime, Some(1), "schedule-guid", false),
+            ]
+        );
+
+        settings.general.pause_power_plan_switching_while_plugged_in = true;
+        let paused = decide(&settings, input.clone());
+        assert_eq!(paused.state, DecisionState::PausedWhilePluggedIn);
+        assert!(paused.competing_modes.is_empty());
+        settings.general.enabled = false;
+        let disabled = decide(&settings, input);
+        assert_eq!(disabled.state, DecisionState::Disabled);
+        assert!(disabled.competing_modes.is_empty());
+
+        settings.general.enabled = true;
+        let unqualified = decide(
+            &settings,
+            DecisionInput {
+                activity_state: ActivityState::Unknown,
+                by_running_app_known: false,
+                cpu_load_known: false,
+                ..inactive_input()
+            },
+        );
+        assert_eq!(unqualified.reason, "Input activity could not be detected.");
+        assert!(unqualified.power_plan_guid.is_none());
+        assert!(unqualified.competing_modes.is_empty());
     }
 
     #[test]

@@ -358,7 +358,9 @@ pub(super) fn page_feature_info(page: Page) -> String {
         Page::CpuSetsSoft => ("cpu_sets_soft", 2),
         Page::ProcessorAffinityHard => ("processor_affinity_hard", 2),
         Page::TimerResolution => ("timer_resolution", 3),
-        Page::AdvancedPowerPlanTuning | Page::Win32PrioritySeparation => ("", 0),
+        Page::PowerPlanControl | Page::AdvancedPowerPlanTuning | Page::Win32PrioritySeparation => {
+            ("", 0)
+        }
         _ => return String::new(),
     };
     let mut help = (1..=paragraphs)
@@ -370,13 +372,20 @@ pub(super) fn page_feature_info(page: Page) -> String {
         .join("\n\n");
     if matches!(
         page,
-        Page::ByActivity | Page::ByCpuLoad | Page::ByFocus | Page::ByRunningApp | Page::ByTime
+        Page::PowerPlanControl
+            | Page::ByActivity
+            | Page::ByCpuLoad
+            | Page::ByFocus
+            | Page::ByRunningApp
+            | Page::ByTime
     ) {
         for key in [
             "common.power_plan_priority",
             "common.power_plan_pause_priority",
         ] {
-            help.push_str("\n\n");
+            if !help.is_empty() {
+                help.push_str("\n\n");
+            }
             help.push_str(&t!(key));
         }
     }

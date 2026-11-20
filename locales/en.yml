@@ -218,7 +218,7 @@ common:
   rule_count: "%{count} rules"
   seconds_ago: "%{count}s ago"
   power_plan_priority: "Priority: By Focus > By Running App > By CPU Load > By Activity > By Time."
-  power_plan_pause_priority: "Stop conditions override all detection: master switch off, manual override, or paused while plugged in."
+  power_plan_pause_priority: "These rules yield when automation is off, switching is paused on A/C, or Adaptive Engine manages the active plan."
 
 theme:
   system: "Follow system"
@@ -1089,6 +1089,7 @@ update_channel:
   pre_release: "Pre-release"
 power_plan_control:
   automation: "Automation"
+  other_matches: "Other matching modes"
   requested_plan: "Requested plan is %{plan}"
   automation_switch_failed: "Could not switch to %{plan}"
   processor_power_settings: "Processor Power settings"
