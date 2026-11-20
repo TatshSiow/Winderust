@@ -44,7 +44,8 @@ window rendering and infrastructure calls are not duplicated here.
 The diagnostic starts one bounded real-time system logger with DPC, interrupt,
 and image events. The app generates a capture-specific name and sends it through
 the inherited pipe before the helper starts ETW. The fixed logger GUID limits
-Winderust to one live trace across app instances. Capture data stays in memory.
+Winderust to one live trace across app instances. Raw capture data stays in
+memory. Users can export the summarized report after the capture finishes.
 
 | API | Used for | Reference |
 | --- | --- | --- |

@@ -1476,7 +1476,12 @@ impl WinderustApp {
                 return self.browse(Page::AdaptiveEngine);
             }
             Message::Adaptive(adaptive_engine::Message::InterruptTiming(message)) => {
-                self.interrupt_timing.update(message);
+                let hwnd = self
+                    .hwnd
+                    .map(|hwnd| hwnd as windows_sys::Win32::Foundation::HWND);
+                return self.interrupt_timing.update(message, hwnd).map(|message| {
+                    Message::Adaptive(adaptive_engine::Message::InterruptTiming(message))
+                });
             }
             Message::PollInterruptTiming => self.interrupt_timing.poll(),
             Message::Adaptive(message) => {

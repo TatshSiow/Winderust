@@ -527,6 +527,11 @@ Read the relevant section before changing feature policy, ownership, restoration
   ranked by inclusive time, plus any loss or attribution warnings. Per-CPU is
   collapsed for each new result and shows inclusive DPC and ISR times in
   milliseconds on verified single-group systems.
+- A completed report can be exported as JSON to a user-selected path. The
+  export includes driver basenames, aggregate durations, loss and attribution
+  counts, and per-CPU totals when available. It does not include raw trace
+  events, addresses, or driver paths. Cancelling or failing an export leaves
+  the completed report available for another attempt.
 - Cancel and app exit close the capture helper's lifetime pipe. The helper
   records the capture ID in an administrator-only, volatile Windows registry
   value before starting ETW. The surviving app can clean up after a failed
