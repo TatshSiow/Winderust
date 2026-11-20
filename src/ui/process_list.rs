@@ -73,6 +73,15 @@ impl Selection {
     fn targets(&self) -> Vec<Result<ProcessActionTarget, ProcessActionTargetError>> {
         self.processes.iter().map(snapshot_target).collect()
     }
+
+    fn shares_process_with(&self, other: &Self) -> bool {
+        self.processes.iter().any(|process| {
+            process.creation_time.is_some()
+                && other.processes.iter().any(|other| {
+                    other.id == process.id && other.creation_time == process.creation_time
+                })
+        })
+    }
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Sort {
@@ -151,14 +160,18 @@ pub(super) enum Message {
     ProcessTab(ProcessTab),
     MenuBranch(MenuBranch),
     Menu(Box<Message>),
-    Current(Result<(Selection, Vec<Value>, Option<bool>), String>),
+    Current(u64, Result<(Vec<Value>, Option<bool>), String>),
     CloseSelection,
     Action(Action),
     Stop(bool),
     ConfirmStop,
     CancelStop,
     TreeReady(Result<Vec<ProcessActionTarget>, String>),
-    Result(String, Result<(), String>),
+    Result {
+        name: String,
+        result: Result<(), String>,
+        readback: Option<Selection>,
+    },
     OpenLocation,
     Properties,
     Details(details::Message),
@@ -194,6 +207,7 @@ pub(super) struct ProcessList {
     context: Option<iced::Point>,
     menu_branch: MenuBranch,
     process_tab: ProcessTab,
+    current_query_id: u64,
     current: Vec<Value>,
     efficiency: Option<bool>,
     stopping: Option<(Selection, bool)>,
@@ -230,6 +244,7 @@ impl Default for ProcessList {
             context: None,
             menu_branch: MenuBranch::Closed,
             process_tab: ProcessTab::Immediate,
+            current_query_id: 0,
             current: Vec::new(),
             efficiency: None,
             stopping: None,
@@ -442,79 +457,22 @@ impl ProcessList {
                 self.efficiency = None;
                 self.selected = Some(selection.clone());
                 self.process_tab = ProcessTab::Immediate;
-                let allow = settings.general.allow_cross_session_process_control;
-                return background(
-                    move || {
-                        let targets = selection
-                            .targets()
-                            .into_iter()
-                            .filter_map(Result::ok)
-                            .collect::<Vec<_>>();
-                        let mut values = Vec::new();
-                        if let Some(v) = targets.iter().find_map(|t| {
-                            crate::control::priority_efficiency::current_process_priority(t, allow)
-                                .ok()
-                        }) {
-                            values.push(Value::Process(v));
-                        }
-                        if let Some(v) = targets.iter().find_map(|t| {
-                            crate::control::thread_priority::current_process_thread_priority(
-                                t, allow,
-                            )
-                            .ok()
-                            .flatten()
-                        }) {
-                            values.push(Value::Thread(v));
-                        }
-                        if let Some(v) = targets.iter().find_map(|t| {
-                            crate::control::io_priority::current_process_io_priority(t, allow).ok()
-                        }) {
-                            values.push(Value::Io(v.into()));
-                        }
-                        if let Some(v) = targets.iter().find_map(|t| {
-                            crate::control::gpu_priority::current_process_gpu_priority(t, allow)
-                                .ok()
-                        }) {
-                            values.push(Value::Gpu(v.into()));
-                        }
-                        if let Some(v) = targets.iter().find_map(|t| {
-                            crate::control::memory_priority::current_process_memory_priority(
-                                t, allow,
-                            )
-                            .ok()
-                        }) {
-                            values.push(Value::Memory(v.into()));
-                        }
-                        if let Some(v)=targets.iter().find_map(|t|crate::control::dynamic_priority_boost::current_dynamic_priority_boost_state(t).ok()){values.push(Value::DynamicBoost(match v{crate::control::dynamic_priority_boost::DynamicPriorityBoostState::Enabled=>ProcessDynamicPriorityBoostSetting::Enabled,crate::control::dynamic_priority_boost::DynamicPriorityBoostState::Disabled=>ProcessDynamicPriorityBoostSetting::Disabled}));}
-                        let efficiencies = targets
-                            .iter()
-                            .filter_map(|t| {
-                                crate::control::priority_efficiency::current_efficiency_mode(
-                                    t, allow,
-                                )
-                                .ok()
-                            })
-                            .collect::<Vec<_>>();
-                        let efficiency =
-                            (!efficiencies.is_empty()).then(|| efficiencies.iter().all(|v| *v));
-                        Ok((selection, values, efficiency))
-                    },
-                    Message::Current,
+                return self.read_current(
+                    selection,
+                    settings.general.allow_cross_session_process_control,
                 );
             }
-            Message::Current(result) => match result {
-                Ok((selection, values, efficiency)) => {
-                    if self
-                        .selected
-                        .as_ref()
-                        .is_some_and(|s| s.processes == selection.processes)
-                    {
-                        self.current = values;
-                        self.efficiency = efficiency;
+            Message::Current(query_id, result) => {
+                if query_id == self.current_query_id && self.selected.is_some() {
+                    match result {
+                        Ok((values, efficiency)) => {
+                            self.current = values;
+                            self.efficiency = efficiency;
+                        }
+                        Err(error) => self.error = Some(error),
                     }
                 }
-                Err(e) => self.error = Some(e),
-            },
+            }
             Message::CloseSelection => {
                 self.selected = None;
                 self.context = None;
@@ -551,7 +509,10 @@ impl ProcessList {
                                         .map_err(|e| e.to_string())?
                                         .into_process_list_result()
                                 },
-                                self.result_message(),
+                                self.result_message(matches!(
+                                    action,
+                                    Action::Efficiency(_) | Action::Priority(_)
+                                )),
                             )
                         }
                         Err(e) => self.error = Some(e.to_string()),
@@ -587,18 +548,32 @@ impl ProcessList {
                 }
             }
             Message::TreeReady(targets) => return self.stop_targets(targets, runtime),
-            Message::Result(name, result) => {
+            Message::Result {
+                name,
+                result,
+                readback,
+            } => {
                 self.error = Some(match result {
                     Ok(()) => t!("process_list.action_completed", name = name).to_string(),
                     Err(e) => e,
-                })
+                });
+                if let Some(selection) = self.selected.as_ref().filter(|selection| {
+                    readback
+                        .as_ref()
+                        .is_some_and(|origin| selection.shares_process_with(origin))
+                }) {
+                    return self.read_current(
+                        selection.clone(),
+                        settings.general.allow_cross_session_process_control,
+                    );
+                }
             }
             Message::Properties => {
                 if let Some(selection) = &self.selected {
                     let path = PathBuf::from(&selection.path);
                     return background(
                         move || foreground::open_process_properties(&path),
-                        self.result_message(),
+                        self.result_message(false),
                     );
                 }
             }
@@ -607,7 +582,7 @@ impl ProcessList {
                     let path = PathBuf::from(&selection.path);
                     return background(
                         move || foreground::open_process_location(&path),
-                        self.result_message(),
+                        self.result_message(false),
                     );
                 }
             }
@@ -619,13 +594,90 @@ impl ProcessList {
         }
         Task::none()
     }
-    fn result_message(&self) -> impl Fn(Result<(), String>) -> Message + Send + 'static {
+    fn read_current(&mut self, selection: Selection, allow: bool) -> Task<Message> {
+        use crate::control::dynamic_priority_boost::{
+            current_dynamic_priority_boost_state, DynamicPriorityBoostState,
+        };
+        use crate::control::priority_efficiency::{
+            current_efficiency_mode, current_process_priority,
+        };
+
+        self.current_query_id = self.current_query_id.wrapping_add(1);
+        let query_id = self.current_query_id;
+        background(
+            move || {
+                let targets = selection
+                    .targets()
+                    .into_iter()
+                    .filter_map(Result::ok)
+                    .collect::<Vec<_>>();
+                let mut values = Vec::new();
+                if let Some(v) = targets
+                    .iter()
+                    .find_map(|target| current_process_priority(target, allow).ok())
+                {
+                    values.push(Value::Process(v));
+                }
+                if let Some(v) = targets.iter().find_map(|target| {
+                    crate::control::thread_priority::current_process_thread_priority(target, allow)
+                        .ok()
+                        .flatten()
+                }) {
+                    values.push(Value::Thread(v));
+                }
+                if let Some(v) = targets.iter().find_map(|target| {
+                    crate::control::io_priority::current_process_io_priority(target, allow).ok()
+                }) {
+                    values.push(Value::Io(v.into()));
+                }
+                if let Some(v) = targets.iter().find_map(|target| {
+                    crate::control::gpu_priority::current_process_gpu_priority(target, allow).ok()
+                }) {
+                    values.push(Value::Gpu(v.into()));
+                }
+                if let Some(v) = targets.iter().find_map(|target| {
+                    crate::control::memory_priority::current_process_memory_priority(target, allow)
+                        .ok()
+                }) {
+                    values.push(Value::Memory(v.into()));
+                }
+                if let Some(v) = targets
+                    .iter()
+                    .find_map(|target| current_dynamic_priority_boost_state(target).ok())
+                {
+                    values.push(Value::DynamicBoost(match v {
+                        DynamicPriorityBoostState::Enabled => {
+                            ProcessDynamicPriorityBoostSetting::Enabled
+                        }
+                        DynamicPriorityBoostState::Disabled => {
+                            ProcessDynamicPriorityBoostSetting::Disabled
+                        }
+                    }));
+                }
+                let efficiency = targets
+                    .iter()
+                    .filter_map(|target| current_efficiency_mode(target, allow).ok())
+                    .reduce(|all_enabled, enabled| all_enabled && enabled);
+                Ok((values, efficiency))
+            },
+            move |result| Message::Current(query_id, result),
+        )
+    }
+    fn result_message(
+        &self,
+        readback: bool,
+    ) -> impl Fn(Result<(), String>) -> Message + Send + 'static {
         let name = self
             .selected
             .as_ref()
             .map(|s| s.name.clone())
             .unwrap_or_default();
-        move |result| Message::Result(name.clone(), result)
+        let readback = self.selected.as_ref().filter(|_| readback).cloned();
+        move |result| Message::Result {
+            name: name.clone(),
+            result,
+            readback: readback.clone(),
+        }
     }
     fn stop_targets(
         &mut self,
@@ -651,7 +703,11 @@ impl ProcessList {
                         .map_err(|e| e.to_string())?
                         .into_process_list_result()
                 },
-                move |result| Message::Result(name.clone(), result),
+                move |result| Message::Result {
+                    name: name.clone(),
+                    result,
+                    readback: None,
+                },
             ),
             Err(e) => {
                 self.error = Some(e);
@@ -2773,9 +2829,44 @@ mod tests {
             }),
             ..Default::default()
         };
-        let complete = list.result_message();
+        let complete = list.result_message(true);
         list.selected = None;
-        assert!(matches!(complete(Ok(())),Message::Result(name,Ok(())) if name=="original.exe"));
+        assert!(matches!(
+            complete(Ok(())),
+            Message::Result { name, result: Ok(()), readback: Some(selection) }
+            if name == "original.exe" && selection.name == "original.exe"
+        ));
+    }
+
+    #[test]
+    fn current_controls_ignore_older_queries_and_closed_selections() {
+        let mut settings = Settings::default();
+        settings.general.enabled = false;
+        let mut editor = crate::application::SettingsEditor::with_settings(settings.clone());
+        let runtime = RuntimeHandle::start(&editor.runtime_settings_snapshot());
+        let mut list = ProcessList {
+            selected: Some(Selection {
+                nested: false,
+                processes: vec![process(10, 100, r"C:\A\app.exe")],
+                path: r"C:\A\app.exe".into(),
+                name: "app.exe".into(),
+            }),
+            current_query_id: 2,
+            ..Default::default()
+        };
+        let value = Value::Process(ProcessPrioritySetting::Idle);
+        for message in [
+            Message::Current(2, Ok((vec![value], Some(true)))),
+            Message::Current(1, Ok((Vec::new(), Some(false)))),
+            Message::Current(1, Err("obsolete query".into())),
+            Message::CloseSelection,
+            Message::Current(2, Err("closed selection".into())),
+        ] {
+            let _ = list.update(message, &mut settings, &runtime);
+        }
+        assert_eq!(list.current, [value]);
+        assert_eq!(list.efficiency, Some(true));
+        assert!(list.error.is_none());
     }
     fn process(id: u32, created: u64, path: &str) -> ProcessInfo {
         ProcessInfo {
