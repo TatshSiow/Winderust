@@ -1,5 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
+    ops::Bound::{Excluded, Unbounded},
     path::Path,
     time::{Duration, Instant},
 };
@@ -13,7 +14,7 @@ use crate::{
     action_log::{ActionLog, ActionLogFeature, ActionLogResult},
     config::MemoryTrimSettings,
     control::{
-        memory_trim::MemoryTrimController,
+        memory_trim::{MemoryTrimController, MemoryTrimPlatform},
         process::{ProcessControlError, ProcessControlTarget},
     },
     cpu::{process_cpu_usage_percent, ProcessCpuSample},
@@ -28,6 +29,7 @@ use crate::{
 
 const MB: u64 = 1_000_000;
 const CPU_IDLE_THRESHOLD_PERCENT: f32 = 1.0;
+const AUTOMATIC_TRIM_ATTEMPT_LIMIT: usize = 4;
 
 const BUILT_IN_EXCLUSIONS: &[&str] = EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS;
 
@@ -36,6 +38,7 @@ pub struct MemoryTrimSnapshot {
     pub enabled: bool,
     pub scanned_processes: usize,
     pub candidate_processes: usize,
+    pub(crate) has_deferred_candidates: bool,
     pub trimmed_processes: usize,
     pub skipped_processes: usize,
     pub failed_processes: usize,
@@ -64,6 +67,7 @@ pub enum MemoryTrimStatus {
 pub struct MemoryTrimManager {
     tracked: BTreeMap<u32, TrackedProcess>,
     failure_suppression: ExecutionFailureTracker,
+    last_automatic_trim_pid: u32,
 }
 
 #[derive(Clone)]
@@ -145,6 +149,7 @@ impl MemoryTrimManager {
             MemoryTrimMode::Automatic,
             observations,
             action_log,
+            system_memory_load_percent,
         )
     }
 
@@ -171,6 +176,7 @@ impl MemoryTrimManager {
             MemoryTrimMode::Manual,
             observations,
             action_log,
+            system_memory_load_percent,
         )
     }
 
@@ -178,9 +184,9 @@ impl MemoryTrimManager {
         clippy::too_many_arguments,
         reason = "the pass-local observation dependency is clearer here than an unrelated argument bundle"
     )]
-    fn update_with_mode(
+    fn update_with_mode<P: MemoryTrimPlatform>(
         &mut self,
-        controller: &mut MemoryTrimController,
+        controller: &mut MemoryTrimController<P>,
         settings: &MemoryTrimSettings,
         automation_enabled: bool,
         allow_cross_session_process_control: bool,
@@ -188,6 +194,7 @@ impl MemoryTrimManager {
         mode: MemoryTrimMode,
         observations: &mut CycleObservations,
         action_log: &mut ActionLog,
+        read_memory_load: impl FnOnce() -> Result<u8, String>,
     ) -> MemoryTrimSnapshot {
         if !automation_enabled {
             self.clear_tracking();
@@ -217,7 +224,7 @@ impl MemoryTrimManager {
             };
         }
 
-        let memory_load_percent = match system_memory_load_percent() {
+        let memory_load_percent = match read_memory_load() {
             Ok(percent) => percent,
             Err(err) => {
                 self.break_idle_intervals();
@@ -305,9 +312,8 @@ impl MemoryTrimManager {
             );
         }
 
-        let target_ids = target_processes.keys().copied().collect::<BTreeSet<_>>();
         self.tracked
-            .retain(|process_id, _| target_ids.contains(process_id));
+            .retain(|process_id, _| target_processes.contains_key(process_id));
         let active_target_names = target_processes
             .values()
             .map(|target| process_failure_key(target.executable_path.to_string_lossy().as_ref()))
@@ -315,6 +321,7 @@ impl MemoryTrimManager {
         self.failure_suppression.retain_keys(&active_target_names);
 
         let mut candidate_processes = 0;
+        let mut has_deferred_candidates = false;
         let mut trimmed_processes = 0;
         let mut skipped_processes = 0;
         let mut failures = MemoryTrimFailures::default();
@@ -322,7 +329,16 @@ impl MemoryTrimManager {
         let mut auto_excluded_processes = BTreeSet::new();
         let now = Instant::now();
 
-        for target in target_processes.into_values() {
+        let mut remaining_attempts =
+            (mode == MemoryTrimMode::Automatic).then_some(AUTOMATIC_TRIM_ATTEMPT_LIMIT);
+        let cursor = match mode {
+            MemoryTrimMode::Automatic => self.last_automatic_trim_pid,
+            MemoryTrimMode::Manual => 0,
+        };
+        for (_, target) in target_processes
+            .range((Excluded(cursor), Unbounded))
+            .chain(target_processes.range(..=cursor))
+        {
             let process_id = target.id;
             let process_name = target.name.clone();
             let executable_path = target.executable_path.to_string_lossy().into_owned();
@@ -339,10 +355,10 @@ impl MemoryTrimManager {
 
             match self.update_process(
                 controller,
-                &target,
+                target,
                 allow_cross_session_process_control,
                 settings,
-                mode,
+                remaining_attempts.as_mut(),
                 now,
             ) {
                 Ok(ProcessUpdate::Waiting) => {
@@ -351,6 +367,10 @@ impl MemoryTrimManager {
                 Ok(ProcessUpdate::Candidate) => {
                     candidate_processes += 1;
                     self.clear_process_failure(&executable_path);
+                }
+                Ok(ProcessUpdate::Deferred) => {
+                    candidate_processes += 1;
+                    has_deferred_candidates = true;
                 }
                 Ok(ProcessUpdate::Trimmed {
                     working_set_reduction_bytes,
@@ -394,6 +414,7 @@ impl MemoryTrimManager {
             enabled: true,
             scanned_processes,
             candidate_processes,
+            has_deferred_candidates,
             trimmed_processes,
             skipped_processes,
             failed_processes: failures.count,
@@ -408,13 +429,13 @@ impl MemoryTrimManager {
         }
     }
 
-    fn update_process(
+    fn update_process<P: MemoryTrimPlatform>(
         &mut self,
-        controller: &mut MemoryTrimController,
+        controller: &mut MemoryTrimController<P>,
         target: &ProcessControlTarget,
         allow_cross_session_process_control: bool,
         settings: &MemoryTrimSettings,
-        mode: MemoryTrimMode,
+        remaining_attempts: Option<&mut usize>,
         now: Instant,
     ) -> Result<ProcessUpdate, ProcessControlError> {
         let process_id = target.id;
@@ -428,7 +449,7 @@ impl MemoryTrimManager {
         let sample = match controller.sample(
             target,
             allow_cross_session_process_control,
-            mode == MemoryTrimMode::Automatic,
+            remaining_attempts.is_some(),
         ) {
             Ok(sample) => sample,
             Err(error) => {
@@ -446,12 +467,12 @@ impl MemoryTrimManager {
             return Ok(ProcessUpdate::Waiting);
         }
 
-        if mode == MemoryTrimMode::Manual {
+        let Some(remaining_attempts) = remaining_attempts else {
             let outcome = controller.trim(target, allow_cross_session_process_control)?;
             return Ok(ProcessUpdate::Trimmed {
                 working_set_reduction_bytes: outcome.working_set_reduction_bytes,
             });
-        }
+        };
 
         let Some(cpu_sample) = sample.cpu else {
             if let Some(state) = self.tracked.get_mut(&process_id) {
@@ -481,6 +502,11 @@ impl MemoryTrimManager {
             return Ok(ProcessUpdate::Candidate);
         }
 
+        if *remaining_attempts == 0 {
+            return Ok(ProcessUpdate::Deferred);
+        }
+        *remaining_attempts -= 1;
+        self.last_automatic_trim_pid = process_id;
         let outcome = controller.trim(target, allow_cross_session_process_control)?;
         state.trimmed_while_idle = true;
         Ok(ProcessUpdate::Trimmed {
@@ -490,6 +516,7 @@ impl MemoryTrimManager {
 
     fn clear_tracking(&mut self) {
         self.tracked.clear();
+        self.last_automatic_trim_pid = 0;
     }
 
     fn break_idle_intervals(&mut self) {
@@ -553,6 +580,7 @@ enum MemoryTrimMode {
 enum ProcessUpdate {
     Waiting,
     Candidate,
+    Deferred,
     Trimmed {
         working_set_reduction_bytes: Option<u64>,
     },

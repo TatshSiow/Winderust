@@ -90,7 +90,7 @@ impl Default for MemoryTrimController {
 }
 
 impl<P: MemoryTrimPlatform> MemoryTrimController<P> {
-    fn with_platform(platform: P) -> Self {
+    pub(crate) fn with_platform(platform: P) -> Self {
         Self { platform }
     }
 

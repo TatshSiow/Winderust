@@ -95,6 +95,14 @@ impl CycleObservations {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn with_processes(processes: Vec<ProcessInfo>) -> Self {
+        Self {
+            processes: Observation::Available(Arc::from(processes)),
+            ..Self::default()
+        }
+    }
+
     pub(crate) fn cpu_topology(&mut self) -> Result<Arc<crate::cpu_topology::CpuTopology>, String> {
         if matches!(self.cpu_topology, Observation::NotRequested) {
             self.cpu_topology = match (self.sources.cpu_topology)() {

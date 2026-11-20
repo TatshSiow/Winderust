@@ -305,6 +305,11 @@ Read the relevant section before changing feature policy, ownership, restoration
   below the size threshold break idle qualification without rearming a process
   already trimmed during that idle episode. Observed activity or a new exact
   process identity may rearm it; explicitly disabling automation clears tracking.
+- An automatic pass attempts up to four trims, counting failures toward the
+  limit. If eligible processes remain, the worker schedules another pass in
+  three seconds. Each pass checks current pressure and eligibility, and starts
+  after the last attempted PID before wrapping to lower PIDs. Trim Now can
+  attempt all eligible processes in one pass.
 - Before/after working-set reduction is not measured system RAM reclaimed.
   Unavailable readback remains unknown; trimming cannot restore discarded pages.
 

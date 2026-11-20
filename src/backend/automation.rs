@@ -131,6 +131,7 @@ const IO_PRIORITY_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const GPU_PRIORITY_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const MEMORY_PRIORITY_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const MEMORY_TRIM_REFRESH_INTERVAL: Duration = Duration::from_secs(15 * 60);
+const MEMORY_TRIM_FOLLOW_UP_INTERVAL: Duration = Duration::from_secs(3);
 const TIMER_RESOLUTION_REFRESH_INTERVAL: Duration = Duration::from_secs(3);
 const SLEEP_PREVENTION_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const KEEP_RUNNING_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
@@ -1624,8 +1625,13 @@ fn run_background_automation(
             && scheduler.is_due(RefreshDomain::MemoryTrim, now)
         {
             let memory_trim_status = runner.run_memory_trim_update(settings, &mut observations);
+            let (scheduled_at, interval) = if memory_trim_status.has_deferred_candidates {
+                (Instant::now(), MEMORY_TRIM_FOLLOW_UP_INTERVAL)
+            } else {
+                (now, memory_trim_refresh_interval)
+            };
             update_memory_trim_status(&shared, memory_trim_status);
-            scheduler.schedule_after(RefreshDomain::MemoryTrim, now, memory_trim_refresh_interval);
+            scheduler.schedule_after(RefreshDomain::MemoryTrim, scheduled_at, interval);
         }
         if watchdog_refresh_required && scheduler.is_due(RefreshDomain::Watchdog, now) {
             let status =

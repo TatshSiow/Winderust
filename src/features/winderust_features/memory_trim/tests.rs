@@ -1,3 +1,7 @@
+use std::path::PathBuf;
+
+use crate::{control::memory_trim::MemoryTrimPlatform, foreground::ProcessInfo};
+
 use super::*;
 
 fn tracked_process() -> TrackedProcess {
@@ -15,6 +19,170 @@ fn cpu_sample(cpu_time_100ns: u64, sampled_at: Instant) -> ProcessCpuSample {
         cpu_time_100ns,
         sampled_at,
     }
+}
+
+struct BatchTestPlatform {
+    sampled_at: Instant,
+    fail_before_pid: u32,
+}
+
+impl MemoryTrimPlatform for BatchTestPlatform {
+    type Process = u32;
+
+    fn open(
+        &mut self,
+        target: &ProcessControlTarget,
+        _allow_cross_session_process_control: bool,
+    ) -> Result<Self::Process, ProcessControlError> {
+        Ok(target.id)
+    }
+
+    fn working_set_bytes(&mut self, _process: &Self::Process) -> Result<u64, ProcessControlError> {
+        Ok(MB)
+    }
+
+    fn cpu_sample(
+        &mut self,
+        _process: &Self::Process,
+    ) -> Result<ProcessCpuSample, ProcessControlError> {
+        Ok(cpu_sample(0, self.sampled_at))
+    }
+
+    fn trim(&mut self, process: &Self::Process) -> Result<(), ProcessControlError> {
+        if *process < self.fail_before_pid {
+            return Err(ProcessControlError::Failed("trim failed".to_owned()));
+        }
+        Ok(())
+    }
+}
+
+fn batch_processes(count: usize) -> Vec<ProcessInfo> {
+    let current_process_id = std::process::id();
+    (1..)
+        .filter(|&id| id != current_process_id)
+        .take(count)
+        .map(|id| {
+            let name = format!("worker{id}.exe");
+            ProcessInfo {
+                id,
+                creation_time: Some(1),
+                parent_id: None,
+                session_id: None,
+                user_name: None,
+                is_service_account: None,
+                is_critical: Some(false),
+                can_set_information: true,
+                image_path: Some(PathBuf::from(r"C:\Apps").join(&name)),
+                name,
+            }
+        })
+        .collect()
+}
+
+fn run_batch_pass(
+    manager: &mut MemoryTrimManager,
+    processes: &[ProcessInfo],
+    mode: MemoryTrimMode,
+    platform: BatchTestPlatform,
+    memory_load_percent: u8,
+) -> MemoryTrimSnapshot {
+    manager.update_with_mode(
+        &mut MemoryTrimController::with_platform(platform),
+        &MemoryTrimSettings {
+            enabled: true,
+            system_memory_load_threshold_percent: 80,
+            process_working_set_threshold_mb: 1,
+            process_idle_seconds: 0,
+            ..Default::default()
+        },
+        true,
+        true,
+        Some(u32::MAX),
+        mode,
+        &mut CycleObservations::with_processes(processes.to_vec()),
+        &mut ActionLog::new(16),
+        || Ok(memory_load_percent),
+    )
+}
+
+#[test]
+fn automatic_trim_defers_after_failed_attempts_and_rechecks_pressure() {
+    let mut manager = MemoryTrimManager::default();
+    let limit = AUTOMATIC_TRIM_ATTEMPT_LIMIT;
+    let processes = batch_processes(2 * limit + 1);
+    let start = Instant::now();
+    let run = |manager: &mut MemoryTrimManager, elapsed_seconds, pressure| {
+        run_batch_pass(
+            manager,
+            &processes,
+            MemoryTrimMode::Automatic,
+            BatchTestPlatform {
+                sampled_at: start + Duration::from_secs(elapsed_seconds),
+                fail_before_pid: processes[limit].id,
+            },
+            pressure,
+        )
+    };
+
+    run(&mut manager, 0, 90);
+    let first = run(&mut manager, 1, 90);
+    assert_eq!(first.failed_processes, limit);
+    assert_eq!(first.trimmed_processes, 0);
+    assert!(first.has_deferred_candidates);
+
+    let second = run(&mut manager, 2, 90);
+    assert_eq!(second.failed_processes, 0);
+    assert_eq!(second.trimmed_processes, limit);
+    assert!(second.has_deferred_candidates);
+
+    let low_pressure = run(&mut manager, 3, 70);
+    assert_eq!(
+        low_pressure.status,
+        MemoryTrimStatus::WaitingForMemoryLoad {
+            threshold_percent: 80
+        }
+    );
+    assert_eq!(low_pressure.trimmed_processes, 0);
+    assert!(!low_pressure.has_deferred_candidates);
+
+    let pressure_returned = run(&mut manager, 4, 90);
+    assert_eq!(pressure_returned.trimmed_processes, 0);
+    assert_eq!(pressure_returned.failed_processes, 0);
+}
+
+#[test]
+fn exact_automatic_budget_does_not_defer_and_manual_trim_is_uncapped() {
+    let mut manager = MemoryTrimManager::default();
+    let limit = AUTOMATIC_TRIM_ATTEMPT_LIMIT;
+    let processes = batch_processes(limit + 1);
+    let start = Instant::now();
+    for (elapsed_seconds, expected_trimmed) in [(0, 0), (1, limit)] {
+        let snapshot = run_batch_pass(
+            &mut manager,
+            &processes[..limit],
+            MemoryTrimMode::Automatic,
+            BatchTestPlatform {
+                sampled_at: start + Duration::from_secs(elapsed_seconds),
+                fail_before_pid: 0,
+            },
+            90,
+        );
+        assert_eq!(snapshot.trimmed_processes, expected_trimmed);
+        assert!(!snapshot.has_deferred_candidates);
+    }
+
+    let manual = run_batch_pass(
+        &mut manager,
+        &processes,
+        MemoryTrimMode::Manual,
+        BatchTestPlatform {
+            sampled_at: start,
+            fail_before_pid: 0,
+        },
+        70,
+    );
+    assert_eq!(manual.trimmed_processes, limit + 1);
+    assert!(!manual.has_deferred_candidates);
 }
 
 #[test]
