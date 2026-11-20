@@ -2154,8 +2154,8 @@ impl WinderustApp {
             Message::Save if self.timer.has_invalid_inputs() => {
                 self.error_message = t!("timer_resolution.invalid_request").to_string();
             }
-            Message::Save if self.preferences.has_invalid_inputs() => {
-                self.error_message = t!("unsaved.message").to_string();
+            Message::Save if self.preferences.has_invalid_accent() => {
+                self.error_message = t!("accent.invalid_hex").to_string();
             }
             Message::Save => {
                 if let Some(delay) = self.suspension.invalid_delay() {

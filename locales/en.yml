@@ -237,6 +237,7 @@ accent:
   custom: "Custom"
   custom_colors: "Custom colors"
   color_palette: "Color Palette"
+  invalid_hex: "Enter a six-digit hex color for the custom accent, such as #3366FF."
 
 status:
   action_log_export_failed: "Failed to export log to %{path}: %{error}"

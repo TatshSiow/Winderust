@@ -103,11 +103,13 @@ impl Editor {
     }
 
     pub(super) fn has_invalid_inputs(&self) -> bool {
-        self.has_invalid_failure_threshold()
-            || self
-                .color
-                .as_ref()
-                .is_some_and(|value| parse_color(value).is_none())
+        self.has_invalid_failure_threshold() || self.has_invalid_accent()
+    }
+
+    pub(super) fn has_invalid_accent(&self) -> bool {
+        self.color
+            .as_deref()
+            .is_some_and(|value| parse_color(value).is_none())
     }
 
     pub(super) fn reset_drafts(&mut self) {
@@ -258,6 +260,9 @@ impl Editor {
             Message::AccentSource(value) => {
                 s.general.accent.source = value;
                 self.accent_expanded = value != AccentColorSource::Windows;
+                if !self.accent_expanded {
+                    self.color = None;
+                }
             }
             Message::AccentHex(value) => {
                 if let Some(color) = parse_color(&value) {
@@ -273,11 +278,7 @@ impl Editor {
             }
             Message::SaveColor => {
                 let color = s.general.accent.custom_color;
-                if self
-                    .color
-                    .as_deref()
-                    .is_none_or(|v| parse_color(v).is_some())
-                {
+                if !self.has_invalid_accent() {
                     s.general
                         .accent
                         .custom_colors
@@ -538,10 +539,7 @@ impl Editor {
                         action_button(t!("common.save").to_string())
                             .style(widgets::primary_button)
                             .on_press_maybe(
-                                self.color
-                                    .as_deref()
-                                    .is_none_or(|v| parse_color(v).is_some())
-                                    .then_some(Message::SaveColor)
+                                (!self.has_invalid_accent()).then_some(Message::SaveColor)
                             )
                     ]
                     .spacing(design::space::SMALL)
@@ -1419,6 +1417,14 @@ mod tests {
         e.update(&mut s, Message::SaveColor);
         assert!(s.general.accent.custom_colors.is_empty());
         e.update(&mut s, Message::AccentHex("#123456".into()));
+        e.update(&mut s, Message::AccentHex(String::new()));
+        assert!(e.has_invalid_accent());
+        e.update(&mut s, Message::AccentSource(AccentColorSource::Windows));
+        assert!(e.color.is_none() && !e.accent_expanded);
+        assert!(!e.has_invalid_inputs());
+        assert_eq!(s.general.accent.custom_color, 0x123456);
+        e.update(&mut s, Message::AccentSource(AccentColorSource::Custom));
+        assert_eq!(s.general.accent.custom_color, 0x123456);
         e.update(&mut s, Message::SaveColor);
         e.update(&mut s, Message::SaveColor);
         assert_eq!(s.general.accent.custom_colors, vec![0x123456]);

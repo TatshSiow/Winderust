@@ -237,6 +237,7 @@ accent:
   source_help: "使用 Windows 強調色，或選擇自訂色彩。"
   windows: "跟隨系統"
   custom: "自訂"
+  invalid_hex: "請輸入 6 位十六進位色碼來設定自訂強調色，例如 #3366FF。"
 
 status:
   action_log_export_failed: "無法將動作記錄匯出至 %{path}：%{error}"
