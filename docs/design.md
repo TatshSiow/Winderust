@@ -224,10 +224,11 @@ hover/press; background shading supplies feedback.
 - Offer saved Windows plans in the target selector. If the temporary Winderust
   Adaptive plan is active, show it as the active plan while the selected saved
   plan remains editable.
-- Expose separate Plugged In / On Battery long- and short-running thread scheduling
-  policies for hybrid processors. Read the selected plan and offer all six Windows
-  choices without an implicit Automatic override. Missing settings are unavailable;
-  unknown indices and access errors remain visible failures.
+- Show Performance Boost Mode and the long- and short-running thread policies
+  separately for Plugged In and On Battery. Offer all six scheduling choices
+  for recognized policy values. For unavailable controls, distinguish missing,
+  unreadable, and unknown values, and show the raw index for unknown values.
+  Keep the other controls editable.
 - Built-in presets keep current scheduling policies; custom presets can capture
   choices or keep current. Re-read after every Apply attempt, including partial
   failure. Adaptive Engine does not own these persistent writes.

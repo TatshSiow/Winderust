@@ -3,8 +3,9 @@ use super::widgets::{action_button, button, icon_button, pick_list, slider, text
 use crate::application::{AdvancedPowerPlanTuningError, AdvancedPowerPlanTuningService};
 use crate::config::AdvancedPowerPlanTuningPreset;
 use crate::power::{
-    AdvancedPowerPlanTuningSourceValues, AdvancedPowerPlanTuningValues, EffectivePowerMode,
-    PowerPlan, PowerPlanPersonality, ProcessorBoostMode, ProcessorPowerPreset,
+    AdvancedPowerPlanTuningReadback, AdvancedPowerPlanTuningSourceValues,
+    AdvancedPowerPlanTuningValues, EditableTuningValues, EffectivePowerMode, PowerPlan,
+    PowerPlanPersonality, PowerSettingReadback, ProcessorBoostMode, ProcessorPowerPreset,
     ProcessorSchedulingPolicy,
 };
 use crate::ui::scrolling::scrollable;
@@ -21,6 +22,7 @@ fn tuning_plans(plans: &[PowerPlan]) -> impl Iterator<Item = &PowerPlan> {
 pub(super) struct Editor {
     service: AdvancedPowerPlanTuningService,
     target: Option<String>,
+    readback: Option<AdvancedPowerPlanTuningReadback>,
     values: Option<AdvancedPowerPlanTuningSourceValues>,
     personality: Option<PowerPlanPersonality>,
     pub(super) dirty: bool,
@@ -68,26 +70,35 @@ pub(super) enum ApplyOrigin {
 
 #[derive(Clone, Copy)]
 struct RestorePoint {
-    previous: AdvancedPowerPlanTuningSourceValues,
-    applied: AdvancedPowerPlanTuningSourceValues,
+    previous: AdvancedPowerPlanTuningReadback,
+    applied: AdvancedPowerPlanTuningReadback,
 }
 
 impl RestorePoint {
     fn capture(
-        previous: AdvancedPowerPlanTuningSourceValues,
-        applied: AdvancedPowerPlanTuningSourceValues,
+        previous: AdvancedPowerPlanTuningReadback,
+        applied: AdvancedPowerPlanTuningReadback,
     ) -> Option<Self> {
-        // The tuning writer normalizes percentages and leaves absent policies unchanged.
-        (previous == previous.normalized()
+        let values = previous.writable();
+        fn can_restore<T: Copy + Eq>(
+            before: PowerSettingReadback<T>,
+            after: PowerSettingReadback<T>,
+        ) -> bool {
+            before == after || (before.known().is_some() && after.known().is_some())
+        }
+        (values == values.normalized()
             && [
                 (previous.ac, applied.ac),
                 (previous.battery, applied.battery),
             ]
             .into_iter()
             .all(|(before, after)| {
-                before.scheduling_policy.is_some() == after.scheduling_policy.is_some()
-                    && before.short_scheduling_policy.is_some()
-                        == after.short_scheduling_policy.is_some()
+                can_restore(before.processor.boost_mode, after.processor.boost_mode)
+                    && can_restore(before.scheduling_policy, after.scheduling_policy)
+                    && can_restore(
+                        before.short_scheduling_policy,
+                        after.short_scheduling_policy,
+                    )
             }))
         .then_some(Self { previous, applied })
     }
@@ -96,16 +107,29 @@ impl RestorePoint {
 struct ApplyReview {
     guid: String,
     name: String,
-    current: AdvancedPowerPlanTuningSourceValues,
+    current: AdvancedPowerPlanTuningReadback,
     requested: AdvancedPowerPlanTuningSourceValues,
     origin: ApplyOrigin,
 }
 
 impl ApplyReview {
+    fn request(
+        current: AdvancedPowerPlanTuningReadback,
+        draft: AdvancedPowerPlanTuningSourceValues,
+    ) -> AdvancedPowerPlanTuningSourceValues {
+        let current = current.writable();
+        AdvancedPowerPlanTuningSourceValues {
+            ac: with_supported_settings(draft.ac, current.ac),
+            battery: with_supported_settings(draft.battery, current.battery),
+        }
+        .normalized()
+    }
+
     fn changes(&self, source: Source) -> impl Iterator<Item = (&'static str, String, String)> {
+        let current = self.current.writable();
         let (current, requested) = match source {
-            Source::Ac => (self.current.ac, self.requested.ac),
-            Source::Battery => (self.current.battery, self.requested.battery),
+            Source::Ac => (current.ac, self.requested.ac),
+            Source::Battery => (current.battery, self.requested.battery),
         };
         let percentages = fields(current)
             .into_iter()
@@ -114,13 +138,18 @@ impl ApplyReview {
             .map(|((_, label, before), (_, _, after))| {
                 (label, format!("{before}%"), format!("{after}%"))
             });
-        let (before, after) = (current.processor.boost_mode, requested.processor.boost_mode);
-        let boost = (before != after).then(|| {
-            (
-                "processor_power.boost_mode",
-                BoostChoice(before).to_string(),
-                BoostChoice(after).to_string(),
-            )
+        let boost = requested.processor.boost_mode.and_then(|after| {
+            let before = current.processor.boost_mode;
+            (before != Some(after)).then(|| {
+                (
+                    "processor_power.boost_mode",
+                    before.map_or_else(
+                        || t!("common.unavailable").to_string(),
+                        |mode| BoostChoice(mode).to_string(),
+                    ),
+                    BoostChoice(after).to_string(),
+                )
+            })
         });
         let scheduling = scheduling_fields(current)
             .into_iter()
@@ -166,7 +195,7 @@ impl Editor {
     fn selected_preset(
         &self,
         source: Source,
-        values: AdvancedPowerPlanTuningValues,
+        values: EditableTuningValues,
         options: &[PresetChoice],
     ) -> Option<PresetChoice> {
         self.selected_presets[source as usize]
@@ -215,7 +244,6 @@ impl Editor {
 
     fn select_plan(&mut self, target: Option<String>) {
         self.target = target;
-        self.values = None;
         self.personality = None;
         self.selected_presets = [None, None];
         self.read_selected_plan();
@@ -233,7 +261,7 @@ impl Editor {
     fn read_selected_plan(&mut self) {
         self.cancel_apply_review();
         let Some(guid) = &self.target else {
-            self.values = None;
+            self.set_readback(None);
             self.status = t!("processor_power.no_active_plan").to_string();
             return;
         };
@@ -246,17 +274,23 @@ impl Editor {
         };
         match self.service.read_values(guid) {
             Ok(v) => {
-                self.values = Some(v);
-                self.dirty = false;
                 self.status = t!("processor_power.loaded_values", plan = guid).to_string();
+                self.set_readback(Some(v));
+                self.dirty = false;
             }
             Err(error) => {
-                self.values = None;
+                self.set_readback(None);
                 self.dirty = false;
                 self.status = error.to_string();
             }
         }
     }
+
+    fn set_readback(&mut self, readback: Option<AdvancedPowerPlanTuningReadback>) {
+        self.readback = readback;
+        self.values = readback.map(AdvancedPowerPlanTuningReadback::writable);
+    }
+
     pub(super) fn review_apply(
         &mut self,
         plans: &[PowerPlan],
@@ -279,7 +313,7 @@ impl Editor {
             guid: guid.clone(),
             name: plan.name.clone(),
             current,
-            requested: values.normalized(),
+            requested: ApplyReview::request(current, values),
             origin,
         });
         Ok(())
@@ -302,7 +336,7 @@ impl Editor {
         }
         let plan = self.selected_plan(plans)?;
         let point = *self.restore_points.get(&plan.guid)?;
-        (self.values == Some(point.applied)).then_some((plan, point))
+        (self.readback == Some(point.applied)).then_some((plan, point))
     }
 
     fn review_restore(&mut self, plans: &[PowerPlan]) -> Result<(), String> {
@@ -314,14 +348,14 @@ impl Editor {
             .read_values(&plan.guid)
             .map_err(|error| error.to_string())?;
         if current != point.applied {
-            self.values = Some(current);
+            self.set_readback(Some(current));
             return Err(t!("processor_power.restore_values_changed").to_string());
         }
         self.review = Some(ApplyReview {
             guid: plan.guid.clone(),
             name: plan.name.clone(),
             current,
-            requested: point.previous,
+            requested: point.previous.writable(),
             origin: ApplyOrigin::Restore,
         });
         Ok(())
@@ -330,10 +364,14 @@ impl Editor {
     fn remember_verified_write(
         &mut self,
         review: &ApplyReview,
-        actual: AdvancedPowerPlanTuningSourceValues,
+        actual: AdvancedPowerPlanTuningReadback,
     ) -> bool {
         if review.origin == ApplyOrigin::Restore {
-            if actual != review.requested {
+            if !self
+                .restore_points
+                .get(&review.guid)
+                .is_some_and(|point| actual == point.previous)
+            {
                 return false;
             }
             self.restore_points.remove(&review.guid);
@@ -357,14 +395,14 @@ impl Editor {
         let restoring = review.origin == ApplyOrigin::Restore;
         let draft_matches = if restoring {
             !self.dirty
-                && self.values == Some(review.current)
+                && self.readback == Some(review.current)
                 && self.restore_points.get(&review.guid).is_some_and(|point| {
-                    point.applied == review.current && point.previous == review.requested
+                    point.applied == review.current && point.previous.writable() == review.requested
                 })
         } else {
-            self.values
-                .map(AdvancedPowerPlanTuningSourceValues::normalized)
-                == Some(review.requested)
+            self.values.is_some_and(|draft| {
+                ApplyReview::request(review.current, draft) == review.requested
+            })
         };
         if self.target.as_ref() != Some(&review.guid) || !draft_matches {
             self.status = t!("processor_power.review_stale").to_string();
@@ -382,7 +420,7 @@ impl Editor {
                 Ok(outcome) => outcome,
                 Err(AdvancedPowerPlanTuningError::ValuesChanged) => {
                     self.status = if restoring {
-                        self.values = self.service.read_values(&review.guid).ok();
+                        self.set_readback(self.service.read_values(&review.guid).ok());
                         t!("processor_power.restore_values_changed").to_string()
                     } else {
                         t!("processor_power.review_stale").to_string()
@@ -394,7 +432,7 @@ impl Editor {
                     return false;
                 }
             };
-        self.values = outcome.actual_values;
+        self.set_readback(outcome.actual_values);
         self.dirty = !restoring && self.values.is_some() && !outcome.applied;
         match outcome.error {
             Some(error) => {
@@ -403,7 +441,7 @@ impl Editor {
             }
             None => {
                 if !self
-                    .values
+                    .readback
                     .is_some_and(|actual| self.remember_verified_write(&review, actual))
                 {
                     self.status = t!("processor_power.restore_not_verified").to_string();
@@ -474,21 +512,22 @@ impl Editor {
             }
             Message::Boost(source, value) => {
                 if let Some(values) = self.values.as_mut() {
-                    source_values(values, source).processor.boost_mode = value;
-                    self.dirty = true;
+                    if let Some(current) =
+                        source_values(values, source).processor.boost_mode.as_mut()
+                    {
+                        *current = value;
+                        self.dirty = true;
+                    }
                 }
             }
             Message::Load(source, choice) => {
                 if let Some(values) = self.values.as_mut() {
                     let current = source_values(values, source);
-                    let mut preset = choice.1.normalized();
-                    preset.scheduling_policy = current
-                        .scheduling_policy
-                        .map(|value| preset.scheduling_policy.unwrap_or(value));
-                    preset.short_scheduling_policy = current
-                        .short_scheduling_policy
-                        .map(|value| preset.short_scheduling_policy.unwrap_or(value));
-                    *current = preset;
+                    let preset = choice.1.normalized();
+                    *current = with_supported_settings(
+                        preset.with_boost_mode(Some(preset.processor.boost_mode)),
+                        *current,
+                    );
                     self.selected_presets[source as usize] = Some(choice);
                     self.dirty = true;
                 }
@@ -515,14 +554,21 @@ impl Editor {
                         };
                         (p.name.clone(), p.values.normalized())
                     }
-                    PresetTarget::Custom(None) => (
-                        String::new(),
-                        self.values.map(|v| v.ac).unwrap_or_else(|| {
-                            AdvancedPowerPlanTuningValues::for_preset(
-                                ProcessorPowerPreset::Balanced,
+                    PresetTarget::Custom(None) => {
+                        let balanced = AdvancedPowerPlanTuningValues::for_preset(
+                            ProcessorPowerPreset::Balanced,
+                        );
+                        let values = self.values.map_or(balanced, |values| {
+                            values.ac.with_boost_mode(
+                                values
+                                    .ac
+                                    .processor
+                                    .boost_mode
+                                    .unwrap_or(balanced.processor.boost_mode),
                             )
-                        }),
-                    ),
+                        });
+                        (String::new(), values)
+                    }
                 };
                 self.preset = Some(PresetEditor {
                     target,
@@ -657,13 +703,19 @@ impl Editor {
                 body = body.push(text(t!("processor_power.overlay_warning").to_string()));
             }
         }
-        if let Some(values) = self.values {
-            for (source, title, values) in [
-                (Source::Ac, "processor_power.ac_preset", values.ac),
+        if let (Some(values), Some(readback)) = (self.values, self.readback) {
+            for (source, title, values, readback) in [
+                (
+                    Source::Ac,
+                    "processor_power.ac_preset",
+                    values.ac,
+                    readback.ac,
+                ),
                 (
                     Source::Battery,
                     "processor_power.battery_preset",
                     values.battery,
+                    readback.battery,
                 ),
             ] {
                 let mut options = BUILT_INS
@@ -704,21 +756,27 @@ impl Editor {
                         .into(),
                     );
                 }
-                controls.push(
-                    row![
-                        text(t!("processor_power.boost_mode").to_string()).width(Fill),
+                let boost = tuning_choice(
+                    readback.processor.boost_mode,
+                    values.processor.boost_mode,
+                    |mode| {
                         pick_list(
                             ProcessorBoostMode::ALL.map(BoostChoice),
-                            Some(BoostChoice(values.processor.boost_mode)),
-                            move |v| Message::Boost(source, v.0)
+                            Some(BoostChoice(mode)),
+                            move |v| Message::Boost(source, v.0),
                         )
                         .width(280)
-                    ]
-                    .spacing(design::space::SMALL)
-                    .into(),
+                        .into()
+                    },
                 );
+                controls
+                    .push(super::widgets::setting_row("processor_power.boost_mode", boost).into());
                 for (field, label, policy) in scheduling_fields(values) {
-                    let control: Element<'_, Message> = if let Some(policy) = policy {
+                    let status = match field {
+                        SchedulingField::LongRunning => readback.scheduling_policy,
+                        SchedulingField::ShortRunning => readback.short_scheduling_policy,
+                    };
+                    let control = tuning_choice(status, policy, |policy| {
                         pick_list(
                             ProcessorSchedulingPolicy::ALL.map(|v| SchedulingChoice(Some(v))),
                             Some(SchedulingChoice(Some(policy))),
@@ -732,11 +790,7 @@ impl Editor {
                         )
                         .width(280)
                         .into()
-                    } else {
-                        text(t!("common.unavailable").to_string())
-                            .style(text::secondary)
-                            .into()
-                    };
+                    });
                     controls.push(super::widgets::setting_row(label, control).into());
                 }
                 body = body.push(super::widgets::setting_group(
@@ -1031,18 +1085,19 @@ const BUILT_INS: [ProcessorPowerPreset; 3] = [
 fn source_values(
     values: &mut AdvancedPowerPlanTuningSourceValues,
     source: Source,
-) -> &mut AdvancedPowerPlanTuningValues {
+) -> &mut EditableTuningValues {
     match source {
         Source::Ac => &mut values.ac,
         Source::Battery => &mut values.battery,
     }
 }
-fn preset_matches(
-    preset: AdvancedPowerPlanTuningValues,
-    actual: AdvancedPowerPlanTuningValues,
-) -> bool {
+fn preset_matches(preset: AdvancedPowerPlanTuningValues, actual: EditableTuningValues) -> bool {
     let preset = preset.normalized();
-    preset.processor == actual.processor
+    let boost_mode = actual
+        .processor
+        .boost_mode
+        .map(|_| preset.processor.boost_mode);
+    preset.processor.with_boost_mode(boost_mode) == actual.processor
         && preset
             .scheduling_policy
             .is_none_or(|policy| Some(policy) == actual.scheduling_policy)
@@ -1051,8 +1106,25 @@ fn preset_matches(
             .is_none_or(|policy| Some(policy) == actual.short_scheduling_policy)
 }
 
-fn scheduling_fields(
-    values: AdvancedPowerPlanTuningValues,
+fn with_supported_settings(
+    mut draft: EditableTuningValues,
+    current: EditableTuningValues,
+) -> EditableTuningValues {
+    draft.processor.boost_mode = current
+        .processor
+        .boost_mode
+        .map(|mode| draft.processor.boost_mode.unwrap_or(mode));
+    draft.scheduling_policy = current
+        .scheduling_policy
+        .map(|value| draft.scheduling_policy.unwrap_or(value));
+    draft.short_scheduling_policy = current
+        .short_scheduling_policy
+        .map(|value| draft.short_scheduling_policy.unwrap_or(value));
+    draft
+}
+
+fn scheduling_fields<B>(
+    values: AdvancedPowerPlanTuningValues<B>,
 ) -> [(
     SchedulingField,
     &'static str,
@@ -1072,14 +1144,30 @@ fn scheduling_fields(
     ]
 }
 
-fn scheduling_field(
-    values: &mut AdvancedPowerPlanTuningValues,
+fn scheduling_field<B>(
+    values: &mut AdvancedPowerPlanTuningValues<B>,
     field: SchedulingField,
 ) -> &mut Option<ProcessorSchedulingPolicy> {
     match field {
         SchedulingField::LongRunning => &mut values.scheduling_policy,
         SchedulingField::ShortRunning => &mut values.short_scheduling_policy,
     }
+}
+
+fn tuning_choice<'a, T>(
+    readback: PowerSettingReadback<T>,
+    draft: Option<T>,
+    pick: impl FnOnce(T) -> Element<'a, Message>,
+) -> Element<'a, Message> {
+    let status = match readback {
+        PowerSettingReadback::Known(value) => return pick(draft.unwrap_or(value)),
+        PowerSettingReadback::Missing => t!("processor_power.setting_missing"),
+        PowerSettingReadback::Unreadable => t!("processor_power.setting_unreadable"),
+        PowerSettingReadback::Unknown(value) => {
+            t!("processor_power.setting_unknown", value = value)
+        }
+    };
+    text(status.to_string()).style(text::secondary).into()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1102,7 +1190,7 @@ impl std::fmt::Display for SchedulingChoice {
     }
 }
 
-fn fields(v: AdvancedPowerPlanTuningValues) -> [(Field, &'static str, u32); 4] {
+fn fields<B>(v: AdvancedPowerPlanTuningValues<B>) -> [(Field, &'static str, u32); 4] {
     let v = v.processor;
     [
         (
@@ -1123,7 +1211,7 @@ fn fields(v: AdvancedPowerPlanTuningValues) -> [(Field, &'static str, u32); 4] {
         (Field::Boost, "processor_power.boost_policy", v.boost_policy),
     ]
 }
-fn set_field(values: &mut AdvancedPowerPlanTuningValues, field: Field, value: u32) {
+fn set_field<B>(values: &mut AdvancedPowerPlanTuningValues<B>, field: Field, value: u32) {
     let values = &mut values.processor;
     *match field {
         Field::Parking => &mut values.core_parking_min,
@@ -1209,18 +1297,21 @@ mod tests {
             AdvancedPowerPlanTuningValues::for_preset(ProcessorPowerPreset::Balanced),
         );
         current.ac.processor.performance_max = 70;
-        current.ac.scheduling_policy = Some(ProcessorSchedulingPolicy::Automatic);
+        current.battery.short_scheduling_policy = Some(ProcessorSchedulingPolicy::Automatic);
         let mut draft = current;
         draft.ac.processor.performance_min = 80;
-        draft.ac.scheduling_policy = None;
+        draft.ac.scheduling_policy = Some(ProcessorSchedulingPolicy::Automatic);
         draft.battery.processor.boost_policy = 35;
-        draft.battery.processor.boost_mode = ProcessorBoostMode::Disabled;
+        draft.battery.processor.boost_mode = Some(ProcessorBoostMode::Disabled);
         draft.battery.short_scheduling_policy = Some(ProcessorSchedulingPolicy::AllProcessors);
+        let mut current: AdvancedPowerPlanTuningReadback = current.into();
+        current.ac.scheduling_policy = PowerSettingReadback::Unknown(10);
+        current.ac.processor.boost_mode = PowerSettingReadback::Unreadable;
         let review = ApplyReview {
             guid: "plan".into(),
             name: "Balanced".into(),
             current,
-            requested: draft.normalized(),
+            requested: ApplyReview::request(current, draft),
             origin: ApplyOrigin::Page,
         };
         assert_eq!(
@@ -1260,7 +1351,7 @@ mod tests {
         let review = || ApplyReview {
             guid: "first-plan".into(),
             name: "Balanced".into(),
-            current,
+            current: current.into(),
             requested: draft,
             origin: ApplyOrigin::Save,
         };
@@ -1316,7 +1407,7 @@ mod tests {
         let review = ApplyReview {
             guid: plans[1].guid.clone(),
             name: plans[1].name.clone(),
-            current,
+            current: current.into(),
             requested: draft,
             origin: ApplyOrigin::Save,
         };
@@ -1337,11 +1428,16 @@ mod tests {
 
     #[test]
     fn restore_requires_the_selected_plan_and_exact_values() {
-        let previous = AdvancedPowerPlanTuningSourceValues::same(
-            AdvancedPowerPlanTuningValues::for_preset(ProcessorPowerPreset::Balanced),
-        );
+        let mut previous: AdvancedPowerPlanTuningReadback =
+            AdvancedPowerPlanTuningSourceValues::same(AdvancedPowerPlanTuningValues::for_preset(
+                ProcessorPowerPreset::Balanced,
+            ))
+            .into();
+        previous.ac.short_scheduling_policy = PowerSettingReadback::Unknown(12);
+        previous.ac.processor.boost_mode = PowerSettingReadback::Unknown(13);
         let mut applied = previous;
-        applied.ac.processor.performance_min = 35;
+        applied.battery.processor.boost_mode =
+            PowerSettingReadback::Known(ProcessorBoostMode::Disabled);
         let mut plans = ["first-plan", "second-plan"].map(|guid| PowerPlan {
             guid: guid.into(),
             name: guid.into(),
@@ -1350,14 +1446,14 @@ mod tests {
         });
         let mut editor = Editor {
             target: Some(plans[0].guid.clone()),
-            values: Some(applied),
             ..Default::default()
         };
+        editor.set_readback(Some(applied));
         let mut review = ApplyReview {
             guid: plans[0].guid.clone(),
             name: plans[0].name.clone(),
             current: previous,
-            requested: applied,
+            requested: applied.writable(),
             origin: ApplyOrigin::Page,
         };
         assert!(editor.remember_verified_write(&review, applied));
@@ -1365,7 +1461,7 @@ mod tests {
         // A no-op Apply and a canceled Restore both keep the last changed values.
         review.current = applied;
         assert!(editor.remember_verified_write(&review, applied));
-        review.requested = previous;
+        review.requested = previous.writable();
         review.origin = ApplyOrigin::Restore;
         editor.review = Some(review);
         assert!(editor.restore_point_for(&plans).is_none());
@@ -1388,15 +1484,15 @@ mod tests {
             guid: plans[0].guid.clone(),
             name: plans[0].name.clone(),
             current: applied,
-            requested: previous,
+            requested: previous.writable(),
             origin: ApplyOrigin::Restore,
         };
         let mut partial = previous;
-        partial.ac.short_scheduling_policy = Some(ProcessorSchedulingPolicy::AllProcessors);
+        partial.ac.processor.boost_mode = PowerSettingReadback::Unknown(14);
         assert!(!editor.remember_verified_write(&review, partial));
-        editor.values = Some(partial);
+        editor.set_readback(Some(partial));
         assert!(editor.restore_point_for(&plans).is_none());
-        editor.values = Some(applied);
+        editor.set_readback(Some(applied));
         assert!(editor.restore_point_for(&plans).is_some());
 
         assert!(editor.remember_verified_write(&review, previous));
@@ -1410,11 +1506,11 @@ mod tests {
         );
         let mut applied = previous;
         applied.battery.scheduling_policy = Some(ProcessorSchedulingPolicy::Automatic);
-        assert!(RestorePoint::capture(previous, applied).is_none());
+        assert!(RestorePoint::capture(previous.into(), applied.into()).is_none());
 
         previous.ac.processor.performance_min = 75;
         previous.ac.processor.performance_max = 50;
-        assert!(RestorePoint::capture(previous, previous.normalized()).is_none());
+        assert!(RestorePoint::capture(previous.into(), previous.normalized().into()).is_none());
     }
 
     #[test]
@@ -1422,10 +1518,12 @@ mod tests {
         let mut preset = AdvancedPowerPlanTuningValues::for_preset(ProcessorPowerPreset::Balanced);
         preset.processor.performance_min = 75;
         preset.processor.performance_max = 75;
-        let mut actual = preset;
+        let editable = preset.with_boost_mode(Some(preset.processor.boost_mode));
+        let mut actual = editable;
         actual.processor.performance_max = 50;
         assert!(!preset_matches(preset, actual));
-        assert!(preset_matches(preset, preset));
+        assert!(preset_matches(preset, editable));
+        assert!(preset_matches(preset, editable.with_boost_mode(None)));
     }
 
     #[test]
@@ -1433,10 +1531,18 @@ mod tests {
         let mut values = AdvancedPowerPlanTuningValues::for_preset(ProcessorPowerPreset::Balanced);
         values.scheduling_policy = Some(ProcessorSchedulingPolicy::Automatic);
         values.short_scheduling_policy = Some(ProcessorSchedulingPolicy::AllProcessors);
+        let mut loaded = AdvancedPowerPlanTuningSourceValues::same(values);
+        loaded.ac.processor.boost_mode = None;
         let mut editor = Editor {
-            values: Some(AdvancedPowerPlanTuningSourceValues::same(values)),
+            values: Some(loaded),
             ..Default::default()
         };
+        editor.update(
+            &mut vec![],
+            &[],
+            Message::Boost(Source::Ac, ProcessorBoostMode::Disabled),
+        );
+        assert!(!editor.dirty);
         editor.update(
             &mut vec![],
             &[],
@@ -1446,7 +1552,7 @@ mod tests {
                 ProcessorSchedulingPolicy::PerformanceProcessors,
             ),
         );
-        assert_eq!(editor.values.unwrap().battery, values);
+        assert_eq!(editor.values.unwrap().battery, loaded.battery);
         assert_eq!(
             editor.values.unwrap().ac.scheduling_policy,
             Some(ProcessorSchedulingPolicy::PerformanceProcessors)
@@ -1470,6 +1576,7 @@ mod tests {
             editor.values.unwrap().ac.short_scheduling_policy,
             values.short_scheduling_policy
         );
+        assert_eq!(editor.values.unwrap().ac.processor.boost_mode, None);
         let mut presets = vec![];
         editor.update(
             &mut presets,
@@ -1574,7 +1681,8 @@ mod tests {
     fn identical_presets_keep_explicit_selection_for_each_source() {
         let mut editor = Editor::default();
         let values = AdvancedPowerPlanTuningValues::for_preset(ProcessorPowerPreset::Balanced);
-        editor.values = Some(AdvancedPowerPlanTuningSourceValues::same(values));
+        let loaded = AdvancedPowerPlanTuningSourceValues::same(values);
+        editor.values = Some(loaded);
         let options = vec![
             PresetChoice("Balanced".into(), values),
             PresetChoice("Mine".into(), values),
@@ -1590,11 +1698,11 @@ mod tests {
             Message::Load(Source::Battery, options[1].clone()),
         );
         assert_eq!(
-            editor.selected_preset(Source::Ac, values, &options),
+            editor.selected_preset(Source::Ac, loaded.ac, &options),
             Some(options[0].clone())
         );
         assert_eq!(
-            editor.selected_preset(Source::Battery, values, &options),
+            editor.selected_preset(Source::Battery, loaded.battery, &options),
             Some(options[1].clone())
         );
         editor.update(
@@ -1604,15 +1712,22 @@ mod tests {
         );
         editor.discard_editor();
         assert_eq!(
-            editor.selected_preset(Source::Ac, values, &options),
+            editor.selected_preset(Source::Ac, loaded.ac, &options),
             Some(options[1].clone())
         );
         assert_eq!(
-            editor.selected_preset(Source::Ac, values, &options[..1]),
+            editor.selected_preset(Source::Ac, loaded.ac, &options[..1]),
             Some(options[0].clone())
         );
         let changed = AdvancedPowerPlanTuningValues::for_preset(ProcessorPowerPreset::Saver);
-        assert_eq!(editor.selected_preset(Source::Ac, changed, &options), None);
+        assert_eq!(
+            editor.selected_preset(
+                Source::Ac,
+                changed.with_boost_mode(Some(changed.processor.boost_mode)),
+                &options
+            ),
+            None
+        );
     }
 
     #[test]
@@ -1620,7 +1735,8 @@ mod tests {
         let mut e = Editor::default();
         let mut presets = vec![];
         let balanced = AdvancedPowerPlanTuningValues::for_preset(ProcessorPowerPreset::Balanced);
-        e.values = Some(AdvancedPowerPlanTuningSourceValues::same(balanced));
+        let loaded = AdvancedPowerPlanTuningSourceValues::same(balanced);
+        e.values = Some(loaded);
         e.update(
             &mut presets,
             &[],
@@ -1632,7 +1748,7 @@ mod tests {
                 ),
             ),
         );
-        assert_eq!(e.values.unwrap().battery, balanced);
+        assert_eq!(e.values.unwrap().battery, loaded.battery);
         e.update(
             &mut presets,
             &[],

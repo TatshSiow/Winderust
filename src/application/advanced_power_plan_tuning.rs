@@ -1,7 +1,8 @@
 use crate::power::{
     apply_processor_power_values_staged, powercfg::validate_tuning_plan, read_plan_personality,
-    read_processor_power_values, AdvancedPowerPlanTuningSourceValues,
-    AdvancedPowerPlanTuningValues, PowerPlanPersonality, ProcessorPowerApplyError,
+    read_processor_power_values, AdvancedPowerPlanTuningReadback,
+    AdvancedPowerPlanTuningSourceValues, EditableTuningValues, PowerPlanPersonality,
+    ProcessorPowerApplyError,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -12,6 +13,8 @@ pub(crate) enum AdvancedPowerPlanTuningError {
     ReadPersonality(String),
     #[error("Power plan values changed after review.")]
     ValuesChanged,
+    #[error("A requested processor power setting is unavailable.")]
+    SettingUnavailable,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -32,7 +35,7 @@ pub(crate) enum AdvancedPowerPlanTuningApplyError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct AdvancedPowerPlanTuningApplyOutcome {
     pub applied: bool,
-    pub actual_values: Option<AdvancedPowerPlanTuningSourceValues>,
+    pub actual_values: Option<AdvancedPowerPlanTuningReadback>,
     pub error: Option<AdvancedPowerPlanTuningApplyError>,
 }
 
@@ -40,7 +43,7 @@ trait AdvancedPowerPlanTuningStore: Send + Sync {
     fn read_values(
         &self,
         guid: &str,
-    ) -> Result<AdvancedPowerPlanTuningSourceValues, AdvancedPowerPlanTuningError>;
+    ) -> Result<AdvancedPowerPlanTuningReadback, AdvancedPowerPlanTuningError>;
     fn read_personality(
         &self,
         guid: &str,
@@ -59,7 +62,7 @@ impl AdvancedPowerPlanTuningStore for WindowsAdvancedPowerPlanTuningStore {
     fn read_values(
         &self,
         guid: &str,
-    ) -> Result<AdvancedPowerPlanTuningSourceValues, AdvancedPowerPlanTuningError> {
+    ) -> Result<AdvancedPowerPlanTuningReadback, AdvancedPowerPlanTuningError> {
         read_processor_power_values(guid).map_err(AdvancedPowerPlanTuningError::ReadValues)
     }
 
@@ -101,7 +104,7 @@ impl AdvancedPowerPlanTuningService {
     pub(crate) fn read_values(
         &self,
         guid: &str,
-    ) -> Result<AdvancedPowerPlanTuningSourceValues, AdvancedPowerPlanTuningError> {
+    ) -> Result<AdvancedPowerPlanTuningReadback, AdvancedPowerPlanTuningError> {
         self.store.read_values(guid)
     }
 
@@ -115,11 +118,25 @@ impl AdvancedPowerPlanTuningService {
     pub(crate) fn apply_reviewed_values(
         &self,
         guid: &str,
-        reviewed_current: AdvancedPowerPlanTuningSourceValues,
+        reviewed_current: AdvancedPowerPlanTuningReadback,
         values: AdvancedPowerPlanTuningSourceValues,
     ) -> Result<AdvancedPowerPlanTuningApplyOutcome, AdvancedPowerPlanTuningError> {
         if self.read_values(guid)? != reviewed_current {
             return Err(AdvancedPowerPlanTuningError::ValuesChanged);
+        }
+        let available = reviewed_current.writable();
+        if [
+            (values.ac, available.ac),
+            (values.battery, available.battery),
+        ]
+        .into_iter()
+        .any(|(requested, current)| {
+            (requested.processor.boost_mode.is_some() && current.processor.boost_mode.is_none())
+                || (requested.scheduling_policy.is_some() && current.scheduling_policy.is_none())
+                || (requested.short_scheduling_policy.is_some()
+                    && current.short_scheduling_policy.is_none())
+        }) {
+            return Err(AdvancedPowerPlanTuningError::SettingUnavailable);
         }
         Ok(self.apply_values(guid, values))
     }
@@ -135,8 +152,9 @@ impl AdvancedPowerPlanTuningService {
 
         match (apply_error, readback) {
             (None, Ok(actual_values)) => {
-                let applied = tuning_matches(values.ac, actual_values.ac)
-                    && tuning_matches(values.battery, actual_values.battery);
+                let actual = actual_values.writable();
+                let applied = tuning_matches(values.ac, actual.ac)
+                    && tuning_matches(values.battery, actual.battery);
                 AdvancedPowerPlanTuningApplyOutcome {
                     applied,
                     actual_values: Some(actual_values),
@@ -165,11 +183,12 @@ impl AdvancedPowerPlanTuningService {
     }
 }
 
-fn tuning_matches(
-    requested: AdvancedPowerPlanTuningValues,
-    actual: AdvancedPowerPlanTuningValues,
-) -> bool {
-    requested.processor == actual.processor
+fn tuning_matches(requested: EditableTuningValues, actual: EditableTuningValues) -> bool {
+    requested.processor.with_boost_mode(()) == actual.processor.with_boost_mode(())
+        && requested
+            .processor
+            .boost_mode
+            .is_none_or(|value| actual.processor.boost_mode == Some(value))
         && requested
             .scheduling_policy
             .is_none_or(|value| actual.scheduling_policy == Some(value))

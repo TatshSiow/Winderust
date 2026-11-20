@@ -72,12 +72,12 @@ pub enum ProcessorBoostMode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ProcessorPowerValues {
+pub struct ProcessorPowerValues<B = ProcessorBoostMode> {
     pub core_parking_min: u32,
     pub performance_min: u32,
     pub performance_max: u32,
     pub boost_policy: u32,
-    pub boost_mode: ProcessorBoostMode,
+    pub boost_mode: B,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -116,22 +116,43 @@ impl ProcessorSchedulingPolicy {
         Self::Automatic,
     ];
 
-    pub fn from_power_value(value: u32) -> Result<Self, String> {
-        Self::ALL
-            .get(value as usize)
-            .copied()
-            .ok_or_else(|| format!("Unknown processor scheduling policy value: {value}."))
-    }
-
     pub const fn power_value(self) -> u32 {
         self as u32
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PowerSettingReadback<T> {
+    Known(T),
+    Missing,
+    Unknown(u32),
+    Unreadable,
+}
+
+impl<T> PowerSettingReadback<T> {
+    pub(crate) fn from_optional_read(
+        read: Result<Option<u32>, String>,
+        decode: impl FnOnce(u32) -> Option<T>,
+    ) -> Self {
+        match read {
+            Ok(Some(value)) => decode(value).map_or(Self::Unknown(value), Self::Known),
+            Ok(None) => Self::Missing,
+            Err(_) => Self::Unreadable,
+        }
+    }
+
+    pub(crate) fn known(self) -> Option<T> {
+        match self {
+            Self::Known(value) => Some(value),
+            Self::Missing | Self::Unknown(_) | Self::Unreadable => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AdvancedPowerPlanTuningValues {
+pub struct AdvancedPowerPlanTuningValues<B = ProcessorBoostMode> {
     #[serde(flatten)]
-    pub processor: ProcessorPowerValues,
+    pub processor: ProcessorPowerValues<B>,
     // None leaves the selected plan's scheduling policy unchanged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scheduling_policy: Option<ProcessorSchedulingPolicy>,
@@ -139,8 +160,8 @@ pub struct AdvancedPowerPlanTuningValues {
     pub short_scheduling_policy: Option<ProcessorSchedulingPolicy>,
 }
 
-impl From<ProcessorPowerValues> for AdvancedPowerPlanTuningValues {
-    fn from(processor: ProcessorPowerValues) -> Self {
+impl<B> From<ProcessorPowerValues<B>> for AdvancedPowerPlanTuningValues<B> {
+    fn from(processor: ProcessorPowerValues<B>) -> Self {
         Self {
             processor,
             scheduling_policy: None,
@@ -153,26 +174,38 @@ impl AdvancedPowerPlanTuningValues {
     pub fn for_preset(preset: ProcessorPowerPreset) -> Self {
         ProcessorPowerValues::for_preset(preset).into()
     }
+}
 
+impl<B> AdvancedPowerPlanTuningValues<B> {
     pub fn normalized(self) -> Self {
         Self {
             processor: self.processor.normalized(),
             ..self
         }
     }
+
+    pub(crate) fn with_boost_mode<C>(self, mode: C) -> AdvancedPowerPlanTuningValues<C> {
+        AdvancedPowerPlanTuningValues {
+            processor: self.processor.with_boost_mode(mode),
+            scheduling_policy: self.scheduling_policy,
+            short_scheduling_policy: self.short_scheduling_policy,
+        }
+    }
 }
 
+pub(crate) type EditableTuningValues = AdvancedPowerPlanTuningValues<Option<ProcessorBoostMode>>;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct AdvancedPowerPlanTuningSourceValues {
-    pub ac: AdvancedPowerPlanTuningValues,
-    pub battery: AdvancedPowerPlanTuningValues,
+pub(crate) struct AdvancedPowerPlanTuningSourceValues {
+    pub ac: EditableTuningValues,
+    pub battery: EditableTuningValues,
 }
 
 impl From<ProcessorPowerSourceValues> for AdvancedPowerPlanTuningSourceValues {
-    fn from(values: ProcessorPowerSourceValues) -> Self {
+    fn from(ProcessorPowerSourceValues { ac, battery }: ProcessorPowerSourceValues) -> Self {
         Self {
-            ac: values.ac.into(),
-            battery: values.battery.into(),
+            ac: ac.with_boost_mode(Some(ac.boost_mode)).into(),
+            battery: battery.with_boost_mode(Some(battery.boost_mode)).into(),
         }
     }
 }
@@ -180,6 +213,7 @@ impl From<ProcessorPowerSourceValues> for AdvancedPowerPlanTuningSourceValues {
 impl AdvancedPowerPlanTuningSourceValues {
     #[cfg(test)]
     pub fn same(values: AdvancedPowerPlanTuningValues) -> Self {
+        let values = values.with_boost_mode(Some(values.processor.boost_mode));
         Self {
             ac: values,
             battery: values,
@@ -194,13 +228,70 @@ impl AdvancedPowerPlanTuningSourceValues {
     }
 }
 
-impl ProcessorPowerValues {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct AdvancedPowerPlanTuningSourceReadback {
+    pub processor: ProcessorPowerValues<PowerSettingReadback<ProcessorBoostMode>>,
+    pub scheduling_policy: PowerSettingReadback<ProcessorSchedulingPolicy>,
+    pub short_scheduling_policy: PowerSettingReadback<ProcessorSchedulingPolicy>,
+}
+
+impl AdvancedPowerPlanTuningSourceReadback {
+    pub(crate) fn writable(self) -> EditableTuningValues {
+        let processor = self.processor;
+        AdvancedPowerPlanTuningValues {
+            processor: processor.with_boost_mode(processor.boost_mode.known()),
+            scheduling_policy: self.scheduling_policy.known(),
+            short_scheduling_policy: self.short_scheduling_policy.known(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct AdvancedPowerPlanTuningReadback {
+    pub ac: AdvancedPowerPlanTuningSourceReadback,
+    pub battery: AdvancedPowerPlanTuningSourceReadback,
+}
+
+impl AdvancedPowerPlanTuningReadback {
+    pub(crate) fn writable(self) -> AdvancedPowerPlanTuningSourceValues {
+        AdvancedPowerPlanTuningSourceValues {
+            ac: self.ac.writable(),
+            battery: self.battery.writable(),
+        }
+    }
+}
+
+#[cfg(test)]
+impl From<AdvancedPowerPlanTuningSourceValues> for AdvancedPowerPlanTuningReadback {
+    fn from(values: AdvancedPowerPlanTuningSourceValues) -> Self {
+        let make_readback = |values: EditableTuningValues| AdvancedPowerPlanTuningSourceReadback {
+            processor: values.processor.with_boost_mode(
+                values
+                    .processor
+                    .boost_mode
+                    .map_or(PowerSettingReadback::Missing, PowerSettingReadback::Known),
+            ),
+            scheduling_policy: values
+                .scheduling_policy
+                .map_or(PowerSettingReadback::Missing, PowerSettingReadback::Known),
+            short_scheduling_policy: values
+                .short_scheduling_policy
+                .map_or(PowerSettingReadback::Missing, PowerSettingReadback::Known),
+        };
+        Self {
+            ac: make_readback(values.ac),
+            battery: make_readback(values.battery),
+        }
+    }
+}
+
+impl<B> ProcessorPowerValues<B> {
     pub const fn new_with_boost_mode(
         core_parking_min: u32,
         performance_min: u32,
         performance_max: u32,
         boost_policy: u32,
-        boost_mode: ProcessorBoostMode,
+        boost_mode: B,
     ) -> Self {
         Self {
             core_parking_min,
@@ -211,6 +302,29 @@ impl ProcessorPowerValues {
         }
     }
 
+    pub(crate) fn with_boost_mode<C>(self, mode: C) -> ProcessorPowerValues<C> {
+        ProcessorPowerValues::new_with_boost_mode(
+            self.core_parking_min,
+            self.performance_min,
+            self.performance_max,
+            self.boost_policy,
+            mode,
+        )
+    }
+
+    pub fn normalized(self) -> Self {
+        let performance_min = self.performance_min.min(100);
+        Self {
+            core_parking_min: self.core_parking_min.min(100),
+            performance_min,
+            performance_max: self.performance_max.min(100).max(performance_min),
+            boost_policy: self.boost_policy.min(100),
+            boost_mode: self.boost_mode,
+        }
+    }
+}
+
+impl ProcessorPowerValues {
     pub const fn for_preset(preset: ProcessorPowerPreset) -> Self {
         match preset {
             ProcessorPowerPreset::Performance => Self {
@@ -234,17 +348,6 @@ impl ProcessorPowerValues {
                 boost_policy: 0,
                 boost_mode: ProcessorBoostMode::Disabled,
             },
-        }
-    }
-
-    pub fn normalized(self) -> Self {
-        let performance_min = self.performance_min.min(100);
-        Self {
-            core_parking_min: self.core_parking_min.min(100),
-            performance_min,
-            performance_max: self.performance_max.min(100).max(performance_min),
-            boost_policy: self.boost_policy.min(100),
-            boost_mode: self.boost_mode,
         }
     }
 }
@@ -297,11 +400,8 @@ impl ProcessorBoostMode {
         Self::EfficientAggressiveAtGuaranteed,
     ];
 
-    pub fn from_power_value(value: u32) -> Result<Self, String> {
-        Self::ALL
-            .get(value as usize)
-            .copied()
-            .ok_or_else(|| format!("Unknown processor boost mode value: {value}."))
+    pub(crate) fn from_power_value(value: u32) -> Option<Self> {
+        Self::ALL.get(value as usize).copied()
     }
 
     pub const fn power_value(self) -> u32 {
@@ -594,16 +694,27 @@ mod adaptive_tests {
     }
 
     #[test]
-    fn boost_modes_round_trip_and_reject_unknown_native_values() {
+    fn boost_modes_distinguish_known_and_unavailable_native_values() {
+        let readback = |read| {
+            PowerSettingReadback::from_optional_read(read, ProcessorBoostMode::from_power_value)
+        };
         for mode in ProcessorBoostMode::ALL {
             assert_eq!(
-                ProcessorBoostMode::from_power_value(mode.power_value()),
-                Ok(mode)
+                readback(Ok(Some(mode.power_value()))),
+                PowerSettingReadback::Known(mode)
             );
         }
         for unknown in [7, 100, u32::MAX] {
-            assert!(ProcessorBoostMode::from_power_value(unknown).is_err());
+            assert_eq!(
+                readback(Ok(Some(unknown))),
+                PowerSettingReadback::Unknown(unknown)
+            );
         }
+        assert_eq!(readback(Ok(None)), PowerSettingReadback::Missing);
+        assert_eq!(
+            readback(Err("access denied".into())),
+            PowerSettingReadback::Unreadable
+        );
     }
 
     #[test]
@@ -612,15 +723,21 @@ mod adaptive_tests {
         let mut tuning = AdvancedPowerPlanTuningValues::from(processor);
         let saved = toml::to_string(&tuning).unwrap();
         assert!(!saved.contains("scheduling_policy"));
+        assert!(saved.contains("boost_mode = \"enabled\""));
         assert_eq!(
             toml::from_str::<AdvancedPowerPlanTuningValues>(&saved).unwrap(),
             tuning
         );
+        let readback = |read| {
+            PowerSettingReadback::from_optional_read(read, |value| {
+                ProcessorSchedulingPolicy::ALL.get(value as usize).copied()
+            })
+        };
         for (index, policy) in ProcessorSchedulingPolicy::ALL.into_iter().enumerate() {
             assert_eq!(policy.power_value(), index as u32);
             assert_eq!(
-                ProcessorSchedulingPolicy::from_power_value(index as u32),
-                Ok(policy)
+                readback(Ok(Some(index as u32))),
+                PowerSettingReadback::Known(policy)
             );
             tuning.scheduling_policy = Some(policy);
             tuning.short_scheduling_policy = Some(ProcessorSchedulingPolicy::Automatic);
@@ -631,12 +748,18 @@ mod adaptive_tests {
             );
         }
         for unknown in [6, 100, u32::MAX] {
-            assert!(ProcessorSchedulingPolicy::from_power_value(unknown).is_err());
+            assert_eq!(
+                readback(Ok(Some(unknown))),
+                PowerSettingReadback::Unknown(unknown)
+            );
         }
         let automatic: AdvancedPowerPlanTuningSourceValues =
             ProcessorPowerSourceValues::same(processor).into();
         for source in [automatic.ac, automatic.battery] {
-            assert_eq!(source.processor, processor);
+            assert_eq!(
+                source.processor,
+                processor.with_boost_mode(Some(processor.boost_mode))
+            );
             assert_eq!(source.scheduling_policy, None);
             assert_eq!(source.short_scheduling_policy, None);
         }

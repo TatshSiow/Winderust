@@ -293,16 +293,22 @@ Read the relevant section before changing feature policy, ownership, restoration
   explicit application service and never enters the automatic recovery journal. Its optional
   long/short-running thread scheduling policies stay outside Adaptive Engine processor profiles;
   built-in presets preserve current policies, and custom presets can select optional overrides.
+  Tuning presets and Adaptive Engine processor profiles store concrete boost modes.
+  Adaptive Engine writes its configured boost modes.
 - Advanced Power Plan Tuning captures the target plan's GUID, live values, and
   normalized draft in the review. The same review gates page Apply and any save
   that includes tuning edits. A fresh read must match the reviewed values before
-  the staged write starts. Selection, confirmation, and the Windows write
-  preflight exclude the temporary Winderust Adaptive plan.
+  the staged write starts, including boost mode and scheduling availability and
+  raw unknown indices for each power source. Selection, confirmation, and the
+  Windows write preflight exclude the temporary Winderust Adaptive plan. Apply
+  and Restore skip missing, unreadable, and unknown boost modes and scheduling
+  policies.
   A stale review or failed preflight read preserves the draft and requires a new
   review. Readback verifies the outcome and reports any partial application.
 - Restore previous tuning values keeps one in-memory restore point per plan GUID
   after a verified Apply that changed values. It captures the pre-apply values
-  only when the tuning writer can reproduce them exactly. Restore requires a
+  only when the writer can reproduce the editable values exactly and preserve
+  the unavailable boost mode and scheduling states. Restore requires a
   clean editor, an unmanaged plan, and live values that match the verified Apply
   readback. It uses the same explicit confirmation and consumes the point after
   exact readback of the previous values. Exit clears the points.

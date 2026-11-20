@@ -1,6 +1,9 @@
 use std::sync::{Arc, Mutex};
 
-use crate::power::{ProcessorBoostMode, ProcessorPowerApplyStage, ProcessorPowerValues};
+use crate::power::{
+    PowerSettingReadback, ProcessorBoostMode, ProcessorPowerApplyStage, ProcessorPowerValues,
+    ProcessorSchedulingPolicy,
+};
 
 use super::*;
 
@@ -11,19 +14,23 @@ struct FakeStore {
 
 #[derive(Debug, Clone)]
 struct FakeStoreState {
-    values: Result<AdvancedPowerPlanTuningSourceValues, AdvancedPowerPlanTuningError>,
+    values: Result<AdvancedPowerPlanTuningReadback, AdvancedPowerPlanTuningError>,
     personality: Result<PowerPlanPersonality, AdvancedPowerPlanTuningError>,
     apply_error: Option<ProcessorPowerApplyError>,
+    apply_readback: Option<AdvancedPowerPlanTuningReadback>,
+    requests: Vec<AdvancedPowerPlanTuningSourceValues>,
     calls: Vec<&'static str>,
 }
 
 impl FakeStore {
-    fn new(values: AdvancedPowerPlanTuningSourceValues) -> Self {
+    fn new(values: impl Into<AdvancedPowerPlanTuningReadback>) -> Self {
         Self {
             state: Arc::new(Mutex::new(FakeStoreState {
-                values: Ok(values),
+                values: Ok(values.into()),
                 personality: Ok(PowerPlanPersonality::Balanced),
                 apply_error: None,
+                apply_readback: None,
+                requests: Vec::new(),
                 calls: Vec::new(),
             })),
         }
@@ -38,7 +45,7 @@ impl AdvancedPowerPlanTuningStore for FakeStore {
     fn read_values(
         &self,
         _guid: &str,
-    ) -> Result<AdvancedPowerPlanTuningSourceValues, AdvancedPowerPlanTuningError> {
+    ) -> Result<AdvancedPowerPlanTuningReadback, AdvancedPowerPlanTuningError> {
         let mut state = self.state.lock().expect("power tuning lock");
         state.calls.push("read");
         state.values.clone()
@@ -56,10 +63,14 @@ impl AdvancedPowerPlanTuningStore for FakeStore {
     fn apply_values(
         &self,
         _guid: &str,
-        _values: AdvancedPowerPlanTuningSourceValues,
+        values: AdvancedPowerPlanTuningSourceValues,
     ) -> Result<(), ProcessorPowerApplyError> {
         let mut state = self.state.lock().expect("power tuning lock");
         state.calls.push("apply");
+        state.requests.push(values);
+        if let Some(readback) = state.apply_readback.take() {
+            state.values = Ok(readback);
+        }
         match state.apply_error.clone() {
             Some(error) => Err(error),
             None => Ok(()),
@@ -89,7 +100,7 @@ fn successful_apply_is_followed_by_readback() {
     let outcome = service.apply_values("plan", values(75));
 
     assert!(outcome.applied);
-    assert_eq!(outcome.actual_values, Some(actual));
+    assert_eq!(outcome.actual_values, Some(actual.into()));
     assert!(outcome.error.is_none());
     assert_eq!(store.calls(), vec!["apply", "read"]);
 }
@@ -101,13 +112,13 @@ fn reviewed_apply_rejects_stale_values_and_rechecks_before_writing() {
     let service = AdvancedPowerPlanTuningService::with_store(Box::new(store.clone()));
 
     assert_eq!(
-        service.apply_reviewed_values("plan", values(70), actual),
+        service.apply_reviewed_values("plan", values(70).into(), actual),
         Err(AdvancedPowerPlanTuningError::ValuesChanged)
     );
     assert_eq!(store.calls(), vec!["read"]);
 
     let outcome = service
-        .apply_reviewed_values("plan", actual, actual)
+        .apply_reviewed_values("plan", actual.into(), actual)
         .unwrap();
     assert!(outcome.applied);
     assert_eq!(store.calls(), vec!["read", "read", "apply", "read"]);
@@ -115,7 +126,7 @@ fn reviewed_apply_rejects_stale_values_and_rechecks_before_writing() {
     let deleted_plan = AdvancedPowerPlanTuningError::ReadValues("Plan deleted".into());
     store.state.lock().expect("power tuning lock").values = Err(deleted_plan.clone());
     assert_eq!(
-        service.apply_reviewed_values("plan", actual, actual),
+        service.apply_reviewed_values("plan", actual.into(), actual),
         Err(deleted_plan)
     );
     assert_eq!(store.calls(), vec!["read", "read", "apply", "read", "read"]);
@@ -123,8 +134,6 @@ fn reviewed_apply_rejects_stale_values_and_rechecks_before_writing() {
 
 #[test]
 fn apply_requires_matching_values_for_both_power_sources() {
-    use crate::power::ProcessorSchedulingPolicy;
-
     let requested = values(75);
     for battery in [false, true] {
         for field in 0..7 {
@@ -145,7 +154,7 @@ fn apply_requires_matching_values_for_both_power_sources() {
                 1 => actual_source.processor.performance_min = 70,
                 2 => actual_source.processor.performance_max = 101,
                 3 => actual_source.processor.boost_policy = 70,
-                4 => actual_source.processor.boost_mode = ProcessorBoostMode::Disabled,
+                4 => actual_source.processor.boost_mode = Some(ProcessorBoostMode::Disabled),
                 5 => {
                     expected_source.scheduling_policy = Some(ProcessorSchedulingPolicy::Automatic);
                     actual_source.scheduling_policy =
@@ -160,7 +169,7 @@ fn apply_requires_matching_values_for_both_power_sources() {
                 AdvancedPowerPlanTuningService::with_store(Box::new(FakeStore::new(actual)));
             let outcome = service.apply_values("plan", expected);
             assert!(!outcome.applied, "source={battery}, field={field}");
-            assert_eq!(outcome.actual_values, Some(actual));
+            assert_eq!(outcome.actual_values, Some(actual.into()));
             assert!(matches!(
                 outcome.error,
                 Some(AdvancedPowerPlanTuningApplyError::Verification)
@@ -170,19 +179,111 @@ fn apply_requires_matching_values_for_both_power_sources() {
 }
 
 #[test]
-fn apply_verifies_requested_scheduling_but_preserves_unowned_fields() {
-    use crate::power::ProcessorSchedulingPolicy;
-
+fn apply_verifies_requested_settings_but_preserves_unowned_fields() {
     let mut actual = values(75);
     actual.ac.scheduling_policy = Some(ProcessorSchedulingPolicy::PerformanceProcessors);
     actual.battery.short_scheduling_policy = Some(ProcessorSchedulingPolicy::Automatic);
     let service = AdvancedPowerPlanTuningService::with_store(Box::new(FakeStore::new(actual)));
-    for requested in [values(75), actual] {
+    let mut unowned = values(75);
+    unowned.ac.processor.boost_mode = None;
+    for requested in [unowned, actual] {
         let outcome = service.apply_values("plan", requested);
         assert!(outcome.applied);
-        assert_eq!(outcome.actual_values, Some(actual));
+        assert_eq!(outcome.actual_values, Some(actual.into()));
         assert!(outcome.error.is_none());
     }
+}
+
+#[test]
+fn reviewed_apply_preserves_unknown_ac_policy_and_can_edit_battery_policy() {
+    let mut current = AdvancedPowerPlanTuningReadback::from(values(75));
+    current.ac.scheduling_policy = PowerSettingReadback::Unknown(42);
+    current.battery.scheduling_policy =
+        PowerSettingReadback::Known(ProcessorSchedulingPolicy::Automatic);
+    let mut actual = current;
+    actual.battery.scheduling_policy =
+        PowerSettingReadback::Known(ProcessorSchedulingPolicy::EfficiencyProcessors);
+    let store = FakeStore::new(current);
+    store
+        .state
+        .lock()
+        .expect("power tuning lock")
+        .apply_readback = Some(actual);
+    let service = AdvancedPowerPlanTuningService::with_store(Box::new(store.clone()));
+    let requested = actual.writable();
+
+    let outcome = service
+        .apply_reviewed_values("plan", current, requested)
+        .unwrap();
+
+    assert_eq!(requested.ac.scheduling_policy, None);
+    assert!(outcome.applied);
+    assert_eq!(outcome.actual_values, Some(actual));
+    assert_eq!(store.calls(), vec!["read", "apply", "read"]);
+}
+
+#[test]
+fn reviewed_apply_rejects_changed_or_unavailable_scheduling_policy() {
+    let mut current = AdvancedPowerPlanTuningReadback::from(values(75));
+    current.ac.scheduling_policy = PowerSettingReadback::Unknown(42);
+    let store = FakeStore::new(current);
+    let service = AdvancedPowerPlanTuningService::with_store(Box::new(store.clone()));
+    let mut stale = current;
+    stale.ac.scheduling_policy = PowerSettingReadback::Unknown(43);
+    assert_eq!(
+        service.apply_reviewed_values("plan", stale, current.writable()),
+        Err(AdvancedPowerPlanTuningError::ValuesChanged)
+    );
+
+    let mut requested = current.writable();
+    requested.ac.scheduling_policy = Some(ProcessorSchedulingPolicy::Automatic);
+    assert_eq!(
+        service.apply_reviewed_values("plan", current, requested),
+        Err(AdvancedPowerPlanTuningError::SettingUnavailable)
+    );
+    assert_eq!(store.calls(), vec!["read", "read"]);
+}
+
+#[test]
+fn apply_and_restore_preserve_unknown_ac_boost_mode() {
+    let mut original = AdvancedPowerPlanTuningReadback::from(values(75));
+    original.ac.processor.boost_mode = PowerSettingReadback::Unknown(42);
+    let mut edited = original;
+    edited.battery.processor.boost_mode = PowerSettingReadback::Known(ProcessorBoostMode::Disabled);
+    let store = FakeStore::new(original);
+    let service = AdvancedPowerPlanTuningService::with_store(Box::new(store.clone()));
+
+    let mut stale = original;
+    stale.ac.processor.boost_mode = PowerSettingReadback::Unknown(43);
+    assert_eq!(
+        service.apply_reviewed_values("plan", stale, edited.writable()),
+        Err(AdvancedPowerPlanTuningError::ValuesChanged)
+    );
+    let mut unavailable = edited.writable();
+    unavailable.ac.processor.boost_mode = Some(ProcessorBoostMode::Enabled);
+    assert_eq!(
+        service.apply_reviewed_values("plan", original, unavailable),
+        Err(AdvancedPowerPlanTuningError::SettingUnavailable)
+    );
+
+    for (reviewed, expected) in [(original, edited), (edited, original)] {
+        store
+            .state
+            .lock()
+            .expect("power tuning lock")
+            .apply_readback = Some(expected);
+        let requested = expected.writable();
+        assert_eq!(requested.ac.processor.boost_mode, None);
+        let outcome = service
+            .apply_reviewed_values("plan", reviewed, requested)
+            .unwrap();
+        assert!(outcome.applied);
+        assert_eq!(outcome.actual_values, Some(expected));
+    }
+    assert_eq!(
+        store.state.lock().expect("power tuning lock").requests,
+        [edited.writable(), original.writable()]
+    );
 }
 
 #[test]
@@ -203,7 +304,6 @@ fn successful_write_with_failed_readback_is_not_verified() {
 
 #[test]
 fn partial_apply_failure_still_returns_actual_values_and_stage() {
-    use crate::power::ProcessorSchedulingPolicy;
     for stage in [
         ProcessorPowerApplyStage::BatteryPerformanceMaximum,
         ProcessorPowerApplyStage::AcSchedulingPolicy,
@@ -221,7 +321,7 @@ fn partial_apply_failure_still_returns_actual_values_and_stage() {
         let service = AdvancedPowerPlanTuningService::with_store(Box::new(store.clone()));
         let outcome = service.apply_values("plan", values(80));
         assert!(!outcome.applied);
-        assert_eq!(outcome.actual_values, Some(actual));
+        assert_eq!(outcome.actual_values, Some(actual.into()));
         assert!(
             matches!(outcome.error, Some(AdvancedPowerPlanTuningApplyError::Apply(ref error)) if error.stage() == stage)
         );

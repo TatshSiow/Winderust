@@ -491,29 +491,40 @@ Implementation paths:
 - `src/platform/windows/power_plan.rs`: raw processor-setting reads/writes, scheme activation, GUID
   conversion, and native power-policy boundary.
 
-The explicit tuning service applies ten ordered A/C and battery processor settings, then up to four selected scheduling-policy values, and retains the exact failing stage. It re-reads the selected plan after every
-attempt, including a partial failure, so the UI reflects the values Windows now
-holds rather than the pre-apply draft. This persistent user command does not use
-the automatic power-plan recovery journal or claim ledger.
-Success requires readback to match every requested processor value and selected
-scheduling override on both power sources. Unselected scheduling fields remain
-unowned. Unknown native boost modes and out-of-range percentages fail reading
-instead of being normalized into apparently successful settings.
+The explicit tuning service writes eight ordered A/C and battery processor
+percentages, then up to two boost modes and four scheduling policies. It retains
+the exact failing stage and re-reads the selected plan after every attempt,
+including a partial failure. Success requires readback to match the requested
+values on both power sources. Unavailable boost modes and unselected or
+unavailable scheduling policies stay untouched. Unavailable or out-of-range
+percentages fail the plan read. Persistent tuning stays outside the automatic
+power-plan recovery journal and claim ledger.
 
 | API / Setting | Used for | Reference |
 | --- | --- | --- |
-| `PowerWriteACValueIndex` / `PowerWriteDCValueIndex` | Writes separate AC and battery processor setting percentages in the selected power plan. | [AC](https://learn.microsoft.com/en-us/windows/win32/api/powersetting/nf-powersetting-powerwriteacvalueindex) / [DC](https://learn.microsoft.com/en-us/windows/win32/api/powersetting/nf-powersetting-powerwritedcvalueindex) |
-| `PowerReadACValueIndex` / `PowerReadDCValueIndex` | Reads the selected power plan's AC and battery processor setting percentages so the UI can reflect current Windows values. | [AC](https://learn.microsoft.com/en-us/windows/win32/api/powrprof/nf-powrprof-powerreadacvalueindex) / [DC](https://learn.microsoft.com/en-us/windows/win32/api/powrprof/nf-powrprof-powerreaddcvalueindex) |
+| `PowerWriteACValueIndex` / `PowerWriteDCValueIndex` | Writes separate AC and battery processor settings in the selected power plan. | [AC](https://learn.microsoft.com/en-us/windows/win32/api/powersetting/nf-powersetting-powerwriteacvalueindex) / [DC](https://learn.microsoft.com/en-us/windows/win32/api/powersetting/nf-powersetting-powerwritedcvalueindex) |
+| `PowerReadACValueIndex` / `PowerReadDCValueIndex` | Reads separate AC and battery processor settings in the selected power plan. | [AC](https://learn.microsoft.com/en-us/windows/win32/api/powrprof/nf-powrprof-powerreadacvalueindex) / [DC](https://learn.microsoft.com/en-us/windows/win32/api/powrprof/nf-powrprof-powerreaddcvalueindex) |
 | Processor power management options | Defines the processor settings and profiles used by Windows. | https://learn.microsoft.com/en-us/windows-hardware/customize/power-settings/configure-processor-power-management-options |
 | Core parking minimum cores | Sets the percentage of logical processors that must remain unparked. | https://learn.microsoft.com/en-us/windows-hardware/customize/power-settings/options-for-core-parking-cpmincores |
 | Processor performance min/max | Sets minimum and maximum processor performance percentages. | [Minimum](https://learn.microsoft.com/en-us/windows-hardware/customize/power-settings/options-for-perf-state-engine-minperformance) / [Maximum](https://learn.microsoft.com/en-us/windows-hardware/customize/power-settings/options-for-perf-state-engine-maxperformance) |
 | Processor performance boost mode | Controls Windows processor boost policy values such as disabled, enabled, aggressive, and efficient modes. | https://learn.microsoft.com/en-us/windows-hardware/customize/power-settings/options-for-perf-state-engine-perfboostmode |
 
-Scheduling-policy details:
+Boost mode and scheduling-policy details:
 
-- `src/power/plan.rs`: `ProcessorSchedulingPolicy` maps documented indices 0-5 exactly; unknown values fail instead of becoming Automatic. Explicit tuning/preset values compose the existing processor values and optional scheduling overrides. Adaptive processor profiles convert with no scheduling overrides.
-- `src/platform/windows/power_plan.rs`: SDK `GUID_PROCESSOR_THREAD_SCHEDULING_POLICY` (`93b8b6dc-0698-4d1c-9ee4-0644e900c85d`) and `GUID_PROCESSOR_SHORT_THREAD_SCHEDULING_POLICY` (`bae08b81-2d5e-4688-ad6a-13243356654b`) use the processor subgroup. `ERROR_FILE_NOT_FOUND` on an optional read means unavailable; all other read errors remain failures. Existing required processor settings still fail if missing.
-- `src/ui/advanced_power_plan_tuning.rs`: loaded values preserve each plan/source; unsupported settings cannot be enabled by a preset. Built-in presets leave scheduling untouched; custom presets serialize optional overrides. Apply remains an explicit persistent operation with stage-specific errors and post-attempt readback; it never adds a runtime recovery claim.
+- `src/power/plan.rs` maps documented indices 0–5 to `ProcessorSchedulingPolicy`.
+  Explicit tuning and preset values contain optional scheduling overrides.
+  Adaptive processor profiles supply no scheduling overrides.
+- `src/platform/windows/power_plan.rs` reads SDK `GUID_PROCESSOR_PERFORMANCE_BOOST_MODE`
+  (`be337238-0d82-4146-a960-4f3749d470c7`), `GUID_PROCESSOR_THREAD_SCHEDULING_POLICY`
+  (`93b8b6dc-0698-4d1c-9ee4-0644e900c85d`) and `GUID_PROCESSOR_SHORT_THREAD_SCHEDULING_POLICY`
+  (`bae08b81-2d5e-4688-ad6a-13243356654b`) from the processor subgroup.
+  `src/power/powercfg.rs` classifies each optional read independently for AC and
+  battery. `ERROR_FILE_NOT_FOUND` becomes missing, other read failures become
+  unreadable, and unrecognized indices retain their raw value for display and
+  stale review checks.
+- `src/ui/advanced_power_plan_tuning.rs` shows the availability of each control.
+  Presets can only edit controls with recognized values. Apply and Restore skip
+  unavailable settings and re-read the plan after an attempted write.
 - [SchedulingPolicy](https://learn.microsoft.com/en-us/windows-hardware/customize/power-settings/configuration-for-hetero-power-scheduling-schedulingpolicy): long-running threads, alias `SCHEDPOLICY`, indices 0 All / 1 Performance / 2 Prefer performance / 3 Efficiency / 4 Prefer efficiency / 5 Automatic.
 - [ShortSchedulingPolicy](https://learn.microsoft.com/en-us/windows-hardware/customize/power-settings/configuration-for-hetero-power-scheduling-shortschedulingpolicy): short-running threads, alias `SHORTSCHEDPOLICY`, same six values. Windows determines the short/long threshold; Winderust does not change that threshold.
 - [Microsoft SDK declarations](https://github.com/microsoft/win32metadata/blob/main/generation/WinSDK/RecompiledIdlHeaders/um/winnt.h): direct source for the two scheduling GUIDs.
