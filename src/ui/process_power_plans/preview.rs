@@ -9,6 +9,7 @@ use rust_i18n::t;
 
 use crate::{
     config::{ByRunningAppRule, ByRunningAppSettings, Settings},
+    control::instance_limits::validate_path,
     features::power_plan_control::by_running_app::{
         preview_matches, rule_name, ByRunningAppPreview, ByRunningAppPreviewMatch,
         ByRunningAppPreviewRow,
@@ -224,16 +225,12 @@ impl FocusPreview {
             .strip_prefix('"')
             .and_then(|path| path.strip_suffix('"'))
             .unwrap_or(input);
-        let path = Path::new(input);
-        (path.is_absolute()
-            && path.file_name().is_some()
-            && !input.ends_with(['\\', '/'])
-            && !input.contains(['"', '\0'])
-            && self
-                .check
-                .as_ref()
-                .is_none_or(|check| check.result.is_some()))
-        .then_some(path)
+        (self
+            .check
+            .as_ref()
+            .is_none_or(|check| check.result.is_some())
+            && validate_path(input).is_ok())
+        .then(|| Path::new(input))
     }
 
     fn view(&self, plans: &[PowerPlan]) -> Element<'_, PreviewMessage> {
@@ -247,6 +244,9 @@ impl FocusPreview {
                 .on_submit_maybe(check.clone())
         ]
         .spacing(widgets::CARD_GAP);
+        if check.is_none() && self.check.is_none() && !self.path.trim().is_empty() {
+            body = body.push(super::path_format_hint());
+        }
         if let Some(pending) = &self.check {
             let result = match &pending.result {
                 None => text(t!("common.loading").to_string()).style(text::secondary),
@@ -397,7 +397,16 @@ fn stale_result_cannot_finish_a_reopened_preview() {
 
 #[test]
 fn focus_preview_checks_only_full_executable_paths() {
-    for path in ["", "app.exe", r"Apps\app.exe", r"C:\", r"C:\Apps\"] {
+    for path in [
+        "",
+        "app.exe",
+        r"Apps\app.exe",
+        r"C:\",
+        r"C:\Apps\",
+        r"C:\Apps\.\app.exe",
+        r"C:\Apps\old\..\app.exe",
+        r"\\?\C:\Apps\app.exe",
+    ] {
         let focus = FocusPreview {
             path: path.into(),
             ..Default::default()

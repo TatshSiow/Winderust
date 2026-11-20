@@ -200,7 +200,8 @@ hover/press; background shading supplies feedback.
   a plan in the same pass. The current-plan card stays compact.
 - By Focus and By Running App default to matching an executable path. Executable
   name rules match the same filename across paths. By Focus evaluates the app with
-  input focus. Process List edits individual path rules.
+  input focus. Process List edits individual path rules. The rule editors accept
+  full drive or network paths and show guidance for unsupported path formats.
 - In By Focus, Preview matches checks a full executable path against the draft
   rules and shows the first eligible rule and its selected plan.
 - In By Running App, Preview matches lists the processes each rule covers,

@@ -2,10 +2,14 @@ mod preview;
 
 pub(super) use preview::PreviewMessage;
 
-use super::widgets::{self, checkbox};
+use super::{
+    app_picker, design,
+    widgets::{self, checkbox},
+};
 use crate::ui::scrolling::scrollable;
 use crate::{
     config::{ByFocusRule, ByRunningAppRule, ExecutableSelector, Settings},
+    control::instance_limits::validate_path,
     power::PowerPlan,
     ui::process_rules::*,
 };
@@ -92,7 +96,9 @@ impl Editor {
                     Message::Preview(_) => unreachable!("preview messages do not edit rules"),
                     Message::Add => {
                         if $can_add_path(feature, &self.path) {
-                            feature.rules.push($new_rule(&self.path, active_plan()));
+                            feature
+                                .rules
+                                .push($new_rule(self.path.trim(), active_plan()));
                             self.path.clear();
                         }
                     }
@@ -156,7 +162,7 @@ impl Editor {
                 .on_press_maybe(add),
         ]
         .align_y(iced::Center)
-        .spacing(super::design::space::SMALL)
+        .spacing(design::space::SMALL)
         .into()
     }
 
@@ -165,7 +171,7 @@ impl Editor {
         kind: Kind,
         settings: &'a Settings,
         plans: &[PowerPlan],
-        candidates: &'a [super::app_picker::Candidate],
+        candidates: &'a [app_picker::Candidate],
         runtime_settings: Option<&Settings>,
         status: &crate::control::power_plan::PowerPlanStatus,
     ) -> Element<'a, Message> {
@@ -191,15 +197,24 @@ impl Editor {
                 let input = if self.match_by == MatchBy::ExecutableName {
                     self.name_input($can_add_name(feature, &self.name))
                 } else {
-                    super::app_picker::view(
+                    let can_add = $can_add_path(feature, &self.path);
+                    let mut picker = column![app_picker::view(
                         &self.path,
                         candidates,
                         true,
                         Message::Path,
                         Message::Browse,
-                        ($can_add_path(feature, &self.path)).then_some(Message::Add),
+                        can_add.then_some(Message::Add),
                         |path| $can_add_path(feature, path).then_some(true),
-                    )
+                    )]
+                    .spacing(design::space::SMALL);
+                    if !can_add
+                        && app_picker::is_path_query(&self.path)
+                        && validate_path(self.path.trim()).is_err()
+                    {
+                        picker = picker.push(path_format_hint());
+                    }
+                    picker.into()
                 };
                 let input = widgets::settings_card(widgets::settings_rows([
                     widgets::setting_row(
@@ -209,7 +224,7 @@ impl Editor {
                             Some(self.match_by),
                             Message::MatchBy,
                         )
-                        .width(super::design::SELECT_WIDTH),
+                        .width(design::SELECT_WIDTH),
                     )
                     .into(),
                     input,
@@ -235,38 +250,42 @@ impl Editor {
                         .padding([4, 8])
                         .style(move |theme| widgets::rule_status_chip(theme, key));
                     let (app, location) = if is_path {
-                        (
-                            super::app_picker::app_name(target, candidates),
-                            target.to_owned(),
-                        )
+                        (app_picker::app_name(target, candidates), target.to_owned())
                     } else {
                         (
                             text(target.to_owned()).into(),
                             t!("common.any_path").to_string(),
                         )
                     };
+                    let mut card = column![widgets::process_rule_header_with_target(
+                        app,
+                        location,
+                        checkbox(rule.enabled)
+                            .on_toggle_maybe(Some(move |value| {
+                                Message::RuleEnabled(index, value)
+                            }))
+                            .into(),
+                        Some(chip.into()),
+                        vec![selector],
+                        iced::widget::container(widgets::rule_delete_button(Some(
+                            Message::Remove(index)
+                        )))
+                        .center_x(80)
+                        .into(),
+                    )];
+                    if is_path && validate_path(target).is_err() {
+                        card = card.push(
+                            iced::widget::container(
+                                text(t!("power_plan_control.executable_path_readd").to_string())
+                                    .style(text::secondary)
+                                    .wrapping(text::Wrapping::WordOrGlyph),
+                            )
+                            .padding(iced::Padding::new(widgets::CARD_PADDING as f32).top(0.0)),
+                        );
+                    }
                     cards.push((
                         widgets::stable_key(&(is_path, target)),
-                        column![
-                            widgets::process_rule_header_with_target(
-                                app,
-                                location,
-                                checkbox(rule.enabled)
-                                    .on_toggle_maybe(Some(move |value| {
-                                        Message::RuleEnabled(index, value)
-                                    }))
-                                    .into(),
-                                Some(chip.into()),
-                                vec![selector],
-                                iced::widget::container(widgets::rule_delete_button(Some(
-                                    Message::Remove(index)
-                                )))
-                                .center_x(80)
-                                .into(),
-                            ),
-                            widgets::settings_divider()
-                        ]
-                        .into(),
+                        card.push(widgets::settings_divider()).into(),
                     ));
                 }
                 rules_body = rules_body.push(widgets::process_rules_table_with_actions(
@@ -309,9 +328,51 @@ impl Editor {
     }
 }
 
+fn path_format_hint<'a>() -> iced::widget::Text<'a> {
+    text(t!("common.executable_path_format_hint").to_string())
+        .style(text::danger)
+        .wrapping(text::Wrapping::WordOrGlyph)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn new_path_rules_require_full_drive_or_network_paths() {
+        for kind in [Kind::Focus, Kind::RunningApp] {
+            let mut settings = Settings::default();
+            let mut editor = Editor::default();
+            for path in [
+                r"C:\Apps\.\worker.exe",
+                r"C:\Apps\old\..\worker.exe",
+                r"\\?\C:\Apps\worker.exe",
+                r"C:\Apps\worker.exe.",
+                r"C:\Apps \worker.exe",
+                r"C:\Apps\",
+                r" C:\Apps\worker.exe ",
+                r" \\server\share\worker.exe ",
+            ] {
+                editor.update(kind, &mut settings, &[], Message::Path(path.into()));
+                editor.update(kind, &mut settings, &[], Message::Add);
+            }
+            let paths: Vec<_> = match kind {
+                Kind::Focus => settings
+                    .by_focus
+                    .rules
+                    .iter()
+                    .map(|rule| rule.selector.value())
+                    .collect(),
+                Kind::RunningApp => settings
+                    .by_running_app
+                    .rules
+                    .iter()
+                    .map(|rule| rule.selector.value())
+                    .collect(),
+            };
+            assert_eq!(paths, [r"C:\Apps\worker.exe", r"\\server\share\worker.exe"]);
+        }
+    }
 
     #[test]
     fn name_rules_allow_overlapping_paths_and_reject_duplicate_names() {

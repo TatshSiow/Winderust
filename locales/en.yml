@@ -205,7 +205,7 @@ common:
   executable_files: "Executable files"
   match_by: "Match by"
   executable_path: "Executable path"
-  executable_path_format_hint: "Browse for an executable, or enter its full drive or network path without dot segments, trailing dots, or spaces at the end of a name."
+  executable_path_format_hint: "Enter a full drive or network path without dot segments, trailing dots, or spaces at the end of a name."
   executable_path_check_failed: "Could not verify the executable path. %{error}"
   executable_name: "Executable name"
   any_path: "Any path"
@@ -1107,6 +1107,7 @@ update_channel:
   stable: "Stable"
   pre_release: "Pre-release"
 power_plan_control:
+  executable_path_readd: "This path format may prevent a match. Remove the rule and add it again with the full drive or network path."
   preview: "Preview matches"
   preview_no_winner: "No confirmed match for an enabled rule with a selected plan."
   preview_winner: "First matching rule is %{rule} (%{plan})."

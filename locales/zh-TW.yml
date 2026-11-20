@@ -205,7 +205,7 @@ common:
   executable_files: "執行檔"
   match_by: "比對方式"
   executable_path: "執行檔路徑"
-  executable_path_format_hint: "請瀏覽並選取執行檔，或輸入完整的磁碟機或網路路徑。請勿使用 . 或 .. 路徑區段，名稱結尾也不可有句點或空格。"
+  executable_path_format_hint: "請輸入完整的磁碟機或網路路徑。請勿使用 . 或 .. 路徑區段，名稱結尾也不可有句點或空格。"
   executable_path_check_failed: "無法驗證執行檔路徑。%{error}"
   executable_name: "執行檔名稱"
   any_path: "不限路徑"
@@ -1110,6 +1110,7 @@ update_channel:
   stable: "穩定版"
   pre_release: "預覽版"
 power_plan_control:
+  executable_path_readd: "此路徑格式可能無法比對。請移除此規則，再以完整的磁碟機或網路路徑重新加入。"
   preview: "預覽符合項目"
   preview_no_winner: "未確認有任何已啟用且已選取電源計畫的規則符合條件。"
   preview_winner: "第一個符合的規則為 %{rule}（%{plan}）。"
