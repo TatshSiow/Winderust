@@ -106,22 +106,30 @@ pub(super) fn view<'a>(
         widgets::setting_row(key, widgets::switch(value, Some(action)))
     };
     let number = |key: &str,
-                  value: String,
+                  value: u64,
+                  draft: Option<&str>,
                   range: std::ops::RangeInclusive<u64>,
                   step: u64,
                   unit: &str,
                   action: fn(String) -> Message| {
+        let formatted;
+        let input = if let Some(draft) = draft {
+            draft
+        } else {
+            formatted = value.to_string();
+            &formatted
+        };
         column![
             widgets::setting_title_with_unit(key, unit),
             row![
                 slider(
                     *range.start() as u32..=*range.end() as u32,
-                    value.parse::<u32>().unwrap_or(*range.start() as u32),
+                    value as u32,
                     move |v| action(v.to_string())
                 )
                 .step(step as u32)
                 .width(Fill),
-                widgets::stepper(&value, range, step, Some(action))
+                widgets::stepper(input, range, step, Some(action))
             ]
             .spacing(design::space::SMALL)
             .align_y(iced::Center),
@@ -192,10 +200,8 @@ pub(super) fn view<'a>(
             widgets::settings_card(widgets::settings_rows([
                 number(
                     "by_activity.idle_timeout",
-                    inputs
-                        .idle
-                        .clone()
-                        .unwrap_or_else(|| activity.idle_timeout_seconds.to_string()),
+                    activity.idle_timeout_seconds,
+                    inputs.idle.as_deref(),
                     1..=3600,
                     1,
                     "s",
@@ -203,10 +209,8 @@ pub(super) fn view<'a>(
                 ),
                 number(
                     "by_activity.check_interval",
-                    inputs
-                        .interval
-                        .clone()
-                        .unwrap_or_else(|| settings.general.check_interval_ms.to_string()),
+                    settings.general.check_interval_ms,
+                    inputs.interval.as_deref(),
                     CHECK_INTERVAL_MIN_MS..=CHECK_INTERVAL_MAX_MS,
                     250,
                     "ms",
