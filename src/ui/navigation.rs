@@ -582,6 +582,9 @@ pub(super) fn dashboard_search_pages(query: &str, show_advanced_controls: bool) 
 
     for section in dashboard_sections_in_nav_order(show_advanced_controls) {
         let section_matches = dashboard_page_matches_query(section.landing_page, &query);
+        if section_matches && seen.insert(section.landing_page) {
+            pages.push(section.landing_page);
+        }
 
         for page in section.pages.iter().copied() {
             if page == Page::Home || !seen.insert(page) {

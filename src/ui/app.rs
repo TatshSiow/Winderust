@@ -4191,6 +4191,17 @@ mod tests {
     }
 
     #[test]
+    fn search_returns_matching_section_landing_before_children() {
+        use Page::PowerPlanControl;
+        for scope in [SearchScope(None), SearchScope(Some(PowerPlanControl))] {
+            let pages = navigation_search_choices("restore previous plan", false, scope);
+            assert_eq!(pages.first(), Some(&PowerPlanControl));
+            assert!(pages.contains(&Page::ByFocus));
+            assert!(!pages[1..].contains(&PowerPlanControl));
+        }
+    }
+
+    #[test]
     fn exit_guard_keeps_pending_completions_but_rejects_new_work() {
         assert!(
             Message::Processes(process_list::Message::Loaded(Err("fixture".into())))
