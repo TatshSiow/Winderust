@@ -35,8 +35,9 @@
 ## Features
 
 - Adaptive Engine - automatic background process restraint.
+- Background Efficiency - set power-efficiency preferences by app and window state.
 - Power Plan Control - switch plans by app focus, running apps, CPU load, activity, or time, with optional restoration when no rule selects a plan.
-- Advanced Power Plan Tuning - adjust processor performance, core parking, and thread scheduling policies.
+- Advanced Power Plan Tuning - adjust processor performance, core parking, boost, and thread scheduling policies.
 - CPU Control - CPU Limiter, CPU Sets (Soft), Processor Affinity (Hard), and Cache Domain presets.
 - Priority Control - Process Priority, Thread Priority, Dynamic Priority Boost, I/O Priority, GPU Priority, and Memory Priority.
 - Memory Trim - trim background process working sets.
@@ -47,6 +48,7 @@
 - Instance Limits - monitor process counts and notify when an app exceeds your chosen maximum, without blocking launches.
 - Instance Balancing - distribute whole-core CPU Sets (Soft) preferences across app instances.
 - Process List and Action Log - inspect running processes and export action history to CSV.
+- Win32 Priority Separation - adjust Windows scheduler time slices and foreground boost, with backup and restore.
 - Interrupt Timing - capture DPC and ISR activity and export completed reports to JSON.
 
 ## Getting started

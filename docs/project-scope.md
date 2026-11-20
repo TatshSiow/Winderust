@@ -12,7 +12,8 @@ Process Lasso is a useful comparison point, not the target to clone. Prefer smal
 
 - Power Plan Control through By Focus, By Running App, By CPU Load, By
   Activity, and By Time.
-- Advanced Power Plan Tuning for core parking and processor performance values.
+- Advanced Power Plan Tuning for core parking, processor performance and boost,
+  and long- and short-running thread scheduling policies.
 - Adaptive Engine CPU scheduling for foreground responsiveness and background restraint.
 - Background Efficiency, implemented with Windows EcoQoS at the operating-system
   boundary.
@@ -29,7 +30,11 @@ Process Lasso is a useful comparison point, not the target to clone. Prefer smal
 - Keep Running rules for opt-in automatic relaunch after a manually started app exits.
 - Instance Limits for sampled per-path process counts and excess notifications in
   the current user's Windows session; it does not prevent or stop app instances.
+- Instance Balancing for separate whole-core CPU Sets (Soft) preferences across
+  eligible instances of the same executable in the current Windows user session.
 - Action Log and CSV export.
+- Win32 Priority Separation for Windows scheduler time slices and foreground
+  boost, with backup and restore.
 - Interrupt Timing for read-only DPC and ISR capture with JSON report export.
 - Process List as the main per-process policy surface.
 
