@@ -2871,6 +2871,7 @@ impl WinderustApp {
                     navigation::Event::Select(page),
                 ),
                 (self.navigation.section == Some(page)).then(|| self.navigation_panel(page)),
+                self.navigation.selected.is_some(),
             )
             .map(Message::Navigation);
             if navigation::is_utility(page) {

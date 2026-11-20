@@ -13,11 +13,13 @@ pub(super) fn view<'a>(
     page: Page,
     anchor: Element<'a, Message>,
     panel: Option<Element<'a, Message>>,
+    keyboard: bool,
 ) -> Element<'a, Message> {
     Element::new(Anchor {
         page: Some(page),
         anchor,
         panel,
+        keyboard,
     })
 }
 
@@ -26,6 +28,7 @@ pub(super) fn search(anchor: Element<'_, Message>) -> Element<'_, Message> {
         page: None,
         anchor,
         panel: None,
+        keyboard: false,
     })
 }
 
@@ -33,6 +36,7 @@ struct Anchor<'a> {
     page: Option<Page>,
     anchor: Element<'a, Message>,
     panel: Option<Element<'a, Message>>,
+    keyboard: bool,
 }
 
 #[derive(Default)]
@@ -254,6 +258,7 @@ impl Widget<Message, Theme, Renderer> for Anchor<'_> {
             tree: &mut tree.children[1],
             anchor,
             hovered: &mut tree.state.downcast_mut::<State>().panel_hovered,
+            keyboard: self.keyboard,
         })))
     }
 }
@@ -263,6 +268,7 @@ struct Panel<'a, 'b> {
     tree: &'b mut Tree,
     anchor: Rectangle,
     hovered: &'b mut bool,
+    keyboard: bool,
 }
 
 impl iced::advanced::Overlay<Message, Theme, Renderer> for Panel<'_, '_> {
@@ -315,6 +321,9 @@ impl iced::advanced::Overlay<Message, Theme, Renderer> for Panel<'_, '_> {
         shell: &mut Shell<'_, Message>,
     ) {
         use keyboard::{key::Named, Key};
+        if !self.keyboard && matches!(event, Event::Keyboard(_)) {
+            return;
+        }
         if let Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. }) = event {
             if matches!(
                 key,
@@ -444,6 +453,7 @@ mod tests {
             page,
             navigation::rail_item(page, false, Message::Select(page)),
             None,
+            false,
         );
         let mut tree = Tree::new(&element);
         let bounds = Rectangle::with_size(Size::new(76.0, 400.0));
@@ -500,6 +510,7 @@ mod tests {
                 .on_press(Message::Select(Page::SettingsHome))
                 .into(),
             None,
+            false,
         );
         let mut tree = Tree::new(&element);
         let bounds = Rectangle::with_size(Size::new(500.0, 400.0));
@@ -637,6 +648,7 @@ mod tests {
                                 .style(super::super::widgets::surface),
                             )
                         }),
+                        false,
                     );
                     tree.diff(&element);
                     let node = element
@@ -752,6 +764,7 @@ mod tests {
                         .height(800)
                         .into()
                 }),
+                false,
             )
         };
         let mut closed = make(false);
@@ -817,6 +830,7 @@ mod tests {
             tree: &mut tree,
             hovered: &mut hovered,
             anchor: Rectangle::new(iced::Point::new(6.0, 680.0), Size::new(76.0, 64.0)),
+            keyboard: false,
         };
         let size = Size::new(400.0, 300.0);
         let node = panel.layout(&renderer, size);
@@ -890,22 +904,35 @@ mod tests {
                 .count(),
             2
         );
-        let mut shell = Shell::new(&mut messages);
-        panel.update(
-            &key(keyboard::key::Named::Escape),
-            Layout::new(&node),
-            mouse::Cursor::Unavailable,
-            &renderer,
-            &mut clipboard,
-            &mut shell,
-        );
-        assert!(shell.is_event_captured());
-        assert!(matches!(
-            messages.last(),
-            Some(Message::Key(
-                keyboard::Key::Named(keyboard::key::Named::Escape),
-                false
-            ))
-        ));
+        use keyboard::key::Named;
+        for keyboard in [false, true] {
+            panel.keyboard = keyboard;
+            for named in [
+                Named::Space,
+                Named::Enter,
+                Named::ArrowDown,
+                Named::Tab,
+                Named::Escape,
+            ] {
+                messages.clear();
+                let mut shell = Shell::new(&mut messages);
+                panel.update(
+                    &key(named),
+                    Layout::new(&node),
+                    mouse::Cursor::Unavailable,
+                    &renderer,
+                    &mut clipboard,
+                    &mut shell,
+                );
+                assert_eq!(shell.is_event_captured(), keyboard);
+                if keyboard {
+                    assert!(
+                        matches!(messages.as_slice(), [Message::Key(keyboard::Key::Named(key), false)] if *key == named)
+                    );
+                } else {
+                    assert!(messages.is_empty());
+                }
+            }
+        }
     }
 }
