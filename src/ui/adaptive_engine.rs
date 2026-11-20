@@ -11,6 +11,7 @@ use crate::ui::scrolling::scrollable;
 use iced::widget::{column, row, text};
 use iced::{Element, Fill};
 use rust_i18n::t;
+use std::collections::HashMap;
 #[cfg(feature = "runtime-benchmark")]
 #[path = "runtime_benchmark.rs"]
 pub(crate) mod benchmark;
@@ -55,8 +56,26 @@ pub(super) struct Editor {
     priority_expanded: [[bool; 7]; 2],
     path: String,
     error: String,
-    numbers: std::collections::HashMap<&'static str, String>,
-    invalid_numbers: std::collections::HashMap<&'static str, (u64, u64, &'static str)>,
+    live_numbers: NumberInputs,
+    preset_numbers: NumberInputs,
+}
+#[derive(Default)]
+struct NumberInputs {
+    drafts: HashMap<&'static str, NumberDraft>,
+}
+struct NumberDraft {
+    text: String,
+    invalid: Option<(u64, u64, &'static str)>,
+}
+impl NumberInputs {
+    fn invalid(&self) -> Option<(u64, u64, &'static str)> {
+        self.drafts.values().find_map(|draft| draft.invalid)
+    }
+
+    fn validation_error(&self) -> Option<String> {
+        self.invalid()
+            .map(|(min, max, label)| format!("{}: {min}..{max}", t!(label)))
+    }
 }
 #[derive(Debug, Clone)]
 pub(super) enum Message {
@@ -101,17 +120,14 @@ impl Editor {
     pub(super) fn update(&mut self, s: &mut Settings, m: Message) {
         if matches!(
             m,
-            Message::BuiltIn(_)
-                | Message::ViewBuiltIn(_)
-                | Message::Apply(_)
+            Message::ViewBuiltIn(_)
                 | Message::Edit(_)
                 | Message::New
                 | Message::Cancel
                 | Message::UseCurrent
         ) {
             self.error.clear();
-            self.numbers.clear();
-            self.invalid_numbers.clear();
+            self.preset_numbers.drafts.clear();
         }
         match m {
             Message::TuningTab(tab) => {
@@ -133,6 +149,8 @@ impl Editor {
                 }
             }
             Message::BuiltIn(p) => {
+                self.error.clear();
+                self.live_numbers.drafts.clear();
                 self.selected_preset = BuiltInAdaptiveEnginePreset::ALL
                     .iter()
                     .position(|v| *v == p)
@@ -151,6 +169,8 @@ impl Editor {
             }
             Message::Apply(i) => {
                 if let Some(p) = s.adaptive_engine_presets.get(i).cloned() {
+                    self.error.clear();
+                    self.live_numbers.drafts.clear();
                     self.selected_preset = Some(Choice(i + 4, p.name.clone()));
                     apply_adaptive_engine_preset(s, &p)
                 }
@@ -184,7 +204,7 @@ impl Editor {
                     }
                     let name = self.name.trim();
                     if !self.read_only
-                        && self.invalid_numbers.is_empty()
+                        && self.preset_numbers.invalid().is_none()
                         && !name.is_empty()
                         && !s.adaptive_engine_presets.iter().enumerate().any(|(i, p)| {
                             Some(i) != self.editing && p.name.trim().eq_ignore_ascii_case(name)
@@ -199,6 +219,7 @@ impl Editor {
                             s.adaptive_engine_presets.push(p);
                         }
                         self.draft = None;
+                        self.preset_numbers.drafts.clear();
                     } else {
                         self.error = t!("adaptive_engine.duplicate_preset_name").to_string();
                     }
@@ -209,6 +230,7 @@ impl Editor {
                     s.adaptive_engine_presets.remove(index);
                 }
                 self.draft = None;
+                self.preset_numbers.drafts.clear();
             }
             Message::Cancel => {
                 self.draft = None;
@@ -266,41 +288,45 @@ impl Editor {
                     );
                     return;
                 }
+                let numbers = if self.draft.is_some() {
+                    &mut self.preset_numbers
+                } else {
+                    &mut self.live_numbers
+                };
                 let target = self.draft.as_mut().unwrap_or(s);
                 match edit {
                     Message::Toggle(f, v) => f(target, v),
                     Message::Number(f, v, min, max, key, label) => {
-                        self.numbers.insert(key, v.clone());
-                        if v.parse::<u64>().is_ok_and(|n| (min..=max).contains(&n)) {
-                            self.invalid_numbers.remove(key);
-                        } else {
-                            self.invalid_numbers.insert(key, (min, max, label));
-                        }
-                        if let Ok(n) = v.parse::<u64>() {
-                            if (min..=max).contains(&n) {
-                                let before = target.adaptive_engine.base_processor_policy;
-                                f(target, n);
-                                target.adaptive_engine.base_processor_policy =
-                                    target.adaptive_engine.base_processor_policy.normalized();
-                                let after = target.adaptive_engine.base_processor_policy;
-                                for (field, changed) in [
-                                    (
-                                        stringify!(
-                                            adaptive_engine.base_processor_policy.performance_min
-                                        ),
-                                        before.performance_min != after.performance_min,
+                        let value = v.parse::<u64>().ok().filter(|n| (min..=max).contains(n));
+                        numbers.drafts.insert(
+                            key,
+                            NumberDraft {
+                                text: v,
+                                invalid: value.is_none().then_some((min, max, label)),
+                            },
+                        );
+                        if let Some(n) = value {
+                            let before = target.adaptive_engine.base_processor_policy;
+                            f(target, n);
+                            target.adaptive_engine.base_processor_policy =
+                                target.adaptive_engine.base_processor_policy.normalized();
+                            let after = target.adaptive_engine.base_processor_policy;
+                            for (field, changed) in [
+                                (
+                                    stringify!(
+                                        adaptive_engine.base_processor_policy.performance_min
                                     ),
-                                    (
-                                        stringify!(
-                                            adaptive_engine.base_processor_policy.performance_max
-                                        ),
-                                        before.performance_max != after.performance_max,
+                                    before.performance_min != after.performance_min,
+                                ),
+                                (
+                                    stringify!(
+                                        adaptive_engine.base_processor_policy.performance_max
                                     ),
-                                ] {
-                                    if field != key && changed {
-                                        self.numbers.remove(field);
-                                        self.invalid_numbers.remove(field);
-                                    }
+                                    before.performance_max != after.performance_max,
+                                ),
+                            ] {
+                                if field != key && changed {
+                                    numbers.drafts.remove(field);
                                 }
                             }
                         }
@@ -375,10 +401,7 @@ impl Editor {
     }
 
     pub(super) fn validation_error(&self) -> Option<String> {
-        self.invalid_numbers
-            .values()
-            .next()
-            .map(|(min, max, label)| format!("{}: {min}..{max}", t!(*label)))
+        self.live_numbers.validation_error()
     }
     pub(super) fn has_pending_editor(&self) -> bool {
         self.draft.is_some()
@@ -455,7 +478,7 @@ impl Editor {
                 action_button(t!("common.save").to_string())
                     .style(super::widgets::primary_button)
                     .on_press_maybe(
-                        (!self.name.trim().is_empty() && self.invalid_numbers.is_empty())
+                        (!self.name.trim().is_empty() && self.preset_numbers.invalid().is_none())
                             .then_some(Message::Save),
                     ),
             );
@@ -488,14 +511,25 @@ impl Editor {
         } else {
             live
         };
+        let numbers = if preset {
+            &self.preset_numbers
+        } else {
+            &self.live_numbers
+        };
         let editable = !preset || !self.read_only;
         let mut body = column![].spacing(super::widgets::CARD_GAP);
         macro_rules! number {($key:expr,$min:expr,$max:expr,$($field:ident).+) => {{
             let key=stringify!($($field).+);
-            let value=self.numbers.get(key).cloned().unwrap_or_else(||s.$($field).+.to_string());
+            let formatted;
+            let value = if let Some(draft) = numbers.drafts.get(key) {
+                &draft.text
+            } else {
+                formatted = s.$($field).+.to_string();
+                &formatted
+            };
             let unit=if key.ends_with("_ms") {"ms"} else if key.ends_with("_seconds") {"s"} else if key.ends_with("_percent") || $max==100 {"%"} else {""};
             row![setting_label_with_unit($key, unit).width(Fill),
-                super::widgets::stepper(&value, $min..=$max, 1,
+                super::widgets::stepper(value, $min..=$max, 1,
                     editable.then_some(move|v|Message::Number(|s,n|s.$($field).+ = n as _,v,$min,$max,key,$key)))
             ].spacing(design::space::SMALL).padding([design::space::CONTROL as u16, 0]).align_y(iced::Center)
         }};}
@@ -1981,7 +2015,7 @@ impl Editor {
             ));
         }
 
-        if let Some(error) = self.validation_error() {
+        if let Some(error) = numbers.validation_error() {
             body = body.push(text(error));
         }
         if !preset && !self.error.is_empty() {
@@ -2544,6 +2578,63 @@ mod tests {
         editor.update(&mut settings, Message::RemoveExclusion(0));
         assert!(settings.adaptive_engine_process.custom_rules.is_empty());
     }
+    #[test]
+    fn preset_numbers_are_independent_of_unfinished_live_edits() {
+        let mut settings = Settings::default();
+        let mut editor = Editor::default();
+        let threshold = |text: &str| {
+            Message::Number(
+                |s, value| {
+                    s.adaptive_engine_process
+                        .background_app_cpu_threshold_percent = value as u8
+                },
+                text.into(),
+                1,
+                100,
+                "threshold",
+                "adaptive_engine_process.background_app_cpu_threshold",
+            )
+        };
+        for message in [
+            threshold(""),
+            Message::New,
+            Message::Name("Custom".into()),
+            threshold("35"),
+            Message::Save,
+        ] {
+            editor.update(&mut settings, message);
+        }
+        assert!(editor.draft.is_none());
+        assert!(editor.preset_numbers.drafts.is_empty());
+        assert!(editor.validation_error().is_some());
+        assert_eq!(editor.live_numbers.drafts["threshold"].text, "");
+        assert_eq!(
+            settings
+                .adaptive_engine_process
+                .background_app_cpu_threshold_percent,
+            30
+        );
+        assert_eq!(
+            settings.adaptive_engine_presets[0]
+                .adaptive_engine_process
+                .background_app_cpu_threshold_percent,
+            35
+        );
+
+        for message in [
+            threshold("31"),
+            Message::Edit(0),
+            threshold(""),
+            Message::Delete(0),
+        ] {
+            editor.update(&mut settings, message);
+        }
+        assert!(settings.adaptive_engine_presets.is_empty());
+        assert!(editor.preset_numbers.drafts.is_empty());
+        assert!(editor.validation_error().is_none());
+        assert_eq!(editor.live_numbers.drafts["threshold"].text, "31");
+    }
+
     #[test]
     fn read_only_builtin_and_invalid_numbers_do_not_mutate() {
         let mut settings = Settings::default();
