@@ -831,6 +831,13 @@ impl WinderustApp {
             _ if review_open => Some(Message::PowerTuning(
                 advanced_power_plan_tuning::Message::CancelApply,
             )),
+            Page::ProcessList
+                if key == Key::Named(Named::Escape)
+                    && modifiers.is_empty()
+                    && (self.processes.modal_open() || self.processes.context_open()) =>
+            {
+                Some(Message::Processes(process_list::Message::CloseSelection))
+            }
             Page::ByFocus | Page::ByRunningApp => {
                 self.process_power_plan_preview().map(|(kind, _)| {
                     Message::ProcessPowerPlans(
