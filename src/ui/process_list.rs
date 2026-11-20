@@ -1546,7 +1546,7 @@ impl ProcessList {
             };
             if let Some(position) = self.context {
                 return iced::widget::stack![
-                    body,
+                    super::modal::background(body),
                     responsive(move |_size| {
                         let efficiency = button(
                             row![

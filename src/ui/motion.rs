@@ -347,7 +347,13 @@ impl<M> Widget<M, Theme, Renderer> for Motion<'_, M> {
         if state.animation.is_animating() {
             shell.request_redraw();
         }
-        state.focus.clear_on_pointer(event, shell);
+        let keep_pointer_focus = matches!(&self.action, Some(KeyboardAction::Keys { .. }))
+            && cursor.position().is_some_and(|position| {
+                layout.bounds().contains(position) && viewport.contains(position)
+            });
+        if !keep_pointer_focus {
+            state.focus.clear_on_pointer(event, shell);
+        }
         self.content.as_widget_mut().update(
             &mut tree.children[0],
             event,
