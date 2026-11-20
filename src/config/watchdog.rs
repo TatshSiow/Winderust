@@ -104,9 +104,32 @@ impl WatchdogMemoryUnit {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WatchdogComparison {
+    #[default]
+    AtOrAbove,
+    AtOrBelow,
+}
+
+impl WatchdogComparison {
+    fn is_at_or_above(&self) -> bool {
+        *self == Self::AtOrAbove
+    }
+
+    pub(crate) fn symbol(self) -> &'static str {
+        match self {
+            Self::AtOrAbove => "≥",
+            Self::AtOrBelow => "≤",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WatchdogMonitor {
     pub enabled: bool,
+    #[serde(default, skip_serializing_if = "WatchdogComparison::is_at_or_above")]
+    pub comparison: WatchdogComparison,
     pub warning: WatchdogResponse,
     pub critical: WatchdogResponse,
 }
@@ -115,6 +138,7 @@ impl WatchdogMonitor {
     fn new(enabled: bool) -> Self {
         Self {
             enabled,
+            comparison: WatchdogComparison::default(),
             warning: WatchdogResponse {
                 threshold: 70,
                 action: WatchdogAction::None,
@@ -127,9 +151,14 @@ impl WatchdogMonitor {
     }
 
     fn validate(&self, metric: WatchdogMetric) -> bool {
-        self.warning.threshold > 0
-            && self.warning.threshold < self.critical.threshold
-            && self.critical.threshold <= metric.maximum()
+        let warning = self.warning.threshold;
+        let critical = self.critical.threshold;
+        match self.comparison {
+            WatchdogComparison::AtOrAbove => {
+                0 < warning && warning < critical && critical <= metric.maximum()
+            }
+            WatchdogComparison::AtOrBelow => critical < warning && warning < metric.maximum(),
+        }
     }
 }
 
@@ -214,20 +243,22 @@ impl WatchdogRule {
         }
     }
 
-    pub fn allows_actions(&self) -> bool {
-        self.scope.is_combined() && matches!(self.selector, WatchdogSelector::ExactPath { .. })
+    pub fn allows_actions(&self, resource: WatchdogResource) -> bool {
+        self.scope.is_combined()
+            && matches!(self.selector, WatchdogSelector::ExactPath { .. })
+            && self.monitor(resource).comparison.is_at_or_above()
     }
 
     pub fn validate(&self) -> Result<(), String> {
         self.selector.validate()?;
-        if !self.allows_actions()
-            && [&self.cpu, &self.memory].iter().any(|monitor| {
-                monitor.warning.action != WatchdogAction::None
-                    || monitor.critical.action != WatchdogAction::None
-            })
-        {
+        if WatchdogResource::ALL.into_iter().any(|resource| {
+            let monitor = self.monitor(resource);
+            !self.allows_actions(resource)
+                && (monitor.warning.action != WatchdogAction::None
+                    || monitor.critical.action != WatchdogAction::None)
+        }) {
             return Err(
-                "Watchdog requires Combined scope and an exact executable path for Terminate or Restart.".into(),
+                "Watchdog requires At or above, Combined by path, and an exact executable path for Terminate or Restart.".into(),
             );
         }
         if self
@@ -240,7 +271,7 @@ impl WatchdogRule {
             || (self.cpu.enabled && !self.cpu.validate(WatchdogMetric::CpuPercent))
             || (self.memory.enabled && !self.memory.validate(self.memory_unit.metric()))
         {
-            return Err("Watchdog requires CPU or memory monitoring and thresholds with 0 < warning < critical within each resource's range.".into());
+            return Err("Watchdog requires an enabled monitor and valid thresholds. At or above requires 0 < warning < critical up to the metric maximum. At or below requires critical < warning below the maximum.".into());
         }
         Ok(())
     }
@@ -289,6 +320,7 @@ mod tests {
         let raw = toml::to_string(&rule).unwrap();
         assert!(raw.contains("executable_path = "));
         assert!(!raw.contains("scope = "));
+        assert!(!raw.contains("comparison = "));
         assert!(raw.contains("memory_unit = \"megabytes\""));
         assert_eq!(toml::from_str::<WatchdogRule>(&raw).unwrap(), rule);
         rule.cpu.warning.threshold = 90;
@@ -358,6 +390,31 @@ mod tests {
             invalid.monitor_mut(resource).warning.action = action;
             assert!(invalid.validate().is_err());
         }
+    }
+
+    #[test]
+    fn low_thresholds_round_trip_and_disable_only_their_own_actions() {
+        let mut rule = WatchdogRule::new(r"C:\Apps\worker.exe".into());
+        rule.cpu.comparison = WatchdogComparison::AtOrBelow;
+        rule.cpu.warning.threshold = 99;
+        rule.cpu.critical.threshold = 0;
+        rule.memory.enabled = true;
+        rule.memory.warning.action = WatchdogAction::Restart;
+        assert!(rule.validate().is_ok());
+        let raw = toml::to_string(&rule).unwrap();
+        assert!(raw.contains("comparison = \"at_or_below\""));
+        assert_eq!(toml::from_str::<WatchdogRule>(&raw).unwrap(), rule);
+        assert!(toml::from_str::<WatchdogRule>(&raw.replace("at_or_below", "unknown")).is_err());
+
+        for (warning, critical) in [(100, 0), (0, 0), (50, 50), (50, 90)] {
+            let mut invalid = rule.clone();
+            invalid.cpu.warning.threshold = warning;
+            invalid.cpu.critical.threshold = critical;
+            assert!(invalid.validate().is_err(), "{warning}, {critical}");
+        }
+        rule.cpu.enabled = false;
+        rule.cpu.critical.action = WatchdogAction::Terminate;
+        assert!(rule.validate().is_err());
     }
 
     #[test]

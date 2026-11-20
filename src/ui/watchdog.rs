@@ -2,8 +2,8 @@ use std::{path::Path, sync::Arc};
 
 use super::{app_picker, design, process_rules::MatchBy, widgets};
 use crate::config::{
-    WatchdogAction, WatchdogMemoryUnit, WatchdogMetric, WatchdogResource, WatchdogRule,
-    WatchdogScope, WatchdogSelector, WatchdogSettings, WATCHDOG_DURATION_RANGE,
+    WatchdogAction, WatchdogComparison, WatchdogMemoryUnit, WatchdogMetric, WatchdogResource,
+    WatchdogRule, WatchdogScope, WatchdogSelector, WatchdogSettings, WATCHDOG_DURATION_RANGE,
 };
 use crate::foreground::{executable_path_key, same_executable_path, same_process_name};
 use iced::{
@@ -31,6 +31,15 @@ impl std::fmt::Display for WatchdogAction {
             Self::None => "watchdog.no_action",
             Self::Terminate => "watchdog.terminate",
             Self::Restart => "watchdog.restart",
+        }))
+    }
+}
+
+impl std::fmt::Display for WatchdogComparison {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&t!(match self {
+            Self::AtOrAbove => "watchdog.at_or_above",
+            Self::AtOrBelow => "watchdog.at_or_below",
         }))
     }
 }
@@ -133,6 +142,14 @@ impl Draft {
         rule.validate().ok()?;
         Some(rule)
     }
+
+    fn clear_unavailable_actions(&mut self, resource: WatchdogResource) {
+        if !self.rule.allows_actions(resource) {
+            let monitor = self.rule.monitor_mut(resource);
+            monitor.warning.action = WatchdogAction::None;
+            monitor.critical.action = WatchdogAction::None;
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -153,6 +170,7 @@ pub(super) enum Message {
     MatchPreviewLoaded(Arc<()>, Result<Vec<preview::MatchRow>, String>),
     Scope(WatchdogScope),
     MonitorEnabled(WatchdogResource, bool),
+    Comparison(WatchdogResource, WatchdogComparison),
     MemoryUnit(WatchdogMemoryUnit),
     Duration(String),
     RuleDuration(String),
@@ -304,18 +322,31 @@ impl Editor {
             Message::Scope(scope) => {
                 if let Some(draft) = &mut self.draft {
                     draft.rule.scope = scope;
-                    if !draft.rule.allows_actions() {
-                        for resource in WatchdogResource::ALL {
-                            let monitor = draft.rule.monitor_mut(resource);
-                            monitor.warning.action = WatchdogAction::None;
-                            monitor.critical.action = WatchdogAction::None;
-                        }
+                    for resource in WatchdogResource::ALL {
+                        draft.clear_unavailable_actions(resource);
                     }
                 }
             }
             Message::MonitorEnabled(resource, enabled) => {
                 if let Some(draft) = &mut self.draft {
                     draft.rule.monitor_mut(resource).enabled = enabled;
+                }
+            }
+            Message::Comparison(resource, comparison) => {
+                if let Some(draft) = self
+                    .draft
+                    .as_mut()
+                    .filter(|draft| draft.rule.monitor(resource).comparison != comparison)
+                {
+                    let monitor = draft.rule.monitor_mut(resource);
+                    monitor.comparison = comparison;
+                    std::mem::swap(
+                        &mut monitor.warning.threshold,
+                        &mut monitor.critical.threshold,
+                    );
+                    let raw = &mut draft.monitors[resource as usize];
+                    std::mem::swap(&mut raw.warning, &mut raw.critical);
+                    draft.clear_unavailable_actions(resource);
                 }
             }
             Message::MemoryUnit(unit) => {
@@ -328,6 +359,13 @@ impl Editor {
                                 (1000, 2000)
                             }
                         };
+                        let memory = &mut draft.rule.memory;
+                        let (warning, critical) = match memory.comparison {
+                            WatchdogComparison::AtOrAbove => (warning, critical),
+                            WatchdogComparison::AtOrBelow => (critical, warning),
+                        };
+                        memory.warning.threshold = warning;
+                        memory.critical.threshold = critical;
                         draft.monitors[WatchdogResource::Memory as usize] = ThresholdInputs {
                             warning: warning.to_string(),
                             critical: critical.to_string(),
@@ -360,7 +398,7 @@ impl Editor {
                 if let Some(draft) = self
                     .draft
                     .as_mut()
-                    .filter(|draft| draft.rule.allows_actions())
+                    .filter(|draft| draft.rule.allows_actions(resource))
                 {
                     response(draft.rule.monitor_mut(resource), critical).action = value;
                 }
@@ -407,13 +445,17 @@ impl Editor {
                                     let monitor = rule.monitor(resource);
                                     let warning = monitor.warning.threshold;
                                     let critical = monitor.critical.threshold;
+                                    let comparison = match monitor.comparison {
+                                        WatchdogComparison::AtOrAbove => "",
+                                        WatchdogComparison::AtOrBelow => monitor.comparison.symbol(),
+                                    };
                                     text(if !monitor.enabled {
                                         t!("common.off").to_string()
                                     } else if resource == WatchdogResource::Memory {
                                         let metric = rule.metric(resource);
-                                        format!("{metric}\n{warning} / {critical}")
+                                        format!("{metric}\n{comparison}{warning} / {comparison}{critical}")
                                     } else {
-                                        format!("{warning}% / {critical}%")
+                                        format!("{comparison}{warning}% / {comparison}{critical}%")
                                     })
                                     .size(design::typography::SECONDARY)
                                     .into()
@@ -540,7 +582,10 @@ impl Editor {
             Some(move |enabled| Message::MonitorEnabled(resource, enabled)),
         )]
         .spacing(widgets::CARD_GAP);
-        if resource == WatchdogResource::Memory && monitor.enabled {
+        if !monitor.enabled {
+            return details;
+        }
+        if resource == WatchdogResource::Memory {
             details = details
                 .push(widgets::heading(
                     t!("watchdog.measurement").to_string(),
@@ -549,62 +594,60 @@ impl Editor {
                 .push(widgets::settings_card(widgets::setting_row(
                     "watchdog.memory_metric",
                     widgets::pick_list(
-                        WatchdogMemoryUnit::ALL.to_vec(),
+                        WatchdogMemoryUnit::ALL,
                         Some(rule.memory_unit),
                         Message::MemoryUnit,
                     )
                     .width(180),
                 )));
         }
-        if monitor.enabled {
-            let raw = &draft.monitors[resource as usize];
-            let metric = rule.metric(resource);
-            for (critical, response, threshold) in [
-                (false, &monitor.warning, &raw.warning),
-                (true, &monitor.critical, &raw.critical),
-            ] {
-                let threshold = widgets::setting_row_with_unit(
-                    "watchdog.threshold",
-                    metric.unit(),
-                    widgets::text_input("", threshold)
-                        .on_input(move |value| Message::Threshold(resource, critical, value))
-                        .on_submit(Message::SaveRule)
-                        .width(design::STANDALONE_NUMERIC_WIDTH),
-                )
-                .into();
-                let action = rule.allows_actions().then(|| {
-                    widgets::setting_row(
-                        "watchdog.action",
-                        widgets::pick_list(
-                            vec![
-                                WatchdogAction::None,
-                                WatchdogAction::Terminate,
-                                WatchdogAction::Restart,
-                            ],
-                            Some(response.action),
-                            move |value| Message::Action(resource, critical, value),
-                        )
-                        .width(180),
+        let raw = &draft.monitors[resource as usize];
+        let metric = rule.metric(resource);
+        for (critical, response, threshold) in [
+            (false, &monitor.warning, &raw.warning),
+            (true, &monitor.critical, &raw.critical),
+        ] {
+            let threshold = widgets::setting_row_with_unit(
+                "watchdog.threshold",
+                metric.unit(),
+                widgets::text_input("", threshold)
+                    .on_input(move |value| Message::Threshold(resource, critical, value))
+                    .on_submit(Message::SaveRule)
+                    .width(design::STANDALONE_NUMERIC_WIDTH),
+            )
+            .into();
+            let action = rule.allows_actions(resource).then(|| {
+                widgets::setting_row(
+                    "watchdog.action",
+                    widgets::pick_list(
+                        [
+                            WatchdogAction::None,
+                            WatchdogAction::Terminate,
+                            WatchdogAction::Restart,
+                        ],
+                        Some(response.action),
+                        move |value| Message::Action(resource, critical, value),
                     )
-                    .into()
-                });
-                details = details
-                    .push(widgets::heading(
-                        format!(
-                            "{} · {}",
-                            metric,
-                            t!(if critical {
-                                "watchdog.critical"
-                            } else {
-                                "watchdog.warning"
-                            })
-                        ),
-                        design::typography::BODY,
-                    ))
-                    .push(widgets::settings_card(widgets::settings_rows(
-                        std::iter::once(threshold).chain(action),
-                    )));
-            }
+                    .width(180),
+                )
+                .into()
+            });
+            details = details
+                .push(widgets::heading(
+                    format!(
+                        "{} · {}",
+                        metric,
+                        t!(if critical {
+                            "watchdog.critical"
+                        } else {
+                            "watchdog.warning"
+                        })
+                    ),
+                    design::typography::BODY,
+                ))
+                .push(widgets::settings_card(widgets::settings_rows(
+                    std::iter::once(threshold).chain(action),
+                )));
         }
         details
     }
@@ -717,6 +760,26 @@ impl Editor {
                 (Self::match_preview_details(draft), "watchdog-match-preview")
             }
         };
+        let comparison = match draft.tab {
+            DraftTab::Monitor(resource) if rule.monitor(resource).enabled => Some(
+                row![
+                    widgets::tooltip(
+                        text(t!("watchdog.comparison").to_string()).style(text::secondary),
+                        text(t!("watchdog.comparison_help").to_string()).width(280),
+                        iced::widget::tooltip::Position::Top,
+                    ),
+                    widgets::pick_list(
+                        [WatchdogComparison::AtOrAbove, WatchdogComparison::AtOrBelow],
+                        Some(rule.monitor(resource).comparison),
+                        move |value| Message::Comparison(resource, value),
+                    )
+                    .width(180),
+                ]
+                .spacing(design::space::SMALL)
+                .align_y(iced::Center),
+            ),
+            _ => None,
+        };
         Some(widgets::modal_frame(
             row![
                 widgets::heading(
@@ -755,24 +818,30 @@ impl Editor {
                     )
                     .width(180),
                 )),
-                iced::widget::container(row![
-                    widgets::panel_tab(
-                        t!("watchdog.cpu_tab").to_string(),
-                        draft.tab == DraftTab::Monitor(WatchdogResource::Cpu),
-                        Message::Tab(WatchdogResource::Cpu)
-                    ),
-                    widgets::panel_tab(
-                        t!("watchdog.memory_tab").to_string(),
-                        draft.tab == DraftTab::Monitor(WatchdogResource::Memory),
-                        Message::Tab(WatchdogResource::Memory)
-                    ),
-                    widgets::panel_tab(
-                        t!("watchdog.match_preview").to_string(),
-                        draft.tab == DraftTab::MatchPreview,
-                        Message::PreviewMatches
-                    ),
-                ])
-                .style(widgets::tab_bar),
+                row![
+                    iced::widget::container(row![
+                        widgets::panel_tab(
+                            t!("watchdog.cpu_tab").to_string(),
+                            draft.tab == DraftTab::Monitor(WatchdogResource::Cpu),
+                            Message::Tab(WatchdogResource::Cpu)
+                        ),
+                        widgets::panel_tab(
+                            t!("watchdog.memory_tab").to_string(),
+                            draft.tab == DraftTab::Monitor(WatchdogResource::Memory),
+                            Message::Tab(WatchdogResource::Memory)
+                        ),
+                        widgets::panel_tab(
+                            t!("watchdog.match_preview").to_string(),
+                            draft.tab == DraftTab::MatchPreview,
+                            Message::PreviewMatches
+                        ),
+                    ])
+                    .style(widgets::tab_bar),
+                    iced::widget::Space::new().width(Fill)
+                ]
+                .extend(comparison.map(Into::into))
+                .spacing(design::space::SMALL)
+                .align_y(iced::Center),
                 super::motion::wrap(
                     super::scrolling::scrollable_pane(details)
                         .id(scroll_id)
@@ -897,6 +966,67 @@ mod tests {
             assert_eq!(monitor.warning.action, WatchdogAction::None);
             assert_eq!(monitor.critical.action, WatchdogAction::None);
         }
+    }
+
+    #[test]
+    fn low_usage_comparison_edits_only_its_monitor() {
+        let mut rule = WatchdogRule::new(r"C:\Apps\test.exe".into());
+        rule.memory.enabled = true;
+        rule.cpu.critical.action = WatchdogAction::Restart;
+        rule.memory.warning.action = WatchdogAction::Terminate;
+        let cpu = rule.cpu.clone();
+        let mut settings = WatchdogSettings {
+            rules: vec![rule],
+            ..Default::default()
+        };
+        let saved = settings.clone();
+        let mut editor = Editor::default();
+        let memory = WatchdogResource::Memory;
+        let low = Message::Comparison(memory, WatchdogComparison::AtOrBelow);
+
+        editor.update(&mut settings, Message::Edit(0));
+        editor.update(&mut settings, low.clone());
+        editor.update(&mut settings, Message::CancelRule);
+        assert_eq!(settings, saved);
+
+        editor.update(&mut settings, Message::Edit(0));
+        editor.update(
+            &mut settings,
+            Message::Threshold(memory, false, "60".into()),
+        );
+        editor.update(&mut settings, low);
+        editor.update(
+            &mut settings,
+            Message::Action(memory, true, WatchdogAction::Restart),
+        );
+        editor.update(&mut settings, Message::SaveRule);
+        assert!(!editor.has_pending_editor());
+        let rule = &settings.rules[0];
+        assert_eq!(rule.cpu, cpu);
+        assert_eq!(rule.memory.comparison, WatchdogComparison::AtOrBelow);
+        assert_eq!(rule.memory.warning.threshold, 90);
+        assert_eq!(rule.memory.critical.threshold, 60);
+        assert_eq!(rule.memory.warning.action, WatchdogAction::None);
+        assert_eq!(rule.memory.critical.action, WatchdogAction::None);
+
+        editor.update(&mut settings, Message::Edit(0));
+        editor.update(
+            &mut settings,
+            Message::MemoryUnit(WatchdogMemoryUnit::PrivateCommitMb),
+        );
+        editor.update(&mut settings, Message::MonitorEnabled(memory, false));
+        editor.update(&mut settings, Message::SaveRule);
+        editor.update(&mut settings, Message::Edit(0));
+        editor.update(&mut settings, Message::MonitorEnabled(memory, true));
+        editor.update(&mut settings, Message::SaveRule);
+        assert!(!editor.has_pending_editor());
+        let rule = &settings.rules[0];
+        assert_eq!(rule.cpu, cpu);
+        assert_eq!(rule.memory_unit, WatchdogMemoryUnit::PrivateCommitMb);
+        assert!(rule.memory.enabled);
+        assert_eq!(rule.memory.comparison, WatchdogComparison::AtOrBelow);
+        assert_eq!(rule.memory.warning.threshold, 2000);
+        assert_eq!(rule.memory.critical.threshold, 1000);
     }
 
     #[test]

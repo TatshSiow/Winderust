@@ -258,19 +258,22 @@ hover/press; background shading supplies feedback.
   only on OK. Cancel, Close, and Escape discard.
 - Choose Executable path to use the app picker or Executable name to enter an
   exact filename such as `worker.exe`. Executable name rules send notifications
-  and evaluate each resolved path separately. Terminate and Restart are available
-  for Executable path rules.
+  and evaluate each resolved path separately. Choose Combined by path or Per
+  instance in the rule dialog. Terminate and Restart require an At or above
+  monitor in a Combined by path rule with an executable path.
 - Match Preview reads a fresh process snapshot when opened or refreshed. It
   lists matches by PID and full path, and identifies unavailable instances.
   For an Executable path rule, it also lists same-named executables elsewhere.
 - Each resource tab starts with its Enable CPU Watchdog or Enable Memory Watchdog
-  toggle and reveals thresholds when enabled. For rules with action controls,
-  default to notification only and show the restart rate limit and data-loss
-  consequence inline.
+  toggle. When enabled, the comparison appears by the tabs and the thresholds
+  appear below the toggle. At or below
+  clears the draft actions for that resource and uses notifications. For monitors
+  with action controls, default to notification only and show the restart rate
+  limit and data-loss consequence inline.
   The main page owns the default sustained duration and one notification switch.
-- Explain that each rule aggregates eligible instances of its executable, excluding
-  different child executables. Working Set measures resident memory and may double-count
-  shared pages. Private Commit (MB) measures committed private memory.
+- Explain that the chosen scope evaluates eligible instances at each matching path
+  together or individually. Working Set measures resident memory and may double-count
+  shared pages when combined. Private Commit (MB) measures committed private memory.
   Restart preserves the original user and privileges, supports non-service apps in
   the current session, and launches without previous arguments.
 - Notifications lead with the action result, including cooldown skips, then trigger

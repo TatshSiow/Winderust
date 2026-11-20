@@ -6,8 +6,8 @@ use std::{
 
 use crate::{
     config::{
-        WatchdogAction, WatchdogMetric, WatchdogResource, WatchdogResponse, WatchdogScope,
-        WatchdogSelector, WatchdogSettings,
+        WatchdogAction, WatchdogComparison, WatchdogMetric, WatchdogResource, WatchdogResponse,
+        WatchdogScope, WatchdogSelector, WatchdogSettings,
     },
     cpu::{process_cpu_usage_percent, ProcessCpuSample},
     foreground::{
@@ -34,6 +34,7 @@ pub(crate) struct WatchdogEvent {
     pub targets: Vec<ProcessActionTarget>,
     pub critical: bool,
     pub metric: WatchdogMetric,
+    pub comparison: WatchdogComparison,
     pub value: f64,
     pub response: WatchdogResponse,
     pub notify: bool,
@@ -46,11 +47,30 @@ struct ThresholdState {
 }
 
 impl ThresholdState {
-    fn observe(&mut self, value: f64, threshold: u64, delay: Duration, now: Instant) -> bool {
-        if value < threshold as f64 {
+    fn observe(
+        &mut self,
+        value: f64,
+        threshold: u64,
+        comparison: WatchdogComparison,
+        metric: WatchdogMetric,
+        delay: Duration,
+        now: Instant,
+    ) -> bool {
+        let threshold = threshold as f64;
+        let qualifies = match comparison {
+            WatchdogComparison::AtOrAbove => value >= threshold,
+            WatchdogComparison::AtOrBelow => value <= threshold,
+        };
+        if !qualifies {
             self.since = None;
             // A small recovery margin prevents repeated alerts around the threshold.
-            if value < threshold as f64 * 0.95 {
+            let recovered = match comparison {
+                WatchdogComparison::AtOrAbove => value < threshold * 0.95,
+                WatchdogComparison::AtOrBelow => {
+                    value >= (threshold * 1.05).min(metric.maximum() as f64)
+                }
+            };
+            if recovered {
                 self.fired = false;
             }
             return false;
@@ -283,10 +303,6 @@ impl WatchdogManager {
             snapshot.monitored_processes += matched.len();
             let delay =
                 Duration::from_secs(rule.sustained_seconds.unwrap_or(settings.sustained_seconds));
-            let allows_actions = rule.allows_actions();
-            let responds = |response: &WatchdogResponse| {
-                settings.notify || (allows_actions && response.action != WatchdogAction::None)
-            };
             let mut alerting = false;
             let mut skipped = false;
             for (resource, thresholds) in
@@ -297,6 +313,11 @@ impl WatchdogManager {
                     continue;
                 }
                 let metric = rule.metric(resource);
+                let comparison = monitor.comparison;
+                let allows_actions = rule.allows_actions(resource);
+                let responds = |response: &WatchdogResponse| {
+                    settings.notify || (allows_actions && response.action != WatchdogAction::None)
+                };
                 // Every member needs a valid sample; never evaluate a partial app total.
                 let value = matched.iter().try_fold(0.0, |total, (process, sample)| {
                     metric_value(
@@ -317,13 +338,20 @@ impl WatchdogManager {
                         && thresholds.critical.observe(
                             value,
                             monitor.critical.threshold,
+                            comparison,
+                            metric,
                             delay,
                             now,
                         );
                     let warning = responds(&monitor.warning)
-                        && thresholds
-                            .warning
-                            .observe(value, monitor.warning.threshold, delay, now);
+                        && thresholds.warning.observe(
+                            value,
+                            monitor.warning.threshold,
+                            comparison,
+                            metric,
+                            delay,
+                            now,
+                        );
                     if critical || warning {
                         if critical {
                             thresholds.warning.fired = true;
@@ -360,6 +388,7 @@ impl WatchdogManager {
                             targets,
                             critical,
                             metric,
+                            comparison,
                             value,
                             notify: settings.notify,
                             response: WatchdogResponse {
@@ -548,6 +577,70 @@ mod tests {
         let events = tick(&mut manager, &settings, &process, start, 14, Some(950));
         assert_eq!(events.len(), 1);
         assert!(events[0].critical);
+    }
+
+    #[test]
+    fn low_threshold_qualifies_at_equality_and_rearms_at_the_capped_margin() {
+        let mut threshold = ThresholdState::default();
+        let start = Instant::now();
+        let mut observe = |second, value| {
+            threshold.observe(
+                value,
+                99,
+                WatchdogComparison::AtOrBelow,
+                WatchdogMetric::CpuPercent,
+                Duration::from_secs(1),
+                start + Duration::from_secs(second),
+            )
+        };
+
+        assert!(!observe(0, 99.0));
+        assert!(observe(1, 99.0));
+        assert!(!observe(2, 99.99));
+        assert!(!observe(3, 99.0));
+        assert!(!observe(4, 99.0));
+        assert!(!observe(5, 100.0));
+        assert!(!observe(6, 99.0));
+        assert!(observe(7, 99.0));
+    }
+
+    #[test]
+    fn low_usage_requires_measured_zero_and_never_captures_action_targets() {
+        let mut manager = WatchdogManager::default();
+        let mut settings = settings();
+        let monitor = &mut settings.rules[0].memory;
+        monitor.comparison = WatchdogComparison::AtOrBelow;
+        monitor.warning.threshold = 1;
+        monitor.critical.threshold = 0;
+        // Guard the runtime even if invalid settings bypass config validation.
+        monitor.critical.action = WatchdogAction::Restart;
+        let process = process();
+        let start = Instant::now();
+        let mut observe =
+            |second, memory| tick(&mut manager, &settings, &process, start, second, memory);
+
+        for (second, memory) in [Some(0), None, Some(0), Some(0)].into_iter().enumerate() {
+            assert!(observe(second as u64, memory).is_empty());
+        }
+        let events = observe(4, Some(0));
+        assert_eq!(events.len(), 1);
+        let event = &events[0];
+        assert!(event.critical && event.notify);
+        assert_eq!(event.comparison, WatchdogComparison::AtOrBelow);
+        assert_eq!(event.response.threshold, 0);
+        assert_eq!(event.response.action, WatchdogAction::None);
+        assert!(event.targets.is_empty());
+
+        // Any positive reading rearms a zero threshold, even while warning qualifies.
+        assert!(observe(5, Some(1)).is_empty());
+        assert!(observe(6, Some(0)).is_empty());
+        assert!(observe(7, Some(0)).is_empty());
+        assert_eq!(observe(8, Some(0)).len(), 1);
+
+        settings.notify = false;
+        for second in 9..12 {
+            assert!(tick(&mut manager, &settings, &process, start, second, Some(0)).is_empty());
+        }
     }
 
     #[test]

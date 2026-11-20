@@ -223,6 +223,7 @@ impl RuntimeCore {
             let metric = t!(event.metric.label_key());
             let process_id = event.process_id;
             let value = format!("{:.1}", event.value);
+            let comparison = event.comparison.symbol();
             let detail = match (event.scope, process_id) {
                 (WatchdogScope::PerInstance, Some(pid)) => t!(
                     "watchdog.instance_trigger_detail",
@@ -231,6 +232,7 @@ impl RuntimeCore {
                     pid = pid,
                     metric = metric,
                     value = value,
+                    comparison = comparison,
                     threshold = event.response.threshold
                 ),
                 (WatchdogScope::PerInstance, None) => {
@@ -245,6 +247,7 @@ impl RuntimeCore {
                     count = event.process_count,
                     metric = metric,
                     value = value,
+                    comparison = comparison,
                     threshold = event.response.threshold
                 ),
             }
