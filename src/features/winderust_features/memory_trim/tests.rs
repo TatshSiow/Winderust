@@ -151,6 +151,49 @@ fn automatic_trim_defers_after_failed_attempts_and_rechecks_pressure() {
 }
 
 #[test]
+fn temporary_loss_of_process_metadata_does_not_rearm_memory_trim() {
+    let mut manager = MemoryTrimManager::default();
+    let mut processes = batch_processes(1);
+    let process_id = processes[0].id;
+    let start = Instant::now();
+    let run = |manager: &mut MemoryTrimManager, processes: &[ProcessInfo], elapsed_seconds| {
+        run_batch_pass(
+            manager,
+            processes,
+            MemoryTrimMode::Automatic,
+            BatchTestPlatform {
+                sampled_at: start + Duration::from_secs(elapsed_seconds),
+                fail_before_pid: 0,
+            },
+            90,
+        )
+    };
+
+    assert_eq!(run(&mut manager, &processes, 0).trimmed_processes, 0);
+    assert_eq!(run(&mut manager, &processes, 1).trimmed_processes, 1);
+
+    processes[0].creation_time = None;
+    processes[0].is_critical = None;
+    assert_eq!(run(&mut manager, &processes, 2).candidate_processes, 0);
+    let tracked = &manager.tracked[&process_id];
+    assert!(tracked.trimmed_while_idle);
+    assert!(tracked.previous_cpu_time.is_none());
+    assert!(tracked.idle_since.is_none());
+
+    processes[0].creation_time = Some(1);
+    processes[0].is_critical = Some(false);
+    assert_eq!(run(&mut manager, &processes, 3).trimmed_processes, 0);
+    assert_eq!(run(&mut manager, &processes, 4).trimmed_processes, 0);
+
+    processes[0].creation_time = Some(2);
+    assert_eq!(run(&mut manager, &processes, 5).trimmed_processes, 0);
+    assert_eq!(run(&mut manager, &processes, 6).trimmed_processes, 1);
+
+    run(&mut manager, &[], 7);
+    assert!(manager.tracked.is_empty());
+}
+
+#[test]
 fn exact_automatic_budget_does_not_defer_and_manual_trim_is_uncapped() {
     let mut manager = MemoryTrimManager::default();
     let limit = AUTOMATIC_TRIM_ATTEMPT_LIMIT;

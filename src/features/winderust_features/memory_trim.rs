@@ -275,7 +275,15 @@ impl MemoryTrimManager {
         });
 
         let mut target_processes = BTreeMap::new();
+        let mut observed_tracked_processes = BTreeSet::new();
         for process in processes.iter() {
+            if self.tracked.get(&process.id).is_some_and(|tracked| {
+                process
+                    .creation_time
+                    .is_none_or(|creation_time| creation_time == tracked.creation_time)
+            }) {
+                observed_tracked_processes.insert(process.id);
+            }
             if process.id == 0
                 || process.is_critical != Some(false)
                 || process.id == current_process_id
@@ -312,8 +320,16 @@ impl MemoryTrimManager {
             );
         }
 
-        self.tracked
-            .retain(|process_id, _| target_processes.contains_key(process_id));
+        self.tracked.retain(|process_id, tracked| {
+            if !observed_tracked_processes.contains(process_id) {
+                return false;
+            }
+            if !target_processes.contains_key(process_id) {
+                // A temporary loss of eligibility does not rearm a trimmed idle episode.
+                tracked.break_idle_interval();
+            }
+            true
+        });
         let active_target_names = target_processes
             .values()
             .map(|target| process_failure_key(target.executable_path.to_string_lossy().as_ref()))
