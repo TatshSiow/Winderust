@@ -205,6 +205,8 @@ common:
   executable_files: "執行檔"
   match_by: "比對方式"
   executable_path: "執行檔路徑"
+  executable_path_format_hint: "請瀏覽並選取執行檔，或輸入完整的磁碟機或網路路徑。請勿使用 . 或 .. 路徑區段，名稱結尾也不可有句點或空格。"
+  executable_path_check_failed: "無法驗證執行檔路徑。%{error}"
   executable_name: "執行檔名稱"
   any_path: "不限路徑"
   search_running_apps: "搜尋執行中的應用程式..."

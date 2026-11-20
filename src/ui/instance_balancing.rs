@@ -122,24 +122,22 @@ impl Editor {
                 )
             })
             .collect();
+        let is_path = app_picker::is_path_query(&self.path);
+        let error = is_path
+            .then(|| path_error(settings, &self.path, None))
+            .flatten();
         let mut picker = column![app_picker::view(
             &self.path,
             candidates,
             true,
             Message::Path,
             Message::Browse,
-            path_error(settings, &self.path, None)
-                .is_none()
-                .then_some(Message::Add),
+            (is_path && error.is_none()).then_some(Message::Add),
             |path| path_error(settings, path, None).is_none().then_some(true),
         )]
         .spacing(design::space::SMALL);
-        if !self.path.is_empty() {
-            if let Some(error) = path_error(settings, &self.path, None) {
-                picker = picker
-                    .push(text(t!("instance_balancing.invalid").to_string()).style(text::danger))
-                    .push(text(error).size(design::typography::SECONDARY));
-            }
+        if let Some(error) = error {
+            picker = picker.push(text(error).style(text::danger));
         }
         super::scrolling::scrollable(
             column![
@@ -184,9 +182,7 @@ impl Editor {
         ]
         .spacing(widgets::CARD_GAP);
         if let Some(error) = error {
-            body = body
-                .push(text(t!("instance_balancing.invalid").to_string()).style(text::danger))
-                .push(text(error).size(design::typography::SECONDARY));
+            body = body.push(text(error).style(text::danger));
         }
         Some(widgets::modal_frame(
             row![
@@ -222,14 +218,18 @@ fn path_error(
     if editing.is_some_and(|index| index >= settings.rules.len()) {
         return Some(t!("instance_balancing.invalid").to_string());
     }
-    if let Err(error) = validate_path(path) {
-        return Some(error);
+    if validate_path(path).is_err() {
+        return Some(t!("common.executable_path_format_hint").to_string());
     }
     for (index, rule) in settings.rules.iter().enumerate() {
         if Some(index) != editing {
             match paths_equal(&rule.executable_path, path) {
                 Ok(true) => return Some(t!("instance_balancing.conflict").to_string()),
-                Err(error) => return Some(error),
+                Err(error) => {
+                    return Some(
+                        t!("common.executable_path_check_failed", error = error).to_string(),
+                    )
+                }
                 Ok(false) => {}
             }
         }

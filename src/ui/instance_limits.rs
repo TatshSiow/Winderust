@@ -1,7 +1,7 @@
 use super::{app_picker, design, widgets};
 use crate::{
     config::{InstanceLimitsRule, InstanceLimitsSettings},
-    control::instance_limits::{paths_equal, CountObservation},
+    control::instance_limits::{paths_equal, validate_path, CountObservation},
     features::advanced_controls::instance_limits::{
         InstanceLimitsSnapshot, NotificationStatus, MAX_SAMPLE_AGE,
     },
@@ -237,18 +237,23 @@ impl Editor {
                 )
             })
             .collect();
+        let can_add = Self::can_add(settings, &self.path);
         let mut picker = column![app_picker::view(
             &self.path,
             candidates,
             true,
             Message::Path,
             Message::Browse,
-            Self::can_add(settings, &self.path).then_some(Message::Add),
+            can_add.then_some(Message::Add),
             |path| Self::can_add(settings, path).then_some(true)
         )]
         .spacing(design::space::SMALL);
-        if !self.path.is_empty() {
-            if let Err(error) = InstanceLimitsRule::new(self.path.clone()).validate() {
+        if !can_add && app_picker::is_path_query(&self.path) {
+            if validate_path(&self.path).is_err() {
+                picker = picker.push(
+                    text(t!("common.executable_path_format_hint").to_string()).style(text::danger),
+                );
+            } else if let Err(error) = InstanceLimitsRule::new(self.path.clone()).validate() {
                 picker = picker
                     .push(text(t!("instance_limits.invalid").to_string()).style(text::danger))
                     .push(text(error).size(design::typography::SECONDARY));

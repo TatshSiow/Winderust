@@ -205,6 +205,8 @@ common:
   executable_files: "Executable files"
   match_by: "Match by"
   executable_path: "Executable path"
+  executable_path_format_hint: "Browse for an executable, or enter its full drive or network path without dot segments, trailing dots, or spaces at the end of a name."
+  executable_path_check_failed: "Could not verify the executable path. %{error}"
   executable_name: "Executable name"
   any_path: "Any path"
   search_running_apps: "Search running apps..."

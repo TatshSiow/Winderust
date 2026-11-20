@@ -38,6 +38,10 @@ pub(super) fn load(cached: Vec<Candidate>) -> Result<Vec<Candidate>, String> {
     })
 }
 
+pub(super) fn is_path_query(query: &str) -> bool {
+    query.contains(['\\', '/', ':'])
+}
+
 pub(super) fn view<'a, M: Clone + 'static>(
     query: &str,
     candidates: &'a [Candidate],
