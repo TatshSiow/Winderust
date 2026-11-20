@@ -1728,7 +1728,8 @@ impl WinderustApp {
                 return self.update(Message::WindowClose);
             }
             Message::WindowFocused => {
-                if self.page == Page::PowerPlanControl && !self.hidden {
+                if !self.hidden && page_needs_power_plans(self.page, self.processes.rulesets_open())
+                {
                     return self.load_power_plans();
                 }
             }
@@ -1983,8 +1984,8 @@ impl WinderustApp {
                     ) {
                         if self.power_plans_loading {
                             self.power_plans_reload_pending = true;
-                        } else if self.page == Page::PowerPlanControl
-                            && !self.hidden
+                        } else if !self.hidden
+                            && page_needs_power_plans(self.page, self.processes.rulesets_open())
                             && !self.power_plans.iter().any(|plan| plan.active)
                         {
                             work.push(self.load_power_plans());
@@ -4248,7 +4249,7 @@ mod tests {
     }
 
     #[test]
-    fn process_rulesets_request_power_plans_only_when_visible() {
+    fn power_plan_catalog_is_requested_on_pages_that_use_it() {
         assert!(!page_needs_power_plans(Page::ProcessList, false));
         assert!(page_needs_power_plans(Page::ProcessList, true));
         for process_rulesets_open in [false, true] {
@@ -4256,6 +4257,9 @@ mod tests {
                 Page::PowerPlanControl,
                 process_rulesets_open
             ));
+            for &page in Page::PowerPlanControl.child_pages().unwrap() {
+                assert!(page_needs_power_plans(page, process_rulesets_open));
+            }
             assert!(!page_needs_power_plans(Page::Home, process_rulesets_open));
         }
     }
@@ -4302,7 +4306,7 @@ mod tests {
 
     #[test]
     fn catalog_completion_after_a_runtime_switch_requires_a_fresh_query() {
-        let balanced = crate::power::PowerPlan {
+        let mut balanced = crate::power::PowerPlan {
             guid: "balanced".into(),
             name: "Balanced".into(),
             active: true,
@@ -4310,7 +4314,7 @@ mod tests {
         };
         let mut plans = vec![balanced.clone()];
         let mut reload_pending =
-            sync_active_power_plan(&mut plans, Some("balanced"), Some("ultimate"));
+            sync_active_power_plan(&mut plans, Some("balanced"), Some("adaptive"));
         assert!(!accept_power_plan_catalog(
             &mut plans,
             Ok(vec![balanced.clone()]),
@@ -4320,18 +4324,33 @@ mod tests {
         assert!(!plans[0].active);
         assert!(!reload_pending);
 
-        assert!(
-            accept_power_plan_catalog(&mut plans, Ok(vec![balanced]), &mut reload_pending,)
-                .unwrap()
-        );
-        assert!(plans[0].active);
+        let adaptive = crate::power::PowerPlan {
+            guid: "adaptive".into(),
+            name: "Winderust Adaptive".into(),
+            active: true,
+            managed_adaptive: true,
+        };
+        balanced.active = false;
+        assert!(accept_power_plan_catalog(
+            &mut plans,
+            Ok(vec![balanced, adaptive]),
+            &mut reload_pending,
+        )
+        .unwrap());
+        assert!(!sync_active_power_plan(
+            &mut plans,
+            Some("adaptive"),
+            Some("ADAPTIVE")
+        ));
+        assert!(plans[1].active && plans[1].managed_adaptive);
 
-        reload_pending |= sync_active_power_plan(&mut plans, Some("ultimate"), Some("balanced"));
-        reload_pending |= sync_active_power_plan(&mut plans, Some("balanced"), Some("ultimate"));
+        reload_pending |= sync_active_power_plan(&mut plans, Some("adaptive"), Some("balanced"));
+        reload_pending |= sync_active_power_plan(&mut plans, Some("balanced"), Some("adaptive"));
         assert!(
             !accept_power_plan_catalog(&mut plans, Ok(Vec::new()), &mut reload_pending).unwrap()
         );
-        assert_eq!(plans.len(), 1);
+        assert_eq!(plans.len(), 2);
+        assert!(plans[1].active);
     }
 
     use super::*;
