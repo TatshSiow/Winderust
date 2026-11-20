@@ -1486,12 +1486,12 @@ impl ProcessList {
                     text(t!(warning, name = &stopping.name).to_string()),
                     row![
                         Space::new().width(Fill),
-                        action_button(t!(action).to_string())
-                            .style(super::widgets::danger_button)
-                            .on_press(Message::ConfirmStop),
                         action_button(t!("common.cancel").to_string())
                             .style(crate::ui::widgets::tertiary_button)
                             .on_press(Message::CancelStop),
+                        action_button(t!(action).to_string())
+                            .style(super::widgets::danger_button)
+                            .on_press(Message::ConfirmStop),
                     ]
                     .spacing(design::space::SMALL),
                 ]
@@ -2692,7 +2692,7 @@ mod tests {
                     labels.0
                 );
                 assert!(
-                    labels.0.iter().any(|label| label == action),
+                    labels.0.ends_with(&["Cancel".into(), action.into()]),
                     "{:#?}",
                     labels.0
                 );
