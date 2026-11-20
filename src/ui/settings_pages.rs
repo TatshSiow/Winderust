@@ -76,7 +76,7 @@ pub(super) enum Message {
     EditColor(u32),
     ReplaceColor(u32, u32),
     Accent(u32),
-    SaveColor,
+    AddColor,
     RemoveColor(usize),
     FailureThreshold(String),
     Channel(UpdateChannel),
@@ -276,7 +276,7 @@ impl Editor {
                 s.general.accent.source = AccentColorSource::Custom;
                 self.color = None;
             }
-            Message::SaveColor => {
+            Message::AddColor => {
                 let color = s.general.accent.custom_color;
                 if !self.has_invalid_accent() {
                     s.general
@@ -536,10 +536,10 @@ impl Editor {
                         )
                         .on_input(Message::AccentHex)
                         .width(130),
-                        action_button(t!("common.save").to_string())
-                            .style(widgets::primary_button)
+                        action_button(t!("accent.add_color").to_string())
+                            .style(widgets::secondary_button)
                             .on_press_maybe(
-                                (!self.has_invalid_accent()).then_some(Message::SaveColor)
+                                (!self.has_invalid_accent()).then_some(Message::AddColor)
                             )
                     ]
                     .spacing(design::space::SMALL)
@@ -1267,7 +1267,7 @@ mod tests {
         assert_eq!(settings.general.accent.custom_color, 0x123456);
         assert!(settings.general.accent.custom_colors.is_empty());
         assert!(editor.picker.is_none());
-        editor.update(&mut settings, Message::SaveColor);
+        editor.update(&mut settings, Message::AddColor);
         editor.update(&mut settings, Message::EditColor(0x123456));
         editor.update(&mut settings, Message::ColorPicked(rgb(0xabcdef)));
         assert_eq!(settings.general.accent.custom_color, 0xabcdef);
@@ -1414,7 +1414,7 @@ mod tests {
         let before = s.general.accent.custom_color;
         e.update(&mut s, Message::AccentHex("#xyzxyz".into()));
         assert_eq!(s.general.accent.custom_color, before);
-        e.update(&mut s, Message::SaveColor);
+        e.update(&mut s, Message::AddColor);
         assert!(s.general.accent.custom_colors.is_empty());
         e.update(&mut s, Message::AccentHex("#123456".into()));
         e.update(&mut s, Message::AccentHex(String::new()));
@@ -1425,8 +1425,8 @@ mod tests {
         assert_eq!(s.general.accent.custom_color, 0x123456);
         e.update(&mut s, Message::AccentSource(AccentColorSource::Custom));
         assert_eq!(s.general.accent.custom_color, 0x123456);
-        e.update(&mut s, Message::SaveColor);
-        e.update(&mut s, Message::SaveColor);
+        e.update(&mut s, Message::AddColor);
+        e.update(&mut s, Message::AddColor);
         assert_eq!(s.general.accent.custom_colors, vec![0x123456]);
         s.process_priority.visible_window_priority = ProcessPrioritySetting::Realtime;
         s.thread_priority.visible_window_priority = ProcessThreadPrioritySetting::TimeCritical;

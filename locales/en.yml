@@ -235,6 +235,7 @@ accent:
   source_help: "Use the Windows accent color or choose a custom color."
   windows: "Follow system"
   custom: "Custom"
+  add_color: "Add color"
   custom_colors: "Custom colors"
   color_palette: "Color Palette"
   invalid_hex: "Enter a six-digit hex color for the custom accent, such as #3366FF."

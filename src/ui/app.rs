@@ -4278,7 +4278,7 @@ mod tests {
         for message in [
             Message::Processes(process_list::Message::Refresh),
             Message::Processes(process_list::Message::ConfirmStop),
-            Message::Preferences(settings_pages::Message::SaveColor),
+            Message::Preferences(settings_pages::Message::AddColor),
             Message::Preferences(settings_pages::Message::Check),
             Message::Preferences(settings_pages::Message::ColorPicked(iced::Color::WHITE)),
             Message::Save,

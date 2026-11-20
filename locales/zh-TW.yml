@@ -231,6 +231,7 @@ accent:
   hue: "色相"
   saturation: "飽和度"
   brightness: "明度"
+  add_color: "加入色彩"
   custom_colors: "自訂色彩"
   color_palette: "調色盤"
   source: "強調色"
