@@ -171,6 +171,7 @@ pub(super) enum Message {
         name: String,
         result: Result<(), String>,
         readback: Option<Selection>,
+        detail_action: Option<u64>,
     },
     OpenLocation,
     Properties,
@@ -207,6 +208,8 @@ pub(super) struct ProcessList {
     context: Option<iced::Point>,
     menu_branch: MenuBranch,
     process_tab: ProcessTab,
+    detail_action_id: u64,
+    detail_feedback: Option<Result<String, String>>,
     current_query_id: u64,
     current: Vec<Value>,
     efficiency: Option<bool>,
@@ -244,6 +247,8 @@ impl Default for ProcessList {
             context: None,
             menu_branch: MenuBranch::Closed,
             process_tab: ProcessTab::Immediate,
+            detail_action_id: 0,
+            detail_feedback: None,
             current_query_id: 0,
             current: Vec::new(),
             efficiency: None,
@@ -453,6 +458,7 @@ impl ProcessList {
                 };
                 self.context = None;
                 self.stopping = None;
+                self.reset_detail_feedback();
                 self.current.clear();
                 self.efficiency = None;
                 self.selected = Some(selection.clone());
@@ -477,8 +483,10 @@ impl ProcessList {
                 self.selected = None;
                 self.context = None;
                 self.stopping = None;
+                self.reset_detail_feedback();
             }
             Message::Action(action) => {
+                let detail_action = self.begin_detail_action();
                 if let Some(selection) = &self.selected {
                     let targets = selection.targets();
                     let result = match action {
@@ -492,8 +500,10 @@ impl ProcessList {
                                 .choices(settings.advanced.expose_all_priority_values)
                                 .contains(&value)
                             {
-                                self.error =
-                                    Some(t!("process_list.status_access_denied").to_string());
+                                self.record_action_result(
+                                    Err(t!("process_list.status_access_denied").to_string()),
+                                    detail_action,
+                                );
                                 return Task::none();
                             }
                             match value{Value::Process(v)=>runtime.request_process_priority_action(targets,v),Value::Thread(v)=>runtime.request_thread_priority_action(targets,v),Value::Io(v)=>if let Some(v)=v.priority(){runtime.request_io_priority_action(targets,v)}else{return Task::none()},Value::Gpu(v)=>if let Some(v)=v.priority(){runtime.request_gpu_priority_action(targets,v)}else{return Task::none()},Value::Memory(v)=>if let Some(v)=v.priority(){runtime.request_memory_priority_action(targets,v)}else{return Task::none()},Value::DynamicBoost(v)=>match v{ProcessDynamicPriorityBoostSetting::Enabled=>runtime.request_dynamic_priority_boost_action(targets,crate::control::dynamic_priority_boost::DynamicPriorityBoostState::Enabled),ProcessDynamicPriorityBoostSetting::Disabled=>runtime.request_dynamic_priority_boost_action(targets,crate::control::dynamic_priority_boost::DynamicPriorityBoostState::Disabled),ProcessDynamicPriorityBoostSetting::Default=>return Task::none()}}
@@ -509,13 +519,13 @@ impl ProcessList {
                                         .map_err(|e| e.to_string())?
                                         .into_process_list_result()
                                 },
-                                self.result_message(matches!(
-                                    action,
-                                    Action::Efficiency(_) | Action::Priority(_)
-                                )),
+                                self.result_message(
+                                    matches!(action, Action::Efficiency(_) | Action::Priority(_)),
+                                    detail_action,
+                                ),
                             )
                         }
-                        Err(e) => self.error = Some(e.to_string()),
+                        Err(e) => self.record_action_result(Err(e.to_string()), detail_action),
                     }
                 }
             }
@@ -552,11 +562,12 @@ impl ProcessList {
                 name,
                 result,
                 readback,
+                detail_action,
             } => {
-                self.error = Some(match result {
-                    Ok(()) => t!("process_list.action_completed", name = name).to_string(),
-                    Err(e) => e,
-                });
+                self.record_action_result(
+                    result.map(|()| t!("process_list.action_completed", name = name).to_string()),
+                    detail_action,
+                );
                 if let Some(selection) = self.selected.as_ref().filter(|selection| {
                     readback
                         .as_ref()
@@ -571,18 +582,20 @@ impl ProcessList {
             Message::Properties => {
                 if let Some(selection) = &self.selected {
                     let path = PathBuf::from(&selection.path);
+                    let detail_action = self.begin_detail_action();
                     return background(
                         move || foreground::open_process_properties(&path),
-                        self.result_message(false),
+                        self.result_message(false, detail_action),
                     );
                 }
             }
             Message::OpenLocation => {
                 if let Some(selection) = &self.selected {
                     let path = PathBuf::from(&selection.path);
+                    let detail_action = self.begin_detail_action();
                     return background(
                         move || foreground::open_process_location(&path),
-                        self.result_message(false),
+                        self.result_message(false, detail_action),
                     );
                 }
             }
@@ -663,9 +676,37 @@ impl ProcessList {
             move |result| Message::Current(query_id, result),
         )
     }
+    fn reset_detail_feedback(&mut self) {
+        self.detail_action_id = self.detail_action_id.wrapping_add(1);
+        self.detail_feedback = None;
+    }
+    fn begin_detail_action(&mut self) -> Option<u64> {
+        if self.selected.is_some()
+            && self.context.is_none()
+            && self.process_tab == ProcessTab::Immediate
+        {
+            self.reset_detail_feedback();
+            Some(self.detail_action_id)
+        } else {
+            None
+        }
+    }
+    fn record_action_result(&mut self, result: Result<String, String>, detail_action: Option<u64>) {
+        if self.selected.is_some()
+            && self.context.is_none()
+            && detail_action == Some(self.detail_action_id)
+        {
+            self.detail_feedback = Some(result);
+        } else {
+            self.error = Some(match result {
+                Ok(message) | Err(message) => message,
+            });
+        }
+    }
     fn result_message(
         &self,
         readback: bool,
+        detail_action: Option<u64>,
     ) -> impl Fn(Result<(), String>) -> Message + Send + 'static {
         let name = self
             .selected
@@ -677,6 +718,7 @@ impl ProcessList {
             name: name.clone(),
             result,
             readback: readback.clone(),
+            detail_action,
         }
     }
     fn stop_targets(
@@ -707,6 +749,7 @@ impl ProcessList {
                     name: name.clone(),
                     result,
                     readback: None,
+                    detail_action: None,
                 },
             ),
             Err(e) => {
@@ -1764,6 +1807,45 @@ impl ProcessList {
                         );
                 }
             }
+            let mut tabs = column![container(container(tabs).style(super::widgets::tab_bar))
+                .padding([design::space::SMALL as u16, design::space::LARGE as u16]),];
+            if let Some(feedback) = self
+                .detail_feedback
+                .as_ref()
+                .filter(|_| self.process_tab == ProcessTab::Immediate)
+            {
+                let message = match feedback {
+                    Ok(message) | Err(message) => message,
+                };
+                tabs = tabs.push(
+                    container(
+                        text(message)
+                            .size(design::typography::SECONDARY)
+                            .wrapping(text::Wrapping::WordOrGlyph)
+                            .style(if feedback.is_err() {
+                                text::danger
+                            } else {
+                                text::success
+                            }),
+                    )
+                    .width(Fill)
+                    .padding([design::space::SMALL as u16, design::space::LARGE as u16]),
+                );
+            }
+            let details = column![
+                header,
+                iced::widget::rule::horizontal(1),
+                tabs,
+                scrollable(
+                    container(super::motion::wrap(
+                        pane,
+                        true,
+                        super::motion::Effect::Content(self.process_tab as u64),
+                    ))
+                    .padding(design::space::LARGE as u16),
+                )
+                .height(Fill),
+            ];
             return iced::widget::stack![
                 super::modal::background(body),
                 mouse_area(container(Space::new().width(Fill).height(Fill)).style(|_| {
@@ -1775,26 +1857,12 @@ impl ProcessList {
                 .on_press(Message::CloseSelection)
                 .on_right_press(Message::CloseSelection),
                 container(iced::widget::opaque(
-                    container(column![
-                        header,
-                        iced::widget::rule::horizontal(1),
-                        container(container(tabs).style(super::widgets::tab_bar))
-                            .padding([design::space::SMALL as u16, design::space::LARGE as u16]),
-                        scrollable(
-                            container(super::motion::wrap(
-                                pane,
-                                true,
-                                super::motion::Effect::Content(self.process_tab as u64)
-                            ))
-                            .padding(design::space::LARGE as u16)
-                        )
-                        .height(Fill),
-                    ])
-                    .width(Fill)
-                    .max_width(960)
-                    .height(Fill)
-                    .max_height(680)
-                    .style(super::widgets::surface)
+                    container(details)
+                        .width(Fill)
+                        .max_width(960)
+                        .height(Fill)
+                        .max_height(680)
+                        .style(super::widgets::surface)
                 ))
                 .padding(design::space::MEDIUM as u16)
                 .center_x(Fill)
@@ -2829,13 +2897,40 @@ mod tests {
             }),
             ..Default::default()
         };
-        let complete = list.result_message(true);
+        let complete = list.result_message(true, None);
         list.selected = None;
         assert!(matches!(
             complete(Ok(())),
-            Message::Result { name, result: Ok(()), readback: Some(selection) }
+            Message::Result { name, result: Ok(()), readback: Some(selection), detail_action: None }
             if name == "original.exe" && selection.name == "original.exe"
         ));
+    }
+
+    #[test]
+    fn detail_feedback_is_scoped_to_the_active_attempt() {
+        let mut list = ProcessList {
+            selected: Some(Selection {
+                nested: false,
+                processes: vec![],
+                path: String::new(),
+                name: "app.exe".into(),
+            }),
+            ..Default::default()
+        };
+        let first = list.begin_detail_action().unwrap();
+        list.record_action_result(Err("First failure".into()), Some(first));
+        assert!(list.detail_feedback.is_some());
+        let latest = list.begin_detail_action().unwrap();
+        assert!(list.detail_feedback.is_none());
+        list.record_action_result(Ok("Latest success".into()), Some(latest));
+        list.record_action_result(Err("Delayed failure".into()), Some(first));
+        assert_eq!(list.detail_feedback, Some(Ok("Latest success".into())));
+        assert_eq!(list.error.as_deref(), Some("Delayed failure"));
+
+        list.context = Some(iced::Point::ORIGIN);
+        assert_eq!(list.begin_detail_action(), None);
+        list.record_action_result(Err("Context failure".into()), None);
+        assert_eq!(list.error.as_deref(), Some("Context failure"));
     }
 
     #[test]
