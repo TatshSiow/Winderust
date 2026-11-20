@@ -144,6 +144,25 @@ Windows accounting, and per-processor busy time does not identify target residen
 The report also retains initial process priority and Power Throttling masks
 through the existing read-only adapters; it never changes them.
 
+## PStack verification
+
+Apply the [PStack verification workflow](https://github.com/cursor/plugins/blob/main/pstack/docs/guide/06-verify-and-ship.md)
+to each change. Define the observable outcome and its failure case before editing.
+Run the smallest reproducible check at the boundary where a user would encounter
+the change. Run the required repository checks as well.
+
+- For UI changes, drive the affected workflow in the current Windows build and
+  inspect the result. Use the render harness for layout and theme evidence, and
+  native input for keyboard, DPI, IME, tray, and accessibility claims. Check both
+  locales and relevant window sizes. Shared controls need coverage at their
+  affected entry points, including cancellation and disabled or unavailable states.
+- For Windows state changes, use an isolated fixture. Read back the actual effect
+  and verify restoration at the Windows boundary. Check settings persistence from
+  the isolated executable's settings file when the workflow saves changes.
+- Keep evidence under ignored `target/` paths. Report the build or commit checked,
+  observed results, and any unverified paths. Keep repeatable checks in the existing
+  harness when they catch a regression the current checks miss.
+
 ## Rendering and performance
 
 - `src/ui/scrolling.rs` owns scroll construction, virtual-list buffering, table surfaces, and card repaint grouping. Route application scroll areas through it.

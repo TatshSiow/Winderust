@@ -25,6 +25,19 @@ Winderust is an operational Windows power and process-control utility. The UI sh
 
 Prefer visible state, compact controls, and predictable rows. Use restrained accent-derived chrome, light/dark finely outlined panels, and more panel spacing; preserve dense operational tables.
 
+- Keep the workflow predictable. Home shows current conditions, feature pages edit
+  rules, the side panel explains status and options, and Action Log records outcomes.
+- Make settings easy to discover through navigation and search. Put common actions
+  first and reveal advanced options where users need them. Keep essential consequences
+  beside the control and longer explanations in Info.
+- Distinguish a switch's configured state, an unsaved edit, and the last verified
+  result from Windows. Use the shared Save and Discard flow for settings changes.
+- Make core tasks keyboard-operable with visible focus and predictable focus return.
+  Give controls meaningful Windows UI Automation names and states. Use at least
+  4.5:1 contrast for normal text across supported themes and accent choices. Use
+  labels alongside color for status and selection. Follow the
+  [Windows accessibility checklist](https://learn.microsoft.com/en-us/windows/apps/design/accessibility/accessibility-checklist).
+
 ## App Shell
 
 - Use a compact themed title bar with the app icon/name and minimize, maximize/restore, and close controls. Follow the active Light, Dark, AMOLED, and accent palette; disable native title-bar decorations. Keep the left navigation and right work area beneath the title bar.
@@ -383,8 +396,10 @@ collapsed/expanded groups, live/editable/read-only presets, Info tabs, flyouts, 
 search. Check header controls independently from expansion; each must retain its own
 hit target. Preserve live/preset navigation and collapse-state isolation.
 
-Review the captures and exercise native interactions. Capture counts and passing Rust
-tests establish coverage, not visual or behavioral equivalence with historical UI.
+Follow the [PStack verification workflow](development.md#pstack-verification) for
+changed workflows. Review the captures and check the relevant Windows interactions
+at the supported window sizes and display scaling. Check keyboard access, readable
+focus and contrast, and accessible names where a change affects shared controls.
 Do not recreate unmapped historical features or infer telemetry/performance promises
 from a reference image. Completed port audits and their old findings remain in Git
 history rather than defining current behavior.
