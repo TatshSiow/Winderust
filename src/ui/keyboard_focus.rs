@@ -1,5 +1,139 @@
-use iced::advanced::{renderer, widget::operation::Focusable, Renderer as _, Shell};
-use iced::{keyboard, mouse, touch, Event, Rectangle, Renderer, Theme};
+use iced::advanced::{
+    renderer,
+    widget::{operation, operation::Focusable, Id, Operation},
+    Renderer as _, Shell,
+};
+use iced::{keyboard, mouse, touch, Event, Rectangle, Renderer, Theme, Vector};
+
+pub(super) fn move_focus<M: Send + 'static>(forward: bool) -> iced::Task<M> {
+    let focus = if forward {
+        iced::widget::operation::focus_next()
+    } else {
+        iced::widget::operation::focus_previous()
+    };
+    focus.chain(iced::advanced::widget::operate(Reveal::default()))
+}
+
+#[derive(Clone, Copy)]
+struct Scroll {
+    ordinal: usize,
+    bounds: Rectangle,
+    content: Rectangle,
+    translation: Vector,
+}
+
+#[derive(Default)]
+struct Reveal {
+    ordinal: usize,
+    pending: Option<Scroll>,
+    ancestors: Vec<Scroll>,
+    changes: Vec<(usize, Vector)>,
+    apply: bool,
+}
+
+impl<T: Send + 'static> Operation<T> for Reveal {
+    fn traverse(&mut self, visit: &mut dyn FnMut(&mut dyn Operation<T>)) {
+        // Native Scrollable registers itself immediately before traversing its content.
+        let entered = self.pending.take();
+        if let Some(scroll) = entered {
+            self.ancestors.push(scroll);
+        }
+        visit(self);
+        if entered.is_some() {
+            self.ancestors.pop();
+        }
+    }
+
+    fn scrollable(
+        &mut self,
+        _: Option<&Id>,
+        bounds: Rectangle,
+        content: Rectangle,
+        translation: Vector,
+        state: &mut dyn operation::Scrollable,
+    ) {
+        let ordinal = self.ordinal;
+        self.ordinal += 1;
+        if self.apply {
+            if let Some((_, delta)) = self.changes.iter().find(|(index, _)| *index == ordinal) {
+                state.scroll_by(
+                    operation::scrollable::AbsoluteOffset {
+                        x: delta.x,
+                        y: delta.y,
+                    },
+                    bounds,
+                    content,
+                );
+            }
+        } else {
+            self.pending = Some(Scroll {
+                ordinal,
+                bounds,
+                content,
+                translation,
+            });
+        }
+    }
+
+    fn focusable(&mut self, _: Option<&Id>, mut target: Rectangle, state: &mut dyn Focusable) {
+        if self.apply || !state.is_focused() {
+            return;
+        }
+        for scroll in self.ancestors.iter().rev() {
+            target.x -= scroll.translation.x;
+            target.y -= scroll.translation.y;
+            let delta = Vector::new(
+                reveal_axis(
+                    target.x,
+                    target.width,
+                    scroll.bounds.x,
+                    scroll.bounds.width,
+                    scroll.translation.x,
+                    scroll.content.width,
+                ),
+                reveal_axis(
+                    target.y,
+                    target.height,
+                    scroll.bounds.y,
+                    scroll.bounds.height,
+                    scroll.translation.y,
+                    scroll.content.height,
+                ),
+            );
+            if delta != Vector::ZERO {
+                self.changes.push((scroll.ordinal, delta));
+            }
+            target.x -= delta.x;
+            target.y -= delta.y;
+        }
+    }
+
+    fn finish(&self) -> operation::Outcome<T> {
+        if self.apply || self.changes.is_empty() {
+            operation::Outcome::None
+        } else {
+            operation::Outcome::Chain(Box::new(Self {
+                changes: self.changes.clone(),
+                apply: true,
+                ..Self::default()
+            }))
+        }
+    }
+}
+
+fn reveal_axis(
+    start: f32,
+    size: f32,
+    viewport: f32,
+    visible: f32,
+    offset: f32,
+    content: f32,
+) -> f32 {
+    let delta = (start + size - viewport - visible)
+        .max(0.0)
+        .min(start - viewport);
+    (offset + delta).clamp(0.0, (content - visible).max(0.0)) - offset
+}
 
 #[derive(Default)]
 pub(super) struct Focus(bool);
@@ -73,6 +207,150 @@ mod tests {
     use crate::ui::{design, widgets};
     use iced::advanced::{layout, widget::Tree, Layout};
     use iced::{Element, Size};
+
+    #[test]
+    fn tab_focus_reveals_nested_controls_without_scrolling_siblings() {
+        #[derive(Default)]
+        struct Snapshot {
+            count: usize,
+            focused: Option<(usize, Rectangle)>,
+            scrolls: Vec<(Rectangle, Vector)>,
+        }
+        impl Operation for Snapshot {
+            fn traverse(&mut self, visit: &mut dyn FnMut(&mut dyn Operation)) {
+                visit(self);
+            }
+            fn focusable(&mut self, _: Option<&Id>, bounds: Rectangle, state: &mut dyn Focusable) {
+                if state.is_focused() {
+                    self.focused = Some((self.count, bounds));
+                }
+                self.count += 1;
+            }
+            fn scrollable(
+                &mut self,
+                id: Option<&Id>,
+                bounds: Rectangle,
+                _: Rectangle,
+                translation: Vector,
+                _: &mut dyn operation::Scrollable,
+            ) {
+                assert!(id.is_none(), "reveal must work without widget IDs");
+                self.scrolls.push((bounds, translation));
+            }
+        }
+        fn run(
+            view: &mut Element<'_, ()>,
+            tree: &mut Tree,
+            node: &layout::Node,
+            renderer: &Renderer,
+            mut operation: Box<dyn Operation>,
+        ) {
+            loop {
+                view.as_widget_mut()
+                    .operate(tree, Layout::new(node), renderer, operation.as_mut());
+                match operation.finish() {
+                    operation::Outcome::Chain(next) => operation = next,
+                    _ => break,
+                }
+            }
+        }
+        fn snapshot(
+            view: &mut Element<'_, ()>,
+            tree: &mut Tree,
+            node: &layout::Node,
+            renderer: &Renderer,
+        ) -> Snapshot {
+            let mut snapshot = Snapshot::default();
+            view.as_widget_mut()
+                .operate(tree, Layout::new(node), renderer, &mut snapshot);
+            snapshot
+        }
+
+        let renderer = Renderer::new(design::typography::FONT, iced::Pixels(14.0));
+        let size = Size::new(360.0, 180.0);
+        for pane in [false, true] {
+            let inner = iced::widget::column![
+                widgets::action_button("First action").on_press(()),
+                iced::widget::Space::new().height(400),
+                widgets::action_button("Last action").on_press(()),
+            ]
+            .spacing(8);
+            let inner = if pane {
+                crate::ui::scrolling::scrollable_pane(inner)
+            } else {
+                crate::ui::scrolling::scrollable(inner)
+            }
+            .height(120);
+            let sibling = crate::ui::scrolling::scrollable(iced::widget::column![
+                iced::widget::Space::new().height(400),
+                widgets::action_button("Sibling action").on_press(()),
+            ])
+            .width(180)
+            .height(iced::Fill);
+            let parent = crate::ui::scrolling::scrollable(iced::widget::column![
+                iced::widget::Space::new().height(300),
+                inner,
+                iced::widget::Space::new().height(100),
+            ])
+            .width(180)
+            .height(iced::Fill);
+            let mut view: Element<'_, ()> = iced::widget::row![sibling, parent].into();
+            let mut tree = Tree::new(&view);
+            let node = view.as_widget_mut().layout(
+                &mut tree,
+                &renderer,
+                &layout::Limits::new(Size::ZERO, size),
+            );
+            for (forward, index) in [(true, 0), (true, 1), (true, 2), (false, 1), (false, 0)] {
+                let focus: Box<dyn Operation> = if forward {
+                    Box::new(operation::focusable::focus_next::<()>())
+                } else {
+                    Box::new(operation::focusable::focus_previous::<()>())
+                };
+                run(&mut view, &mut tree, &node, &renderer, focus);
+                let before = snapshot(&mut view, &mut tree, &node, &renderer);
+                run(
+                    &mut view,
+                    &mut tree,
+                    &node,
+                    &renderer,
+                    Box::new(Reveal::default()),
+                );
+                let after = snapshot(&mut view, &mut tree, &node, &renderer);
+                assert_eq!(after.count, 3);
+                let (focused, mut target) = after.focused.unwrap();
+                assert_eq!(focused, index);
+                let viewport = if index == 0 {
+                    assert_eq!(after.scrolls[1..], before.scrolls[1..]);
+                    target.y -= after.scrolls[0].1.y;
+                    after.scrolls[0].0
+                } else {
+                    assert_eq!(after.scrolls[0], before.scrolls[0]);
+                    let (outer, offset) = after.scrolls[1];
+                    let (mut inner, inner_offset) = after.scrolls[2];
+                    inner.y -= offset.y;
+                    target.y -= offset.y + inner_offset.y;
+                    outer.intersection(&inner).unwrap()
+                };
+                assert!(target.y >= viewport.y, "{target:?} above {viewport:?}");
+                assert!(
+                    target.y + target.height <= viewport.y + viewport.height,
+                    "{target:?} below {viewport:?}"
+                );
+                run(
+                    &mut view,
+                    &mut tree,
+                    &node,
+                    &renderer,
+                    Box::new(Reveal::default()),
+                );
+                assert_eq!(
+                    snapshot(&mut view, &mut tree, &node, &renderer).scrolls,
+                    after.scrolls
+                );
+            }
+        }
+    }
 
     #[test]
     fn enabled_action_controls_take_one_tab_stop_and_activate_once() {

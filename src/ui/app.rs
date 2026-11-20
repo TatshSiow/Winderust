@@ -777,13 +777,7 @@ impl WinderustApp {
         let tab = status == iced::event::Status::Ignored
             && key == Key::Named(Named::Tab)
             && (modifiers.is_empty() || modifiers == iced::keyboard::Modifiers::SHIFT);
-        let move_focus = || {
-            if modifiers.shift() {
-                iced::widget::operation::focus_previous()
-            } else {
-                iced::widget::operation::focus_next()
-            }
-        };
+        let move_focus = || super::keyboard_focus::move_focus(!modifiers.shift());
         if !review_open
             && (self.closing || self.preferences.show_update || !self.error_message.is_empty())
         {
@@ -960,11 +954,7 @@ impl WinderustApp {
                     if tabbing
                         && ((forward && index + 1 == pages.len()) || (!forward && index == 0))
                     {
-                        return if forward {
-                            iced::widget::operation::focus_next()
-                        } else {
-                            iced::widget::operation::focus_previous()
-                        };
+                        return super::keyboard_focus::move_focus(forward);
                     }
                     let index = if forward {
                         (index + 1) % pages.len()
