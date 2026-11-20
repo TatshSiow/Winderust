@@ -240,15 +240,14 @@ impl<M> Widget<M, Theme, Renderer> for Motion<'_, M> {
             } else {
                 iced::widget::checkbox::Status::Disabled { is_checked: true }
             };
-            let color = super::widgets::checkbox_style(theme, status)
-                .icon_color
-                .scale_alpha(progress);
+            let color = super::widgets::checkbox_style(theme, status).icon_color;
             let inset = 2.0;
             renderer.draw_svg(
                 iced::advanced::svg::Svg::new(
                     super::assets::iced_icon("icons/check.svg").expect("Check icon is bundled"),
                 )
-                .color(color),
+                .color(iced::Color { a: 1.0, ..color })
+                .opacity(color.a * progress),
                 Rectangle {
                     x: checkbox.x + inset,
                     y: checkbox.y + inset,
@@ -484,7 +483,7 @@ mod tests {
             &renderer,
             &layout::Limits::new(Size::ZERO, Size::new(100.0, 40.0)),
         );
-        let mut alphas = Vec::new();
+        let mut opacities = Vec::new();
         for elapsed in [0, 60, 300] {
             if elapsed > 0 {
                 tree.state
@@ -502,22 +501,22 @@ mod tests {
                 mouse::Cursor::Unavailable,
                 &Rectangle::with_size(Size::new(100.0, 40.0)),
             );
-            let alpha = renderer
+            let opacity = renderer
                 .layers()
                 .iter()
                 .flat_map(|layer| &layer.images)
                 .find_map(|image| {
                     if let iced::advanced::graphics::Image::Vector { svg, .. } = image {
-                        svg.color.map(|color| color.a)
+                        Some(svg.opacity)
                     } else {
                         None
                     }
                 })
                 .unwrap();
-            alphas.push(alpha);
+            opacities.push(opacity);
         }
-        assert_eq!(alphas[0], 0.0);
-        assert!(alphas[0] < alphas[1] && alphas[1] < alphas[2]);
+        assert_eq!(opacities[0], 0.0);
+        assert!(opacities[0] < opacities[1] && opacities[1] < opacities[2]);
     }
     #[test]
     fn transition_retargets_without_jumping_and_can_settle_immediately() {
