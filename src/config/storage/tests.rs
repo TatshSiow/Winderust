@@ -207,6 +207,7 @@ fn watchdog_settings_persist_optional_durations_and_reject_invalid_rules() {
 
     let path = std::env::temp_dir().join(format!("winderust-watchdog-{}.toml", std::process::id()));
     settings.watchdog.rules[0].memory_unit = crate::config::WatchdogMemoryUnit::PrivateCommitMb;
+    settings.watchdog.rules[0].scope = crate::config::WatchdogScope::PerInstance;
     for duration in [Some(1), Some(3600), None] {
         settings.watchdog.rules[0].sustained_seconds = duration;
         settings.sync_shared_settings_to_battery();
@@ -225,10 +226,16 @@ fn watchdog_settings_persist_optional_durations_and_reject_invalid_rules() {
     let raw = toml::to_string(&settings).unwrap();
     assert!(parse_toml_settings(&path, &raw).is_err());
     assert!(write_toml_settings(&path, &settings).is_err());
-    assert_eq!(
-        load_from_path(&path).unwrap().watchdog.rules[0].sustained_seconds,
-        None
-    );
+    settings.watchdog.rules[1].cpu.critical.action = crate::config::WatchdogAction::None;
+    let saved = load_from_path(&path).unwrap();
+    settings.sync_shared_settings_to_battery();
+    assert_eq!(saved, settings);
+    settings.watchdog.rules[0].memory.critical.action = crate::config::WatchdogAction::Terminate;
+    settings.sync_shared_settings_to_battery();
+    let raw = toml::to_string(&settings).unwrap();
+    assert!(parse_toml_settings(&path, &raw).is_err());
+    assert!(write_toml_settings(&path, &settings).is_err());
+    assert_eq!(load_from_path(&path).unwrap(), saved);
     fs::remove_file(path).unwrap();
 }
 

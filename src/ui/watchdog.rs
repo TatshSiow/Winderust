@@ -3,7 +3,7 @@ use std::{path::Path, sync::Arc};
 use super::{app_picker, design, process_rules::MatchBy, widgets};
 use crate::config::{
     WatchdogAction, WatchdogMemoryUnit, WatchdogMetric, WatchdogResource, WatchdogRule,
-    WatchdogSelector, WatchdogSettings, WATCHDOG_DURATION_RANGE,
+    WatchdogScope, WatchdogSelector, WatchdogSettings, WATCHDOG_DURATION_RANGE,
 };
 use crate::foreground::{executable_path_key, same_executable_path, same_process_name};
 use iced::{
@@ -31,6 +31,15 @@ impl std::fmt::Display for WatchdogAction {
             Self::None => "watchdog.no_action",
             Self::Terminate => "watchdog.terminate",
             Self::Restart => "watchdog.restart",
+        }))
+    }
+}
+
+impl std::fmt::Display for WatchdogScope {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&t!(match self {
+            Self::Combined => "watchdog.scope_combined",
+            Self::PerInstance => "watchdog.scope_per_instance",
         }))
     }
 }
@@ -142,6 +151,7 @@ pub(super) enum Message {
     Tab(WatchdogResource),
     PreviewMatches,
     MatchPreviewLoaded(Arc<()>, Result<Vec<preview::MatchRow>, String>),
+    Scope(WatchdogScope),
     MonitorEnabled(WatchdogResource, bool),
     MemoryUnit(WatchdogMemoryUnit),
     Duration(String),
@@ -291,6 +301,18 @@ impl Editor {
                     rule.enabled = value;
                 }
             }
+            Message::Scope(scope) => {
+                if let Some(draft) = &mut self.draft {
+                    draft.rule.scope = scope;
+                    if !draft.rule.allows_actions() {
+                        for resource in WatchdogResource::ALL {
+                            let monitor = draft.rule.monitor_mut(resource);
+                            monitor.warning.action = WatchdogAction::None;
+                            monitor.critical.action = WatchdogAction::None;
+                        }
+                    }
+                }
+            }
             Message::MonitorEnabled(resource, enabled) => {
                 if let Some(draft) = &mut self.draft {
                     draft.rule.monitor_mut(resource).enabled = enabled;
@@ -338,7 +360,7 @@ impl Editor {
                 if let Some(draft) = self
                     .draft
                     .as_mut()
-                    .filter(|draft| draft.rule.selector.allows_actions())
+                    .filter(|draft| draft.rule.allows_actions())
                 {
                     response(draft.rule.monitor_mut(resource), critical).action = value;
                 }
@@ -364,6 +386,10 @@ impl Editor {
                 let target = match &rule.selector {
                     WatchdogSelector::ExactPath { executable_path } => executable_path.clone(),
                     WatchdogSelector::ExactName { .. } => t!("common.any_path").to_string(),
+                };
+                let target = match rule.scope {
+                    WatchdogScope::Combined => target,
+                    WatchdogScope::PerInstance => format!("{} · {target}", rule.scope),
                 };
                 (
                     widgets::stable_key(&format!("{index}:{value}")),
@@ -546,7 +572,7 @@ impl Editor {
                         .width(design::STANDALONE_NUMERIC_WIDTH),
                 )
                 .into();
-                let action = rule.selector.allows_actions().then(|| {
+                let action = rule.allows_actions().then(|| {
                     widgets::setting_row(
                         "watchdog.action",
                         widgets::pick_list(
@@ -720,6 +746,15 @@ impl Editor {
                 ]
                 .spacing(design::space::MEDIUM)
                 .align_y(iced::Center),
+                widgets::settings_card(widgets::setting_row(
+                    "watchdog.scope",
+                    widgets::pick_list(
+                        [WatchdogScope::Combined, WatchdogScope::PerInstance],
+                        Some(rule.scope),
+                        Message::Scope,
+                    )
+                    .width(180),
+                )),
                 iced::widget::container(row![
                     widgets::panel_tab(
                         t!("watchdog.cpu_tab").to_string(),
@@ -825,6 +860,43 @@ mod tests {
         editor.update(&mut settings, Message::Add);
         editor.update(&mut settings, Message::SaveRule);
         assert_eq!(settings.rules[1], WatchdogRule::new(path.into()));
+    }
+
+    #[test]
+    fn per_instance_scope_clears_draft_actions_and_rejects_action_messages() {
+        let mut rule = WatchdogRule::new(r"C:\Apps\worker.exe".into());
+        for resource in WatchdogResource::ALL {
+            let monitor = rule.monitor_mut(resource);
+            monitor.warning.action = WatchdogAction::Terminate;
+            monitor.critical.action = WatchdogAction::Restart;
+        }
+        let mut settings = WatchdogSettings {
+            rules: vec![rule.clone()],
+            ..Default::default()
+        };
+        let mut editor = Editor::default();
+        editor.update(&mut settings, Message::Edit(0));
+        editor.update(&mut settings, Message::Scope(WatchdogScope::PerInstance));
+        assert_eq!(settings.rules[0], rule);
+
+        editor.update(&mut settings, Message::CancelRule);
+        assert_eq!(settings.rules[0], rule);
+        editor.update(&mut settings, Message::Edit(0));
+        editor.update(&mut settings, Message::Scope(WatchdogScope::PerInstance));
+        for resource in WatchdogResource::ALL {
+            editor.update(
+                &mut settings,
+                Message::Action(resource, true, WatchdogAction::Restart),
+            );
+        }
+        editor.update(&mut settings, Message::SaveRule);
+        assert!(!editor.has_pending_editor());
+        assert_eq!(settings.rules[0].scope, WatchdogScope::PerInstance);
+        for resource in WatchdogResource::ALL {
+            let monitor = settings.rules[0].monitor(resource);
+            assert_eq!(monitor.warning.action, WatchdogAction::None);
+            assert_eq!(monitor.critical.action, WatchdogAction::None);
+        }
     }
 
     #[test]

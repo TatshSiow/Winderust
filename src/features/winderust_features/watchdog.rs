@@ -6,8 +6,8 @@ use std::{
 
 use crate::{
     config::{
-        WatchdogAction, WatchdogMetric, WatchdogResource, WatchdogResponse, WatchdogSelector,
-        WatchdogSettings,
+        WatchdogAction, WatchdogMetric, WatchdogResource, WatchdogResponse, WatchdogScope,
+        WatchdogSelector, WatchdogSettings,
     },
     cpu::{process_cpu_usage_percent, ProcessCpuSample},
     foreground::{
@@ -30,6 +30,7 @@ pub(crate) struct WatchdogEvent {
     pub name: String,
     pub process_count: usize,
     pub process_id: Option<u32>,
+    pub scope: WatchdogScope,
     pub targets: Vec<ProcessActionTarget>,
     pub critical: bool,
     pub metric: WatchdogMetric,
@@ -70,9 +71,13 @@ struct ResourceState {
     critical: ThresholdState,
 }
 
+type ProcessIdentity = (u32, u64);
+type GroupKey<'a> = (Option<ProcessIdentity>, &'a Path);
+type StateKey = (usize, Option<ProcessIdentity>, PathBuf);
+
 #[derive(Default)]
 struct AppState {
-    cpu: BTreeMap<(u32, u64), ProcessCpuSample>,
+    cpu: BTreeMap<ProcessIdentity, ProcessCpuSample>,
     last_sample: Option<Instant>,
     resources: [ResourceState; 2],
 }
@@ -80,7 +85,7 @@ struct AppState {
 #[derive(Default)]
 pub(crate) struct WatchdogManager {
     settings: WatchdogSettings,
-    states: BTreeMap<(usize, PathBuf), AppState>,
+    states: BTreeMap<StateKey, AppState>,
 }
 
 pub(crate) fn observed_path_matches_name(process: &ProcessInfo, executable_name: &str) -> bool {
@@ -111,23 +116,30 @@ fn matching_path<'a>(selector: &'a WatchdogSelector, process: &'a ProcessInfo) -
 }
 
 fn group_matches<'a>(
-    selector: &WatchdogSelector,
+    selector: &'a WatchdogSelector,
+    scope: WatchdogScope,
     processes: &'a [ProcessInfo],
-) -> BTreeMap<PathBuf, Vec<&'a ProcessInfo>> {
-    let mut groups = BTreeMap::<PathBuf, Vec<_>>::new();
+) -> BTreeMap<GroupKey<'a>, Vec<&'a ProcessInfo>> {
+    let mut groups = BTreeMap::<_, Vec<_>>::new();
     for process in processes {
         let Some(path) = matching_path(selector, process) else {
             continue;
         };
-        if let Some(group) = groups.get_mut(path) {
+        let identity = match scope {
+            WatchdogScope::Combined => None,
+            WatchdogScope::PerInstance => process.creation_time.map(|time| (process.id, time)),
+        };
+        let key = (identity, path);
+        if let Some(group) = groups.get_mut(&key) {
             group.push(process);
         } else if let Some((_, group)) = groups
-            .iter_mut()
-            .find(|(observed, _)| same_executable_path(observed, path))
+            .range_mut((identity, Path::new(""))..)
+            .take_while(|((other_identity, _), _)| *other_identity == identity)
+            .find(|((_, observed_path), _)| same_executable_path(observed_path, path))
         {
             group.push(process);
         } else {
-            groups.insert(path.to_owned(), vec![process]);
+            groups.insert(key, vec![process]);
         }
     }
     groups
@@ -212,9 +224,11 @@ impl WatchdogManager {
             .enumerate()
             .filter(|(_, rule)| rule.enabled)
             .flat_map(|(index, rule)| {
-                group_matches(&rule.selector, processes)
+                group_matches(&rule.selector, rule.scope, processes)
                     .into_iter()
-                    .map(move |(path, group)| ((index, path), rule, group))
+                    .map(move |((identity, path), group)| {
+                        ((index, identity, path.to_owned()), rule, group)
+                    })
             });
         for (key, rule, group) in groups {
             let mut matched = Vec::new();
@@ -247,9 +261,11 @@ impl WatchdogManager {
                 .or_else(|| {
                     let previous = self
                         .states
-                        .range((key.0, PathBuf::new())..)
-                        .take_while(|((index, _), _)| *index == key.0)
-                        .find(|((_, path), _)| same_executable_path(path, &key.1))
+                        .range((key.0, key.1, PathBuf::new())..)
+                        .take_while(|((index, identity, _), _)| {
+                            *index == key.0 && *identity == key.1
+                        })
+                        .find(|((_, _, path), _)| same_executable_path(path, &key.2))
                         .map(|(key, _)| key.clone())?;
                     self.states.remove(&previous)
                 })
@@ -267,7 +283,7 @@ impl WatchdogManager {
             snapshot.monitored_processes += matched.len();
             let delay =
                 Duration::from_secs(rule.sustained_seconds.unwrap_or(settings.sustained_seconds));
-            let allows_actions = rule.selector.allows_actions();
+            let allows_actions = rule.allows_actions();
             let responds = |response: &WatchdogResponse| {
                 settings.notify || (allows_actions && response.action != WatchdogAction::None)
             };
@@ -318,7 +334,7 @@ impl WatchdogManager {
                                 .map(|(process, sample)| ProcessActionTarget {
                                     id: process.id,
                                     name: process.name.clone(),
-                                    executable_path: key.1.clone(),
+                                    executable_path: key.2.clone(),
                                     creation_time: sample.creation_time,
                                     session_id: process.session_id,
                                     is_service_account: process.is_service_account,
@@ -336,10 +352,11 @@ impl WatchdogManager {
                             name: if allows_actions {
                                 first.name.clone()
                             } else {
-                                key.1.display().to_string()
+                                key.2.display().to_string()
                             },
                             process_count: matched.len(),
                             process_id: (matched.len() == 1).then_some(first.id),
+                            scope: rule.scope,
                             targets,
                             critical,
                             metric,
@@ -876,26 +893,108 @@ mod tests {
     }
 
     #[test]
-    fn name_rule_events_cannot_dispatch_process_actions() {
+    fn per_instance_thresholds_survive_sibling_gaps_but_not_pid_reuse() {
         let mut settings = settings();
+        settings.rules[0].scope = WatchdogScope::PerInstance;
         settings.rules[0].selector = WatchdogSelector::ExactName {
             executable_name: "test.exe".into(),
         };
-        settings.rules[0].memory.critical.action = WatchdogAction::Restart;
-        let mut manager = WatchdogManager::default();
-        let process = process();
+        let mut processes = [process(), process()];
+        processes[1].id += 1;
         let start = Instant::now();
-        assert!(tick(&mut manager, &settings, &process, start, 0, Some(950)).is_empty());
-        assert!(tick(&mut manager, &settings, &process, start, 1, Some(950)).is_empty());
-        let events = tick(&mut manager, &settings, &process, start, 2, Some(950));
-        assert_eq!(events.len(), 1);
-        assert!(events[0].notify && events[0].critical);
-        assert_eq!(events[0].response.action, WatchdogAction::None);
-        assert!(events[0].targets.is_empty());
+        let mut manager = WatchdogManager::default();
+        let mut observe = |processes: &[ProcessInfo], second, memory: [Option<u64>; 2]| {
+            let now = start + Duration::from_secs(second);
+            let mut samples = BTreeMap::new();
+            for (process, memory) in processes.iter().zip(memory) {
+                if let Some(memory) = memory {
+                    samples.extend(sample(process, now, Some(memory)));
+                }
+            }
+            manager.evaluate(&settings, processes, &samples, Some(1_000), now)
+        };
+        let assert_instance = |events: Vec<WatchdogEvent>, process: &ProcessInfo| {
+            assert_eq!(events.len(), 1);
+            let event = &events[0];
+            assert_eq!(event.scope, WatchdogScope::PerInstance);
+            assert_eq!(event.process_id, Some(process.id));
+            assert_eq!(event.process_count, 1);
+            assert_eq!(
+                event.name,
+                process.image_path.as_ref().unwrap().display().to_string()
+            );
+            assert_eq!(event.value, 95.0);
+            assert!(event.notify && event.critical);
+            assert_eq!(event.response.action, WatchdogAction::None);
+            assert!(event.targets.is_empty());
+        };
 
-        settings.notify = false;
-        for second in 3..=5 {
-            assert!(tick(&mut manager, &settings, &process, start, second, Some(950)).is_empty());
+        for second in 0..3 {
+            let (snapshot, events) = observe(&processes, second, [Some(400); 2]);
+            assert_eq!(snapshot.monitored_processes, 2);
+            assert!(events.is_empty());
+        }
+        assert!(observe(&processes, 3, [Some(950); 2]).1.is_empty());
+        processes[1].image_path = Some(r"c:\apps\TEST.EXE".into());
+        let (snapshot, events) = observe(&processes, 4, [None, Some(950)]);
+        assert_eq!(snapshot.monitored_processes, 1);
+        assert_eq!(snapshot.skipped_processes, 1);
+        assert!(events.is_empty());
+        assert_instance(observe(&processes, 5, [Some(950); 2]).1, &processes[1]);
+        assert!(observe(&processes, 6, [Some(950), Some(400)]).1.is_empty());
+        assert_instance(observe(&processes, 7, [Some(950); 2]).1, &processes[0]);
+
+        processes[0].creation_time = Some(20);
+        assert!(observe(&processes, 8, [Some(950); 2]).1.is_empty());
+        assert_instance(observe(&processes, 9, [Some(950); 2]).1, &processes[1]);
+        assert_instance(observe(&processes, 10, [Some(950); 2]).1, &processes[0]);
+
+        let (snapshot, events) = observe(&processes[1..], 11, [Some(950), None]);
+        assert_eq!(snapshot.monitored_processes, 1);
+        assert_eq!(snapshot.alerting_processes, 1);
+        assert!(events.is_empty());
+        assert!(observe(&processes, 12, [Some(950); 2]).1.is_empty());
+        assert!(observe(&processes, 13, [Some(950); 2]).1.is_empty());
+        assert_instance(observe(&processes, 14, [Some(950); 2]).1, &processes[0]);
+    }
+
+    #[test]
+    fn notification_only_rules_cannot_dispatch_process_actions() {
+        for (selector, scope) in [
+            (
+                WatchdogSelector::ExactName {
+                    executable_name: "test.exe".into(),
+                },
+                WatchdogScope::Combined,
+            ),
+            (
+                WatchdogSelector::ExactPath {
+                    executable_path: r"C:\Apps\test.exe".into(),
+                },
+                WatchdogScope::PerInstance,
+            ),
+        ] {
+            let mut settings = settings();
+            settings.rules[0].selector = selector;
+            settings.rules[0].scope = scope;
+            settings.rules[0].memory.critical.action = WatchdogAction::Restart;
+            let mut manager = WatchdogManager::default();
+            let process = process();
+            let start = Instant::now();
+            assert!(tick(&mut manager, &settings, &process, start, 0, Some(950)).is_empty());
+            assert!(tick(&mut manager, &settings, &process, start, 1, Some(950)).is_empty());
+            let events = tick(&mut manager, &settings, &process, start, 2, Some(950));
+            assert_eq!(events.len(), 1);
+            assert!(events[0].notify && events[0].critical);
+            assert_eq!(events[0].response.action, WatchdogAction::None);
+            assert!(events[0].targets.is_empty());
+
+            settings.notify = false;
+            for second in 3..=5 {
+                assert!(
+                    tick(&mut manager, &settings, &process, start, second, Some(950)).is_empty()
+                );
+            }
         }
     }
 

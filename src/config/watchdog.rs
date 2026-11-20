@@ -134,10 +134,6 @@ impl WatchdogMonitor {
 }
 
 impl WatchdogSelector {
-    pub fn allows_actions(&self) -> bool {
-        matches!(self, Self::ExactPath { .. })
-    }
-
     pub fn validate(&self) -> Result<(), String> {
         match self {
             Self::ExactPath { executable_path } if Path::new(executable_path).is_absolute() => {
@@ -152,11 +148,27 @@ impl WatchdogSelector {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WatchdogScope {
+    #[default]
+    Combined,
+    PerInstance,
+}
+
+impl WatchdogScope {
+    fn is_combined(&self) -> bool {
+        *self == Self::Combined
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WatchdogRule {
     pub enabled: bool,
     #[serde(flatten)]
     pub selector: WatchdogSelector,
+    #[serde(default, skip_serializing_if = "WatchdogScope::is_combined")]
+    pub scope: WatchdogScope,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sustained_seconds: Option<u64>,
     pub cpu: WatchdogMonitor,
@@ -173,6 +185,7 @@ impl WatchdogRule {
         Self {
             enabled: true,
             selector,
+            scope: WatchdogScope::default(),
             sustained_seconds: None,
             cpu: WatchdogMonitor::new(true),
             memory: WatchdogMonitor::new(false),
@@ -201,16 +214,20 @@ impl WatchdogRule {
         }
     }
 
+    pub fn allows_actions(&self) -> bool {
+        self.scope.is_combined() && matches!(self.selector, WatchdogSelector::ExactPath { .. })
+    }
+
     pub fn validate(&self) -> Result<(), String> {
         self.selector.validate()?;
-        if !self.selector.allows_actions()
+        if !self.allows_actions()
             && [&self.cpu, &self.memory].iter().any(|monitor| {
                 monitor.warning.action != WatchdogAction::None
                     || monitor.critical.action != WatchdogAction::None
             })
         {
             return Err(
-                "Watchdog requires an exact executable path for Terminate or Restart.".into(),
+                "Watchdog requires Combined scope and an exact executable path for Terminate or Restart.".into(),
             );
         }
         if self
@@ -271,6 +288,7 @@ mod tests {
         assert!(rule.validate().is_ok());
         let raw = toml::to_string(&rule).unwrap();
         assert!(raw.contains("executable_path = "));
+        assert!(!raw.contains("scope = "));
         assert!(raw.contains("memory_unit = \"megabytes\""));
         assert_eq!(toml::from_str::<WatchdogRule>(&raw).unwrap(), rule);
         rule.cpu.warning.threshold = 90;
@@ -319,6 +337,26 @@ mod tests {
             let imported: WatchdogRule = toml::from_str(&toml::to_string(&rule).unwrap()).unwrap();
             assert!(!imported.memory.enabled);
             assert!(imported.validate().is_err());
+        }
+    }
+
+    #[test]
+    fn per_instance_scope_round_trips_and_rejects_automatic_actions() {
+        let mut rule = WatchdogRule::new(r"C:\Apps\test.exe".into());
+        rule.scope = WatchdogScope::PerInstance;
+        assert!(rule.validate().is_ok());
+        let raw = toml::to_string(&rule).unwrap();
+        assert!(raw.contains("scope = \"per_instance\""));
+        assert_eq!(toml::from_str::<WatchdogRule>(&raw).unwrap(), rule);
+        assert!(toml::from_str::<WatchdogRule>(&raw.replace("per_instance", "unknown")).is_err());
+
+        for (resource, action) in [
+            (WatchdogResource::Cpu, WatchdogAction::Terminate),
+            (WatchdogResource::Memory, WatchdogAction::Restart),
+        ] {
+            let mut invalid = rule.clone();
+            invalid.monitor_mut(resource).warning.action = action;
+            assert!(invalid.validate().is_err());
         }
     }
 

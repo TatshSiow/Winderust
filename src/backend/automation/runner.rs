@@ -204,7 +204,7 @@ impl RuntimeCore {
         settings: &Settings,
         observations: &mut CycleObservations,
     ) -> WatchdogSnapshot {
-        use crate::config::WatchdogAction;
+        use crate::config::{WatchdogAction, WatchdogScope};
         use rust_i18n::t;
         let (mut snapshot, mut events) = self.watchdog_manager.update(
             &settings.watchdog,
@@ -221,17 +221,34 @@ impl RuntimeCore {
                 "watchdog.warning"
             });
             let metric = t!(event.metric.label_key());
-            let detail = t!(
-                "watchdog.trigger_detail",
-                level = level,
-                app = &event.name,
-                count = event.process_count,
-                metric = metric,
-                value = format!("{:.1}", event.value),
-                threshold = event.response.threshold
-            )
-            .to_string();
             let process_id = event.process_id;
+            let value = format!("{:.1}", event.value);
+            let detail = match (event.scope, process_id) {
+                (WatchdogScope::PerInstance, Some(pid)) => t!(
+                    "watchdog.instance_trigger_detail",
+                    level = level,
+                    app = &event.name,
+                    pid = pid,
+                    metric = metric,
+                    value = value,
+                    threshold = event.response.threshold
+                ),
+                (WatchdogScope::PerInstance, None) => {
+                    snapshot.last_error =
+                        Some("Watchdog per-instance event has no process ID.".into());
+                    continue;
+                }
+                (WatchdogScope::Combined, _) => t!(
+                    "watchdog.trigger_detail",
+                    level = level,
+                    app = &event.name,
+                    count = event.process_count,
+                    metric = metric,
+                    value = value,
+                    threshold = event.response.threshold
+                ),
+            }
+            .into_owned();
             let mut action_detail = t!("watchdog.no_action").to_string();
             if event.response.action != WatchdogAction::None {
                 let restarting = event.response.action == WatchdogAction::Restart;
