@@ -10,6 +10,7 @@ use iced::widget::{column, row, text};
 use iced::{Element, Fill};
 use rust_i18n::t;
 use std::path::Path;
+use std::rc::Rc;
 
 #[derive(Debug, Clone, Copy)]
 pub(super) enum Kind {
@@ -339,34 +340,41 @@ impl Editor {
         ]
         .spacing(super::widgets::CARD_GAP);
         let mut rules = Vec::new();
+        let mut shared_presets = None;
         for (i, r) in feature.rules.iter().enumerate() {
+            let presets: &Rc<[_]> = shared_presets.get_or_insert_with(|| {
+                let mut choices = catalog.presets.clone();
+                choices.extend(
+                    s.cpu_allocation_presets
+                        .iter()
+                        .map(|p| super::widgets::Choice(p.selection.clone(), p.name.clone())),
+                );
+                choices.retain(|p| !p.0.is_empty() && catalog.error(&p.0).is_none());
+                choices.into()
+            });
             let controls = [Tier::Focus, Tier::Visible, Tier::Background]
                 .into_iter()
                 .map(|tier| {
                     let selection = tier.selection(r);
-                    let mut choices = catalog.presets.clone();
-                    choices.extend(
-                        s.cpu_allocation_presets
-                            .iter()
-                            .map(|p| super::widgets::Choice(p.selection.clone(), p.name.clone())),
-                    );
-                    choices.retain(|p| !p.0.is_empty() && catalog.error(&p.0).is_none());
-                    let selected = self
-                        .selected_preset(&r.executable_path, tier, selection, &choices)
-                        .unwrap_or_else(|| {
-                            super::widgets::Choice(
-                                selection.clone(),
-                                t!(if catalog.error(selection).is_none() {
-                                    "common.custom"
-                                } else {
-                                    "cpu_allocation.unavailable_selection"
-                                })
-                                .to_string(),
-                            )
-                        });
-                    if !choices.contains(&selected) {
+                    let error = catalog.error(selection);
+                    let (choices, selected) = if let Some(selected) =
+                        self.selected_preset(&r.executable_path, tier, selection, presets)
+                    {
+                        (Rc::clone(presets), selected)
+                    } else {
+                        let selected = super::widgets::Choice(
+                            selection.clone(),
+                            t!(if error.is_some() {
+                                "cpu_allocation.unavailable_selection"
+                            } else {
+                                "common.custom"
+                            })
+                            .to_string(),
+                        );
+                        let mut choices = presets.to_vec();
                         choices.push(selected.clone());
-                    }
+                        (choices.into(), selected)
+                    };
                     let mut control =
                         column![
                             super::widgets::pick_list(choices, Some(selected), move |v| {
@@ -375,7 +383,7 @@ impl Editor {
                             .width(Fill)
                         ]
                         .spacing(design::space::TIGHT);
-                    if let Some(error) = catalog.error(selection) {
+                    if let Some(error) = error {
                         control = control.push(text(error).style(text::danger));
                         control = control.push(text(selection_text(selection)));
                         if let Some(reviewed) = catalog.reviewed(selection) {

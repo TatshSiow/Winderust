@@ -3125,7 +3125,7 @@ impl WinderustApp {
             if selected_result.is_some() {
                 input = input.on_submit(Message::ConfirmSearch);
             }
-            let scopes = std::iter::once(SearchScope(None))
+            let scopes: Vec<_> = std::iter::once(SearchScope(None))
                 .chain(
                     navigation::dashboard_sections_in_nav_order(
                         self.settings.global().advanced.show_advanced_controls,

@@ -2,6 +2,7 @@ use super::design;
 use crate::power::PowerPlan;
 use iced::widget::{row, text};
 use iced::{Element, Fill};
+use std::rc::Rc;
 
 pub(super) fn tooltip<'a, M: 'a>(
     content: impl Into<Element<'a, M>>,
@@ -536,12 +537,12 @@ pub(super) fn pick_list<'a, T, L, V, M>(
 ) -> super::select::Select<'a, T, M>
 where
     T: ToString + PartialEq + Clone + 'a,
-    L: Into<Vec<T>> + 'a,
+    L: Into<Rc<[T]>> + 'a,
     V: std::borrow::Borrow<T> + 'a,
     M: Clone + 'a,
 {
     super::select::Select::new(
-        options.into(),
+        options,
         selected.map(|value| value.borrow().clone()),
         on_selected,
     )

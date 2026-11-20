@@ -47,8 +47,12 @@ pub(super) struct Select<'a, T: ToString + PartialEq + Clone, M> {
 }
 
 impl<'a, T: ToString + PartialEq + Clone + 'a, M: Clone + 'a> Select<'a, T, M> {
-    pub(super) fn new(options: Vec<T>, selected: Option<T>, choose: impl Fn(T) -> M + 'a) -> Self {
-        let options: Rc<[T]> = options.into();
+    pub(super) fn new(
+        options: impl Into<Rc<[T]>>,
+        selected: Option<T>,
+        choose: impl Fn(T) -> M + 'a,
+    ) -> Self {
+        let options = options.into();
         let index = selected
             .as_ref()
             .and_then(|value| options.iter().position(|option| option == value));
@@ -851,7 +855,7 @@ mod tests {
 
     #[test]
     fn rebuilding_an_open_select_preserves_its_menu_state() {
-        let make = || Select::new((0..30).collect(), Some(0), |value| value);
+        let make = || Select::new((0..30).collect::<Vec<_>>(), Some(0), |value| value);
         let select = make();
         let mut tree = Tree::new(&select as &dyn Widget<i32, Theme, Renderer>);
         let state = tree.state.downcast_mut::<State>();
