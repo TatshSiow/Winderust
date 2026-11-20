@@ -1,7 +1,7 @@
 use super::super::design;
 use super::super::priority_control::{self, Kind, Tier, Value};
 use super::super::widgets::{
-    self, action_button, icon_button, pick_list, setting_row, settings_card, slider, switch,
+    self, action_button, icon_button, pick_list, setting_row, settings_card, switch,
 };
 use super::super::{cpu_allocation, cpu_limiter};
 use super::PlanCatalog;
@@ -528,10 +528,14 @@ pub(super) fn view<'a>(
             ]]
             .spacing(widgets::CARD_GAP);
             if mode == ProcessRuleMode::Enabled {
-                controls = controls.push(row![
-                    slider(1..=100, limit, move |v| Message::LimiterLimit(tier, v)),
-                    text(format!("{limit}%"))
-                ]);
+                controls = controls.push(
+                    row![
+                        cpu_limiter::limit_slider(limit, move |v| Message::LimiterLimit(tier, v)),
+                        text(format!("{limit}%"))
+                    ]
+                    .spacing(design::space::SMALL)
+                    .align_y(iced::Center),
+                );
             }
             card = card.push(widgets::settings_divider()).push(controls);
         }

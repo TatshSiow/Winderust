@@ -1,13 +1,32 @@
 use super::design;
 use super::widgets::{action_button, checkbox, icon_button, pick_list, slider, text_input};
 use crate::ui::scrolling::scrollable;
-use iced::widget::{column, row, text};
+use iced::widget::{column, row, text, Row};
 use iced::{Element, Fill};
 use rust_i18n::t;
 use std::collections::HashMap;
 
 use crate::config::{CpuLimiterRule, CpuLimiterSettings, ProcessRuleMode};
 use crate::ui::process_rules::{can_add_cpu_limiter_process, new_cpu_limiter_rule};
+
+pub(super) fn limit_slider<'a, M: Clone + 'a>(
+    value: u8,
+    change: impl Fn(u8) -> M + 'a,
+) -> Row<'a, M> {
+    let decrease = (value > 1).then(|| change(value.saturating_sub(1)));
+    let increase = (value < 100).then(|| change(value.saturating_add(1)));
+    row![
+        icon_button("icons/minus.svg")
+            .style(super::widgets::control_button)
+            .on_press_maybe(decrease),
+        slider(1..=100, value, change).width(Fill),
+        icon_button("icons/plus.svg")
+            .style(super::widgets::control_button)
+            .on_press_maybe(increase),
+    ]
+    .spacing(design::space::SMALL)
+    .align_y(iced::Center)
+}
 
 #[derive(Default)]
 pub(super) struct CpuLimiter {
@@ -216,13 +235,7 @@ impl CpuLimiter {
             None => Message::Default(tier, value),
         };
         row![
-            icon_button("icons/minus.svg")
-                .style(super::widgets::control_button)
-                .on_press_maybe((value > 1).then(|| change(value.saturating_sub(1)))),
-            slider(1..=100, value, change).width(Fill),
-            icon_button("icons/plus.svg")
-                .style(super::widgets::control_button)
-                .on_press_maybe((value < 100).then(|| change(value.saturating_add(1)))),
+            limit_slider(value, change),
             text_input("1-100", &self.number(path, tier, value))
                 .on_input(move |raw| Message::Number(index, tier, raw))
                 .width(design::NUMERIC_WIDTH)
