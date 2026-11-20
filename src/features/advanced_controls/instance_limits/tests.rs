@@ -46,6 +46,38 @@ fn manager() -> InstanceLimitsManager {
 }
 
 #[test]
+fn stale_sample_gaps_restart_excess_and_recovery_qualification() {
+    let mut manager = manager();
+    let now = Instant::now();
+    let counts = |manager: &mut InstanceLimitsManager, count, seconds| {
+        manager.observe(
+            &[CountObservation::Complete(count)],
+            now + Duration::from_secs(seconds),
+        )
+    };
+    assert!(counts(&mut manager, 2, 0).is_empty());
+    assert!(counts(&mut manager, 2, 4).is_empty());
+    assert_eq!(
+        counts(&mut manager, 2, 7),
+        vec![
+            InstanceLimitsEvent::Excess(0),
+            InstanceLimitsEvent::Notify(0)
+        ]
+    );
+    manager.notification_result(0, Ok(())).unwrap();
+
+    assert!(counts(&mut manager, 1, 8).is_empty());
+    assert!(counts(&mut manager, 1, 12).is_empty());
+    let snapshot = manager.snapshot(now + Duration::from_secs(12));
+    assert!(snapshot.rules[0].incident);
+    assert_eq!(snapshot.rules[0].notification, NotificationStatus::Accepted);
+    assert_eq!(
+        counts(&mut manager, 1, 15),
+        vec![InstanceLimitsEvent::Recovered(0)]
+    );
+}
+
+#[test]
 fn reset_intents_clear_only_affected_rules_even_when_settings_revert() {
     let mut manager = manager();
     let mut settings = manager.settings.clone();

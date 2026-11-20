@@ -2,7 +2,9 @@ use super::{app_picker, design, widgets};
 use crate::{
     config::{InstanceLimitsRule, InstanceLimitsSettings},
     control::instance_limits::{paths_equal, CountObservation},
-    features::advanced_controls::instance_limits::{InstanceLimitsSnapshot, NotificationStatus},
+    features::advanced_controls::instance_limits::{
+        InstanceLimitsSnapshot, NotificationStatus, MAX_SAMPLE_AGE,
+    },
 };
 use iced::{
     widget::{column, row, text},
@@ -369,7 +371,7 @@ fn count_reason(count: &CountObservation) -> Option<&str> {
 }
 
 pub(super) fn sample_fresh(sampled_at: Option<std::time::Instant>) -> bool {
-    sampled_at.is_some_and(|sampled_at| sampled_at.elapsed() <= std::time::Duration::from_secs(3))
+    sampled_at.is_some_and(|sampled_at| sampled_at.elapsed() <= MAX_SAMPLE_AGE)
 }
 
 fn exceeds(count: &CountObservation, maximum: u32) -> bool {

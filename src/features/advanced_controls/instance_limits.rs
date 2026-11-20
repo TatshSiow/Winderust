@@ -2,6 +2,8 @@ use std::time::{Duration, Instant};
 
 use crate::{config::InstanceLimitsSettings, control::instance_limits::CountObservation};
 
+pub(crate) const MAX_SAMPLE_AGE: Duration = Duration::from_secs(3);
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct InstanceLimitsSnapshot {
     pub(crate) enabled: bool,
@@ -140,6 +142,13 @@ impl InstanceLimitsManager {
         for (index, (rule, state)) in self.settings.rules.iter().zip(&mut self.rules).enumerate() {
             if !rule.enabled {
                 continue;
+            }
+            if state
+                .sampled_at
+                .is_some_and(|previous| now.saturating_duration_since(previous) > MAX_SAMPLE_AGE)
+            {
+                state.excess_since = None;
+                state.recovery_since = None;
             }
             let fresh = state.sampled_at.is_none_or(|previous| now > previous);
             let count = if rule.max_instances == 0 {

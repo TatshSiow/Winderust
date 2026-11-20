@@ -99,9 +99,9 @@ Read the relevant section before changing feature policy, ownership, restoration
   intake mutex; one-second visible/tray cadence is not a Windows-call deadline.
 - Excess and recovery each need two fresh qualifying samples at least one second
   apart. A lower bound above the maximum proves excess; only complete within-limit
-  counts prove recovery. Uncertainty breaks continuity and preserves an unresolved
-  incident. There is one notification attempt per incident, including failures;
-  acceptance means Windows accepted the request, not that a banner was displayed.
+  counts prove recovery. Uncertainty and gaps longer than three seconds restart
+  qualification while preserving an unresolved incident. Each incident allows one
+  notification attempt, including failures. Acceptance confirms delivery to Windows.
 - Rule edits reset only that rule, while feature/master disable clears all state.
   Notify-only edits and power-source changes preserve incidents. Pending reset
   intents survive rapid edits and toggles between worker snapshots. Suspend/session
