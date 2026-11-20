@@ -8,7 +8,7 @@ use crate::foreground::{
 };
 use crate::ui::scrolling::scrollable;
 use iced::widget::{column, container, image, mouse_area, responsive, row, text, Space};
-use iced::{Element, Fill, Task};
+use iced::{keyboard::key::Named, Element, Fill, Task};
 use rust_i18n::t;
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
@@ -26,6 +26,7 @@ pub(super) enum PlanCatalog<'a> {
     Loaded(&'a [crate::power::PowerPlan]),
 }
 const ROW_HEIGHT: f32 = 36.0;
+const PROCESS_TABLE: &str = "process-list";
 const REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
 type Icons = HashMap<PathBuf, Option<Arc<image::Handle>>>;
 #[derive(Debug, Clone)]
@@ -152,6 +153,8 @@ pub(super) enum Message {
     Column(Sort, bool),
     Select(usize, u64),
     Focus(usize, u64),
+    MoveRowFocus(bool, f32),
+    OpenFocused,
     ExpandFocused,
     DeleteFocused,
     Context(usize, u64),
@@ -356,7 +359,7 @@ impl ProcessList {
                 self.offset.set(0.0);
                 self.rebuild();
                 return iced::widget::operation::scroll_to(
-                    "process-list",
+                    PROCESS_TABLE,
                     iced::widget::scrollable::AbsoluteOffset::<f32>::default(),
                 );
             }
@@ -415,16 +418,39 @@ impl ProcessList {
                 self.menu_branch = MenuBranch::Closed;
                 return task;
             }
-            Message::Focus(index, revision) => self.focus_row(index, revision),
+            Message::Focus(index, revision) => {
+                if self.focus_row(index, revision) {
+                    return iced::widget::operation::focus(PROCESS_TABLE);
+                }
+            }
+            Message::MoveRowFocus(forward, height) => return self.move_row_focus(forward, height),
+            Message::OpenFocused => {
+                if self.selected.is_none() && self.stopping.is_none() {
+                    let row = self
+                        .focused_index()
+                        .or_else(|| self.focused.is_none().then(|| self.first_visible_row()));
+                    if let Some(index) = row {
+                        self.focus_row(index, self.rows_revision);
+                        return self.update(
+                            Message::Select(index, self.rows_revision),
+                            settings,
+                            runtime,
+                        );
+                    }
+                }
+            }
             Message::ExpandFocused => {
-                if let Some((key, false, selection)) = &self.focused {
-                    if selection.processes.len() > 1 {
-                        return self.update(Message::Expand(key.clone()), settings, runtime);
+                if let Some(entry) = self.focused_index().map(|index| &self.rows[index]) {
+                    if entry.indices.len() > 1 {
+                        return self.update(Message::Expand(entry.key.clone()), settings, runtime);
                     }
                 }
             }
             Message::DeleteFocused => {
-                if self.selected.is_none() && self.stopping.is_none() {
+                if self.selected.is_none()
+                    && self.stopping.is_none()
+                    && self.focused_index().is_some()
+                {
                     if let Some((_, _, selection)) = &self.focused {
                         if selection.processes.iter().any(|p| !inaccessible(p)) {
                             self.selected = Some(selection.clone());
@@ -441,21 +467,7 @@ impl ProcessList {
                 else {
                     return Task::none();
                 };
-                let p = &self.processes[entry.indices[0]];
-                let selection = Selection {
-                    nested: entry.nested,
-                    processes: entry
-                        .indices
-                        .iter()
-                        .map(|i| self.processes[*i].clone())
-                        .collect(),
-                    path: p
-                        .image_path
-                        .as_ref()
-                        .map(|p| p.to_string_lossy().into_owned())
-                        .unwrap_or_default(),
-                    name: p.name.clone(),
-                };
+                let selection = self.selection(entry);
                 self.context = None;
                 self.stopping = None;
                 self.reset_detail_feedback();
@@ -870,31 +882,87 @@ impl ProcessList {
         self.column_widths[col as usize].unwrap_or_else(|| column_width(col))
     }
 
-    fn focus_row(&mut self, index: usize, revision: u64) {
+    fn is_focused(&self, entry: &Entry) -> bool {
+        self.focused
+            .as_ref()
+            .is_some_and(|(key, nested, selection)| {
+                let process = &self.processes[entry.indices[0]];
+                *key == entry.key
+                    && *nested == entry.nested
+                    && selection.processes.first().is_some_and(|selected| {
+                        selected.id == process.id && selected.creation_time == process.creation_time
+                    })
+            })
+    }
+
+    fn focused_index(&self) -> Option<usize> {
+        self.rows.iter().position(|entry| self.is_focused(entry))
+    }
+
+    fn first_visible_row(&self) -> usize {
+        self.offsets
+            .partition_point(|offset| *offset <= self.offset.get())
+            .saturating_sub(1)
+            .min(self.rows.len().saturating_sub(1))
+    }
+
+    fn move_row_focus(&mut self, forward: bool, height: f32) -> Task<Message> {
+        if self.rows.is_empty() || self.selected.is_some() || self.stopping.is_some() {
+            return Task::none();
+        }
+        let index = match self.focused_index() {
+            Some(index) if forward => (index + 1).min(self.rows.len() - 1),
+            Some(index) => index.saturating_sub(1),
+            None => self.first_visible_row(),
+        };
+        self.focus_row(index, self.rows_revision);
+        let start = self.offsets[index];
+        let end = self.offsets[index + 1];
+        let max = (self.offsets[self.rows.len()] - height).max(0.0);
+        let offset = self
+            .offset
+            .get()
+            .clamp((end - height).min(start), start)
+            .clamp(0.0, max);
+        if self.offset.replace(offset) == offset {
+            return Task::none();
+        }
+        iced::widget::operation::scroll_to(
+            PROCESS_TABLE,
+            iced::widget::scrollable::AbsoluteOffset {
+                x: None,
+                y: Some(offset),
+            },
+        )
+    }
+
+    fn focus_row(&mut self, index: usize, revision: u64) -> bool {
         if let Some(entry) = self
             .rows
             .get(index)
             .filter(|_| revision == self.rows_revision)
         {
-            let p = &self.processes[entry.indices[0]];
-            self.focused = Some((
-                entry.key.clone(),
-                entry.nested,
-                Selection {
-                    nested: entry.nested,
-                    processes: entry
-                        .indices
-                        .iter()
-                        .map(|i| self.processes[*i].clone())
-                        .collect(),
-                    path: p
-                        .image_path
-                        .as_ref()
-                        .map(|p| p.to_string_lossy().into_owned())
-                        .unwrap_or_default(),
-                    name: p.name.clone(),
-                },
-            ));
+            self.focused = Some((entry.key.clone(), entry.nested, self.selection(entry)));
+            return true;
+        }
+        false
+    }
+
+    fn selection(&self, entry: &Entry) -> Selection {
+        let process = &self.processes[entry.indices[0]];
+        Selection {
+            nested: entry.nested,
+            processes: entry
+                .indices
+                .iter()
+                .map(|i| self.processes[*i].clone())
+                .collect(),
+            path: process
+                .image_path
+                .as_ref()
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+            name: process.name.clone(),
         }
     }
 
@@ -1253,6 +1321,7 @@ impl ProcessList {
                         .width(20)
                         .height(20)
                         .style(super::widgets::quiet)
+                        .pointer_only()
                         .on_press(Message::Expand(entry.key.clone())),
                     );
                 } else {
@@ -1304,16 +1373,7 @@ impl ProcessList {
                     };
                     cells = cells.push(container(cell).width(widths[col as usize]).clip(true));
                 }
-                let focused = self
-                    .focused
-                    .as_ref()
-                    .is_some_and(|(key, nested, selection)| {
-                        *key == entry.key
-                            && *nested == entry.nested
-                            && selection.processes.first().is_some_and(|selected| {
-                                selected.id == p.id && selected.creation_time == p.creation_time
-                            })
-                    });
+                let focused = self.is_focused(entry);
                 visible_rows.push((
                     (p.id, p.creation_time, entry.nested),
                     mouse_area(
@@ -1355,7 +1415,7 @@ impl ProcessList {
                     .height(offsets.last().copied().unwrap_or_default() - offsets[range.end]),
             );
             let table = scrollable(container(rows).width(Fill))
-                .id("process-list")
+                .id(PROCESS_TABLE)
                 .height(Fill)
                 .on_scroll(|v| Message::Scrolled(v.absolute_offset().y));
             let table = scrolling::buffered(
@@ -1368,6 +1428,21 @@ impl ProcessList {
                 |message| match message {
                     Message::Scrolled(offset) => Some(*offset),
                     _ => None,
+                },
+            );
+            let table = super::motion::wrap_keys(
+                table,
+                PROCESS_TABLE,
+                !self.rows.is_empty(),
+                |key, height| {
+                    Some(match key {
+                        Named::ArrowUp => (Message::MoveRowFocus(false, height), true),
+                        Named::ArrowDown => (Message::MoveRowFocus(true, height), true),
+                        Named::Enter => (Message::OpenFocused, false),
+                        Named::Space => (Message::ExpandFocused, false),
+                        Named::Delete => (Message::DeleteFocused, false),
+                        _ => return None,
+                    })
                 },
             );
             let visible = Sort::ALL
@@ -2567,9 +2642,11 @@ mod tests {
             name: "app.exe".into(),
         };
         let mut list = ProcessList {
-            focused: Some(("app.exe".into(), false, selection.clone())),
+            processes: selection.processes.clone(),
             ..ProcessList::default()
         };
+        list.rebuild();
+        assert!(list.focus_row(0, list.rows_revision));
         assert!(!list.modal_open());
         let _ = list.update(Message::DeleteFocused, &mut settings, &runtime);
         assert!(list.modal_open());
@@ -2758,24 +2835,94 @@ mod tests {
     #[test]
     fn focusing_a_row_preserves_exact_targets_without_opening_details() {
         let mut list = ProcessList {
-            processes: vec![process(10, 100, "app.exe"), process(11, 200, "app.exe")],
+            processes: vec![
+                process(10, 100, "app.exe"),
+                process(11, 200, "app.exe"),
+                process(12, 300, "other.exe"),
+            ],
+            sort: Sort::Pid,
             ..ProcessList::default()
         };
         list.rebuild();
         let revision = list.rows_revision;
-        list.focus_row(0, revision);
+        assert!(list.focus_row(0, revision));
+        assert_eq!(list.focused_index(), Some(0));
         assert!(list.selected.is_none());
         let (_, nested, selection) = list.focused.as_ref().unwrap();
         assert!(!nested);
         assert_eq!(selection.processes.len(), 2);
         assert_eq!(selection.processes[0].creation_time, Some(100));
-        list.processes[0].creation_time = Some(300);
+        list.descending = true;
         list.rebuild();
-        list.focus_row(0, revision);
+        assert_eq!(list.focused_index(), Some(1));
+        list.processes[0].creation_time = Some(400);
+        list.rebuild();
+        assert!(!list.focus_row(0, revision));
+        assert_eq!(list.focused_index(), None);
         assert_eq!(
             list.focused.as_ref().unwrap().2.processes[0].creation_time,
             Some(100)
         );
+    }
+
+    #[test]
+    fn process_table_accepts_arrow_keys_when_focused() {
+        use iced::advanced::{layout, widget::Tree, Layout, Shell};
+        use iced::{keyboard, mouse, Event, Rectangle, Renderer, Size};
+
+        let mut list = ProcessList {
+            processes: vec![process(10, 100, "app.exe")],
+            ..ProcessList::default()
+        };
+        list.rebuild();
+        let settings = Settings::default();
+        let status = RuntimeStatusSnapshot::default();
+        let renderer = Renderer::new(design::typography::FONT, iced::Pixels(14.0));
+        let viewport = Rectangle::with_size(Size::new(900.0, 620.0));
+        let mut view = list.view(&settings, &status, PlanCatalog::Loaded(&[]));
+        let mut tree = Tree::new(&view);
+        let node = view.as_widget_mut().layout(
+            &mut tree,
+            &renderer,
+            &layout::Limits::new(Size::ZERO, viewport.size()),
+        );
+        let arrow = Event::Keyboard(keyboard::Event::KeyPressed {
+            key: keyboard::Key::Named(Named::ArrowDown),
+            modified_key: keyboard::Key::Named(Named::ArrowDown),
+            physical_key: keyboard::key::Physical::Code(keyboard::key::Code::ArrowDown),
+            location: keyboard::Location::Standard,
+            modifiers: keyboard::Modifiers::empty(),
+            text: None,
+            repeat: false,
+        });
+        for focused in [false, true] {
+            if focused {
+                view.as_widget_mut().operate(
+                    &mut tree,
+                    Layout::new(&node),
+                    &renderer,
+                    &mut iced::advanced::widget::operation::focusable::focus(PROCESS_TABLE.into()),
+                );
+            }
+            let mut messages = Vec::new();
+            view.as_widget_mut().update(
+                &mut tree,
+                &arrow,
+                Layout::new(&node),
+                mouse::Cursor::Unavailable,
+                &renderer,
+                &mut iced::advanced::clipboard::Null,
+                &mut Shell::new(&mut messages),
+                &viewport,
+            );
+            if focused {
+                assert!(
+                    matches!(messages.as_slice(), [Message::MoveRowFocus(true, height)] if *height > 0.0)
+                );
+            } else {
+                assert!(messages.is_empty());
+            }
+        }
     }
 
     #[test]

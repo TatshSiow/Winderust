@@ -2,10 +2,13 @@
 use super::keyboard_focus::Focus;
 use iced::advanced::{
     layout, renderer,
-    widget::{operation::Focusable, tree, Operation, Tree},
+    widget::{operation::Focusable, tree, Id, Operation, Tree},
     Clipboard, Layout, Shell, Widget,
 };
-use iced::{mouse, overlay, Element, Event, Length, Rectangle, Renderer, Size, Theme, Vector};
+use iced::{
+    keyboard::key::Named, mouse, overlay, Element, Event, Length, Rectangle, Renderer, Size, Theme,
+    Vector,
+};
 use std::{
     sync::atomic::{AtomicBool, Ordering},
     time::Duration,
@@ -52,9 +55,15 @@ struct Motion<'a, M> {
     content: Element<'a, M>,
     target: bool,
     effect: Effect,
-    action: Option<Action<'a, M>>,
+    action: Option<KeyboardAction<'a, M>>,
 }
 pub(super) type Action<'a, M> = Box<dyn Fn() -> M + 'a>;
+type KeyHandler<M> = fn(Named, f32) -> Option<(M, bool)>;
+
+enum KeyboardAction<'a, M> {
+    Activate(Action<'a, M>),
+    Keys { id: Id, handle: KeyHandler<M> },
+}
 
 pub(super) fn wrap<'a, M: 'a>(
     content: impl Into<Element<'a, M>>,
@@ -74,7 +83,24 @@ pub(super) fn wrap_action<'a, M: 'a>(
         content: content.into(),
         target,
         effect,
-        action,
+        action: action.map(KeyboardAction::Activate),
+    })
+}
+
+pub(super) fn wrap_keys<'a, M: 'a>(
+    content: Element<'a, M>,
+    id: &'static str,
+    enabled: bool,
+    handle: KeyHandler<M>,
+) -> Element<'a, M> {
+    Element::new(Motion {
+        content,
+        target: true,
+        effect: Effect::Visible,
+        action: enabled.then(|| KeyboardAction::Keys {
+            id: Id::new(id),
+            handle,
+        }),
     })
 }
 impl<M> Motion<'_, M> {
@@ -332,10 +358,25 @@ impl<M> Widget<M, Theme, Renderer> for Motion<'_, M> {
             shell,
             viewport,
         );
-        if let Some(action) = &self.action {
-            if state.focus.activate(event, shell) {
-                shell.publish(action());
+        match &self.action {
+            Some(KeyboardAction::Activate(action)) => {
+                if state.focus.activate(event, shell) {
+                    shell.publish(action());
+                }
             }
+            Some(KeyboardAction::Keys { handle, .. }) => {
+                let key = state.focus.pressed_key(event, shell);
+                if let Some((message, publish)) = key.and_then(|(key, repeat)| {
+                    handle(key, layout.bounds().height)
+                        .map(|(message, repeatable)| (message, !repeat || repeatable))
+                }) {
+                    shell.capture_event();
+                    if publish {
+                        shell.publish(message);
+                    }
+                }
+            }
+            None => {}
         }
     }
     fn operate(
@@ -346,9 +387,12 @@ impl<M> Widget<M, Theme, Renderer> for Motion<'_, M> {
         operation: &mut dyn Operation,
     ) {
         if !self.hidden() {
-            if self.action.is_some() {
+            if let Some(action) = &self.action {
                 operation.focusable(
-                    None,
+                    match action {
+                        KeyboardAction::Activate(_) => None,
+                        KeyboardAction::Keys { id, .. } => Some(id),
+                    },
                     layout.bounds(),
                     &mut tree.state.downcast_mut::<State>().focus,
                 );

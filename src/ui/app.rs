@@ -447,20 +447,6 @@ pub(crate) fn run(
                 }),
                 _ => None,
             }),
-            if app.page == Page::ProcessList && !app.navigation_search_open {
-                iced::event::listen_with(|event, status, _| match event {
-                    iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
-                        key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Delete),
-                        modifiers,
-                        ..
-                    }) if status == iced::event::Status::Ignored && modifiers.is_empty() => {
-                        Some(Message::Processes(process_list::Message::DeleteFocused))
-                    }
-                    _ => None,
-                })
-            } else {
-                Subscription::none()
-            },
         ])
     })
     .run()

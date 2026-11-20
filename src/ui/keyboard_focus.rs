@@ -3,7 +3,9 @@ use iced::advanced::{
     widget::{operation, operation::Focusable, Id, Operation},
     Renderer as _, Shell,
 };
-use iced::{keyboard, mouse, touch, Event, Rectangle, Renderer, Theme, Vector};
+use iced::{
+    keyboard, keyboard::key::Named, mouse, touch, Event, Rectangle, Renderer, Theme, Vector,
+};
 
 pub(super) fn move_focus<M: Send + 'static>(forward: bool) -> iced::Task<M> {
     let focus = if forward {
@@ -153,19 +155,29 @@ impl Focusable for Focus {
 }
 
 impl Focus {
-    pub(super) fn activate<M>(&self, event: &Event, shell: &mut Shell<'_, M>) -> bool {
-        use keyboard::{key::Named, Key};
+    pub(super) fn pressed_key<M>(
+        &self,
+        event: &Event,
+        shell: &Shell<'_, M>,
+    ) -> Option<(Named, bool)> {
         if let Event::Keyboard(keyboard::Event::KeyPressed {
-            key: Key::Named(Named::Enter | Named::Space),
+            key: keyboard::Key::Named(key),
             modifiers,
             repeat,
             ..
         }) = event
         {
             if self.0 && modifiers.is_empty() && !shell.is_event_captured() {
-                shell.capture_event();
-                return !repeat;
+                return Some((*key, *repeat));
             }
+        }
+        None
+    }
+
+    pub(super) fn activate<M>(&self, event: &Event, shell: &mut Shell<'_, M>) -> bool {
+        if let Some((Named::Enter | Named::Space, repeat)) = self.pressed_key(event, shell) {
+            shell.capture_event();
+            return !repeat;
         }
         false
     }
