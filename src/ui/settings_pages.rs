@@ -88,17 +88,26 @@ pub(super) enum Message {
     Import,
     DismissUpdate,
 }
+
+fn parse_failure_threshold(value: &str) -> Option<u8> {
+    let threshold = value.parse().ok()?;
+    (crate::rules::normalize_execution_failure_suppression_threshold(threshold) == threshold)
+        .then_some(threshold)
+}
+
 impl Editor {
+    pub(super) fn has_invalid_failure_threshold(&self) -> bool {
+        self.failure_threshold
+            .as_deref()
+            .is_some_and(|value| parse_failure_threshold(value).is_none())
+    }
+
     pub(super) fn has_invalid_inputs(&self) -> bool {
-        self.failure_threshold.as_ref().is_some_and(|value| {
-            value
-                .parse::<u8>()
-                .ok()
-                .is_none_or(|value| !(1..=100).contains(&value))
-        }) || self
-            .color
-            .as_ref()
-            .is_some_and(|value| parse_color(value).is_none())
+        self.has_invalid_failure_threshold()
+            || self
+                .color
+                .as_ref()
+                .is_some_and(|value| parse_color(value).is_none())
     }
 
     pub(super) fn reset_drafts(&mut self) {
@@ -303,12 +312,10 @@ impl Editor {
                 }
             }
             Message::FailureThreshold(value) => {
-                self.failure_threshold = Some(value.clone());
-                if let Ok(value) = value.parse::<u8>() {
-                    if (1..=100).contains(&value) {
-                        s.advanced.execution_failure_suppression_threshold = value;
-                    }
+                if let Some(threshold) = parse_failure_threshold(&value) {
+                    s.advanced.execution_failure_suppression_threshold = threshold;
                 }
+                self.failure_threshold = Some(value);
             }
             Message::Channel(value) => {
                 s.general.update_channel = value;
@@ -1354,13 +1361,24 @@ mod tests {
         let mut editor = Editor::default();
         let mut settings = Settings::default();
         editor.update(&mut settings, Message::FailureThreshold("12".into()));
-        for draft in ["", "0", "101", "invalid"] {
+        for draft in ["", "0", "101", "256", "invalid"] {
             editor.update(&mut settings, Message::FailureThreshold(draft.into()));
             assert_eq!(editor.failure_threshold.as_deref(), Some(draft));
             assert!(editor.has_invalid_inputs());
             assert_eq!(
                 settings.advanced.execution_failure_suppression_threshold,
                 12
+            );
+        }
+        for threshold in [1, 100] {
+            editor.update(
+                &mut settings,
+                Message::FailureThreshold(threshold.to_string()),
+            );
+            assert!(!editor.has_invalid_inputs());
+            assert_eq!(
+                settings.advanced.execution_failure_suppression_threshold,
+                threshold
             );
         }
         editor.reset_drafts();

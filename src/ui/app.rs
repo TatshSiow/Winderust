@@ -2147,6 +2147,10 @@ impl WinderustApp {
             Message::Save if !self.activity_inputs.valid() => {
                 self.error_message = t!("by_activity.invalid_timing").to_string();
             }
+            Message::Save if self.preferences.has_invalid_failure_threshold() => {
+                self.error_message =
+                    t!("settings.invalid_failure_suppression_threshold").to_string();
+            }
             Message::Save
                 if self.timer.has_invalid_inputs() || self.preferences.has_invalid_inputs() =>
             {
