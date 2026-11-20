@@ -936,11 +936,12 @@ sleep_prevention:
 
 timer_resolution:
   intro_1: "Winderust requests timer resolution for its own process while a matching app is in the foreground. This does not guarantee a change to that app's timer resolution."
-  intro_2: "Each foreground rule can use its own timer resolution value in milliseconds."
+  intro_2: "Enter a positive number in milliseconds for each foreground rule."
   intro_3: "Winderust releases its request when no foreground rule matches, this control is disabled, or the app exits."
   enable: "Enable Timer Resolution Control"
   warning: "Lower timer values can increase CPU wakeups and battery drain. Leave this off unless a workload needs it."
   requested: "Winderust request"
+  invalid_request: "Winderust request must be a positive number in milliseconds."
   no_rules: "No custom rules are configured."
 
 memory_trim:

@@ -94,7 +94,7 @@ impl Editor {
                 s.enabled,
                 Some(Message::Enabled)
             ),
-            super::widgets::setting_title("common.rules"),
+            super::widgets::setting_title_with_help("common.rules", "", "timer_resolution.intro_2"),
             super::app_picker::view(
                 &self.path,
                 candidates,
