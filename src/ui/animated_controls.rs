@@ -1,4 +1,4 @@
-//! Native controls with interpolated styles; input behavior remains owned by Iced.
+//! Native pointer controls with interpolated styles and shared keyboard activation.
 use super::{motion, widgets};
 use iced::{Element, Length, Padding, Theme};
 use std::{cell::Cell, rc::Rc};
@@ -26,6 +26,8 @@ pub(super) fn background(a: iced::Background, b: iced::Background, t: f32) -> ic
 }
 pub(super) struct Button<'a, M> {
     inner: iced::widget::Button<'a, M>,
+    on_press: Option<M>,
+    keyboard: bool,
     progress: Rc<Cell<f32>>,
     selection: Option<(bool, Rc<Cell<f32>>)>,
 }
@@ -33,6 +35,8 @@ impl<'a, M: 'a> Button<'a, M> {
     pub(super) fn new(content: impl Into<Element<'a, M>>) -> Self {
         Self {
             inner: iced::widget::button(content),
+            on_press: None,
+            keyboard: true,
             progress: Rc::new(Cell::new(0.0)),
             selection: None,
         }
@@ -74,11 +78,15 @@ impl<'a, M: 'a> Button<'a, M> {
         self
     }
     pub(super) fn on_press(mut self, v: M) -> Self {
-        self.inner = self.inner.on_press(v);
+        self.on_press = Some(v);
         self
     }
     pub(super) fn on_press_maybe(mut self, v: Option<M>) -> Self {
-        self.inner = self.inner.on_press_maybe(v);
+        self.on_press = v;
+        self
+    }
+    pub(super) fn pointer_only(mut self) -> Self {
+        self.keyboard = false;
         self
     }
     pub(super) fn style(
@@ -111,7 +119,20 @@ impl<'a, M: 'a> Button<'a, M> {
 }
 impl<'a, M: Clone + 'a> From<Button<'a, M>> for Element<'a, M> {
     fn from(value: Button<'a, M>) -> Self {
-        let button = motion::wrap(value.inner, false, motion::Effect::Hover(value.progress));
+        let action = if value.keyboard {
+            value
+                .on_press
+                .clone()
+                .map(|message| Box::new(move || message.clone()) as motion::Action<'a, M>)
+        } else {
+            None
+        };
+        let button = motion::wrap_action(
+            value.inner.on_press_maybe(value.on_press),
+            false,
+            motion::Effect::Hover(value.progress),
+            action,
+        );
         if let Some((selected, blend)) = value.selection {
             motion::wrap(button, selected, motion::Effect::Control(blend))
         } else {
@@ -122,7 +143,7 @@ impl<'a, M: Clone + 'a> From<Button<'a, M>> for Element<'a, M> {
 pub(super) struct Checkbox<'a, M> {
     inner: iced::widget::Checkbox<'a, M>,
     value: bool,
-    interactive: bool,
+    on_toggle: Option<Rc<dyn Fn(bool) -> M + 'a>>,
     progress: Rc<Cell<f32>>,
 }
 impl<'a, M: 'a> Checkbox<'a, M> {
@@ -159,7 +180,7 @@ impl<'a, M: 'a> Checkbox<'a, M> {
         Self {
             inner,
             value,
-            interactive: false,
+            on_toggle: None,
             progress,
         }
     }
@@ -168,25 +189,33 @@ impl<'a, M: 'a> Checkbox<'a, M> {
         self
     }
     pub(super) fn on_toggle(mut self, f: impl Fn(bool) -> M + 'a) -> Self {
-        self.interactive = true;
-        self.inner = self.inner.on_toggle(f);
+        self.on_toggle = Some(Rc::new(f));
         self
     }
     pub(super) fn on_toggle_maybe(mut self, f: Option<impl Fn(bool) -> M + 'a>) -> Self {
-        self.interactive = f.is_some();
-        self.inner = self.inner.on_toggle_maybe(f);
+        self.on_toggle = f.map(|f| Rc::new(f) as Rc<dyn Fn(bool) -> M + 'a>);
         self
     }
 }
 impl<'a, M: 'a> From<Checkbox<'a, M>> for Element<'a, M> {
     fn from(value: Checkbox<'a, M>) -> Self {
-        motion::wrap(
-            value.inner,
-            value.value,
+        let checked = value.value;
+        let interactive = value.on_toggle.is_some();
+        let on_toggle = value
+            .on_toggle
+            .clone()
+            .map(|on_toggle| move |checked| on_toggle(checked));
+        let action = value
+            .on_toggle
+            .map(|on_toggle| Box::new(move || on_toggle(!checked)) as motion::Action<'a, M>);
+        motion::wrap_action(
+            value.inner.on_toggle_maybe(on_toggle),
+            checked,
             motion::Effect::Checkbox {
                 blend: value.progress,
-                interactive: value.interactive,
+                interactive,
             },
+            action,
         )
     }
 }

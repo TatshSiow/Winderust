@@ -674,8 +674,11 @@ pub(super) fn toggle_card<'a, M: Clone + 'a>(
     value: bool,
     action: Option<impl Fn(bool) -> M + 'a>,
 ) -> Element<'a, M> {
-    let message = action.as_ref().map(|action| action(!value));
-    action_card(setting_row(key, switch(value, action)), message)
+    let message = action.map(|action| action(!value));
+    action_card(
+        setting_row(key, switch_control(value, message.clone(), false)),
+        message,
+    )
 }
 
 /// Separate complete settings, keeping each label, description, and control together.
@@ -811,16 +814,29 @@ pub(super) fn switch<'a, M: Clone + 'a>(
     value: bool,
     action: Option<impl Fn(bool) -> M + 'a>,
 ) -> Element<'a, M> {
-    let interactive = action.is_some();
+    switch_control(value, action.map(|action| action(!value)), true)
+}
+
+fn switch_control<'a, M: Clone + 'a>(
+    value: bool,
+    message: Option<M>,
+    keyboard: bool,
+) -> Element<'a, M> {
+    let interactive = message.is_some();
+    let on_toggle = message.clone().map(|message| move |_| message.clone());
+    let action = message
+        .filter(|_| keyboard)
+        .map(|message| Box::new(move || message.clone()) as super::motion::Action<'a, M>);
     row![
         text(rust_i18n::t!(if value { "common.on" } else { "common.off" }).to_string()),
-        super::motion::wrap(
+        super::motion::wrap_action(
             iced::widget::toggler(value)
                 .size(design::SWITCH_SIZE)
                 .style(toggle_style)
-                .on_toggle_maybe(action),
+                .on_toggle_maybe(on_toggle),
             value,
-            super::motion::Effect::Switch { interactive }
+            super::motion::Effect::Switch { interactive },
+            action,
         )
     ]
     .spacing(design::space::SMALL)

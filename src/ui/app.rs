@@ -1061,6 +1061,7 @@ impl WinderustApp {
             }
             pages = pages.push(
                 button(entry)
+                    .pointer_only()
                     .width(Fill)
                     .padding([design::space::MEDIUM as u16, design::space::SMALL as u16])
                     .style(move |theme, status| {
@@ -2894,6 +2895,7 @@ impl WinderustApp {
                 .center_x(Fill)
                 .center_y(Fill),
             )
+            .pointer_only()
             .width(Fill)
             .height(design::NAVIGATION_ITEM_HEIGHT)
             .padding([design::space::CONTROL as u16, design::space::TIGHT as u16])

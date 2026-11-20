@@ -324,6 +324,7 @@ pub(super) fn rail_item<'a, Message: Clone + 'a>(
     .spacing(design::space::TIGHT)
     .align_x(iced::Center);
     super::widgets::button(container(content).center_x(iced::Fill).center_y(iced::Fill))
+        .pointer_only()
         .width(iced::Fill)
         .height(design::NAVIGATION_ITEM_HEIGHT)
         .padding([design::space::CONTROL as u16, design::space::TIGHT as u16])

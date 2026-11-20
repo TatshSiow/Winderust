@@ -17,6 +17,7 @@ mod instance_balancing;
 mod instance_limits;
 mod interrupt_timing;
 mod keep_running;
+mod keyboard_focus;
 mod memory_trim;
 mod modal;
 mod motion;

@@ -17,15 +17,19 @@ type OptionColor<T> = fn(&T, &Theme) -> Option<iced::Color>;
 type Field<'a, T, M> = PickList<'a, T, Rc<[T]>, T, M>;
 
 struct State {
+    focus: super::keyboard_focus::Focus,
     chevron: iced_anim::Transition<f32>,
     keyboard: Option<usize>,
+    keyboard_open: bool,
     open: bool,
 }
 
 impl Default for State {
     fn default() -> Self {
         Self {
+            focus: super::keyboard_focus::Focus::default(),
             keyboard: None,
+            keyboard_open: false,
             open: false,
             chevron: super::motion::animation(false),
         }
@@ -117,6 +121,7 @@ impl<'a, T: ToString + PartialEq + Clone + 'a, M: Clone + 'a> Select<'a, T, M> {
                 )
                 .width(Length::Fill)
                 .height(40)
+                .pointer_only()
                 .clip(true)
                 .padding([0, 0])
                 .style(move |theme, status| {
@@ -238,6 +243,9 @@ impl<'a, T: ToString + PartialEq + Clone + 'a, M: Clone + 'a> Widget<M, Theme, R
             },
             *viewport,
         );
+        if !self.options.is_empty() {
+            state.focus.draw(renderer, theme, bounds);
+        }
     }
     fn operate(
         &mut self,
@@ -246,6 +254,13 @@ impl<'a, T: ToString + PartialEq + Clone + 'a, M: Clone + 'a> Widget<M, Theme, R
         renderer: &Renderer,
         operation: &mut dyn Operation,
     ) {
+        if !self.options.is_empty() {
+            operation.focusable(
+                None,
+                layout.bounds(),
+                &mut tree.state.downcast_mut::<State>().focus,
+            );
+        }
         self.field
             .operate(&mut tree.children[0], layout, renderer, operation);
     }
@@ -260,6 +275,14 @@ impl<'a, T: ToString + PartialEq + Clone + 'a, M: Clone + 'a> Widget<M, Theme, R
         shell: &mut Shell<'_, M>,
         viewport: &Rectangle,
     ) {
+        let state = tree.state.downcast_mut::<State>();
+        state.focus.clear_on_pointer(event, shell);
+        if !self.options.is_empty() && state.focus.activate(event, shell) {
+            state.keyboard_open = true;
+            state.keyboard = self.selected.or(Some(0));
+            shell.invalidate_layout();
+            shell.request_redraw();
+        }
         self.field.update(
             &mut tree.children[0],
             event,
@@ -281,6 +304,7 @@ impl<'a, T: ToString + PartialEq + Clone + 'a, M: Clone + 'a> Widget<M, Theme, R
             )
             .is_some();
         let state = tree.state.downcast_mut::<State>();
+        let open = open || state.keyboard_open;
         if let Event::Window(iced::window::Event::RedrawRequested(now)) = event {
             state.chevron.tick(*now);
         }
@@ -312,7 +336,7 @@ impl<'a, T: ToString + PartialEq + Clone + 'a, M: Clone + 'a> Widget<M, Theme, R
         viewport: &Rectangle,
         translation: Vector,
     ) -> Option<overlay::Element<'b, M, Theme, Renderer>> {
-        if self
+        let native_open = self
             .field
             .overlay(
                 &mut tree.children[0],
@@ -321,8 +345,8 @@ impl<'a, T: ToString + PartialEq + Clone + 'a, M: Clone + 'a> Widget<M, Theme, R
                 viewport,
                 translation,
             )
-            .is_none()
-        {
+            .is_some();
+        if !native_open && !tree.state.downcast_ref::<State>().keyboard_open {
             let state = tree.state.downcast_mut::<State>();
             state.keyboard = None;
             state.open = false;
@@ -343,12 +367,14 @@ impl<'a, T: ToString + PartialEq + Clone + 'a, M: Clone + 'a> Widget<M, Theme, R
         let (_, content) = self.menu.as_mut()?;
         let (field_tree, menu_tree) = tree.children.split_at_mut(1);
         menu_tree[0].diff(&*content);
+        let state = tree.state.downcast_mut::<State>();
         Some(overlay::Element::new(Box::new(Menu {
             field: &self.field,
             field_tree: &mut field_tree[0],
             tree: &mut menu_tree[0],
             content,
-            keyboard: &mut tree.state.downcast_mut::<State>().keyboard,
+            keyboard: &mut state.keyboard,
+            keyboard_open: &mut state.keyboard_open,
             selected: self.selected,
             options: &self.options,
             choose: &*self.choose,
@@ -371,6 +397,7 @@ struct Menu<'a, 'b, T: ToString + PartialEq + Clone, M> {
     tree: &'b mut Tree,
     content: &'b mut Element<'a, usize>,
     keyboard: &'b mut Option<usize>,
+    keyboard_open: &'b mut bool,
     selected: Option<usize>,
     options: &'b [T],
     choose: &'b (dyn Fn(T) -> M + 'a),
@@ -381,6 +408,7 @@ impl<'a, T: ToString + PartialEq + Clone + 'a, M: Clone + 'a> Menu<'a, '_, T, M>
     fn close(&mut self, shell: &mut Shell<'_, M>) {
         *self.field_tree = Tree::new(self.field as &dyn Widget<M, Theme, Renderer>);
         *self.keyboard = None;
+        *self.keyboard_open = false;
         shell.invalidate_layout();
         shell.request_redraw();
     }
@@ -490,6 +518,7 @@ impl<'a, T: ToString + PartialEq + Clone + 'a, M: Clone + 'a>
         }
         if let Event::Keyboard(keyboard::Event::KeyPressed {
             key: keyboard::Key::Named(key),
+            repeat,
             ..
         }) = event
         {
@@ -534,15 +563,17 @@ impl<'a, T: ToString + PartialEq + Clone + 'a, M: Clone + 'a>
                     shell.capture_event();
                     return;
                 }
-                Named::Enter => {
-                    if let Some(option) = self
-                        .keyboard
-                        .or(self.selected)
-                        .and_then(|i| self.options.get(i))
-                    {
-                        shell.publish((self.choose)(option.clone()));
+                Named::Enter | Named::Space => {
+                    if !*repeat {
+                        if let Some(option) = self
+                            .keyboard
+                            .or(self.selected)
+                            .and_then(|i| self.options.get(i))
+                        {
+                            shell.publish((self.choose)(option.clone()));
+                        }
+                        self.close(shell);
                     }
-                    self.close(shell);
                     shell.capture_event();
                     return;
                 }
@@ -587,6 +618,120 @@ impl<'a, T: ToString + PartialEq + Clone + 'a, M: Clone + 'a>
 mod tests {
     use super::*;
     use iced::advanced::Overlay;
+
+    #[test]
+    fn keyboard_focus_skips_empty_selects_and_opens_cancels_and_chooses_once() {
+        #[derive(Default)]
+        struct FocusControls(usize);
+        impl Operation for FocusControls {
+            fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation)) {
+                operate(self);
+            }
+            fn focusable(
+                &mut self,
+                _: Option<&iced::advanced::widget::Id>,
+                _: Rectangle,
+                state: &mut dyn iced::advanced::widget::operation::Focusable,
+            ) {
+                self.0 += 1;
+                state.focus();
+            }
+        }
+        fn key(key: keyboard::key::Named, repeat: bool) -> Event {
+            Event::Keyboard(keyboard::Event::KeyPressed {
+                key: keyboard::Key::Named(key),
+                modified_key: keyboard::Key::Named(key),
+                physical_key: keyboard::key::Physical::Unidentified(
+                    keyboard::key::NativeCode::Unidentified,
+                ),
+                location: keyboard::Location::Standard,
+                modifiers: keyboard::Modifiers::empty(),
+                text: None,
+                repeat,
+            })
+        }
+        let renderer = Renderer::new(design::typography::FONT, iced::Pixels(14.0));
+        let bounds = Rectangle::with_size(Size::new(400.0, 300.0));
+        let mut clipboard = iced::advanced::clipboard::Null;
+        for options in [vec![], vec![1, 2, 3]] {
+            let empty = options.is_empty();
+            let mut select = Select::new(options, Some(1), |value| value).width(240);
+            let mut tree = Tree::new(&select as &dyn Widget<i32, Theme, Renderer>);
+            let node = select.layout(
+                &mut tree,
+                &renderer,
+                &layout::Limits::new(Size::ZERO, bounds.size()),
+            );
+            let mut focus = FocusControls::default();
+            select.operate(&mut tree, Layout::new(&node), &renderer, &mut focus);
+            assert_eq!(focus.0, usize::from(!empty));
+            let mut messages = Vec::new();
+            for (open, close) in [
+                (keyboard::key::Named::Space, keyboard::key::Named::Escape),
+                (keyboard::key::Named::Enter, keyboard::key::Named::Space),
+            ] {
+                let mut shell = Shell::new(&mut messages);
+                select.update(
+                    &mut tree,
+                    &key(open, false),
+                    Layout::new(&node),
+                    mouse::Cursor::Unavailable,
+                    &renderer,
+                    &mut clipboard,
+                    &mut shell,
+                    &bounds,
+                );
+                assert_eq!(shell.is_event_captured(), !empty);
+                let overlay = select.overlay(
+                    &mut tree,
+                    Layout::new(&node),
+                    &renderer,
+                    &bounds,
+                    Vector::ZERO,
+                );
+                if empty {
+                    assert!(overlay.is_none());
+                    continue;
+                }
+                let mut overlay = overlay.expect("focused Select opens its menu");
+                let menu = overlay.as_overlay_mut().layout(&renderer, bounds.size());
+                for event in [
+                    key(open, true),
+                    key(keyboard::key::Named::End, false),
+                    key(close, false),
+                ] {
+                    let mut shell = Shell::new(&mut messages);
+                    overlay.as_overlay_mut().update(
+                        &event,
+                        Layout::new(&menu),
+                        mouse::Cursor::Unavailable,
+                        &renderer,
+                        &mut clipboard,
+                        &mut shell,
+                    );
+                    assert!(shell.is_event_captured());
+                }
+                drop(overlay);
+                assert!(select
+                    .overlay(
+                        &mut tree,
+                        Layout::new(&node),
+                        &renderer,
+                        &bounds,
+                        Vector::ZERO,
+                    )
+                    .is_none());
+                assert_eq!(
+                    messages,
+                    if close == keyboard::key::Named::Escape {
+                        vec![]
+                    } else {
+                        vec![3]
+                    }
+                );
+            }
+        }
+    }
 
     #[test]
     fn owned_options_are_not_cloned_when_building_a_select() {
@@ -729,12 +874,14 @@ mod tests {
         let mut content = select.menu(None);
         let mut tree = Tree::new(&content);
         let mut keyboard = None;
+        let mut keyboard_open = false;
         let mut menu = Menu {
             field: &select.field,
             field_tree: &mut field_tree,
             tree: &mut tree,
             content: &mut content,
             keyboard: &mut keyboard,
+            keyboard_open: &mut keyboard_open,
             selected: select.selected,
             options: &select.options,
             choose: &*select.choose,

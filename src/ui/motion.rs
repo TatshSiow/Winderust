@@ -1,7 +1,8 @@
 //! Small control transitions; page changes and layout changes are immediate.
+use super::keyboard_focus::Focus;
 use iced::advanced::{
     layout, renderer,
-    widget::{tree, Operation, Tree},
+    widget::{operation::Focusable, tree, Operation, Tree},
     Clipboard, Layout, Shell, Widget,
 };
 use iced::{mouse, overlay, Element, Event, Length, Rectangle, Renderer, Size, Theme, Vector};
@@ -36,6 +37,7 @@ pub(super) enum Effect {
 struct State {
     animation: iced_anim::Transition<f32>,
     content_key: Option<u64>,
+    focus: Focus,
 }
 pub(super) fn animation(value: bool) -> iced_anim::Transition<f32> {
     iced_anim::Transition::new(f32::from(value))
@@ -50,16 +52,29 @@ struct Motion<'a, M> {
     content: Element<'a, M>,
     target: bool,
     effect: Effect,
+    action: Option<Action<'a, M>>,
 }
+pub(super) type Action<'a, M> = Box<dyn Fn() -> M + 'a>;
+
 pub(super) fn wrap<'a, M: 'a>(
     content: impl Into<Element<'a, M>>,
     target: bool,
     effect: Effect,
 ) -> Element<'a, M> {
+    wrap_action(content, target, effect, None)
+}
+
+pub(super) fn wrap_action<'a, M: 'a>(
+    content: impl Into<Element<'a, M>>,
+    target: bool,
+    effect: Effect,
+    action: Option<Action<'a, M>>,
+) -> Element<'a, M> {
     Element::new(Motion {
         content: content.into(),
         target,
         effect,
+        action,
     })
 }
 impl<M> Motion<'_, M> {
@@ -92,6 +107,7 @@ impl<M> Widget<M, Theme, Renderer> for Motion<'_, M> {
             } else {
                 None
             },
+            focus: Focus::default(),
         })
     }
     fn children(&self) -> Vec<Tree> {
@@ -99,6 +115,9 @@ impl<M> Widget<M, Theme, Renderer> for Motion<'_, M> {
     }
     fn diff(&self, tree: &mut Tree) {
         let state = tree.state.downcast_mut::<State>();
+        if self.action.is_none() {
+            state.focus.unfocus();
+        }
         if let Effect::Content(key) = self.effect {
             if state.content_key != Some(key) {
                 tree.children[0] = Tree::new(&self.content);
@@ -147,7 +166,8 @@ impl<M> Widget<M, Theme, Renderer> for Motion<'_, M> {
         if self.hidden() {
             return;
         }
-        let progress = tree.state.downcast_ref::<State>().value();
+        let state = tree.state.downcast_ref::<State>();
+        let progress = state.value();
         let bounds = layout.bounds();
         let child = layout.children().next().unwrap();
         if matches!(self.effect, Effect::Chevron) {
@@ -221,9 +241,7 @@ impl<M> Widget<M, Theme, Renderer> for Motion<'_, M> {
                 },
                 visual.foreground,
             );
-            return;
-        }
-        if let Effect::Checkbox { interactive, .. } = self.effect {
+        } else if let Effect::Checkbox { interactive, .. } = self.effect {
             use iced::advanced::svg::Renderer as _;
             self.content.as_widget().draw(
                 &tree.children[0],
@@ -256,18 +274,18 @@ impl<M> Widget<M, Theme, Renderer> for Motion<'_, M> {
                 },
                 *viewport,
             );
-            return;
+        } else {
+            self.content.as_widget().draw(
+                &tree.children[0],
+                renderer,
+                theme,
+                style,
+                child,
+                cursor,
+                viewport,
+            );
         }
-
-        self.content.as_widget().draw(
-            &tree.children[0],
-            renderer,
-            theme,
-            style,
-            child,
-            cursor,
-            viewport,
-        );
+        state.focus.draw(renderer, theme, bounds);
     }
     fn update(
         &mut self,
@@ -301,6 +319,7 @@ impl<M> Widget<M, Theme, Renderer> for Motion<'_, M> {
         if state.animation.is_animating() {
             shell.request_redraw();
         }
+        state.focus.clear_on_pointer(event, shell);
         self.content.as_widget_mut().update(
             &mut tree.children[0],
             event,
@@ -311,6 +330,11 @@ impl<M> Widget<M, Theme, Renderer> for Motion<'_, M> {
             shell,
             viewport,
         );
+        if let Some(action) = &self.action {
+            if state.focus.activate(event, shell) {
+                shell.publish(action());
+            }
+        }
     }
     fn operate(
         &mut self,
@@ -320,6 +344,13 @@ impl<M> Widget<M, Theme, Renderer> for Motion<'_, M> {
         operation: &mut dyn Operation,
     ) {
         if !self.hidden() {
+            if self.action.is_some() {
+                operation.focusable(
+                    None,
+                    layout.bounds(),
+                    &mut tree.state.downcast_mut::<State>().focus,
+                );
+            }
             self.content.as_widget_mut().operate(
                 &mut tree.children[0],
                 layout.children().next().unwrap(),
@@ -403,6 +434,7 @@ mod tests {
         let renderer = Renderer::new(iced::Font::DEFAULT, iced::Pixels(14.0));
         for effect in [Effect::Visible, Effect::Content(1)] {
             let mut widget = Motion::<()> {
+                action: None,
                 content: iced::widget::Space::new()
                     .width(Length::Fill)
                     .height(100)
@@ -428,6 +460,7 @@ mod tests {
     fn switch_paints_intermediate_knob_positions() {
         let mut renderer = Renderer::new(iced::Font::DEFAULT, iced::Pixels(14.0));
         let mut widget = Motion::<()> {
+            action: None,
             content: iced::widget::toggler(false).size(20).into(),
             target: true,
             effect: Effect::Switch { interactive: true },
@@ -538,6 +571,7 @@ mod tests {
     fn changing_tabs_does_not_inherit_expanded_cards() {
         let card = |expanded| wrap::<()>(iced::widget::Space::new(), expanded, Effect::Visible);
         let mut widget = Motion {
+            action: None,
             content: card(true),
             target: true,
             effect: Effect::Content(0),
