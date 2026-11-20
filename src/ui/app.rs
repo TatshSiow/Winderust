@@ -2126,7 +2126,7 @@ impl WinderustApp {
                 self.power_plan_control.selected_guid = None;
                 self.settings.cancel();
                 if self.power_tuning.dirty {
-                    self.power_tuning.refresh();
+                    self.power_tuning.refresh(&self.power_plans);
                 }
                 self.reset_editors();
                 rust_i18n::set_locale(self.settings.global().general.language.locale());
@@ -2156,7 +2156,7 @@ impl WinderustApp {
             Message::DiscardAndClose => {
                 self.settings.cancel();
                 if self.power_tuning.dirty {
-                    self.power_tuning.refresh();
+                    self.power_tuning.refresh(&self.power_plans);
                 }
                 return self.shutdown();
             }
@@ -2211,6 +2211,11 @@ impl WinderustApp {
     }
 
     fn save_settings(&mut self) -> Task<Message> {
+        if self.power_tuning.dirty && self.power_tuning.selected_plan(&self.power_plans).is_none() {
+            self.power_tuning.cancel_apply_review();
+            self.error_message = t!("common.selected_plan_unavailable").to_string();
+            return Task::none();
+        }
         let outcome = match self.settings.save() {
             Ok(outcome) => outcome,
             Err(error) => {
@@ -2223,7 +2228,7 @@ impl WinderustApp {
             self.error_message = error.to_string();
         }
         self.publish_settings();
-        if self.power_tuning.dirty && !self.power_tuning.confirm_apply() {
+        if self.power_tuning.dirty && !self.power_tuning.confirm_apply(&self.power_plans) {
             self.error_message = self.power_tuning.status.clone();
             return Task::none();
         }

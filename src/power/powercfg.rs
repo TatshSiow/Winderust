@@ -256,6 +256,22 @@ impl std::fmt::Display for ProcessorPowerApplyError {
 
 impl std::error::Error for ProcessorPowerApplyError {}
 
+pub(crate) fn validate_tuning_plan(guid: &str) -> Result<(), ProcessorPowerApplyError> {
+    let error =
+        |source| ProcessorPowerApplyError::at(ProcessorPowerApplyStage::ValidatePlan, source);
+    if list_plans()
+        .map_err(error)?
+        .iter()
+        .any(|plan| !plan.managed_adaptive && plan.guid.eq_ignore_ascii_case(guid))
+    {
+        Ok(())
+    } else {
+        Err(error(
+            "The selected plan is unavailable for persistent tuning.".to_owned(),
+        ))
+    }
+}
+
 pub fn apply_processor_power_values(
     guid: &str,
     values: ProcessorPowerSourceValues,

@@ -482,7 +482,10 @@ Implementation paths:
 - `src/ui/advanced_power_plan_tuning.rs`: plan selection,
   presets, separate A/C and battery controls, and apply/reset UI.
 - `src/application/advanced_power_plan_tuning.rs`: typed persistent read,
-  staged apply, and mandatory post-attempt readback service.
+  staged apply, and mandatory post-attempt readback service. The Windows store
+  rechecks the selected GUID using `src/power/powercfg.rs::validate_tuning_plan`
+  before writing. It rejects managed Adaptive plans identified by scheme name and
+  description through the existing [Power Scheme APIs](#power-scheme-apis).
 - `src/power/powercfg.rs`: typed normalization, ordered stages, active-plan refresh decision, and
   managed/persistent domain semantics.
 - `src/platform/windows/power_plan.rs`: raw processor-setting reads/writes, scheme activation, GUID

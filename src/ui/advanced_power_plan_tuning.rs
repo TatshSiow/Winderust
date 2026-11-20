@@ -11,6 +11,11 @@ use crate::ui::scrolling::scrollable;
 use iced::widget::{column, row, text};
 use iced::{Element, Fill};
 use rust_i18n::t;
+use std::collections::BTreeMap;
+
+fn tuning_plans(plans: &[PowerPlan]) -> impl Iterator<Item = &PowerPlan> {
+    plans.iter().filter(|plan| !plan.managed_adaptive)
+}
 
 #[derive(Default)]
 pub(super) struct Editor {
@@ -22,6 +27,7 @@ pub(super) struct Editor {
     pub(super) status: String,
     preset: Option<PresetEditor>,
     review: Option<ApplyReview>,
+    restore_points: BTreeMap<String, RestorePoint>,
     expanded: [bool; 2],
     selected_presets: [Option<PresetChoice>; 2],
 }
@@ -57,6 +63,34 @@ struct PresetEditor {
 pub(super) enum ApplyOrigin {
     Page,
     Save,
+    Restore,
+}
+
+#[derive(Clone, Copy)]
+struct RestorePoint {
+    previous: AdvancedPowerPlanTuningSourceValues,
+    applied: AdvancedPowerPlanTuningSourceValues,
+}
+
+impl RestorePoint {
+    fn capture(
+        previous: AdvancedPowerPlanTuningSourceValues,
+        applied: AdvancedPowerPlanTuningSourceValues,
+    ) -> Option<Self> {
+        // The tuning writer normalizes percentages and leaves absent policies unchanged.
+        (previous == previous.normalized()
+            && [
+                (previous.ac, applied.ac),
+                (previous.battery, applied.battery),
+            ]
+            .into_iter()
+            .all(|(before, after)| {
+                before.scheduling_policy.is_some() == after.scheduling_policy.is_some()
+                    && before.short_scheduling_policy.is_some()
+                        == after.short_scheduling_policy.is_some()
+            }))
+        .then_some(Self { previous, applied })
+    }
 }
 
 struct ApplyReview {
@@ -110,6 +144,7 @@ pub(super) enum Message {
     Group(Source),
     Refresh,
     ReviewApply,
+    ReviewRestore,
     ConfirmApply,
     CancelApply,
     Value(Source, Field, u32),
@@ -162,26 +197,40 @@ impl Editor {
         if self.dirty {
             return;
         }
-        if !plans.iter().any(|p| Some(&p.guid) == self.target.as_ref()) {
-            let target = plans
-                .iter()
+        if self.selected_plan(plans).is_none() {
+            let target = tuning_plans(plans)
                 .find(|p| p.active)
-                .or_else(|| plans.first())
+                .or_else(|| tuning_plans(plans).next())
                 .map(|p| p.guid.clone());
             self.select_plan(target);
         } else if self.values.is_none() {
-            self.refresh();
+            self.read_selected_plan();
         }
     }
+
+    pub(super) fn selected_plan<'a>(&self, plans: &'a [PowerPlan]) -> Option<&'a PowerPlan> {
+        let guid = self.target.as_deref()?;
+        tuning_plans(plans).find(|plan| plan.guid.eq_ignore_ascii_case(guid))
+    }
+
     fn select_plan(&mut self, target: Option<String>) {
         self.target = target;
         self.values = None;
         self.personality = None;
         self.selected_presets = [None, None];
-        self.refresh();
+        self.read_selected_plan();
     }
 
-    pub(super) fn refresh(&mut self) {
+    pub(super) fn refresh(&mut self, plans: &[PowerPlan]) {
+        self.dirty = false;
+        if self.selected_plan(plans).is_some() {
+            self.read_selected_plan();
+        } else {
+            self.ensure_plan(plans);
+        }
+    }
+
+    fn read_selected_plan(&mut self) {
         self.cancel_apply_review();
         let Some(guid) = &self.target else {
             self.values = None;
@@ -219,18 +268,16 @@ impl Editor {
         let (Some(guid), Some(values)) = (&self.target, self.values) else {
             return Err(t!("processor_power.no_active_plan").to_string());
         };
-        let name = plans
-            .iter()
-            .find(|plan| plan.guid.eq_ignore_ascii_case(guid))
-            .map(|plan| plan.name.clone())
-            .ok_or_else(|| t!("processor_power.no_active_plan").to_string())?;
+        let plan = self
+            .selected_plan(plans)
+            .ok_or_else(|| t!("common.selected_plan_unavailable").to_string())?;
         let current = self
             .service
             .read_values(guid)
             .map_err(|error| error.to_string())?;
         self.review = Some(ApplyReview {
             guid: guid.clone(),
-            name,
+            name: plan.name.clone(),
             current,
             requested: values.normalized(),
             origin,
@@ -246,17 +293,85 @@ impl Editor {
         self.review = None;
     }
 
-    pub(super) fn confirm_apply(&mut self) -> bool {
+    fn restore_point_for<'a>(
+        &self,
+        plans: &'a [PowerPlan],
+    ) -> Option<(&'a PowerPlan, RestorePoint)> {
+        if self.dirty || self.review.is_some() {
+            return None;
+        }
+        let plan = self.selected_plan(plans)?;
+        let point = *self.restore_points.get(&plan.guid)?;
+        (self.values == Some(point.applied)).then_some((plan, point))
+    }
+
+    fn review_restore(&mut self, plans: &[PowerPlan]) -> Result<(), String> {
+        let Some((plan, point)) = self.restore_point_for(plans) else {
+            return Ok(());
+        };
+        let current = self
+            .service
+            .read_values(&plan.guid)
+            .map_err(|error| error.to_string())?;
+        if current != point.applied {
+            self.values = Some(current);
+            return Err(t!("processor_power.restore_values_changed").to_string());
+        }
+        self.review = Some(ApplyReview {
+            guid: plan.guid.clone(),
+            name: plan.name.clone(),
+            current,
+            requested: point.previous,
+            origin: ApplyOrigin::Restore,
+        });
+        Ok(())
+    }
+
+    fn remember_verified_write(
+        &mut self,
+        review: &ApplyReview,
+        actual: AdvancedPowerPlanTuningSourceValues,
+    ) -> bool {
+        if review.origin == ApplyOrigin::Restore {
+            if actual != review.requested {
+                return false;
+            }
+            self.restore_points.remove(&review.guid);
+        } else if actual != review.current {
+            match RestorePoint::capture(review.current, actual) {
+                Some(point) => {
+                    self.restore_points.insert(review.guid.clone(), point);
+                }
+                None => {
+                    self.restore_points.remove(&review.guid);
+                }
+            }
+        }
+        true
+    }
+
+    pub(super) fn confirm_apply(&mut self, plans: &[PowerPlan]) -> bool {
         let Some(review) = self.review.take() else {
             return false;
         };
-        if self.target.as_ref() != Some(&review.guid)
-            || self
-                .values
+        let restoring = review.origin == ApplyOrigin::Restore;
+        let draft_matches = if restoring {
+            !self.dirty
+                && self.values == Some(review.current)
+                && self.restore_points.get(&review.guid).is_some_and(|point| {
+                    point.applied == review.current && point.previous == review.requested
+                })
+        } else {
+            self.values
                 .map(AdvancedPowerPlanTuningSourceValues::normalized)
-                != Some(review.requested)
-        {
+                == Some(review.requested)
+        };
+        if self.target.as_ref() != Some(&review.guid) || !draft_matches {
             self.status = t!("processor_power.review_stale").to_string();
+            return false;
+        }
+        if self.selected_plan(plans).is_none() {
+            self.status = t!("common.selected_plan_unavailable").to_string();
             return false;
         }
         let outcome =
@@ -266,7 +381,12 @@ impl Editor {
             {
                 Ok(outcome) => outcome,
                 Err(AdvancedPowerPlanTuningError::ValuesChanged) => {
-                    self.status = t!("processor_power.review_stale").to_string();
+                    self.status = if restoring {
+                        self.values = self.service.read_values(&review.guid).ok();
+                        t!("processor_power.restore_values_changed").to_string()
+                    } else {
+                        t!("processor_power.review_stale").to_string()
+                    };
                     return false;
                 }
                 Err(error) => {
@@ -275,15 +395,25 @@ impl Editor {
                 }
             };
         self.values = outcome.actual_values;
-        self.dirty = self.values.is_some() && !outcome.applied;
+        self.dirty = !restoring && self.values.is_some() && !outcome.applied;
         match outcome.error {
             Some(error) => {
                 self.status = error.to_string();
                 false
             }
             None => {
-                self.dirty = false;
-                self.status = t!("processor_power.applied_custom", plan = &review.guid).to_string();
+                if !self
+                    .values
+                    .is_some_and(|actual| self.remember_verified_write(&review, actual))
+                {
+                    self.status = t!("processor_power.restore_not_verified").to_string();
+                    return false;
+                }
+                self.status = if restoring {
+                    t!("processor_power.restored_previous", plan = &review.name).to_string()
+                } else {
+                    t!("processor_power.applied_custom", plan = &review.guid).to_string()
+                };
                 true
             }
         }
@@ -299,23 +429,34 @@ impl Editor {
                 self.expanded[source as usize] = !self.expanded[source as usize];
             }
             Message::Plan(guid) => {
-                if self.target.as_ref() == Some(&guid) {
+                if self
+                    .target
+                    .as_ref()
+                    .is_some_and(|target| target.eq_ignore_ascii_case(&guid))
+                {
                     return;
                 }
                 if self.dirty {
                     self.status = t!("processor_power.save_before_changing_plan").to_string();
-                } else if plans.iter().any(|p| p.guid.eq_ignore_ascii_case(&guid)) {
-                    self.select_plan(Some(guid));
+                } else if let Some(plan) =
+                    tuning_plans(plans).find(|plan| plan.guid.eq_ignore_ascii_case(&guid))
+                {
+                    self.select_plan(Some(plan.guid.clone()));
                 }
             }
-            Message::Refresh => self.refresh(),
+            Message::Refresh => self.refresh(plans),
             Message::ReviewApply => {
                 if let Err(error) = self.review_apply(plans, ApplyOrigin::Page) {
                     self.status = error;
                 }
             }
+            Message::ReviewRestore => {
+                if let Err(error) = self.review_restore(plans) {
+                    self.status = error;
+                }
+            }
             Message::ConfirmApply => {
-                self.confirm_apply();
+                self.confirm_apply(plans);
             }
             Message::CancelApply => self.cancel_apply_review(),
             Message::Value(source, field, value) => {
@@ -469,8 +610,7 @@ impl Editor {
         plans: &[PowerPlan],
         mode: EffectivePowerMode,
     ) -> Element<'a, Message> {
-        let choices = plans
-            .iter()
+        let choices = tuning_plans(plans)
             .map(|p| PlanChoice(p.guid.clone(), p.display_name()))
             .collect::<Vec<_>>();
         let selected = choices
@@ -495,7 +635,7 @@ impl Editor {
             )
         ]
         .spacing(super::widgets::CARD_GAP);
-        if let Some(plan) = plans.iter().find(|p| Some(&p.guid) == self.target.as_ref()) {
+        if let Some(plan) = self.selected_plan(plans) {
             if !plan.active {
                 body = body.push(text(
                     t!(
@@ -608,20 +748,26 @@ impl Editor {
                 ));
             }
         }
+        let mut actions = row![
+            action_button(t!("processor_power.refresh_values").to_string())
+                .on_press_maybe(self.target.as_ref().map(|_| Message::Refresh)),
+            action_button(t!("settings.apply").to_string())
+                .style(super::widgets::primary_button)
+                .on_press_maybe(
+                    (self.values.is_some() && self.dirty && self.selected_plan(plans).is_some())
+                        .then_some(Message::ReviewApply)
+                )
+        ]
+        .spacing(design::space::SMALL)
+        .align_y(iced::Center);
+        if self.restore_point_for(plans).is_some() {
+            actions = actions.push(
+                action_button(t!("processor_power.restore_previous").to_string())
+                    .on_press(Message::ReviewRestore),
+            );
+        }
         body = body
-            .push(super::widgets::settings_card(
-                row![
-                    action_button(t!("processor_power.refresh_values").to_string())
-                        .on_press_maybe(self.target.as_ref().map(|_| Message::Refresh)),
-                    action_button(t!("settings.apply").to_string())
-                        .style(super::widgets::primary_button)
-                        .on_press_maybe(
-                            (self.values.is_some() && self.dirty).then_some(Message::ReviewApply)
-                        )
-                ]
-                .spacing(design::space::SMALL)
-                .align_y(iced::Center),
-            ))
+            .push(super::widgets::settings_card(actions))
             .push(text(&self.status));
         scrollable(body).height(Fill).width(Fill).into()
     }
@@ -669,13 +815,17 @@ impl Editor {
             body = body
                 .push(text(t!("processor_power.no_changes").to_string()).style(text::secondary));
         }
+        let (title, action) = if review.origin == ApplyOrigin::Restore {
+            (
+                t!("processor_power.restore_previous"),
+                t!("processor_power.restore"),
+            )
+        } else {
+            (t!("processor_power.review_changes"), t!("settings.apply"))
+        };
         Some(widgets::modal_frame(
             row![
-                widgets::heading(
-                    t!("processor_power.review_changes").to_string(),
-                    design::typography::DIALOG_TITLE
-                )
-                .width(Fill),
+                widgets::heading(title.to_string(), design::typography::DIALOG_TITLE).width(Fill),
                 icon_button("icons/x.svg").on_press(Message::CancelApply)
             ]
             .align_y(iced::Center),
@@ -684,7 +834,7 @@ impl Editor {
                 action_button(t!("common.cancel").to_string())
                     .style(widgets::tertiary_button)
                     .on_press(Message::CancelApply),
-                action_button(t!("settings.apply").to_string())
+                action_button(action.to_string())
                     .style(widgets::primary_button)
                     .on_press(Message::ConfirmApply)
             ]
@@ -1106,7 +1256,7 @@ mod tests {
             dirty: true,
             ..Default::default()
         };
-        assert!(!editor.confirm_apply());
+        assert!(!editor.confirm_apply(&[]));
         let review = || ApplyReview {
             guid: "first-plan".into(),
             name: "Balanced".into(),
@@ -1117,13 +1267,13 @@ mod tests {
 
         editor.review = Some(review());
         editor.update(&mut vec![], &[], Message::CancelApply);
-        assert!(!editor.confirm_apply());
+        assert!(!editor.confirm_apply(&[]));
         assert_eq!(editor.values, Some(draft));
         assert!(editor.dirty);
 
         editor.review = Some(review());
         editor.target = Some("second-plan".into());
-        assert!(!editor.confirm_apply());
+        assert!(!editor.confirm_apply(&[]));
         assert_eq!(editor.status, t!("processor_power.review_stale"));
         assert_eq!(editor.values, Some(draft));
         assert!(editor.dirty);
@@ -1131,9 +1281,140 @@ mod tests {
         editor.review = Some(review());
         editor.target = Some("first-plan".into());
         editor.values = Some(current);
-        assert!(!editor.confirm_apply());
+        assert!(!editor.confirm_apply(&[]));
         assert_eq!(editor.status, t!("processor_power.review_stale"));
         assert_eq!(editor.values, Some(current));
+    }
+
+    #[test]
+    fn temporary_adaptive_plan_is_unavailable_for_tuning_even_after_review() {
+        let mut plans = [
+            PowerPlan {
+                guid: "adaptive".into(),
+                name: "Winderust Adaptive".into(),
+                active: true,
+                managed_adaptive: true,
+            },
+            PowerPlan {
+                guid: "saved-plan".into(),
+                name: "Saved plan".into(),
+                active: false,
+                managed_adaptive: false,
+            },
+        ];
+        let mut editor = Editor::default();
+        editor.ensure_plan(&plans);
+        assert_eq!(editor.selected_plan(&plans), Some(&plans[1]));
+        editor.update(&mut vec![], &plans, Message::Plan(plans[0].guid.clone()));
+        assert_eq!(editor.selected_plan(&plans), Some(&plans[1]));
+
+        let current = AdvancedPowerPlanTuningSourceValues::same(
+            AdvancedPowerPlanTuningValues::for_preset(ProcessorPowerPreset::Balanced),
+        );
+        let mut draft = current;
+        draft.ac.processor.core_parking_min = 25;
+        let review = ApplyReview {
+            guid: plans[1].guid.clone(),
+            name: plans[1].name.clone(),
+            current,
+            requested: draft,
+            origin: ApplyOrigin::Save,
+        };
+        editor.dirty = true;
+        editor.values = Some(draft);
+        editor.review = Some(review);
+        plans[1].managed_adaptive = true;
+        editor.ensure_plan(&plans);
+        assert!(!editor.confirm_apply(&plans));
+        assert_eq!(editor.status, t!("common.selected_plan_unavailable"));
+        assert!(editor.review.is_none());
+        assert_eq!(editor.values, Some(draft));
+        assert!(editor.dirty);
+
+        editor.refresh(&plans);
+        assert!(editor.target.is_none() && editor.values.is_none() && !editor.dirty);
+    }
+
+    #[test]
+    fn restore_requires_the_selected_plan_and_exact_values() {
+        let previous = AdvancedPowerPlanTuningSourceValues::same(
+            AdvancedPowerPlanTuningValues::for_preset(ProcessorPowerPreset::Balanced),
+        );
+        let mut applied = previous;
+        applied.ac.processor.performance_min = 35;
+        let mut plans = ["first-plan", "second-plan"].map(|guid| PowerPlan {
+            guid: guid.into(),
+            name: guid.into(),
+            active: false,
+            managed_adaptive: false,
+        });
+        let mut editor = Editor {
+            target: Some(plans[0].guid.clone()),
+            values: Some(applied),
+            ..Default::default()
+        };
+        let mut review = ApplyReview {
+            guid: plans[0].guid.clone(),
+            name: plans[0].name.clone(),
+            current: previous,
+            requested: applied,
+            origin: ApplyOrigin::Page,
+        };
+        assert!(editor.remember_verified_write(&review, applied));
+
+        // A no-op Apply and a canceled Restore both keep the last changed values.
+        review.current = applied;
+        assert!(editor.remember_verified_write(&review, applied));
+        review.requested = previous;
+        review.origin = ApplyOrigin::Restore;
+        editor.review = Some(review);
+        assert!(editor.restore_point_for(&plans).is_none());
+        editor.discard_editor();
+        let (_, restore_point) = editor.restore_point_for(&plans).unwrap();
+        assert_eq!(restore_point.previous, previous);
+
+        editor.dirty = true;
+        assert!(editor.restore_point_for(&plans).is_none());
+        editor.dirty = false;
+        editor.target = Some(plans[1].guid.clone());
+        assert!(editor.restore_point_for(&plans).is_none());
+        editor.target = Some(plans[0].guid.clone());
+        assert!(editor.restore_point_for(&plans[1..]).is_none());
+        plans[0].managed_adaptive = true;
+        assert!(editor.restore_point_for(&plans).is_none());
+        plans[0].managed_adaptive = false;
+
+        let review = ApplyReview {
+            guid: plans[0].guid.clone(),
+            name: plans[0].name.clone(),
+            current: applied,
+            requested: previous,
+            origin: ApplyOrigin::Restore,
+        };
+        let mut partial = previous;
+        partial.ac.short_scheduling_policy = Some(ProcessorSchedulingPolicy::AllProcessors);
+        assert!(!editor.remember_verified_write(&review, partial));
+        editor.values = Some(partial);
+        assert!(editor.restore_point_for(&plans).is_none());
+        editor.values = Some(applied);
+        assert!(editor.restore_point_for(&plans).is_some());
+
+        assert!(editor.remember_verified_write(&review, previous));
+        assert!(editor.restore_points.is_empty());
+    }
+
+    #[test]
+    fn restore_refuses_previous_values_the_writer_cannot_round_trip() {
+        let mut previous = AdvancedPowerPlanTuningSourceValues::same(
+            AdvancedPowerPlanTuningValues::for_preset(ProcessorPowerPreset::Balanced),
+        );
+        let mut applied = previous;
+        applied.battery.scheduling_policy = Some(ProcessorSchedulingPolicy::Automatic);
+        assert!(RestorePoint::capture(previous, applied).is_none());
+
+        previous.ac.processor.performance_min = 75;
+        previous.ac.processor.performance_max = 50;
+        assert!(RestorePoint::capture(previous, previous.normalized()).is_none());
     }
 
     #[test]
@@ -1285,7 +1566,7 @@ mod tests {
                 Message::Value(Source::Ac, Field::Minimum, 25),
             );
             assert!(!editor.dirty);
-            assert!(!editor.confirm_apply());
+            assert!(!editor.confirm_apply(&plans));
         }
     }
 

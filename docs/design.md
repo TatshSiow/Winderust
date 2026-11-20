@@ -221,6 +221,9 @@ hover/press; background shading supplies feedback.
 
 ### Advanced Power Plan Tuning
 
+- Offer saved Windows plans in the target selector. If the temporary Winderust
+  Adaptive plan is active, show it as the active plan while the selected saved
+  plan remains editable.
 - Expose separate Plugged In / On Battery long- and short-running thread scheduling
   policies for hybrid processors. Read the selected plan and offer all six Windows
   choices without an implicit Automatic override. Missing settings are unavailable;
@@ -231,6 +234,9 @@ hover/press; background shading supplies feedback.
 - Apply and Save open the same review for pending tuning edits. Show the target
   plan and only changed values, grouped by Plugged In and On Battery. Cancel
   keeps the tuning draft.
+- Restore previous tuning values opens the same review for the selected plan's
+  previous values. It is available for the current Winderust session after a
+  verified change and requires applying or discarding any pending edits first.
 
 ### Watchdog
 

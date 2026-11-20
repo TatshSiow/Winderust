@@ -296,9 +296,16 @@ Read the relevant section before changing feature policy, ownership, restoration
 - Advanced Power Plan Tuning captures the target plan's GUID, live values, and
   normalized draft in the review. The same review gates page Apply and any save
   that includes tuning edits. A fresh read must match the reviewed values before
-  the staged write starts.
+  the staged write starts. Selection, confirmation, and the Windows write
+  preflight exclude the temporary Winderust Adaptive plan.
   A stale review or failed preflight read preserves the draft and requires a new
   review. Readback verifies the outcome and reports any partial application.
+- Restore previous tuning values keeps one in-memory restore point per plan GUID
+  after a verified Apply that changed values. It captures the pre-apply values
+  only when the tuning writer can reproduce them exactly. Restore requires a
+  clean editor, an unmanaged plan, and live values that match the verified Apply
+  readback. It uses the same explicit confirmation and consumes the point after
+  exact readback of the previous values. Exit clears the points.
 - `src/backend/self_power.rs` owns Winderust's hidden-to-tray priority and Power
   Throttling lifecycle, including strict baseline capture, verification, compensation, retry, and
   clean shutdown. Visibility changes apply synchronously; a process-lifetime

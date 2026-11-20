@@ -1,7 +1,7 @@
 use crate::power::{
-    apply_processor_power_values_staged, read_plan_personality, read_processor_power_values,
-    AdvancedPowerPlanTuningSourceValues, AdvancedPowerPlanTuningValues, PowerPlanPersonality,
-    ProcessorPowerApplyError,
+    apply_processor_power_values_staged, powercfg::validate_tuning_plan, read_plan_personality,
+    read_processor_power_values, AdvancedPowerPlanTuningSourceValues,
+    AdvancedPowerPlanTuningValues, PowerPlanPersonality, ProcessorPowerApplyError,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -75,6 +75,7 @@ impl AdvancedPowerPlanTuningStore for WindowsAdvancedPowerPlanTuningStore {
         guid: &str,
         values: AdvancedPowerPlanTuningSourceValues,
     ) -> Result<(), ProcessorPowerApplyError> {
+        validate_tuning_plan(guid)?;
         apply_processor_power_values_staged(guid, values)
     }
 }
