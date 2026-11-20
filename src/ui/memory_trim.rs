@@ -11,6 +11,40 @@ use rust_i18n::t;
 pub(super) struct Editor {
     pub(super) path: String,
     expanded: [bool; 3],
+    thresholds: [Option<String>; 3],
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Threshold {
+    Load,
+    WorkingSet,
+    Idle,
+}
+impl Threshold {
+    const ALL: [Self; 3] = [Self::Load, Self::WorkingSet, Self::Idle];
+
+    fn label_and_maximum(self) -> (&'static str, u64) {
+        match self {
+            Self::Load => ("memory_trim.memory_threshold", 100),
+            Self::WorkingSet => ("memory_trim.working_set_threshold", 1_000_000),
+            Self::Idle => ("memory_trim.idle_time", 86_400),
+        }
+    }
+
+    fn parse(self, raw: &str) -> Option<u64> {
+        raw.parse()
+            .ok()
+            .filter(|value| (1..=self.label_and_maximum().1).contains(value))
+    }
+
+    pub(super) fn error_message(self) -> String {
+        let (label, maximum) = self.label_and_maximum();
+        t!(
+            "memory_trim.invalid_threshold",
+            setting = t!(label),
+            maximum = maximum
+        )
+        .to_string()
+    }
 }
 #[derive(Debug, Clone)]
 pub(super) enum Message {
@@ -18,9 +52,7 @@ pub(super) enum Message {
     Collapse(usize),
     Path(String),
     Add,
-    Load(String),
-    WorkingSet(String),
-    Idle(String),
+    Threshold(Threshold, String),
     RuleEnabled(usize, bool),
     Remove(usize),
 
@@ -28,6 +60,14 @@ pub(super) enum Message {
     Browse,
 }
 impl Editor {
+    pub(super) fn invalid_threshold(&self) -> Option<Threshold> {
+        Threshold::ALL.into_iter().find(|&field| {
+            self.thresholds[field as usize]
+                .as_deref()
+                .is_some_and(|raw| field.parse(raw).is_none())
+        })
+    }
+
     pub(super) fn update(&mut self, settings: &mut MemoryTrimSettings, message: Message) {
         match message {
             Message::Collapse(i) => {
@@ -43,26 +83,17 @@ impl Editor {
                     .push(new_process_exclusion_rule(&self.path));
                 self.path.clear();
             }
-            Message::Load(v) => {
-                if let Ok(v) = v.parse::<u8>() {
-                    if (1..=100).contains(&v) {
-                        settings.system_memory_load_threshold_percent = v;
+            Message::Threshold(field, raw) => {
+                if let Some(value) = field.parse(&raw) {
+                    match field {
+                        Threshold::Load => {
+                            settings.system_memory_load_threshold_percent = value as u8
+                        }
+                        Threshold::WorkingSet => settings.process_working_set_threshold_mb = value,
+                        Threshold::Idle => settings.process_idle_seconds = value,
                     }
                 }
-            }
-            Message::WorkingSet(v) => {
-                if let Ok(v) = v.parse::<u64>() {
-                    if (1..=1_000_000).contains(&v) {
-                        settings.process_working_set_threshold_mb = v;
-                    }
-                }
-            }
-            Message::Idle(v) => {
-                if let Ok(v) = v.parse::<u64>() {
-                    if (1..=86_400).contains(&v) {
-                        settings.process_idle_seconds = v;
-                    }
-                }
+                self.thresholds[field as usize] = Some(raw);
             }
             Message::RuleEnabled(i, v) => {
                 if let Some(r) = settings.exclusions.get_mut(i) {
@@ -89,12 +120,19 @@ impl Editor {
             Some(Message::Enabled)
         ),]
         .spacing(super::widgets::CARD_GAP);
-        let field = |label: &str, unit: &str, value: String, change: fn(String) -> Message| {
+        let field = |field: Threshold, unit: &str, value: u64| {
+            let formatted;
+            let raw = if let Some(raw) = &self.thresholds[field as usize] {
+                raw
+            } else {
+                formatted = value.to_string();
+                &formatted
+            };
             super::widgets::setting_row_with_unit(
-                label,
+                field.label_and_maximum().0,
                 unit,
-                text_input("", &value)
-                    .on_input_maybe(Some(change))
+                text_input("", raw)
+                    .on_input(move |raw| Message::Threshold(field, raw))
                     .width(design::STANDALONE_NUMERIC_WIDTH),
             )
         };
@@ -104,17 +142,15 @@ impl Editor {
                 "memory_trim.category_thresholds",
                 super::widgets::settings_rows([
                     field(
-                        "memory_trim.memory_threshold",
+                        Threshold::Load,
                         "%",
-                        settings.system_memory_load_threshold_percent.to_string(),
-                        Message::Load,
+                        u64::from(settings.system_memory_load_threshold_percent),
                     )
                     .into(),
                     field(
-                        "memory_trim.working_set_threshold",
+                        Threshold::WorkingSet,
                         "MB",
-                        settings.process_working_set_threshold_mb.to_string(),
-                        Message::WorkingSet,
+                        settings.process_working_set_threshold_mb,
                     )
                     .into(),
                 ]),
@@ -122,12 +158,7 @@ impl Editor {
             (
                 1,
                 "memory_trim.category_when_to_trim",
-                column![field(
-                    "memory_trim.idle_time",
-                    "s",
-                    settings.process_idle_seconds.to_string(),
-                    Message::Idle
-                )],
+                column![field(Threshold::Idle, "s", settings.process_idle_seconds,)],
             ),
         ] {
             body = body.push(super::widgets::setting_group(
@@ -206,11 +237,27 @@ mod tests {
         let mut e = Editor::default();
         let mut s = crate::config::Settings::default().memory_trim;
         let before = s.clone();
-        e.update(&mut s, Message::Load("0".into()));
-        e.update(&mut s, Message::Idle("86401".into()));
-        e.update(&mut s, Message::WorkingSet("-1".into()));
+        e.update(&mut s, Message::Threshold(Threshold::Load, "0".into()));
+        e.update(&mut s, Message::Threshold(Threshold::Idle, "86401".into()));
+        e.update(
+            &mut s,
+            Message::Threshold(Threshold::WorkingSet, "-1".into()),
+        );
         e.update(&mut s, Message::Remove(0));
         assert_eq!(s, before);
+        assert_eq!(e.invalid_threshold(), Some(Threshold::Load));
+        e.update(&mut s, Message::Threshold(Threshold::Load, "100".into()));
+        assert_eq!(s.system_memory_load_threshold_percent, 100);
+        assert_eq!(e.invalid_threshold(), Some(Threshold::WorkingSet));
+        e.update(
+            &mut s,
+            Message::Threshold(Threshold::WorkingSet, "1".into()),
+        );
+        assert_eq!(s.process_working_set_threshold_mb, 1);
+        assert_eq!(e.invalid_threshold(), Some(Threshold::Idle));
+        e.update(&mut s, Message::Threshold(Threshold::Idle, "10".into()));
+        assert_eq!(s.process_idle_seconds, 10);
+        assert_eq!(e.invalid_threshold(), None);
         let path = r"C:\Apps\test.exe";
         s.exclusions.push(new_process_exclusion_rule(path));
         e.update(&mut s, Message::Remove(0));

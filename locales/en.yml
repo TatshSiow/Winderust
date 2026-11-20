@@ -960,6 +960,7 @@ memory_trim:
   memory_threshold: "System Memory Load Threshold"
   working_set_threshold: "Process Working Set Threshold"
   idle_time: "Idle Time"
+  invalid_threshold: "%{setting} must be a whole number from 1 to %{maximum}."
   trim_now: "Trim now"
   no_exclusions: "No custom rules are configured."
 

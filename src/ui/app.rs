@@ -2162,6 +2162,8 @@ impl WinderustApp {
                     self.error_message = delay.error_message();
                 } else if self.suspension.has_invalid_thresholds() {
                     self.error_message = t!("app_suspension.invalid_network_threshold").to_string();
+                } else if let Some(threshold) = self.trim.invalid_threshold() {
+                    self.error_message = threshold.error_message();
                 } else if self.power_tuning.dirty {
                     match self.power_tuning.review_apply(
                         &self.power_plans,
@@ -2336,6 +2338,7 @@ impl WinderustApp {
             || self.power_tuning.has_invalid_inputs()
             || self.suspension.invalid_delay().is_some()
             || self.suspension.has_invalid_thresholds()
+            || self.trim.invalid_threshold().is_some()
             || self.timer.has_invalid_inputs()
             || self.preferences.has_invalid_inputs()
             || self.adaptive.validation_error().is_some()

@@ -963,6 +963,7 @@ memory_trim:
   memory_threshold: "系統記憶體負載門檻"
   working_set_threshold: "程序工作集門檻"
   idle_time: "閒置時間"
+  invalid_threshold: "%{setting}必須是 1 到 %{maximum} 之間的整數。"
   trim_now: "立即修剪"
   no_exclusions: "尚未設定自訂規則。"
 
