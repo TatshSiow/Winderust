@@ -337,9 +337,14 @@ pub(super) fn rule_status_chip(theme: &iced::Theme, key: &str) -> iced::widget::
         "common.unknown" => muted_color(theme),
         _ => return indicator_chip(theme, false),
     };
+    let fill = super::animated_controls::color(
+        theme.extended_palette().background.weak.color,
+        color,
+        0.15,
+    );
     iced::widget::container::Style {
-        text_color: Some(color),
-        background: Some(color.scale_alpha(0.15).into()),
+        text_color: Some(design::readable_on(color, fill)),
+        background: Some(fill.into()),
         ..indicator_chip(theme, false)
     }
 }
@@ -1885,6 +1890,24 @@ mod tests {
                         panic!("checkboxes use a solid fill");
                     };
                     assert!(checkbox.icon_color.relative_contrast(fill) >= 3.0);
+                }
+                for key in [
+                    "common.applied",
+                    "common.waiting",
+                    "common.error",
+                    "common.unknown",
+                    "common.inactive",
+                ] {
+                    let chip = rule_status_chip(&theme, key);
+                    let Some(Background::Color(fill)) = chip.background else {
+                        panic!("status chips use a solid fill");
+                    };
+                    assert_eq!(fill.a, 1.0);
+                    let text = chip.text_color.expect("status chips set a text color");
+                    assert!(
+                        text.relative_contrast(fill) >= 4.5,
+                        "{key}: {text:?} on {fill:?}"
+                    );
                 }
             }
         }
