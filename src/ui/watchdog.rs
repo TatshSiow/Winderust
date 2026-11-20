@@ -1,6 +1,6 @@
 use std::{path::Path, sync::Arc};
 
-use super::{app_picker, design, widgets};
+use super::{app_picker, design, process_rules::MatchBy, widgets};
 use crate::config::{
     WatchdogAction, WatchdogMemoryUnit, WatchdogMetric, WatchdogResource, WatchdogRule,
     WatchdogSelector, WatchdogSettings, WATCHDOG_DURATION_RANGE,
@@ -42,22 +42,6 @@ pub(super) struct Editor {
     name: String,
     duration: Option<String>,
     draft: Option<Draft>,
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(super) enum MatchBy {
-    #[default]
-    ExecutablePath,
-    ExecutableName,
-}
-
-impl std::fmt::Display for MatchBy {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&t!(match self {
-            Self::ExecutablePath => "watchdog.executable_path",
-            Self::ExecutableName => "watchdog.executable_name",
-        }))
-    }
 }
 
 struct Draft {
@@ -379,7 +363,7 @@ impl Editor {
                 let value = rule.selector.value();
                 let target = match &rule.selector {
                     WatchdogSelector::ExactPath { executable_path } => executable_path.clone(),
-                    WatchdogSelector::ExactName { .. } => t!("watchdog.any_path").to_string(),
+                    WatchdogSelector::ExactName { .. } => t!("common.any_path").to_string(),
                 };
                 (
                     widgets::stable_key(&format!("{index}:{value}")),
@@ -485,7 +469,7 @@ impl Editor {
             MatchBy::ExecutableName => {
                 let add = self.new_name_selector(settings).map(|_| Message::Add);
                 column![
-                    widgets::setting_title("watchdog.executable_name"),
+                    widgets::setting_title("common.executable_name"),
                     row![
                         widgets::text_input("worker.exe", &self.name)
                             .on_input(Message::Name)
@@ -504,7 +488,7 @@ impl Editor {
         };
         widgets::settings_card(widgets::settings_rows([
             widgets::setting_row(
-                "watchdog.match_by",
+                "common.match_by",
                 widgets::pick_list(
                     vec![MatchBy::ExecutablePath, MatchBy::ExecutableName],
                     Some(self.match_by),

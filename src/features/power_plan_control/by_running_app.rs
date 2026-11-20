@@ -4,7 +4,7 @@ use std::{
 };
 
 use crate::{
-    config::{ByRunningAppRule, ByRunningAppSettings},
+    config::{ByRunningAppRule, ByRunningAppSettings, ExecutableSelector},
     foreground::{
         contains_process_name, process_executable_path, process_session_id, same_executable_path,
         same_process_name, ProcessInfo, EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS,
@@ -67,7 +67,10 @@ impl ByRunningAppManager {
         self.observation_known = true;
         if !automation_enabled
             || !settings.enabled
-            || !settings.rules.iter().any(|rule| rule_plan(rule).is_some())
+            || !settings
+                .rules
+                .iter()
+                .any(|rule| rule.configured_plan().is_some())
         {
             self.release();
             return self.snapshot();
@@ -199,7 +202,7 @@ fn preview_rule_processes(
         .iter()
         .enumerate()
         .map(|(rule_index, rule)| {
-            let Some((configured_path, file_name)) = rule_path(rule) else {
+            let Some((file_name, configured_path)) = rule_executable(rule) else {
                 return Vec::new();
             };
             let mut rows: Vec<_> = processes
@@ -217,7 +220,7 @@ fn preview_rule_processes(
                 })
                 .collect();
             if winner.is_none()
-                && rule_plan(rule).is_some()
+                && rule.configured_plan().is_some()
                 && rows
                     .iter()
                     .any(|row| row.kind == ByRunningAppPreviewMatch::Match)
@@ -241,10 +244,10 @@ fn matching_rule_process(
 ) -> (Option<ActiveByRunningApp>, bool) {
     let mut known = true;
     for (rule_index, rule) in settings.rules.iter().enumerate() {
-        let Some(target_guid) = rule_plan(rule) else {
+        let Some(target_guid) = rule.configured_plan() else {
             continue;
         };
-        let Some((configured_path, file_name)) = rule_path(rule) else {
+        let Some((file_name, configured_path)) = rule_executable(rule) else {
             continue;
         };
 
@@ -281,22 +284,20 @@ fn matching_rule_process(
     (None, known)
 }
 
-fn rule_plan(rule: &ByRunningAppRule) -> Option<&str> {
-    if rule.enabled && !rule.executable_path.trim().is_empty() {
-        rule.power_plan_guid.as_deref()
-    } else {
-        None
+fn rule_executable(rule: &ByRunningAppRule) -> Option<(&str, Option<&Path>)> {
+    let value = rule.selector.value().trim();
+    match &rule.selector {
+        ExecutableSelector::ExactPath { .. } => {
+            let path = Path::new(value);
+            Some((path.file_name()?.to_str()?, Some(path)))
+        }
+        ExecutableSelector::ExactName { .. } => (!value.is_empty()).then_some((value, None)),
     }
-}
-
-fn rule_path(rule: &ByRunningAppRule) -> Option<(&Path, &str)> {
-    let path = Path::new(rule.executable_path.trim());
-    Some((path, path.file_name()?.to_str()?))
 }
 
 fn classify_process(
     process: &ProcessInfo,
-    configured_path: &Path,
+    configured_path: Option<&Path>,
     file_name: &str,
     current_process_id: u32,
     current_session_id: u32,
@@ -316,11 +317,14 @@ fn classify_process(
         return None;
     }
     let path = executable_path(process);
-    let kind = match path.as_deref() {
-        Some(path) if !same_executable_path(path, configured_path) => {
+    let kind = match (path.as_deref(), configured_path) {
+        (Some(path), Some(expected_path)) if !same_executable_path(path, expected_path) => {
             ByRunningAppPreviewMatch::SameNameDifferentPath
         }
-        Some(_) if process.is_critical == Some(false) && session.is_some() => {
+        (Some(path), None) if !path_has_executable_name(path, file_name) => {
+            ByRunningAppPreviewMatch::Unavailable
+        }
+        (Some(_), _) if process.is_critical == Some(false) && session.is_some() => {
             ByRunningAppPreviewMatch::Match
         }
         _ => ByRunningAppPreviewMatch::Unavailable,
@@ -332,10 +336,18 @@ fn classify_process(
     })
 }
 
+fn path_has_executable_name(path: &Path, executable_name: &str) -> bool {
+    path.is_absolute()
+        && path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| same_process_name(name, executable_name))
+}
+
 pub(crate) fn rule_name(rule: &ByRunningAppRule) -> &str {
     let name = rule.name.trim();
     if name.is_empty() {
-        rule.executable_path.trim()
+        rule.selector.value().trim()
     } else {
         name
     }
@@ -344,6 +356,26 @@ pub(crate) fn rule_name(rule: &ByRunningAppRule) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn observed_process(
+        id: u32,
+        name: &str,
+        path: Option<&str>,
+        is_critical: Option<bool>,
+    ) -> ProcessInfo {
+        ProcessInfo {
+            id,
+            creation_time: Some(1),
+            parent_id: None,
+            session_id: None,
+            user_name: None,
+            is_service_account: None,
+            is_critical,
+            can_set_information: true,
+            name: name.into(),
+            image_path: path.map(PathBuf::from),
+        }
+    }
 
     fn match_processes(
         settings: &ByRunningAppSettings,
@@ -366,7 +398,9 @@ mod tests {
             rules: vec![ByRunningAppRule {
                 enabled: true,
                 name: "Game".to_owned(),
-                executable_path: "Game.EXE".to_owned(),
+                selector: ExecutableSelector::ExactPath {
+                    executable_path: "Game.EXE".to_owned(),
+                },
                 power_plan_guid: Some("custom-guid".to_owned()),
             }],
         };
@@ -396,13 +430,17 @@ mod tests {
                 ByRunningAppRule {
                     enabled: false,
                     name: "Disabled".to_owned(),
-                    executable_path: "game.exe".to_owned(),
+                    selector: ExecutableSelector::ExactPath {
+                        executable_path: "game.exe".to_owned(),
+                    },
                     power_plan_guid: Some("disabled-guid".to_owned()),
                 },
                 ByRunningAppRule {
                     enabled: true,
                     name: "Missing plan".to_owned(),
-                    executable_path: "game.exe".to_owned(),
+                    selector: ExecutableSelector::ExactPath {
+                        executable_path: "game.exe".to_owned(),
+                    },
                     power_plan_guid: None,
                 },
             ],
@@ -430,13 +468,17 @@ mod tests {
                 ByRunningAppRule {
                     enabled: true,
                     name: "Missing process".to_owned(),
-                    executable_path: "missing.exe".to_owned(),
+                    selector: ExecutableSelector::ExactPath {
+                        executable_path: "missing.exe".to_owned(),
+                    },
                     power_plan_guid: Some("missing-guid".to_owned()),
                 },
                 ByRunningAppRule {
                     enabled: true,
                     name: "Game".to_owned(),
-                    executable_path: "game.exe".to_owned(),
+                    selector: ExecutableSelector::ExactPath {
+                        executable_path: "game.exe".to_owned(),
+                    },
                     power_plan_guid: Some("game-guid".to_owned()),
                 },
             ],
@@ -493,7 +535,9 @@ mod tests {
             rules: vec![ByRunningAppRule {
                 enabled: true,
                 name: "Game".into(),
-                executable_path: r"C:\Games\game.exe".into(),
+                selector: ExecutableSelector::ExactPath {
+                    executable_path: r"C:\Games\game.exe".into(),
+                },
                 power_plan_guid: Some("game-plan".into()),
             }],
         };
@@ -576,7 +620,9 @@ mod tests {
         let rule = |enabled, path: &str, plan: Option<&str>| ByRunningAppRule {
             enabled,
             name: String::new(),
-            executable_path: path.into(),
+            selector: ExecutableSelector::ExactPath {
+                executable_path: path.into(),
+            },
             power_plan_guid: plan.map(str::to_owned),
         };
         let settings = ByRunningAppSettings {
@@ -590,29 +636,17 @@ mod tests {
                 rule(true, excluded_path, Some("excluded-plan")),
             ],
         };
-        let process = |id, name: &str, path: Option<&str>, is_critical| ProcessInfo {
-            id,
-            creation_time: Some(1),
-            parent_id: None,
-            session_id: None,
-            user_name: None,
-            is_service_account: None,
-            is_critical,
-            can_set_information: true,
-            name: name.into(),
-            image_path: path.map(PathBuf::from),
-        };
         let processes = [
-            process(0, "game.exe", Some(game_path), Some(false)),
-            process(1, "game.exe", Some(game_path), Some(false)),
-            process(2, "game.exe", Some(game_path), Some(true)),
-            process(3, "game.exe", Some(game_path), Some(false)),
-            process(4, "GAME.exe", Some(other_path), Some(false)),
-            process(5, "game.exe", None, Some(false)),
-            process(6, "game.exe", Some(game_path), Some(false)),
-            process(8, "game.exe", Some(game_path), Some(false)),
-            process(7, "game.exe", Some(game_path), Some(false)),
-            process(9, "csrss.exe", Some(excluded_path), Some(false)),
+            observed_process(0, "game.exe", Some(game_path), Some(false)),
+            observed_process(1, "game.exe", Some(game_path), Some(false)),
+            observed_process(2, "game.exe", Some(game_path), Some(true)),
+            observed_process(3, "game.exe", Some(game_path), Some(false)),
+            observed_process(4, "GAME.exe", Some(other_path), Some(false)),
+            observed_process(5, "game.exe", None, Some(false)),
+            observed_process(6, "game.exe", Some(game_path), Some(false)),
+            observed_process(8, "game.exe", Some(game_path), Some(false)),
+            observed_process(7, "game.exe", Some(game_path), Some(false)),
+            observed_process(9, "csrss.exe", Some(excluded_path), Some(false)),
         ];
         let session_id = |pid| match pid {
             3 => Some(2),
@@ -656,6 +690,88 @@ mod tests {
         assert_eq!(selected.process_id, 8);
         assert!(observation_known);
         assert_eq!(queried_paths, [4, 5, 6, 8]);
+    }
+
+    #[test]
+    fn name_rule_requires_a_verified_executable_at_any_path() {
+        use ByRunningAppPreviewMatch::{Match, Unavailable};
+
+        let first_path = r"C:\Games\game.exe";
+        let second_path = r"C:\Other\game.exe";
+        let rule = |selector, plan: &str| ByRunningAppRule {
+            enabled: true,
+            name: String::new(),
+            selector,
+            power_plan_guid: Some(plan.into()),
+        };
+        let settings = ByRunningAppSettings {
+            enabled: true,
+            rules: vec![
+                rule(
+                    ExecutableSelector::ExactPath {
+                        executable_path: r"C:\Absent\game.exe".into(),
+                    },
+                    "absent-plan",
+                ),
+                rule(
+                    ExecutableSelector::ExactName {
+                        executable_name: "GAME.exe".into(),
+                    },
+                    "name-plan",
+                ),
+                rule(
+                    ExecutableSelector::ExactPath {
+                        executable_path: first_path.into(),
+                    },
+                    "path-plan",
+                ),
+            ],
+        };
+        let processes = [
+            observed_process(2, "game.exe", None, Some(false)),
+            observed_process(3, "game.exe", Some(first_path), Some(false)),
+            observed_process(4, "game.exe", Some(first_path), Some(false)),
+            observed_process(5, "game.exe", Some(first_path), None),
+            observed_process(6, "game.exe", Some("game.exe"), Some(false)),
+            observed_process(7, "game.exe", Some(r"C:\Games\other.exe"), Some(false)),
+            observed_process(9, "game.exe", Some(second_path), Some(false)),
+            observed_process(8, "game.exe", Some(first_path), Some(false)),
+        ];
+        let session_id = |pid| match pid {
+            3 => None,
+            4 => Some(2),
+            _ => Some(1),
+        };
+        let preview = preview_rule_processes(&settings, &processes, 1, 1, session_id, |process| {
+            process.image_path.clone()
+        });
+        let name_matches: Vec<_> = preview.rules[1]
+            .iter()
+            .map(|row| (row.pid, row.kind))
+            .collect();
+        assert_eq!(
+            name_matches,
+            [
+                (2, Unavailable),
+                (3, Unavailable),
+                (5, Unavailable),
+                (6, Unavailable),
+                (7, Unavailable),
+                (8, Match),
+                (9, Match),
+            ]
+        );
+
+        let (selected, known) =
+            matching_rule_process(&settings, &processes, 1, 1, session_id, |process| {
+                process.image_path.clone()
+            });
+        let selected = selected.unwrap();
+        assert_eq!(preview.winner, Some(1));
+        assert_eq!(preview.winner, Some(selected.rule_index));
+        assert_eq!(selected.target_guid, "name-plan");
+        assert_eq!(selected.process_id, 9);
+        assert!(known);
     }
 
     #[test]

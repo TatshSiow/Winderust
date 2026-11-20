@@ -7,7 +7,9 @@ use super::super::{cpu_allocation, cpu_limiter};
 use super::PlanCatalog;
 use crate::config::*;
 use crate::foreground::executable_path_key;
-use crate::ui::process_rules::{new_cpu_limiter_rule, process_setting_matches};
+use crate::ui::process_rules::{
+    by_running_app_path_matches, new_cpu_limiter_rule, process_setting_matches,
+};
 use iced::widget::{column, container, row, text};
 use iced::{Element, Fill};
 use rust_i18n::t;
@@ -135,7 +137,7 @@ pub(super) fn update(s: &mut Settings, path: &str, m: Message) -> Option<String>
                 if let Some(guid) = guid {
                     if let Some(r) = rules
                         .iter_mut()
-                        .find(|r| process_setting_matches(&r.executable_path, &path))
+                        .find(|r| by_running_app_path_matches(r, &path))
                     {
                         r.enabled = true;
                         r.power_plan_guid = Some(guid);
@@ -146,7 +148,7 @@ pub(super) fn update(s: &mut Settings, path: &str, m: Message) -> Option<String>
                         ));
                     }
                 } else {
-                    rules.retain(|r| !process_setting_matches(&r.executable_path, &path));
+                    rules.retain(|r| !by_running_app_path_matches(r, &path));
                 }
             }
         }
@@ -335,7 +337,7 @@ pub(super) fn view<'a>(
                 s.by_running_app
                     .rules
                     .iter()
-                    .find(|r| r.enabled && process_setting_matches(&r.executable_path, path))
+                    .find(|r| r.enabled && by_running_app_path_matches(r, path))
                     .and_then(|r| r.power_plan_guid.clone())
             };
             let mut options = vec![Plan(None, t!("common.default").to_string())];

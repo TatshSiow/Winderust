@@ -2,6 +2,9 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
+use super::is_valid_executable_name;
+pub use super::ExecutableSelector as WatchdogSelector;
+
 pub(crate) const WATCHDOG_DURATION_RANGE: std::ops::RangeInclusive<u64> = 1..=3600;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -130,39 +133,7 @@ impl WatchdogMonitor {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(untagged, try_from = "WatchdogSelectorFields")]
-pub enum WatchdogSelector {
-    ExactPath { executable_path: String },
-    ExactName { executable_name: String },
-}
-
-#[derive(Deserialize)]
-struct WatchdogSelectorFields {
-    executable_path: Option<String>,
-    executable_name: Option<String>,
-}
-
-impl TryFrom<WatchdogSelectorFields> for WatchdogSelector {
-    type Error = &'static str;
-
-    fn try_from(fields: WatchdogSelectorFields) -> Result<Self, Self::Error> {
-        match (fields.executable_path, fields.executable_name) {
-            (Some(executable_path), None) => Ok(Self::ExactPath { executable_path }),
-            (None, Some(executable_name)) => Ok(Self::ExactName { executable_name }),
-            _ => Err("Watchdog requires exactly one executable path or executable name."),
-        }
-    }
-}
-
 impl WatchdogSelector {
-    pub fn value(&self) -> &str {
-        match self {
-            Self::ExactPath { executable_path } => executable_path,
-            Self::ExactName { executable_name } => executable_name,
-        }
-    }
-
     pub fn allows_actions(&self) -> bool {
         matches!(self, Self::ExactPath { .. })
     }
@@ -173,13 +144,7 @@ impl WatchdogSelector {
                 Ok(())
             }
             Self::ExactPath { .. } => Err("Watchdog requires an absolute executable path.".into()),
-            Self::ExactName { executable_name }
-                if executable_name.trim() == executable_name
-                    && !executable_name.chars().any(|character| {
-                        character.is_ascii_control() || r#"<>:"/\|?*"#.contains(character)
-                    })
-                    && Path::new(executable_name).file_name().is_some() =>
-            {
+            Self::ExactName { executable_name } if is_valid_executable_name(executable_name) => {
                 Ok(())
             }
             Self::ExactName { .. } => Err("Watchdog requires an exact executable filename.".into()),

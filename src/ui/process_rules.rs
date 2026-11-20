@@ -1,14 +1,34 @@
 use crate::config::{
+    is_valid_executable_name, ByFocusRule, ByFocusSettings, ByRunningAppRule, ByRunningAppSettings,
+    ExecutableSelector,
+};
+use crate::config::{
     AppSuspensionRule, AppSuspensionSettings, MemoryTrimSettings, NetworkThresholdUnit,
     ProcessExclusionRule, TimerResolutionRule, TimerResolutionSettings,
 };
-use crate::config::{ByFocusRule, ByFocusSettings, ByRunningAppRule, ByRunningAppSettings};
 use crate::config::{CpuLimiterRule, CpuLimiterSettings, ProcessRuleMode};
 use crate::cpu_limiter;
 use crate::foreground::executable_path_key;
-use crate::foreground::same_executable_path;
+use crate::foreground::{same_executable_path, same_process_name};
 use crate::{app_suspension, memory_trim};
+use rust_i18n::t;
 use std::path::Path;
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) enum MatchBy {
+    #[default]
+    ExecutablePath,
+    ExecutableName,
+}
+
+impl std::fmt::Display for MatchBy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&t!(match self {
+            Self::ExecutablePath => "common.executable_path",
+            Self::ExecutableName => "common.executable_name",
+        }))
+    }
+}
 
 pub(crate) fn can_add_process_candidate(
     process: &str,
@@ -96,10 +116,25 @@ pub(crate) fn can_add_by_running_app_process(
             settings
                 .rules
                 .iter()
-                .any(|rule| process_setting_matches(&rule.executable_path, process))
+                .any(|rule| by_running_app_path_matches(rule, process))
         },
         crate::features::power_plan_control::by_running_app::is_builtin_excluded,
     )
+}
+
+pub(crate) fn by_running_app_path_matches(rule: &ByRunningAppRule, path: &str) -> bool {
+    rule.selector
+        .exact_path()
+        .is_some_and(|target| process_setting_matches(target, path))
+}
+
+pub(super) fn can_add_by_running_app_name(settings: &ByRunningAppSettings, name: &str) -> bool {
+    is_valid_executable_name(name)
+        && !crate::features::power_plan_control::by_running_app::is_builtin_excluded(name)
+        && !settings.rules.iter().any(|rule| {
+            matches!(&rule.selector, ExecutableSelector::ExactName { executable_name }
+                if same_process_name(executable_name, name))
+        })
 }
 
 pub(crate) fn new_by_running_app_rule(
@@ -114,7 +149,7 @@ pub(crate) fn new_by_running_app_rule(
             .and_then(|name| name.to_str())
             .unwrap_or(process)
             .to_owned(),
-        executable_path,
+        selector: ExecutableSelector::ExactPath { executable_path },
         power_plan_guid,
     }
 }

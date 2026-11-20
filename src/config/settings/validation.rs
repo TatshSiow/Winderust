@@ -2,6 +2,7 @@ use super::{
     AppSuspensionSettings, ByCpuLoadRule, CpuLoadPercent, CpuUsageComparison, Settings,
     SleepPreventionSettings, NESTED_BATTERY_PROFILE_ERROR,
 };
+use crate::config::{is_valid_executable_name, ExecutableSelector};
 
 impl Settings {
     pub fn validate(&self) -> Result<(), String> {
@@ -15,6 +16,13 @@ impl Settings {
         for profile in self.profiles() {
             profile.app_suspension.validate()?;
             profile.sleep_prevention.validate()?;
+            for rule in &profile.by_running_app.rules {
+                if let ExecutableSelector::ExactName { executable_name } = &rule.selector {
+                    if !is_valid_executable_name(executable_name) {
+                        return Err("By Running App requires an exact executable filename.".into());
+                    }
+                }
+            }
         }
         Ok(())
     }

@@ -181,11 +181,12 @@ hover/press; background shading supplies feedback.
   restoration controls. By CPU Load retains Target plan and optional Else plan;
   By Activity retains Idle plan and Active plan. These local choices remain
   visible independently of the shared restoration switch.
-- By Running App opens a read-only Preview matches modal on demand. It shows
-  processes with matching executable paths, processes with the same name at a
-  different path, and processes with unavailable details. It reports the first
-  eligible rule and its selected power plan using the current editor values.
-  Power Plan Control continues to decide the active Windows plan.
+- By Running App defaults to matching an executable path. Executable name rules
+  opt in to matching the same filename across paths. Preview matches lists the
+  processes each rule covers, same-name copies outside path rules, and processes
+  with unavailable details. It reports the first eligible rule and its selected
+  power plan using the current editor values. Power Plan Control continues to
+  decide the active Windows plan. Process List edits individual path rules.
 - CPU Sets (Soft) and Processor Affinity (Hard) share that rail with compact Status and Presets
   tabs, alongside Info in the shared docked panel.
 - Instance Balancing lives under CPU Control and shares one configuration across

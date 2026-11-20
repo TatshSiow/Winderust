@@ -8,7 +8,7 @@ use crate::action_log::{
 use crate::application::settings::{RuntimeSettingsSnapshot, SettingsRevision};
 use crate::config::{
     AppSuspensionRule, ByFocusRule, ByRunningAppRule, ByTimeRule, CpuAllocationRule,
-    CpuLimiterRule, ProcessDynamicPriorityBoostSetting, ProcessExclusionRule,
+    CpuLimiterRule, ExecutableSelector, ProcessDynamicPriorityBoostSetting, ProcessExclusionRule,
     ProcessGpuPrioritySetting, ProcessRuleMode, ProcessThreadPrioritySetting, TimerResolutionRule,
     WeekdaySetting,
 };
@@ -946,7 +946,9 @@ fn enabled_empty_rule_features_do_not_poll() {
     settings.by_running_app.rules.push(ByRunningAppRule {
         enabled: true,
         name: "Empty".to_owned(),
-        executable_path: " ".to_owned(),
+        selector: ExecutableSelector::ExactPath {
+            executable_path: " ".to_owned(),
+        },
         power_plan_guid: Some("active-guid".to_owned()),
     });
     settings.timer_resolution.rules.push(TimerResolutionRule {
@@ -1003,7 +1005,9 @@ fn enabled_nonempty_rule_features_require_runtime_work() {
     settings.by_running_app.rules.push(ByRunningAppRule {
         enabled: true,
         name: "Chat".to_owned(),
-        executable_path: r"C:\Apps\chat.exe".to_owned(),
+        selector: ExecutableSelector::ExactPath {
+            executable_path: r"C:\Apps\chat.exe".to_owned(),
+        },
         power_plan_guid: Some("active-guid".to_owned()),
     });
     settings.timer_resolution.enabled = true;
@@ -1029,6 +1033,16 @@ fn enabled_nonempty_rule_features_require_runtime_work() {
     assert!(process_appearance_scan_required(&settings));
     assert!(event_driven_process_work_required(&settings));
     assert!(automation_worker_required(&settings));
+
+    settings.by_running_app.rules[0].selector = ExecutableSelector::ExactPath {
+        executable_path: "chat.exe".to_owned(),
+    };
+    assert!(!by_running_app_required(&settings));
+
+    settings.by_running_app.rules[0].selector = ExecutableSelector::ExactName {
+        executable_name: "chat.exe".to_owned(),
+    };
+    assert!(by_running_app_required(&settings));
 }
 
 #[test]

@@ -233,6 +233,49 @@ fn watchdog_settings_persist_optional_durations_and_reject_invalid_rules() {
 }
 
 #[test]
+fn by_running_app_keeps_flat_selectors_on_both_power_profiles() {
+    let path = Path::new("by-running-app.toml");
+    let mut settings = Settings::default();
+    settings.by_running_app.rules.push(
+        toml::from_str("executable_path = 'game.exe'\npower_plan_guid = 'gaming-guid'").unwrap(),
+    );
+    settings.battery_profile_mut().by_running_app.rules =
+        vec![
+            toml::from_str("executable_name = 'Game Tool.exe'\npower_plan_guid = 'gaming-guid'")
+                .unwrap(),
+        ];
+
+    let raw = toml::to_string(&settings).unwrap();
+    assert!(raw.contains("executable_path = \"game.exe\""));
+    assert!(raw.contains("executable_name = \"Game Tool.exe\""));
+    assert_eq!(parse_toml_settings(path, &raw).unwrap(), settings);
+
+    for (changed, expected_error) in [
+        (
+            raw.replace(
+                "executable_name = \"Game Tool.exe\"",
+                "executable_name = \"Game Tool.exe\"\nexecutable_path = \"game.exe\"",
+            ),
+            "exactly one executable path or executable name",
+        ),
+        (
+            raw.replace("executable_name = \"Game Tool.exe\"\n", ""),
+            "exactly one executable path or executable name",
+        ),
+        (
+            raw.replace(
+                "executable_name = \"Game Tool.exe\"",
+                "executable_name = \"*.exe\"",
+            ),
+            "By Running App requires an exact executable filename",
+        ),
+    ] {
+        let error = parse_toml_settings(path, &changed).unwrap_err();
+        assert!(error.contains(expected_error), "{error}");
+    }
+}
+
+#[test]
 fn invalid_by_time_clock_values_fail_load_and_import_without_rewriting() {
     let mut settings = Settings::default();
     settings.battery_profile_mut();
@@ -1040,7 +1083,9 @@ fn toml_round_trip_preserves_settings() {
             rules: vec![ByRunningAppRule {
                 enabled: true,
                 name: "Game performance".to_owned(),
-                executable_path: "game.exe".to_owned(),
+                selector: crate::config::ExecutableSelector::ExactPath {
+                    executable_path: "game.exe".into(),
+                },
                 power_plan_guid: Some("gaming-guid".to_owned()),
             }],
         },

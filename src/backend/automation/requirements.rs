@@ -566,8 +566,11 @@ pub(super) fn by_cpu_load_rules_required(settings: &Settings) -> bool {
 pub(super) fn by_running_app_required(settings: &Settings) -> bool {
     settings.by_running_app.enabled
         && settings.by_running_app.rules.iter().any(|rule| {
-            enabled_executable_path_rule(rule.enabled, &rule.executable_path)
-                && rule.power_plan_guid.is_some()
+            rule.configured_plan().is_some()
+                && rule
+                    .selector
+                    .exact_path()
+                    .is_none_or(|path| std::path::Path::new(path.trim()).is_absolute())
         })
 }
 

@@ -2,7 +2,7 @@ use chrono::Weekday;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-use super::RuleTime;
+use super::{ExecutableSelector, RuleTime};
 
 use crate::cpu_topology::CpuSelection;
 use crate::foreground::same_executable_path;
@@ -1004,9 +1004,18 @@ pub struct ByRunningAppRule {
     pub enabled: bool,
     #[serde(default)]
     pub name: String,
-    pub executable_path: String,
+    #[serde(flatten)]
+    pub selector: ExecutableSelector,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub power_plan_guid: Option<String>,
+}
+
+impl ByRunningAppRule {
+    pub(crate) fn configured_plan(&self) -> Option<&str> {
+        self.power_plan_guid
+            .as_deref()
+            .filter(|_| self.enabled && !self.selector.value().trim().is_empty())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -118,7 +118,7 @@ impl Preview {
                                 );
                             t!(
                                 "by_running_app.preview_winner",
-                                rule = rule.executable_path.trim(),
+                                rule = rule.selector.value().trim(),
                                 plan = plan
                             )
                             .to_string()
@@ -157,14 +157,19 @@ fn rule_matches<'a>(
 ) -> Element<'a, PreviewMessage> {
     use ByRunningAppPreviewMatch::{Match, SameNameDifferentPath, Unavailable};
 
-    let path = rule.executable_path.trim();
+    let target = rule.selector.value().trim();
     let name = rule_name(rule);
     let mut details = column![widgets::heading(name.to_owned(), design::typography::BODY)
         .wrapping(text::Wrapping::WordOrGlyph)]
     .spacing(design::space::SMALL);
-    if path != name {
+    if rule.selector.exact_path().is_none() || target != name {
+        let location = if rule.selector.exact_path().is_some() {
+            target.to_owned()
+        } else {
+            t!("common.any_path").to_string()
+        };
         details = details.push(
-            text(path.to_owned())
+            text(location)
                 .style(text::secondary)
                 .wrapping(text::Wrapping::WordOrGlyph),
         );

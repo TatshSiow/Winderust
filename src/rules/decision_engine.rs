@@ -73,11 +73,11 @@ pub fn decide(settings: &Settings, input: DecisionInput) -> DecisionOutcome {
     };
     let running_app_known = input.by_running_app_known
         || !settings.by_running_app.enabled
-        || !settings.by_running_app.rules.iter().any(|rule| {
-            rule.enabled
-                && rule.power_plan_guid.is_some()
-                && !rule.executable_path.trim().is_empty()
-        });
+        || !settings
+            .by_running_app
+            .rules
+            .iter()
+            .any(|rule| rule.configured_plan().is_some());
     let cpu_load_known = input.cpu_load_known
         || !settings.by_cpu_load.enabled
         || !settings.by_cpu_load.rules.iter().any(|rule| {
