@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use serde::{Deserialize, Serialize};
 
 pub(crate) const WATCHDOG_DURATION_RANGE: std::ops::RangeInclusive<u64> = 1..=3600;
@@ -129,9 +131,67 @@ impl WatchdogMonitor {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged, try_from = "WatchdogSelectorFields")]
+pub enum WatchdogSelector {
+    ExactPath { executable_path: String },
+    ExactName { executable_name: String },
+}
+
+#[derive(Deserialize)]
+struct WatchdogSelectorFields {
+    executable_path: Option<String>,
+    executable_name: Option<String>,
+}
+
+impl TryFrom<WatchdogSelectorFields> for WatchdogSelector {
+    type Error = &'static str;
+
+    fn try_from(fields: WatchdogSelectorFields) -> Result<Self, Self::Error> {
+        match (fields.executable_path, fields.executable_name) {
+            (Some(executable_path), None) => Ok(Self::ExactPath { executable_path }),
+            (None, Some(executable_name)) => Ok(Self::ExactName { executable_name }),
+            _ => Err("Watchdog requires exactly one executable path or executable name."),
+        }
+    }
+}
+
+impl WatchdogSelector {
+    pub fn value(&self) -> &str {
+        match self {
+            Self::ExactPath { executable_path } => executable_path,
+            Self::ExactName { executable_name } => executable_name,
+        }
+    }
+
+    pub fn allows_actions(&self) -> bool {
+        matches!(self, Self::ExactPath { .. })
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        match self {
+            Self::ExactPath { executable_path } if Path::new(executable_path).is_absolute() => {
+                Ok(())
+            }
+            Self::ExactPath { .. } => Err("Watchdog requires an absolute executable path.".into()),
+            Self::ExactName { executable_name }
+                if executable_name.trim() == executable_name
+                    && !executable_name.chars().any(|character| {
+                        character.is_ascii_control() || r#"<>:"/\|?*"#.contains(character)
+                    })
+                    && Path::new(executable_name).file_name().is_some() =>
+            {
+                Ok(())
+            }
+            Self::ExactName { .. } => Err("Watchdog requires an exact executable filename.".into()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WatchdogRule {
     pub enabled: bool,
-    pub executable_path: String,
+    #[serde(flatten)]
+    pub selector: WatchdogSelector,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sustained_seconds: Option<u64>,
     pub cpu: WatchdogMonitor,
@@ -141,9 +201,13 @@ pub struct WatchdogRule {
 
 impl WatchdogRule {
     pub fn new(executable_path: String) -> Self {
+        Self::with_selector(WatchdogSelector::ExactPath { executable_path })
+    }
+
+    pub fn with_selector(selector: WatchdogSelector) -> Self {
         Self {
             enabled: true,
-            executable_path,
+            selector,
             sustained_seconds: None,
             cpu: WatchdogMonitor::new(true),
             memory: WatchdogMonitor::new(false),
@@ -173,18 +237,28 @@ impl WatchdogRule {
     }
 
     pub fn validate(&self) -> Result<(), String> {
+        self.selector.validate()?;
+        if !self.selector.allows_actions()
+            && [&self.cpu, &self.memory].iter().any(|monitor| {
+                monitor.warning.action != WatchdogAction::None
+                    || monitor.critical.action != WatchdogAction::None
+            })
+        {
+            return Err(
+                "Watchdog requires an exact executable path for Terminate or Restart.".into(),
+            );
+        }
         if self
             .sustained_seconds
             .is_some_and(|seconds| !WATCHDOG_DURATION_RANGE.contains(&seconds))
         {
             return Err("Watchdog rule sustained usage must be between 1 and 3600 seconds.".into());
         }
-        if !std::path::Path::new(&self.executable_path).is_absolute()
-            || (!self.cpu.enabled && !self.memory.enabled)
+        if (!self.cpu.enabled && !self.memory.enabled)
             || (self.cpu.enabled && !self.cpu.validate(WatchdogMetric::CpuPercent))
             || (self.memory.enabled && !self.memory.validate(self.memory_unit.metric()))
         {
-            return Err("Watchdog requires an absolute executable path, CPU or memory monitoring, and thresholds with 0 < warning < critical within each resource's range.".into());
+            return Err("Watchdog requires CPU or memory monitoring and thresholds with 0 < warning < critical within each resource's range.".into());
         }
         Ok(())
     }
@@ -231,6 +305,7 @@ mod tests {
         rule.memory.critical.action = WatchdogAction::Terminate;
         assert!(rule.validate().is_ok());
         let raw = toml::to_string(&rule).unwrap();
+        assert!(raw.contains("executable_path = "));
         assert!(raw.contains("memory_unit = \"megabytes\""));
         assert_eq!(toml::from_str::<WatchdogRule>(&raw).unwrap(), rule);
         rule.cpu.warning.threshold = 90;
@@ -256,5 +331,59 @@ mod tests {
         assert_eq!(toml::from_str::<WatchdogSettings>(&raw).unwrap(), settings);
         settings.sustained_seconds = 0;
         assert!(settings.validate().is_err());
+    }
+
+    #[test]
+    fn name_rule_round_trip_requires_one_flat_selector_and_notification_only() {
+        let mut rule = WatchdogRule::with_selector(WatchdogSelector::ExactName {
+            executable_name: "Worker Tool.EXE".to_owned(),
+        });
+        assert!(rule.validate().is_ok());
+        let raw = toml::to_string(&rule).unwrap();
+        let name_field = "executable_name = \"Worker Tool.EXE\"\n";
+        assert!(raw.contains(name_field));
+        assert!(!raw.contains("executable_path"));
+        assert_eq!(toml::from_str::<WatchdogRule>(&raw).unwrap(), rule);
+        let both = format!("executable_path = 'C:\\Apps\\worker.exe'\n{raw}");
+        assert!(toml::from_str::<WatchdogRule>(&both).is_err());
+        let neither = raw.replace(name_field, "");
+        assert!(toml::from_str::<WatchdogRule>(&neither).is_err());
+
+        for action in [WatchdogAction::Terminate, WatchdogAction::Restart] {
+            rule.memory.warning.action = action;
+            let imported: WatchdogRule = toml::from_str(&toml::to_string(&rule).unwrap()).unwrap();
+            assert!(!imported.memory.enabled);
+            assert!(imported.validate().is_err());
+        }
+    }
+
+    #[test]
+    fn exact_executable_name_rejects_paths_patterns_and_invalid_names() {
+        for invalid in [
+            "",
+            ".",
+            "..",
+            "worker.exe ",
+            r"C:\Apps\worker.exe",
+            "Apps/worker.exe",
+            "worker*.exe",
+            "worker?.exe",
+            "work:er.exe",
+            "work\0er.exe",
+        ] {
+            assert!(
+                WatchdogSelector::ExactName {
+                    executable_name: invalid.to_owned(),
+                }
+                .validate()
+                .is_err(),
+                "accepted {invalid:?}"
+            );
+        }
+        assert!(WatchdogSelector::ExactName {
+            executable_name: "worker.scr".into(),
+        }
+        .validate()
+        .is_ok());
     }
 }

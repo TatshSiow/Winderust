@@ -189,6 +189,14 @@ fn watchdog_settings_persist_optional_durations_and_reject_invalid_rules() {
     assert!(parse_toml_settings(Path::new("test.toml"), &raw).is_err());
     assert!(settings.validate_watchdog().is_err());
     settings.watchdog.rules[0].memory.critical.threshold = 90;
+    settings
+        .watchdog
+        .rules
+        .push(crate::config::WatchdogRule::with_selector(
+            crate::config::WatchdogSelector::ExactName {
+                executable_name: "test.exe".into(),
+            },
+        ));
     settings.battery_profile_mut();
     settings.sync_shared_settings_to_battery();
     let raw = toml::to_string(&settings).unwrap();
@@ -211,6 +219,12 @@ fn watchdog_settings_persist_optional_durations_and_reject_invalid_rules() {
         assert!(parse_toml_settings(&path, &raw).is_err());
         assert!(write_toml_settings(&path, &settings).is_err());
     }
+    settings.watchdog.rules[0].sustained_seconds = None;
+    settings.watchdog.rules[1].cpu.critical.action = crate::config::WatchdogAction::Restart;
+    settings.sync_shared_settings_to_battery();
+    let raw = toml::to_string(&settings).unwrap();
+    assert!(parse_toml_settings(&path, &raw).is_err());
+    assert!(write_toml_settings(&path, &settings).is_err());
     assert_eq!(
         load_from_path(&path).unwrap().watchdog.rules[0].sustained_seconds,
         None

@@ -90,6 +90,24 @@ pub(super) fn process_rule_header<'a, M: 'a>(
     controls: Vec<Element<'a, M>>,
     action: Element<'a, M>,
 ) -> Element<'a, M> {
+    process_rule_header_with_target(
+        super::app_picker::app_name(path, candidates),
+        path.to_owned(),
+        active,
+        status,
+        controls,
+        action,
+    )
+}
+
+pub(super) fn process_rule_header_with_target<'a, M: 'a>(
+    app: Element<'a, M>,
+    target: String,
+    active: Element<'a, M>,
+    status: Option<Element<'a, M>>,
+    controls: Vec<Element<'a, M>>,
+    action: Element<'a, M>,
+) -> Element<'a, M> {
     use iced::widget::container;
     let mut cells = row![container(active).width(48)]
         .spacing(design::space::MEDIUM)
@@ -99,13 +117,13 @@ pub(super) fn process_rule_header<'a, M: 'a>(
     }
     let mut cells = cells
         .push(
-            container(super::app_picker::app_name(path, candidates))
+            container(app)
                 .width(iced::Length::FillPortion(2))
                 .clip(true),
         )
         .push(
             container(
-                text(path.to_owned())
+                text(target)
                     .style(text::secondary)
                     .wrapping(text::Wrapping::None),
             )

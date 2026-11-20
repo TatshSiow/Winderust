@@ -40,7 +40,7 @@
 - CPU Control - CPU Limiter, CPU Sets (Soft), Processor Affinity (Hard), and Cache Domain presets.
 - Priority Control - Process Priority, Thread Priority, Dynamic Priority Boost, I/O Priority, GPU Priority, and Memory Priority.
 - Memory Trim - trim background process working sets.
-- Watchdog - CPU and memory alerts, with optional Stop or Restart actions.
+- Watchdog - CPU and memory alerts by executable path or exact name. Path rules can also Terminate or Restart apps.
 - App Suspension and Timer Resolution for selected apps.
 - Sleep Prevention - prevent idle sleep while selected apps run, with an option to keep the display on.
 - Keep Running - relaunch selected desktop apps after their last instance exits. Start the app yourself once to arm its rule.

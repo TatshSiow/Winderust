@@ -237,12 +237,17 @@ hover/press; background shading supplies feedback.
   Pencil dialogs show app identity and an optional sustained duration shared by
   the CPU / Memory tabs. A blank duration inherits the page default. Drafts apply
   only on OK. Cancel, Close, and Escape discard.
-- Match Preview reads a fresh process snapshot when opened or refreshed. It lists
-  exact-path matches by PID and full path, same-named executables at other paths,
-  and instances Watchdog cannot verify or use.
-- Each tab starts with its Enable CPU Watchdog or Enable Memory Watchdog toggle and
-  reveals thresholds and optional termination/restart only when enabled. Default to
-  notification only and show the restart rate limit and data-loss consequence inline.
+- Choose Executable path to use the app picker or Executable name to enter an
+  exact filename such as `worker.exe`. Executable name rules send notifications
+  and evaluate each resolved path separately. Terminate and Restart are available
+  for Executable path rules.
+- Match Preview reads a fresh process snapshot when opened or refreshed. It
+  lists matches by PID and full path, and identifies unavailable instances.
+  For an Executable path rule, it also lists same-named executables elsewhere.
+- Each resource tab starts with its Enable CPU Watchdog or Enable Memory Watchdog
+  toggle and reveals thresholds when enabled. For rules with action controls,
+  default to notification only and show the restart rate limit and data-loss
+  consequence inline.
   The main page owns the default sustained duration and one notification switch.
 - Explain that each rule aggregates eligible instances of its executable, excluding
   different child executables. Working Set measures resident memory and may double-count

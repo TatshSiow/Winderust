@@ -225,17 +225,13 @@ impl RuntimeCore {
                 "watchdog.trigger_detail",
                 level = level,
                 app = &event.name,
-                count = event.targets.len(),
+                count = event.process_count,
                 metric = metric,
                 value = format!("{:.1}", event.value),
                 threshold = event.response.threshold
             )
             .to_string();
-            let process_id = if event.targets.len() == 1 {
-                event.targets.first().map(|target| target.id)
-            } else {
-                None
-            };
+            let process_id = event.process_id;
             let mut action_detail = t!("watchdog.no_action").to_string();
             if event.response.action != WatchdogAction::None {
                 let restarting = event.response.action == WatchdogAction::Restart;

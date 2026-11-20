@@ -1,13 +1,15 @@
 use std::path::{Path, PathBuf};
 
 use crate::{
+    config::WatchdogSelector,
+    features::winderust_features::watchdog::observed_path_matches_name,
     foreground::{same_executable_path, same_process_name, ProcessInfo},
     runtime::observations::CycleObservations,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum MatchKind {
-    ExactPath,
+    Matched,
     SameName,
     Unavailable,
 }
@@ -19,18 +21,25 @@ pub(crate) struct MatchRow {
     pub(crate) kind: MatchKind,
 }
 
-pub(super) fn load(executable_path: &str) -> Result<Vec<MatchRow>, String> {
+pub(super) fn load(selector: &WatchdogSelector) -> Result<Vec<MatchRow>, String> {
     let processes = CycleObservations::default().processes_with_paths()?;
-    Ok(classify(
-        Path::new(executable_path.trim()),
-        &processes,
-        std::process::id(),
-    ))
+    Ok(classify(selector, &processes, std::process::id()))
 }
 
-fn classify(path: &Path, processes: &[ProcessInfo], current_pid: u32) -> Vec<MatchRow> {
-    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
-        return Vec::new();
+fn classify(
+    selector: &WatchdogSelector,
+    processes: &[ProcessInfo],
+    current_pid: u32,
+) -> Vec<MatchRow> {
+    let (name, expected_path) = match selector {
+        WatchdogSelector::ExactPath { executable_path } => {
+            let path = Path::new(executable_path.trim());
+            let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+                return Vec::new();
+            };
+            (name, Some(path))
+        }
+        WatchdogSelector::ExactName { executable_name } => (executable_name.as_str(), None),
     };
 
     let mut rows = Vec::new();
@@ -39,13 +48,18 @@ fn classify(path: &Path, processes: &[ProcessInfo], current_pid: u32) -> Vec<Mat
             continue;
         }
         let kind = match process.image_path.as_deref() {
-            Some(actual_path) if !same_executable_path(actual_path, path) => MatchKind::SameName,
+            Some(actual_path)
+                if expected_path.is_some_and(|path| !same_executable_path(actual_path, path)) =>
+            {
+                MatchKind::SameName
+            }
             Some(_)
-                if process.is_critical == Some(false)
+                if (expected_path.is_some() || observed_path_matches_name(process, name))
+                    && process.is_critical == Some(false)
                     && process.creation_time.is_some()
                     && process.id != current_pid =>
             {
-                MatchKind::ExactPath
+                MatchKind::Matched
             }
             _ => MatchKind::Unavailable,
         };
@@ -95,14 +109,17 @@ mod tests {
         processes[0].is_critical = Some(true);
         processes[4].creation_time = None;
 
-        let rows = classify(Path::new(path), &processes, 7);
+        let selector = WatchdogSelector::ExactPath {
+            executable_path: path.into(),
+        };
+        let rows = classify(&selector, &processes, 7);
         assert_eq!(
             rows.iter()
                 .map(|row| (row.pid, row.kind))
                 .collect::<Vec<_>>(),
             [
-                (1, MatchKind::ExactPath),
-                (2, MatchKind::ExactPath),
+                (1, MatchKind::Matched),
+                (2, MatchKind::Matched),
                 (3, MatchKind::SameName),
                 (4, MatchKind::Unavailable),
                 (5, MatchKind::Unavailable),
@@ -113,5 +130,38 @@ mod tests {
         assert_eq!(rows[2].path.as_deref(), Some(Path::new(other_path)));
         assert_eq!(rows[3].path, None);
         assert_eq!(rows[4].path.as_deref(), Some(Path::new(path)));
+    }
+
+    #[test]
+    fn name_preview_lists_verified_paths_and_marks_unverified_instances_unavailable() {
+        let path = r"C:\Apps\worker.exe";
+        let other_path = r"D:\Tools\WORKER.EXE";
+        let processes = [
+            process(1, "worker.exe", Some(path)),
+            process(2, "WORKER.EXE", Some(other_path)),
+            process(3, "worker.exe", None),
+            process(4, "worker.exe", Some(r"C:\Apps\different.exe")),
+            process(5, "worker.exe", Some("worker.exe")),
+            process(6, "different.exe", Some(path)),
+        ];
+        let selector = WatchdogSelector::ExactName {
+            executable_name: "worker.exe".into(),
+        };
+
+        let rows = classify(&selector, &processes, 0);
+        assert_eq!(
+            rows.iter()
+                .map(|row| (row.pid, row.kind))
+                .collect::<Vec<_>>(),
+            [
+                (1, MatchKind::Matched),
+                (2, MatchKind::Matched),
+                (3, MatchKind::Unavailable),
+                (4, MatchKind::Unavailable),
+                (5, MatchKind::Unavailable),
+            ]
+        );
+        assert_eq!(rows[0].path.as_deref(), Some(Path::new(path)));
+        assert_eq!(rows[1].path.as_deref(), Some(Path::new(other_path)));
     }
 }

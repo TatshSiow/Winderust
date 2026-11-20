@@ -1,10 +1,11 @@
-use std::sync::Arc;
+use std::{path::Path, sync::Arc};
 
 use super::{app_picker, design, widgets};
 use crate::config::{
     WatchdogAction, WatchdogMemoryUnit, WatchdogMetric, WatchdogResource, WatchdogRule,
-    WatchdogSettings, WATCHDOG_DURATION_RANGE,
+    WatchdogSelector, WatchdogSettings, WATCHDOG_DURATION_RANGE,
 };
+use crate::foreground::{executable_path_key, same_executable_path, same_process_name};
 use iced::{
     widget::{column, row, text, Column},
     Element, Fill,
@@ -36,9 +37,27 @@ impl std::fmt::Display for WatchdogAction {
 
 #[derive(Default)]
 pub(super) struct Editor {
+    match_by: MatchBy,
     path: String,
+    name: String,
     duration: Option<String>,
     draft: Option<Draft>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) enum MatchBy {
+    #[default]
+    ExecutablePath,
+    ExecutableName,
+}
+
+impl std::fmt::Display for MatchBy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&t!(match self {
+            Self::ExecutablePath => "watchdog.executable_path",
+            Self::ExecutableName => "watchdog.executable_name",
+        }))
+    }
 }
 
 struct Draft {
@@ -126,7 +145,9 @@ impl Draft {
 #[derive(Debug, Clone)]
 pub(super) enum Message {
     Enabled(bool),
+    MatchBy(MatchBy),
     Path(String),
+    Name(String),
     Browse,
     Add,
     Remove(usize),
@@ -147,19 +168,50 @@ pub(super) enum Message {
 }
 
 impl Editor {
-    fn can_add(&self, settings: &WatchdogSettings, path: &str) -> bool {
+    fn can_add_path(settings: &WatchdogSettings, path: &str) -> bool {
         super::process_rules::can_add_process_candidate(
             path,
             |path| {
                 settings.rules.iter().any(|rule| {
-                    crate::foreground::same_executable_path(
-                        std::path::Path::new(&rule.executable_path),
-                        std::path::Path::new(path),
+                    matches!(
+                        &rule.selector,
+                        WatchdogSelector::ExactPath { executable_path }
+                            if same_executable_path(Path::new(executable_path), Path::new(path))
                     )
                 })
             },
             |name| name.eq_ignore_ascii_case("winderust.exe"),
         )
+    }
+
+    fn new_name_selector(&self, settings: &WatchdogSettings) -> Option<WatchdogSelector> {
+        let name = self.name.trim();
+        if name.eq_ignore_ascii_case("winderust.exe")
+            || settings.rules.iter().any(|rule| {
+                matches!(
+                    &rule.selector,
+                    WatchdogSelector::ExactName { executable_name }
+                        if same_process_name(executable_name, name)
+                )
+            })
+        {
+            return None;
+        }
+        let selector = WatchdogSelector::ExactName {
+            executable_name: name.into(),
+        };
+        selector.validate().ok()?;
+        Some(selector)
+    }
+
+    fn new_rule(&self, settings: &WatchdogSettings) -> Option<WatchdogRule> {
+        match self.match_by {
+            MatchBy::ExecutablePath => Self::can_add_path(settings, &self.path)
+                .then(|| WatchdogRule::new(executable_path_key(Path::new(self.path.trim())))),
+            MatchBy::ExecutableName => self
+                .new_name_selector(settings)
+                .map(WatchdogRule::with_selector),
+        }
     }
 
     pub(super) fn has_pending_editor(&self) -> bool {
@@ -188,8 +240,8 @@ impl Editor {
         }
         let request = Arc::new(());
         draft.match_preview = MatchPreview::Loading(request.clone());
-        let executable_path = draft.rule.executable_path.clone();
-        super::tasks::run(move || preview::load(&executable_path)).map(move |result| {
+        let selector = draft.rule.selector.clone();
+        super::tasks::run(move || preview::load(&selector)).map(move |result| {
             Message::MatchPreviewLoaded(request.clone(), result.and_then(|result| result))
         })
     }
@@ -211,14 +263,13 @@ impl Editor {
     pub(super) fn update(&mut self, settings: &mut WatchdogSettings, message: Message) {
         match message {
             Message::Enabled(value) => settings.enabled = value,
+            Message::MatchBy(value) => self.match_by = value,
             Message::Path(value) => self.path = value,
-            Message::Add if self.can_add(settings, &self.path) => {
-                self.draft = Some(Draft::new(
-                    None,
-                    WatchdogRule::new(crate::foreground::executable_path_key(
-                        std::path::Path::new(self.path.trim()),
-                    )),
-                ));
+            Message::Name(value) => self.name = value,
+            Message::Add => {
+                if let Some(rule) = self.new_rule(settings) {
+                    self.draft = Some(Draft::new(None, rule));
+                }
             }
             Message::Edit(index) => {
                 self.draft = settings
@@ -235,8 +286,11 @@ impl Editor {
                                 *target = rule;
                             }
                         } else {
+                            match &rule.selector {
+                                WatchdogSelector::ExactPath { .. } => self.path.clear(),
+                                WatchdogSelector::ExactName { .. } => self.name.clear(),
+                            }
                             settings.rules.push(rule);
-                            self.path.clear();
                         }
                         self.draft = None;
                     }
@@ -297,12 +351,15 @@ impl Editor {
             }
             Message::Notify(value) => settings.notify = value,
             Message::Action(resource, critical, value) => {
-                if let Some(draft) = &mut self.draft {
+                if let Some(draft) = self
+                    .draft
+                    .as_mut()
+                    .filter(|draft| draft.rule.selector.allows_actions())
+                {
                     response(draft.rule.monitor_mut(resource), critical).action = value;
                 }
             }
-            Message::Add
-            | Message::Remove(_)
+            Message::Remove(_)
             | Message::Browse
             | Message::PreviewMatches
             | Message::MatchPreviewLoaded(..) => {}
@@ -319,12 +376,17 @@ impl Editor {
             .iter()
             .enumerate()
             .map(|(index, rule)| {
+                let value = rule.selector.value();
+                let target = match &rule.selector {
+                    WatchdogSelector::ExactPath { executable_path } => executable_path.clone(),
+                    WatchdogSelector::ExactName { .. } => t!("watchdog.any_path").to_string(),
+                };
                 (
-                    widgets::stable_key(&format!("{index}:{}", rule.executable_path)),
+                    widgets::stable_key(&format!("{index}:{value}")),
                     column![
-                        widgets::process_rule_header(
-                            &rule.executable_path,
-                            candidates,
+                        widgets::process_rule_header_with_target(
+                            app_picker::app_name(value, candidates),
+                            target,
                             widgets::checkbox(rule.enabled)
                                 .on_toggle(move |value| Message::RuleEnabled(index, value))
                                 .into(),
@@ -390,15 +452,7 @@ impl Editor {
                     .into(),
                 ])),
                 widgets::setting_title("watchdog.rules"),
-                app_picker::view(
-                    &self.path,
-                    candidates,
-                    true,
-                    Message::Path,
-                    Message::Browse,
-                    self.can_add(settings, &self.path).then_some(Message::Add),
-                    |path| self.can_add(settings, path).then_some(true)
-                ),
+                self.add_rule_card(settings, candidates),
                 widgets::process_rules_table_with_actions(
                     ["watchdog.cpu_tab", "watchdog.memory_tab"].map(|key| t!(key).to_string()),
                     rules,
@@ -410,6 +464,57 @@ impl Editor {
             .spacing(widgets::CARD_GAP),
         )
         .height(Fill)
+        .into()
+    }
+
+    fn add_rule_card<'a>(
+        &self,
+        settings: &WatchdogSettings,
+        candidates: &'a [app_picker::Candidate],
+    ) -> Element<'a, Message> {
+        let target = match self.match_by {
+            MatchBy::ExecutablePath => app_picker::view(
+                &self.path,
+                candidates,
+                true,
+                Message::Path,
+                Message::Browse,
+                Self::can_add_path(settings, &self.path).then_some(Message::Add),
+                |path| Self::can_add_path(settings, path).then_some(true),
+            ),
+            MatchBy::ExecutableName => {
+                let add = self.new_name_selector(settings).map(|_| Message::Add);
+                column![
+                    widgets::setting_title("watchdog.executable_name"),
+                    row![
+                        widgets::text_input("worker.exe", &self.name)
+                            .on_input(Message::Name)
+                            .on_submit_maybe(add.clone())
+                            .width(Fill),
+                        widgets::action_button(t!("common.add").to_string())
+                            .style(widgets::primary_button)
+                            .on_press_maybe(add),
+                    ]
+                    .spacing(design::space::SMALL)
+                    .align_y(iced::Center),
+                ]
+                .spacing(design::space::SMALL)
+                .into()
+            }
+        };
+        widgets::settings_card(widgets::settings_rows([
+            widgets::setting_row(
+                "watchdog.match_by",
+                widgets::pick_list(
+                    vec![MatchBy::ExecutablePath, MatchBy::ExecutableName],
+                    Some(self.match_by),
+                    Message::MatchBy,
+                )
+                .width(180),
+            )
+            .into(),
+            target,
+        ]))
         .into()
     }
 
@@ -448,6 +553,31 @@ impl Editor {
                 (false, &monitor.warning, &raw.warning),
                 (true, &monitor.critical, &raw.critical),
             ] {
+                let threshold = widgets::setting_row_with_unit(
+                    "watchdog.threshold",
+                    metric.unit(),
+                    widgets::text_input("", threshold)
+                        .on_input(move |value| Message::Threshold(resource, critical, value))
+                        .on_submit(Message::SaveRule)
+                        .width(design::STANDALONE_NUMERIC_WIDTH),
+                )
+                .into();
+                let action = rule.selector.allows_actions().then(|| {
+                    widgets::setting_row(
+                        "watchdog.action",
+                        widgets::pick_list(
+                            vec![
+                                WatchdogAction::None,
+                                WatchdogAction::Terminate,
+                                WatchdogAction::Restart,
+                            ],
+                            Some(response.action),
+                            move |value| Message::Action(resource, critical, value),
+                        )
+                        .width(180),
+                    )
+                    .into()
+                });
                 details = details
                     .push(widgets::heading(
                         format!(
@@ -461,33 +591,9 @@ impl Editor {
                         ),
                         design::typography::BODY,
                     ))
-                    .push(widgets::settings_card(widgets::settings_rows([
-                        widgets::setting_row_with_unit(
-                            "watchdog.threshold",
-                            metric.unit(),
-                            widgets::text_input("", threshold)
-                                .on_input(move |value| {
-                                    Message::Threshold(resource, critical, value)
-                                })
-                                .on_submit(Message::SaveRule)
-                                .width(design::STANDALONE_NUMERIC_WIDTH),
-                        )
-                        .into(),
-                        widgets::setting_row(
-                            "watchdog.action",
-                            widgets::pick_list(
-                                vec![
-                                    WatchdogAction::None,
-                                    WatchdogAction::Terminate,
-                                    WatchdogAction::Restart,
-                                ],
-                                Some(response.action),
-                                move |value| Message::Action(resource, critical, value),
-                            )
-                            .width(180),
-                        )
-                        .into(),
-                    ])));
+                    .push(widgets::settings_card(widgets::settings_rows(
+                        std::iter::once(threshold).chain(action),
+                    )));
             }
         }
         details
@@ -519,7 +625,7 @@ impl Editor {
         };
 
         for (kind, heading) in [
-            (MatchKind::ExactPath, "watchdog.preview_matches"),
+            (MatchKind::Matched, "watchdog.preview_matches"),
             (MatchKind::SameName, "watchdog.preview_same_name"),
             (MatchKind::Unavailable, "watchdog.preview_unavailable"),
         ] {
@@ -544,7 +650,7 @@ impl Editor {
                 })
                 .collect();
             if rows.is_empty() {
-                if kind == MatchKind::ExactPath {
+                if kind == MatchKind::Matched {
                     details = details.push(
                         text(t!("watchdog.preview_no_matches").to_string()).style(text::secondary),
                     );
@@ -568,6 +674,10 @@ impl Editor {
     ) -> Option<Element<'a, Message>> {
         let draft = self.draft.as_ref()?;
         let rule = &draft.rule;
+        let target = match &rule.selector {
+            WatchdogSelector::ExactPath { executable_path } => executable_path.clone(),
+            WatchdogSelector::ExactName { .. } => t!("watchdog.name_rule_mode").to_string(),
+        };
         let duration_valid = draft.parsed_duration().is_some();
         let valid = duration_valid && draft.validated_rule().is_some();
         let mut duration = column![widgets::setting_row_with_unit(
@@ -615,8 +725,8 @@ impl Editor {
             column![
                 row![
                     column![
-                        app_picker::app_name(&rule.executable_path, candidates),
-                        text(rule.executable_path.clone())
+                        app_picker::app_name(rule.selector.value(), candidates),
+                        text(target)
                             .style(text::secondary)
                             .wrapping(text::Wrapping::WordOrGlyph),
                     ]
@@ -690,6 +800,48 @@ fn response(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn name_rules_reject_automatic_actions_and_can_coexist_with_exact_path_rules() {
+        let mut editor = Editor::default();
+        let mut settings = WatchdogSettings::default();
+        editor.update(&mut settings, Message::MatchBy(MatchBy::ExecutableName));
+        for invalid in ["*.exe", r"C:\Apps\worker.exe"] {
+            editor.update(&mut settings, Message::Name(invalid.into()));
+            editor.update(&mut settings, Message::Add);
+            assert!(!editor.has_pending_editor());
+        }
+
+        editor.update(&mut settings, Message::Name("worker.exe".into()));
+        editor.update(&mut settings, Message::Add);
+        assert!(settings.rules.is_empty());
+        editor.update(
+            &mut settings,
+            Message::Action(WatchdogResource::Cpu, false, WatchdogAction::Terminate),
+        );
+        editor.update(
+            &mut settings,
+            Message::Action(WatchdogResource::Cpu, true, WatchdogAction::Restart),
+        );
+        editor.update(&mut settings, Message::SaveRule);
+        assert!(!editor.has_pending_editor());
+        assert_eq!(
+            settings.rules[0],
+            WatchdogRule::with_selector(WatchdogSelector::ExactName {
+                executable_name: "worker.exe".into(),
+            })
+        );
+
+        editor.update(&mut settings, Message::Name("WORKER.EXE".into()));
+        editor.update(&mut settings, Message::Add);
+        assert!(!editor.has_pending_editor());
+        editor.update(&mut settings, Message::MatchBy(MatchBy::ExecutablePath));
+        let path = r"C:\Apps\worker.exe";
+        editor.update(&mut settings, Message::Path(path.into()));
+        editor.update(&mut settings, Message::Add);
+        editor.update(&mut settings, Message::SaveRule);
+        assert_eq!(settings.rules[1], WatchdogRule::new(path.into()));
+    }
 
     #[test]
     fn closing_and_reopening_a_rule_discards_its_pending_match_preview() {
