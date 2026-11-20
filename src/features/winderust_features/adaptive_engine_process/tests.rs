@@ -308,6 +308,7 @@ fn adaptive_engine_process_selection_can_replace_cooler_selected_process() {
         process_name: "selected.exe".to_owned(),
         executable_path: r"C:\Apps\selected.exe".to_owned(),
         creation_time: 1,
+        tier: AdaptiveEngineProcessTier::Background,
         previous_cpu_time: None,
         last_usage_tenths: Some(100),
         high_since: Some(now - Duration::from_secs(60)),
@@ -321,6 +322,7 @@ fn adaptive_engine_process_selection_can_replace_cooler_selected_process() {
         process_name: "hotter.exe".to_owned(),
         executable_path: r"C:\Apps\hotter.exe".to_owned(),
         creation_time: 2,
+        tier: AdaptiveEngineProcessTier::Background,
         previous_cpu_time: None,
         last_usage_tenths: Some(900),
         high_since: Some(now),
@@ -359,6 +361,7 @@ fn adaptive_engine_process_candidate_score_uses_only_cpu_and_selection_stickines
         process_name: "worker.exe".to_owned(),
         executable_path: r"C:\Apps\worker.exe".to_owned(),
         creation_time: 1,
+        tier: AdaptiveEngineProcessTier::Background,
         previous_cpu_time: None,
         last_usage_tenths: Some(100),
         high_since: Some(now),
@@ -696,6 +699,7 @@ struct AdaptiveCpuObservations {
     started_at: Instant,
     path: &'static str,
     creation_time: u64,
+    tier: AdaptiveEngineProcessTier,
 }
 
 impl AdaptiveCpuObservations {
@@ -706,6 +710,7 @@ impl AdaptiveCpuObservations {
             started_at: Instant::now(),
             path: r"C:\Apps\worker.exe",
             creation_time: 1,
+            tier: AdaptiveEngineProcessTier::Background,
         }
     }
 
@@ -732,7 +737,7 @@ impl AdaptiveCpuObservations {
             "worker.exe",
             self.path,
             &self.settings,
-            AdaptiveEngineProcessTier::Background,
+            self.tier,
             sample,
         )
     }
@@ -847,6 +852,55 @@ fn adaptive_replacement_identity_does_not_reuse_the_previous_cpu_incident() {
         assert_eq!(
             observations.manager.tracked_processes[&42].active_since,
             Some(observations.started_at + Duration::from_secs(3))
+        );
+    }
+}
+
+#[test]
+fn adaptive_role_changes_require_a_fresh_hot_interval() {
+    use AdaptiveEngineProcessDecision::{LimitProcessors, LowerPriority};
+    use AdaptiveEngineProcessTier::{Background, VisibleWindow};
+
+    for (from, to, active_decision, next_decision) in [
+        (VisibleWindow, Background, LowerPriority, LimitProcessors),
+        (Background, VisibleWindow, LimitProcessors, LowerPriority),
+    ] {
+        let mut observations = AdaptiveCpuObservations::new(AdaptiveEngineProcessSettings {
+            cpu_pressure_restraint_enabled: true,
+            limit_background_processors_enabled: true,
+            background_app_cpu_threshold_percent: 70,
+            cpu_recovery_threshold_percent: 20,
+            cpu_restraint_time_seconds: 10,
+            ..Default::default()
+        });
+        observations.tier = from;
+        assert!(observations.sample(0, 0).is_none());
+        assert_eq!(
+            observations.sample(1, 10_000_000).unwrap().decision,
+            active_decision
+        );
+        let tracked = &mut observations.manager.tracked_processes;
+        let active = tracked.get_mut(&42).unwrap();
+        active.selected = true;
+        let unrelated = active.clone();
+        let unrelated_active_since = unrelated.active_since;
+        tracked.insert(99, unrelated);
+
+        observations.tier = to;
+        assert!(observations.sample(2, 11_000_000).is_none());
+        assert!(observations.sample(3, 12_000_000).is_none());
+        let tracked = &observations.manager.tracked_processes;
+        assert!(!tracked[&42].selected);
+        assert!(tracked[&42].active_since.is_none());
+        assert_eq!(tracked[&99].active_since, unrelated_active_since);
+        assert!(tracked[&99].selected);
+
+        let renewed = observations.sample(4, 22_000_000).unwrap();
+        assert_eq!(renewed.tier, to);
+        assert_eq!(renewed.decision, next_decision);
+        assert_eq!(
+            observations.manager.tracked_processes[&42].active_since,
+            Some(observations.started_at + Duration::from_secs(4))
         );
     }
 }

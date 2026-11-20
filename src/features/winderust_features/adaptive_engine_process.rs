@@ -154,6 +154,7 @@ struct AdaptiveEngineProcessProcess {
     process_name: String,
     executable_path: String,
     creation_time: u64,
+    tier: AdaptiveEngineProcessTier,
     previous_cpu_time: Option<ProcessCpuSample>,
     last_usage_tenths: Option<u16>,
     high_since: Option<Instant>,
@@ -1810,6 +1811,7 @@ impl AdaptiveEngineProcessManager {
             .get(&process_id)
             .is_some_and(|process| {
                 process.creation_time != creation_time
+                    || process.tier != tier
                     || !same_executable_path(
                         Path::new(&process.executable_path),
                         Path::new(executable_path),
@@ -1823,6 +1825,7 @@ impl AdaptiveEngineProcessManager {
                 process_name: process_name.to_owned(),
                 executable_path: executable_path.to_owned(),
                 creation_time,
+                tier,
                 previous_cpu_time: None,
                 last_usage_tenths: None,
                 high_since: None,

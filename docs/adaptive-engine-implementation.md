@@ -108,6 +108,8 @@ migration or copying from the limiter is performed.
   eligible Visible Window and Background processes receive their configured soft pressure policy
   only when CPU Pressure Restraint is enabled. Hot Background candidates are independently ranked
   by current CPU demand with a small selection-stability bias for processor allocation.
+  Moving between Visible Window and Background restarts the process's CPU sampling and
+  restraint qualification under its new role.
 - When a selected process falls below its recovery threshold, Winderust removes processor
   allocation first, keeps the softer restraint during the recovery period, and then restores the
   original state. Renewed CPU demand cancels recovery.
