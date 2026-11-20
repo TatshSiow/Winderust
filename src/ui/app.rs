@@ -552,14 +552,17 @@ fn navigation_search_overlay<'a>(
             )
             .on_press(Message::CloseNavigationSearch)
         ),
-        container(iced::widget::opaque(search))
-            .padding(iced::Padding {
-                top: 120.0,
-                right: 24.0,
-                bottom: 24.0,
-                left: 24.0
-            })
-            .center_x(Fill),
+        container(iced::widget::opaque(super::modal::dismiss_on_escape(
+            search,
+            Message::CloseNavigationSearch,
+        )))
+        .padding(iced::Padding {
+            top: 120.0,
+            right: 24.0,
+            bottom: 24.0,
+            left: 24.0
+        })
+        .center_x(Fill),
     ]
     .into()
 }
@@ -768,11 +771,23 @@ impl WinderustApp {
     ) -> Task<Message> {
         use iced::keyboard::{key::Named, Key};
         let review_open = self.power_tuning.review_origin().is_some();
-        if self.hidden
-            || !review_open
-                && (self.closing || self.preferences.show_update || !self.error_message.is_empty())
-        {
+        if self.hidden {
             return Task::none();
+        }
+        let tab = status == iced::event::Status::Ignored
+            && key == Key::Named(Named::Tab)
+            && (modifiers.is_empty() || modifiers == iced::keyboard::Modifiers::SHIFT);
+        let move_focus = || {
+            if modifiers.shift() {
+                iced::widget::operation::focus_previous()
+            } else {
+                iced::widget::operation::focus_next()
+            }
+        };
+        if !review_open
+            && (self.closing || self.preferences.show_update || !self.error_message.is_empty())
+        {
+            return if tab { move_focus() } else { Task::none() };
         }
         if !review_open && self.page == Page::WinderustBehaviour {
             if let Some(slot) = self.preferences.hotkey_capture {
@@ -793,7 +808,7 @@ impl WinderustApp {
         }
         if !review_open && self.navigation_search_open {
             match key.as_ref() {
-                Key::Named(Named::Escape) => return self.update(Message::CloseNavigationSearch),
+                Key::Named(Named::Tab) if tab => return move_focus(),
                 Key::Named(Named::ArrowUp | Named::ArrowDown)
                     if status == iced::event::Status::Ignored && modifiers.is_empty() =>
                 {
@@ -803,7 +818,14 @@ impl WinderustApp {
                         count,
                         key == Key::Named(Named::ArrowDown),
                     );
-                    return self.scroll_search_selection();
+                    return if count == 0 {
+                        Task::none()
+                    } else {
+                        Task::batch([
+                            iced::widget::operation::focus("navigation-search"),
+                            self.scroll_search_selection(),
+                        ])
+                    };
                 }
                 Key::Named(Named::Enter) if status == iced::event::Status::Ignored && !repeat => {
                     return self.update(Message::ConfirmSearch);
@@ -859,13 +881,7 @@ impl WinderustApp {
                 {
                     self.update(cancel_dialog)
                 }
-                Key::Named(Named::Tab) if status == iced::event::Status::Ignored => {
-                    if modifiers.shift() {
-                        iced::widget::operation::focus_previous()
-                    } else {
-                        iced::widget::operation::focus_next()
-                    }
-                }
+                Key::Named(Named::Tab) if tab => move_focus(),
                 _ => Task::none(),
             };
         }
@@ -890,12 +906,8 @@ impl WinderustApp {
             if self.navigation.selected.is_some() && self.navigation.section.is_some() {
                 return self.update_navigation(navigation::Event::Key(key, modifiers.shift()));
             }
-            if key == Key::Named(Named::Tab) {
-                return if modifiers.shift() {
-                    iced::widget::operation::focus_previous()
-                } else {
-                    iced::widget::operation::focus_next()
-                };
+            if tab {
+                return move_focus();
             }
         }
         Task::none()
@@ -3072,6 +3084,7 @@ impl WinderustApp {
                         .height(Fill)
                         .align_y(iced::Center),
                     )
+                    .pointer_only()
                     .width(Fill)
                     .height(48)
                     .padding([6, 12])
@@ -3706,6 +3719,7 @@ mod tests {
     fn search_overlay_blocks_background_hover_scroll_and_clicks_but_keeps_search_editable() {
         use super::*;
         use iced::advanced::{layout, widget::Tree, Layout, Shell};
+        use iced::keyboard::{key::Named, Key};
         use iced::{mouse, Event, Point, Rectangle, Size};
         let renderer = iced::Renderer::new(design::typography::FONT, iced::Pixels(14.0));
         let bounds = Rectangle::with_size(Size::new(900.0, 620.0));
@@ -3758,6 +3772,7 @@ mod tests {
         }
         let input = node.children()[2].children()[0].bounds().center();
         let mut messages = Vec::new();
+        let escape = Key::Named(Named::Escape);
         for event in [
             Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
             Event::Keyboard(iced::keyboard::Event::KeyPressed {
@@ -3767,6 +3782,17 @@ mod tests {
                 location: iced::keyboard::Location::Standard,
                 modifiers: iced::keyboard::Modifiers::default(),
                 text: Some("x".into()),
+                repeat: false,
+            }),
+            Event::Keyboard(iced::keyboard::Event::KeyPressed {
+                key: escape.clone(),
+                modified_key: escape,
+                physical_key: iced::keyboard::key::Physical::Code(
+                    iced::keyboard::key::Code::Escape,
+                ),
+                location: iced::keyboard::Location::Standard,
+                modifiers: iced::keyboard::Modifiers::empty(),
+                text: None,
                 repeat: false,
             }),
         ] {
@@ -3781,7 +3807,9 @@ mod tests {
                 &bounds,
             );
         }
-        assert!(matches!(messages.as_slice(), [Message::NavigationSearch(text)] if text == "x"));
+        assert!(
+            matches!(messages.as_slice(), [Message::NavigationSearch(text), Message::CloseNavigationSearch] if text == "x")
+        );
     }
 
     #[test]
