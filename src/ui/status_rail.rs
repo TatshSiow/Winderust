@@ -511,6 +511,12 @@ fn sidebar_state(
 ) -> FeatureRunState {
     use crate::control::power_plan::PowerPlanOwner;
     use crate::rules::DecisionState;
+    if page == Page::TimerResolution {
+        let timer = &runtime.feature_status.timer_resolution;
+        if !timer.enabled && timer.requested_100ns.is_some() && timer.last_error.is_some() {
+            return FeatureRunState::Error;
+        }
+    }
     if !settings.general.enabled
         || super::navigation::feature_page_enabled(settings, page) == Some(false)
     {
