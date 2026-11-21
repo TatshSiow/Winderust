@@ -281,20 +281,31 @@ impl AppSuspensionManager {
             result.map(|_| ()).map_err(|error| error.to_string())
         } else {
             let suspension_target = SuspensionTarget::from_action_target(target);
-            let result = controller
-                .thaw_keep_target(&suspension_target, true)
-                .map(|_| ());
-            if result.is_ok() || !controller.is_frozen_process(target.id) {
-                self.suspended.remove(&target.id);
-                let now = Instant::now();
-                self.set_temporary_thaw(
-                    target.id,
-                    target.name.clone(),
-                    target.executable_path.to_string_lossy().into_owned(),
-                    now + Duration::from_secs(USER_INTENT_THAW_SECONDS),
-                    TemporaryThawReason::UserIntent,
-                );
-            }
+            let result = if controller.matches_target(&suspension_target) {
+                let result = controller
+                    .thaw_keep_target(&suspension_target, true)
+                    .map(|_| ());
+                if result.is_ok() || !controller.is_frozen_process(target.id) {
+                    self.suspended.remove(&target.id);
+                    let now = Instant::now();
+                    self.set_temporary_thaw(
+                        target.id,
+                        target.name.clone(),
+                        target.executable_path.to_string_lossy().into_owned(),
+                        now + Duration::from_secs(USER_INTENT_THAW_SECONDS),
+                        TemporaryThawReason::UserIntent,
+                    );
+                }
+                result
+            } else {
+                match suspension_control::verify_unmanaged_resume_target(
+                    &suspension_target,
+                    allow_cross_session,
+                ) {
+                    Ok(()) => return Ok(()),
+                    Err(error) => Err(error),
+                }
+            };
             action_log.record(
                 ActionLogFeature::AppSuspension,
                 Some(target.id),

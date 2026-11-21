@@ -12,14 +12,14 @@ use crate::{
     },
     platform::windows::{
         job::{self as windows_job, JobHandle, JobObjectError},
-        suspension as windows_suspension,
+        process as windows_process, suspension as windows_suspension,
     },
     win_util::WinHandle,
 };
 
 use super::process::{
-    open_process_for_job_assignment, ProcessControlError, ProcessControlTarget, ProcessIdentity,
-    ProcessTargetKey,
+    open_process_for_job_assignment, open_process_for_observation, ProcessControlError,
+    ProcessControlTarget, ProcessIdentity, ProcessTargetKey,
 };
 
 const APP_SUSPENSION_ONLY_BUILT_IN_EXCLUSIONS: &[&str] = &[
@@ -111,6 +111,29 @@ pub(crate) fn process_is_suspendable(target: &ProcessActionTarget) -> bool {
     !is_builtin_excluded(&target.name)
         && target.session_id.is_some_and(|session_id| session_id != 0)
         && target.is_service_account == Some(false)
+}
+
+pub(crate) fn verify_unmanaged_resume_target(
+    target: &SuspensionTarget,
+    allow_cross_session_process_control: bool,
+) -> Result<(), SuspensionError> {
+    if is_builtin_excluded(&target.process.name) || target.is_service_account != Some(false) {
+        return Err(SuspensionError::AccessDenied);
+    }
+    let (identity, process) =
+        open_process_for_observation(&target.process, allow_cross_session_process_control)
+            .map_err(map_process_control_error)?;
+    if identity.session_id.is_none_or(|session_id| session_id == 0)
+        || process_runs_as_service_account_from_handle(&process) != Some(false)
+    {
+        return Err(SuspensionError::AccessDenied);
+    }
+    if windows_process::poll_exit(&process)
+        .map_err(|error| map_process_control_error(error.into()))?
+    {
+        return Err(SuspensionError::ProcessExited);
+    }
+    Ok(())
 }
 
 pub(crate) trait SuspensionPlatform {

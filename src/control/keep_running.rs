@@ -85,7 +85,7 @@ pub(crate) fn retain_member(
     target: &ProcessControlTarget,
     context: &DesktopContext,
 ) -> Result<Member, KeepRunningError> {
-    let (_, process) = open_process_for_observation(target)?;
+    let (_, process) = open_process_for_observation(target, false)?;
     if process_runs_as_service_account_from_handle(&process) != Some(false) {
         return Err(native::KeepRunningError::Unsupported(
             "Keep Running requires a verified non-service desktop app.",

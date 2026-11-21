@@ -242,10 +242,11 @@ pub(crate) fn open_process_for_thread_control(
 
 pub(crate) fn open_process_for_observation(
     target: &ProcessControlTarget,
+    allow_cross_session_process_control: bool,
 ) -> Result<(ProcessIdentity, WinHandle), ProcessControlError> {
     open_process_with_access(
         target,
-        false,
+        allow_cross_session_process_control,
         ProcessAccess::Observation,
         ProcessActionAccess::SafetyOnly,
     )
@@ -530,10 +531,14 @@ mod tests {
         let target = ProcessControlTarget::from_action_target(&target);
         let (_, retained) =
             open_process_for_set_information(&target, false).map_err(|error| error.to_string())?;
+        let (_, observed) =
+            open_process_for_observation(&target, false).map_err(|error| error.to_string())?;
         assert_eq!(windows_process::exit_confirmed(&retained), Ok(false));
+        assert_eq!(windows_process::poll_exit(&observed), Ok(false));
         child.0.kill().map_err(|error| error.to_string())?;
         child.0.wait().map_err(|error| error.to_string())?;
         assert_eq!(windows_process::exit_confirmed(&retained), Ok(true));
+        assert_eq!(windows_process::poll_exit(&observed), Ok(true));
         assert!(matches!(
             open_process_for_set_information(&target, false),
             Err(ProcessControlError::ProcessExited)
