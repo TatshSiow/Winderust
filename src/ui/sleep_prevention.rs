@@ -197,8 +197,10 @@ fn indicator(status: Option<&SleepPreventionSnapshot>, rule: &SleepPreventionRul
         "sleep_prevention.requests_paused"
     } else if contains(&status.running_apps) {
         "common.waiting"
-    } else {
+    } else if status.observed_rule_paths.as_deref().is_some_and(contains) {
         "sleep_prevention.not_running"
+    } else {
+        "common.unknown"
     };
     t!(key).to_string()
 }
@@ -293,5 +295,26 @@ mod tests {
         );
         rule.enabled = false;
         assert_eq!(indicator(None, &rule), t!("common.off"));
+    }
+
+    #[test]
+    fn rule_absence_requires_an_observation_of_its_path() {
+        let rule = SleepPreventionRule {
+            executable_path: r"C:\Apps\test.exe".into(),
+            enabled: true,
+            keep_display_on: false,
+        };
+        let mut status = SleepPreventionSnapshot {
+            enabled: true,
+            observation_known: true,
+            observed_rule_paths: Some([r"C:\Other\test.exe".into()].into()),
+            ..Default::default()
+        };
+        assert_eq!(indicator(Some(&status), &rule), t!("common.unknown"));
+        status.observed_rule_paths = Some([r"c:/apps/TEST.exe".into()].into());
+        assert_eq!(
+            indicator(Some(&status), &rule),
+            t!("sleep_prevention.not_running")
+        );
     }
 }

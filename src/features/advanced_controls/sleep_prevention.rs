@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, path::Path};
+use std::{collections::BTreeMap, path::Path, sync::Arc};
 
 use crate::{
     action_log::{ActionLog, ActionLogFeature, ActionLogResult},
@@ -22,6 +22,7 @@ pub struct SleepPreventionSnapshot {
     pub running_apps: Vec<String>,
     pub suppressed_apps: Vec<String>,
     pub(crate) requesting_apps: Vec<RequestingApp>,
+    pub(crate) observed_rule_paths: Option<Arc<[String]>>,
     pub system_requested: bool,
     pub display_requested: bool,
     pub observation_known: bool,
@@ -268,6 +269,21 @@ impl SleepPreventionManager {
             }
         };
         let mut snapshot = self.matching_snapshot();
+        if snapshot.observation_known {
+            let paths = settings
+                .rules
+                .iter()
+                .filter(|rule| rule.enabled)
+                .filter_map(|rule| matchable_target(&rule.executable_path).map(|(path, _)| path));
+            snapshot.observed_rule_paths = Some(
+                self.snapshot
+                    .observed_rule_paths
+                    .as_ref()
+                    .filter(|previous| previous.iter().map(String::as_str).eq(paths.clone()))
+                    .cloned()
+                    .unwrap_or_else(|| paths.map(str::to_owned).collect()),
+            );
+        }
         snapshot.last_error = error;
         let mode = self.permitted_mode(controller.requests());
         self.apply(controller, mode, snapshot, action_log)
@@ -567,6 +583,15 @@ impl SleepPreventionManager {
     }
 }
 
+fn matchable_target(executable: &str) -> Option<(&str, &str)> {
+    let executable = executable.trim();
+    let path = Path::new(executable);
+    if !path.is_absolute() {
+        return None;
+    }
+    Some((executable, path.file_name()?.to_str()?))
+}
+
 fn match_rules(
     settings: &SleepPreventionSettings,
     processes: &[ProcessInfo],
@@ -579,13 +604,10 @@ fn match_rules(
         ..Default::default()
     };
     for rule in settings.rules.iter().filter(|rule| rule.enabled) {
-        let path = Path::new(rule.executable_path.trim());
-        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        let Some((executable, name)) = matchable_target(&rule.executable_path) else {
             continue;
         };
-        if !path.is_absolute() {
-            continue;
-        }
+        let path = Path::new(executable);
         let mut rule_matched = false;
         for process in processes {
             if process.id == 0
@@ -627,7 +649,7 @@ fn match_rules(
                 .entry((process.id, creation))
                 .and_modify(|app| app.display |= rule.keep_display_on)
                 .or_insert_with(|| MatchedApp {
-                    path: rule.executable_path.trim().to_owned(),
+                    path: executable.to_owned(),
                     display: rule.keep_display_on,
                     in_current_session: current_session.is_some()
                         && process.session_id == current_session,
