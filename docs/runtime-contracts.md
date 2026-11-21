@@ -230,7 +230,14 @@ Read the relevant section before changing feature policy, ownership, restoration
   through observation gaps when the next sample confirms an exact member
   survives. New or unsampled members require a fresh CPU baseline. Power-source
   changes leave Watchdog rules and incident state unchanged.
-- `RuntimeCore` executes automatic termination through the existing `ProcessTerminationController`, preserving exact identity, protected-process and helper exclusions, current cross-session policy, and Windows access checks. Termination batches all captured matching process identities through the existing preflight, records partial failures, and deduplicates successful targets by PID and creation time across simultaneous CPU/memory events. It has no baseline, recovery entry, or restore path. Failures remain visible in Action Log and status.
+- `RuntimeCore` executes automatic termination through `ProcessTerminationController`,
+  preserving exact identity, protected-process and helper exclusions, current
+  cross-session policy, and Windows access checks. The controller preflights
+  captured identities and records partial failures. Accepted requests are
+  deduplicated by PID and creation time across simultaneous CPU and memory
+  events. Action Log and notifications count the requests accepted for that
+  action. Failures remain visible in Action Log and status. Termination has no
+  baseline, recovery entry, or restore path.
 - Restart validates every captured exact instance, requires a non-service app
   in Winderust's Windows session, rejects mixed Windows logons, and prepares one
   suspended replacement with the oldest captured instance as its explicit

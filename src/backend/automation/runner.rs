@@ -288,14 +288,20 @@ impl RuntimeCore {
                             },
                         )
                         .map(|outcome| match outcome {
-                            WatchdogRestartOutcome::Applied => None,
-                            WatchdogRestartOutcome::CoolingDown => Some(t!(
-                                "watchdog.restart_cooldown",
-                                seconds = WATCHDOG_RESTART_COOLDOWN.as_secs()
-                            )),
+                            WatchdogRestartOutcome::Applied => (
+                                ActionLogResult::Applied,
+                                t!("watchdog.restarted", count = event.targets.len()),
+                            ),
+                            WatchdogRestartOutcome::CoolingDown => (
+                                ActionLogResult::Skipped,
+                                t!(
+                                    "watchdog.restart_cooldown",
+                                    seconds = WATCHDOG_RESTART_COOLDOWN.as_secs()
+                                ),
+                            ),
                         })
                 } else if let Some(reason) = actions.skipped_termination_reason(&event.targets) {
-                    Ok(Some(t!(reason)))
+                    Ok((ActionLogResult::Skipped, t!(reason)))
                 } else {
                     self.keep_running
                         .pause_targets(&event.targets, PauseReason::Watchdog);
@@ -314,28 +320,21 @@ impl RuntimeCore {
                         settings.general.allow_cross_session_process_control,
                     );
                     for result in &batch.results {
-                        if result.outcome == crate::control::process_termination::ProcessTerminationOutcome::Terminated {
+                        if result.outcome == crate::control::process_termination::ProcessTerminationOutcome::Requested {
                             actions.termination_handled.insert((result.target.id, result.target.creation_time));
                         }
                     }
-                    batch.into_process_list_result().map(|()| None)
+                    batch.into_termination_result().map(|count| {
+                        (
+                            ActionLogResult::Applied,
+                            t!("watchdog.termination_requested", count = count),
+                        )
+                    })
                 };
                 let outcome = match result {
-                    Ok(Some(reason)) => {
-                        action_detail = reason.into_owned();
-                        ActionLogResult::Skipped
-                    }
-                    Ok(None) => {
-                        action_detail = t!(
-                            if restarting {
-                                "watchdog.restarted"
-                            } else {
-                                "watchdog.terminated"
-                            },
-                            count = event.targets.len()
-                        )
-                        .to_string();
-                        ActionLogResult::Applied
+                    Ok((outcome, message)) => {
+                        action_detail = message.into_owned();
+                        outcome
                     }
                     Err(error) => {
                         snapshot.last_error = Some(error.clone());

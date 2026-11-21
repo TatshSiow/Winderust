@@ -795,7 +795,8 @@ impl ProcessList {
                         .recv()
                         .map_err(|e| e.to_string())?
                         .map_err(|e| e.to_string())?
-                        .into_process_list_result()
+                        .into_termination_result()
+                        .map(|_| ())
                 },
                 move |result| Message::Result {
                     name: name.clone(),

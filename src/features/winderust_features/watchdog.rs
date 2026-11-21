@@ -1362,7 +1362,7 @@ mod tests {
             .all(|target| children.iter().any(|child| target.id == child.0.id())));
         crate::control::process_termination::ProcessTerminationController::default()
             .terminate_batch(event.targets, false)
-            .into_process_list_result()
+            .into_termination_result()
             .unwrap();
         for child in &mut children {
             assert!(!child.0.wait().unwrap().success());

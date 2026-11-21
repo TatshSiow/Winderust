@@ -6,7 +6,7 @@ use super::process::{open_process_for_termination, ProcessControlError, ProcessC
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ProcessTerminationOutcome {
-    Terminated,
+    Requested,
     Failed(String),
     NotAttempted,
 }
@@ -24,37 +24,37 @@ pub(crate) struct ProcessTerminationBatchResult {
 }
 
 impl ProcessTerminationBatchResult {
-    pub(crate) fn into_process_list_result(self) -> Result<(), String> {
+    pub(crate) fn into_termination_result(self) -> Result<usize, String> {
         if self.results.is_empty() {
             return Err("No process targets were available.".to_owned());
         }
         let total = self.results.len();
-        let terminated = self
+        let requested = self
             .results
             .iter()
-            .filter(|result| matches!(result.outcome, ProcessTerminationOutcome::Terminated))
+            .filter(|result| matches!(result.outcome, ProcessTerminationOutcome::Requested))
             .count();
         let first_error =
             self.results
                 .iter()
                 .find_map(|result| match &result.outcome {
                     ProcessTerminationOutcome::Failed(error) => Some(error.as_str()),
-                    ProcessTerminationOutcome::Terminated
+                    ProcessTerminationOutcome::Requested
                     | ProcessTerminationOutcome::NotAttempted => None,
                 });
         if self.preflight_failed {
             return Err(format!(
-                "Process termination preflight failed; no processes were stopped: {}",
+                "Process termination preflight failed. No termination requests were sent. {}",
                 first_error.unwrap_or("A process target could not be validated.")
             ));
         }
-        if terminated == total {
-            Ok(())
+        if requested == total {
+            Ok(requested)
         } else {
             Err(format!(
-                "Stopped {terminated} of {total} processes; {} failed: {}",
-                total.saturating_sub(terminated),
-                first_error.unwrap_or("The process could not be stopped.")
+                "Windows accepted termination requests for {requested} of {total} processes. {} failed. {}",
+                total - requested,
+                first_error.unwrap_or("Windows did not accept a termination request.")
             ))
         }
     }
@@ -160,7 +160,7 @@ impl<P: ProcessTerminationPlatform> ProcessTerminationController<P> {
             .map(|(target, process)| {
                 let outcome = match process {
                     Some(process) => match self.platform.terminate(&process) {
-                        Ok(()) => ProcessTerminationOutcome::Terminated,
+                        Ok(()) => ProcessTerminationOutcome::Requested,
                         Err(error) => ProcessTerminationOutcome::Failed(error.to_string()),
                     },
                     None => ProcessTerminationOutcome::Failed(
@@ -268,11 +268,11 @@ mod tests {
         assert_eq!(result.results[2].target.id, 1);
         assert!(matches!(
             result.results[2].outcome,
-            ProcessTerminationOutcome::Terminated
+            ProcessTerminationOutcome::Requested
         ));
         assert_eq!(
-            result.into_process_list_result().unwrap_err(),
-            "Stopped 2 of 3 processes; 1 failed: failed"
+            result.into_termination_result().unwrap_err(),
+            "Windows accepted termination requests for 2 of 3 processes. 1 failed. failed"
         );
     }
 
@@ -283,7 +283,7 @@ mod tests {
         let result = controller.terminate_batch(Vec::new(), true);
 
         assert_eq!(
-            result.into_process_list_result().unwrap_err(),
+            result.into_termination_result().unwrap_err(),
             "No process targets were available."
         );
         assert!(controller.platform.opens.is_empty());

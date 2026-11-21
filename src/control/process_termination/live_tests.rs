@@ -60,7 +60,7 @@ fn live_trim_and_termination_validate_identity() -> Result<(), String> {
     assert!(child.0.try_wait().map_err(|e| e.to_string())?.is_none());
     termination
         .terminate_batch(vec![target], false)
-        .into_process_list_result()?;
+        .into_termination_result()?;
     child.0.wait().map_err(|e| e.to_string())?;
     Ok(())
 }

@@ -508,7 +508,7 @@ fn process_termination_request_starts_worker_and_replies() {
         .expect("runtime should process the request");
 
     assert_eq!(
-        outcome.into_process_list_result().unwrap_err(),
+        outcome.into_termination_result().unwrap_err(),
         "No process targets were available."
     );
     automation.shutdown().expect("shutdown");

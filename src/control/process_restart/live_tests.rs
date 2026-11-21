@@ -126,7 +126,7 @@ fn main() {
     // Clean up only the verified replacement from this fixture before asserting its launch context.
     super::super::process_termination::ProcessTerminationController::default()
         .terminate_batch(vec![replacement], false)
-        .into_process_list_result()?;
+        .into_termination_result()?;
     assert_ne!(first[0], second[0]);
     assert_eq!(first[1..], second[1..]);
     assert_eq!(second[3], "1");
