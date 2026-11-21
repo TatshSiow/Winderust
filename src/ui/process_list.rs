@@ -43,6 +43,14 @@ struct Entry {
     key: String,
     nested: bool,
 }
+
+struct FocusedRow {
+    key: String,
+    nested: bool,
+    pid: u32,
+    creation_time: Option<u64>,
+}
+
 #[derive(Debug, Clone)]
 pub(super) struct Selection {
     nested: bool,
@@ -209,7 +217,7 @@ pub(super) struct ProcessList {
     column_widths: [Option<f32>; 6],
     resizing: Option<(Sort, f32, Option<f32>)>,
     selected: Option<Selection>,
-    focused: Option<(String, bool, Selection)>,
+    focused: Option<FocusedRow>,
     pointer: iced::Point,
     context: Option<iced::Point>,
     menu_branch: MenuBranch,
@@ -455,16 +463,16 @@ impl ProcessList {
                 }
             }
             Message::DeleteFocused => {
-                if self.selected.is_none()
-                    && self.stopping.is_none()
-                    && self.focused_index().is_some()
-                {
-                    if let Some((_, _, selection)) = &self.focused {
-                        if selection.processes.iter().any(|p| !inaccessible(p)) {
-                            self.selected = Some(selection.clone());
-                            return self.update(Message::Stop(false), settings, runtime);
-                        }
-                    }
+                if self.selected.is_some() || self.stopping.is_some() {
+                    return Task::none();
+                }
+                let Some(index) = self.focused_index() else {
+                    return Task::none();
+                };
+                let selection = self.selection(&self.rows[index]);
+                if selection.processes.iter().any(|p| !inaccessible(p)) {
+                    self.selected = Some(selection);
+                    return self.update(Message::Stop(false), settings, runtime);
                 }
             }
             Message::Select(index, revision) => {
@@ -893,16 +901,13 @@ impl ProcessList {
     }
 
     fn is_focused(&self, entry: &Entry) -> bool {
-        self.focused
-            .as_ref()
-            .is_some_and(|(key, nested, selection)| {
-                let process = &self.processes[entry.indices[0]];
-                *key == entry.key
-                    && *nested == entry.nested
-                    && selection.processes.first().is_some_and(|selected| {
-                        selected.id == process.id && selected.creation_time == process.creation_time
-                    })
-            })
+        self.focused.as_ref().is_some_and(|focused| {
+            let process = &self.processes[entry.indices[0]];
+            focused.key == entry.key
+                && focused.nested == entry.nested
+                && focused.pid == process.id
+                && focused.creation_time == process.creation_time
+        })
     }
 
     fn focused_index(&self) -> Option<usize> {
@@ -952,7 +957,13 @@ impl ProcessList {
             .get(index)
             .filter(|_| revision == self.rows_revision)
         {
-            self.focused = Some((entry.key.clone(), entry.nested, self.selection(entry)));
+            let process = &self.processes[entry.indices[0]];
+            self.focused = Some(FocusedRow {
+                key: entry.key.clone(),
+                nested: entry.nested,
+                pid: process.id,
+                creation_time: process.creation_time,
+            });
             return true;
         }
         false
@@ -2690,10 +2701,12 @@ mod tests {
         list.rebuild();
         assert!(list.focus_row(0, list.rows_revision));
         assert!(!list.modal_open());
+        list.processes.push(process(12, 300, "app.exe"));
+        list.rebuild();
         let _ = list.update(Message::DeleteFocused, &mut editor, &runtime);
         assert!(list.modal_open());
         let (pending, tree) = list.stopping.as_ref().unwrap();
-        assert_eq!(pending.processes.len(), 2);
+        assert_eq!(pending.processes.len(), 3);
         assert!(!tree);
         let _ = list.update(Message::CancelStop, &mut editor, &runtime);
         assert!(list.stopping.is_none());
@@ -2875,7 +2888,7 @@ mod tests {
     }
 
     #[test]
-    fn focusing_a_row_preserves_exact_targets_without_opening_details() {
+    fn focusing_a_row_tracks_its_identity_without_opening_details() {
         let mut list = ProcessList {
             processes: vec![
                 process(10, 100, "app.exe"),
@@ -2890,10 +2903,9 @@ mod tests {
         assert!(list.focus_row(0, revision));
         assert_eq!(list.focused_index(), Some(0));
         assert!(list.selected.is_none());
-        let (_, nested, selection) = list.focused.as_ref().unwrap();
-        assert!(!nested);
-        assert_eq!(selection.processes.len(), 2);
-        assert_eq!(selection.processes[0].creation_time, Some(100));
+        let focused = list.focused.as_ref().unwrap();
+        assert!(!focused.nested);
+        assert_eq!(focused.pid, 10);
         list.descending = true;
         list.rebuild();
         assert_eq!(list.focused_index(), Some(1));
@@ -2901,10 +2913,7 @@ mod tests {
         list.rebuild();
         assert!(!list.focus_row(0, revision));
         assert_eq!(list.focused_index(), None);
-        assert_eq!(
-            list.focused.as_ref().unwrap().2.processes[0].creation_time,
-            Some(100)
-        );
+        assert_eq!(list.focused.as_ref().unwrap().creation_time, Some(100));
     }
 
     #[test]
