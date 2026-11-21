@@ -2617,7 +2617,7 @@ where
 }
 
 impl TimerResolutionSettings {
-    pub fn desired_resolution_for_foreground(&self, process_name: &str) -> Option<(String, u32)> {
+    pub fn desired_resolution_for_foreground(&self, process_name: &str) -> Option<(&str, u32)> {
         self.rules
             .iter()
             .find(|rule| {
@@ -2625,7 +2625,7 @@ impl TimerResolutionSettings {
                     && !rule.executable_path.trim().is_empty()
                     && same_rule_executable_path(&rule.executable_path, process_name)
             })
-            .map(|rule| (rule.executable_path.clone(), rule.desired_100ns))
+            .map(|rule| (rule.executable_path.as_str(), rule.desired_100ns))
     }
 
     pub fn contains_rule_for(&self, process_name: &str) -> bool {

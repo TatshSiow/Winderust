@@ -476,7 +476,7 @@ fn timer_resolution_rules_match_only_the_foreground_executable_path() {
 
     assert_eq!(
         settings.desired_resolution_for_foreground("c:/games/GAME.exe"),
-        Some(("C:\\Games\\game.exe".to_owned(), 20_000))
+        Some(("C:\\Games\\game.exe", 20_000))
     );
     assert_eq!(
         settings.desired_resolution_for_foreground("C:\\Other\\game.exe"),

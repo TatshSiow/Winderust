@@ -12,7 +12,6 @@ const SYSTEM_TARGET_NAME: &str = "System";
 pub struct TimerResolutionSnapshot {
     pub enabled: bool,
     pub requested_100ns: Option<u32>,
-    pub active_rule_process: Option<String>,
     pub maximum_100ns: Option<u32>,
     pub minimum_100ns: Option<u32>,
     pub failed_actions: usize,
@@ -89,7 +88,6 @@ impl TimerResolutionManager {
                 return TimerResolutionSnapshot {
                     enabled: true,
                     requested_100ns: controller.active_request_100ns(),
-                    active_rule_process: self.active_rule_process.clone(),
                     failed_actions: 1,
                     last_error: Some(error),
                     ..Default::default()
@@ -102,8 +100,8 @@ impl TimerResolutionManager {
 
         let previous_target = self
             .active_rule_process
-            .clone()
-            .unwrap_or_else(|| SYSTEM_TARGET_NAME.to_owned());
+            .as_deref()
+            .unwrap_or(SYSTEM_TARGET_NAME);
         self.last_release_error = None;
         match controller.set_request(desired_100ns) {
             Ok(transition) => {
@@ -123,7 +121,7 @@ impl TimerResolutionManager {
                     action_log.record(
                         ActionLogFeature::TimerResolution,
                         None,
-                        rule_process_name.clone(),
+                        rule_process_name,
                         ActionLogResult::Applied,
                         format!(
                             "Requested timer resolution {} while {} is foreground.",
@@ -132,14 +130,16 @@ impl TimerResolutionManager {
                         ),
                     );
                 }
-                self.active_rule_process = Some(rule_process_name.clone());
+                if self.active_rule_process.as_deref() != Some(rule_process_name) {
+                    self.active_rule_process = Some(rule_process_name.to_owned());
+                }
             }
             Err(error) => {
                 if let Some(previous_100ns) = error.released_100ns {
                     action_log.record(
                         ActionLogFeature::TimerResolution,
                         None,
-                        previous_target.clone(),
+                        previous_target,
                         ActionLogResult::Restored,
                         format!(
                             "Released previous timer resolution request {}.",
@@ -171,7 +171,6 @@ impl TimerResolutionManager {
                 return snapshot_from_query(
                     true,
                     error.active_100ns,
-                    self.active_rule_process.clone(),
                     Some(info),
                     1,
                     Some(error.message),
@@ -183,7 +182,6 @@ impl TimerResolutionManager {
         snapshot_from_query(
             true,
             controller.active_request_100ns(),
-            Some(rule_process_name),
             Some(info),
             0,
             None,
@@ -266,7 +264,6 @@ impl TimerResolutionManager {
         snapshot_from_query(
             enabled,
             controller.active_request_100ns(),
-            self.active_rule_process.clone(),
             info,
             failures,
             last_error,
@@ -310,7 +307,6 @@ pub fn format_resolution_ms(value_100ns: u32) -> String {
 fn snapshot_from_query(
     enabled: bool,
     requested_100ns: Option<u32>,
-    active_rule_process: Option<String>,
     info: Option<TimerResolutionInfo>,
     failed_actions: usize,
     last_error: Option<String>,
@@ -319,7 +315,6 @@ fn snapshot_from_query(
     TimerResolutionSnapshot {
         enabled,
         requested_100ns,
-        active_rule_process,
         maximum_100ns: info.map(|info| info.maximum_100ns),
         minimum_100ns: info.map(|info| info.minimum_100ns),
         failed_actions,
