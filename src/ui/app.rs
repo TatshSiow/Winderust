@@ -854,6 +854,9 @@ impl WinderustApp {
                 power_rules::Kind::CpuLoad,
                 power_rules::Message::Cancel,
             )),
+            Page::CpuLimiter if self.cpu_limiter.has_pending_editor() && modifiers.is_empty() => {
+                Some(Message::CpuLimiter(cpu_limiter::Message::CancelRule))
+            }
             _ => None,
         };
         if let Some(cancel_dialog) = cancel_dialog {
