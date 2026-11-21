@@ -575,18 +575,14 @@ impl Model {
                         .map(|mhz| f64::from(normalize_cpu_frequency_percent(mhz, base, peak))),
                 ],
                 ChartKind::Memory => [sample.memory.percent.map(f64::from), None],
-                ChartKind::Io => sample.io.bytes_per_second.map_or([None; 2], |_| {
-                    [
-                        Some(sample.io.read_bytes_per_second.unwrap_or(0.0)),
-                        Some(sample.io.write_bytes_per_second.unwrap_or(0.0)),
-                    ]
-                }),
-                ChartKind::Network => sample.network.bytes_per_second.map_or([None; 2], |_| {
-                    [
-                        Some(sample.network.download_bytes_per_second.unwrap_or(0.0)),
-                        Some(sample.network.upload_bytes_per_second.unwrap_or(0.0)),
-                    ]
-                }),
+                ChartKind::Io => [
+                    sample.io.read_bytes_per_second,
+                    sample.io.write_bytes_per_second,
+                ],
+                ChartKind::Network => [
+                    sample.network.download_bytes_per_second,
+                    sample.network.upload_bytes_per_second,
+                ],
             };
             Some(ChartSample {
                 captured_at: sample.captured_at,
@@ -2250,6 +2246,25 @@ mod tests {
             "9.7 GB"
         );
         assert_eq!(network_usage_label(None), t!("home.collecting").to_string());
+    }
+    #[test]
+    fn disk_chart_preserves_available_directions_without_a_total() {
+        let mut model = Model::default();
+        for [read, write] in [[Some(0.0), None], [None, Some(1_000_000.0)]] {
+            model.record(Sample {
+                io: IoUsageSnapshot {
+                    bytes_per_second: None,
+                    read_bytes_per_second: read,
+                    write_bytes_per_second: write,
+                },
+                ..Default::default()
+            });
+            let chart = model.chart(ChartKind::Io);
+            assert_eq!(
+                chart.sample_at(HISTORY_LEN - 1).unwrap().reading,
+                [read, write]
+            );
+        }
     }
     #[test]
     fn network_chart_and_headers_use_the_same_byte_rates() {
