@@ -525,6 +525,25 @@ fn sidebar_state(
     {
         return FeatureRunState::Blocked;
     }
+    let priority_observation = match page {
+        Page::ProcessPriority => Some((
+            features.process_priority.enabled,
+            features.process_priority.observation_paused,
+        )),
+        Page::ThreadPriority => Some((
+            features.thread_priority.enabled,
+            features.thread_priority.observation_paused,
+        )),
+        _ => None,
+    };
+    if let Some((enabled, paused)) = priority_observation {
+        if paused {
+            return FeatureRunState::Paused;
+        }
+        if !enabled {
+            return FeatureRunState::Unknown;
+        }
+    }
     if page == Page::GpuPriority {
         if features.gpu_priority.observation_paused {
             return FeatureRunState::Paused;
@@ -692,22 +711,24 @@ fn feature_status_summary(
         }
         Page::ProcessPriority => {
             let status = &runtime.feature_status.process_priority;
+            let observed = status.enabled && !status.observation_paused;
             FeatureStatusSummary {
-                scanned: Some(status.scanned_processes),
-                adjusted: Some(status.adjusted_processes),
+                scanned: observed.then_some(status.scanned_processes),
+                adjusted: observed.then_some(status.adjusted_processes),
                 protected_or_denied: None,
-                skipped: Some(status.skipped_processes),
+                skipped: observed.then_some(status.skipped_processes),
                 last_error: status.last_error.as_deref(),
                 action_log_feature: ActionLogFeature::ProcessPriority,
             }
         }
         Page::ThreadPriority => {
             let status = &runtime.feature_status.thread_priority;
+            let observed = status.enabled && !status.observation_paused;
             FeatureStatusSummary {
-                scanned: Some(status.scanned_processes),
-                adjusted: Some(status.adjusted_processes),
+                scanned: observed.then_some(status.scanned_processes),
+                adjusted: observed.then_some(status.adjusted_processes),
                 protected_or_denied: None,
-                skipped: Some(status.skipped_processes),
+                skipped: observed.then_some(status.skipped_processes),
                 last_error: status.last_error.as_deref(),
                 action_log_feature: ActionLogFeature::ThreadPriority,
             }
@@ -875,9 +896,12 @@ mod tests {
         };
         assert_eq!(state(&settings, &runtime), FeatureRunState::Unknown);
         runtime.generation = 1;
+        assert_eq!(state(&settings, &runtime), FeatureRunState::Unknown);
+        std::sync::Arc::make_mut(&mut runtime.feature_status)
+            .process_priority
+            .enabled = true;
         assert_eq!(state(&settings, &runtime), FeatureRunState::Waiting);
-        std::sync::Arc::get_mut(&mut runtime.feature_status)
-            .unwrap()
+        std::sync::Arc::make_mut(&mut runtime.feature_status)
             .process_priority
             .adjusted_processes = 1;
         assert_eq!(state(&settings, &runtime), FeatureRunState::Running);

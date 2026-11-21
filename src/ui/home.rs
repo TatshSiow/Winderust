@@ -1295,6 +1295,26 @@ fn normalize_cpu_frequency_percent(
         .clamp(0.0, 100.0)
 }
 
+fn priority_observation_detail(
+    enabled: bool,
+    paused: bool,
+    failed: bool,
+    adjusted: usize,
+) -> String {
+    if paused {
+        t!(if failed {
+            "common.error"
+        } else {
+            "sidebar_status.paused"
+        })
+        .to_string()
+    } else if enabled {
+        t!("home.adjusted_count", count = adjusted).to_string()
+    } else {
+        t!("common.unknown").to_string()
+    }
+}
+
 fn enabled_features(
     settings: &Settings,
     status: &RuntimeFeatureStatus,
@@ -1426,23 +1446,27 @@ fn enabled_features(
             .to_string()
         }
     );
+    let process_priority = &status.process_priority;
     feature!(
         ProcessPriority,
         process_priority,
-        t!(
-            "home.adjusted_count",
-            count = status.process_priority.adjusted_processes
+        priority_observation_detail(
+            process_priority.enabled,
+            process_priority.observation_paused,
+            process_priority.last_error.is_some(),
+            process_priority.adjusted_processes
         )
-        .to_string()
     );
+    let thread_priority = &status.thread_priority;
     feature!(
         ThreadPriority,
         thread_priority,
-        t!(
-            "home.adjusted_count",
-            count = status.thread_priority.adjusted_processes
+        priority_observation_detail(
+            thread_priority.enabled,
+            thread_priority.observation_paused,
+            thread_priority.last_error.is_some(),
+            thread_priority.adjusted_processes
         )
-        .to_string()
     );
     feature!(
         DynamicPriorityBoost,

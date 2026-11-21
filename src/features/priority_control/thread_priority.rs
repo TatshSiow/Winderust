@@ -32,7 +32,7 @@ pub struct ThreadPrioritySnapshot {
     pub failed_processes: usize,
     pub adjusted_apps: Vec<String>,
     pub auto_excluded_processes: Vec<String>,
-    pub message: String,
+    pub(crate) observation_paused: bool,
     pub last_error: Option<String>,
 }
 
@@ -64,7 +64,7 @@ impl ThreadPriorityManager {
                 "automation disabled",
             );
             self.failure_suppression.clear();
-            return inactive_snapshot("Automation disabled.", failures);
+            return inactive_snapshot(failures);
         }
         if !settings.enabled {
             let failures = record_release(
@@ -73,7 +73,7 @@ impl ThreadPriorityManager {
                 "Thread Priority disabled",
             );
             self.failure_suppression.clear();
-            return inactive_snapshot("Thread Priority disabled.", failures);
+            return inactive_snapshot(failures);
         }
 
         let focus_unknown =
@@ -88,12 +88,12 @@ impl ThreadPriorityManager {
             None
         } else {
             let Some(session_id) = process_session_id(current_process_id) else {
-                let failures = record_release(
-                    controller.release_all_policy(),
+                return paused_snapshot(
+                    controller,
                     action_log,
                     "current Windows session is unknown",
+                    None,
                 );
-                return paused_snapshot("Paused: current Windows session is unknown.", failures);
             };
             Some(session_id)
         };
@@ -101,29 +101,23 @@ impl ThreadPriorityManager {
         let processes = match observations.processes_with_paths() {
             Ok(processes) => processes,
             Err(error) => {
-                let failures = record_release(
-                    controller.release_all_policy(),
+                return paused_snapshot(
+                    controller,
                     action_log,
                     "process list unavailable",
+                    Some(error),
                 );
-                return ThreadPrioritySnapshot {
-                    enabled: true,
-                    failed_processes: failures.count,
-                    message: error,
-                    last_error: failures.last_error,
-                    ..Default::default()
-                };
             }
         };
         let scanned_processes = processes.len();
         let visible_processes = if settings.visible_window_detection_enabled {
             let Ok(process_ids) = observations.visible_window_process_ids() else {
-                let failures = record_release(
-                    controller.release_all_policy(),
+                return paused_snapshot(
+                    controller,
                     action_log,
                     "visible windows are unavailable",
+                    None,
                 );
-                return paused_snapshot("Paused: visible windows are unavailable.", failures);
             };
             ProtectedProcesses::capture(processes.as_ref(), false, None, process_ids)
         } else {
@@ -243,7 +237,7 @@ impl ThreadPriorityManager {
                 Err(error) if inventory.failed() => {
                     // A shared observation failure is not a failure of any application.
                     failures.count += 1;
-                    failures.last_error = Some(error.to_string());
+                    failures.last_error.get_or_insert_with(|| error.to_string());
                     break;
                 }
                 Err(ProcessControlError::ProcessExited) => skipped_processes += 1,
@@ -290,7 +284,7 @@ impl ThreadPriorityManager {
             failed_processes: failures.count,
             adjusted_apps: controller.policy_managed_process_names(),
             auto_excluded_processes: auto_excluded_processes.into_iter().collect(),
-            message: "Thread Priority active.".to_owned(),
+            observation_paused: inventory.failed(),
             last_error: failures.last_error,
         }
     }
@@ -361,11 +355,9 @@ impl ThreadPriorityFailures {
     }
 }
 
-fn inactive_snapshot(message: &str, failures: ThreadPriorityFailures) -> ThreadPrioritySnapshot {
+fn inactive_snapshot(failures: ThreadPriorityFailures) -> ThreadPrioritySnapshot {
     ThreadPrioritySnapshot {
-        enabled: false,
         failed_processes: failures.count,
-        message: message.to_owned(),
         last_error: failures.last_error,
         ..Default::default()
     }
@@ -375,20 +367,21 @@ fn pause_for_unknown_focus(
     controller: &mut ThreadPriorityController,
     action_log: &mut ActionLog,
 ) -> ThreadPrioritySnapshot {
-    let failures = record_release(
-        controller.release_all_policy(),
-        action_log,
-        "foreground app is unknown",
-    );
-    paused_snapshot("Paused: foreground app is unknown.", failures)
+    paused_snapshot(controller, action_log, "foreground app is unknown", None)
 }
 
-fn paused_snapshot(message: &str, failures: ThreadPriorityFailures) -> ThreadPrioritySnapshot {
+fn paused_snapshot(
+    controller: &mut ThreadPriorityController,
+    action_log: &mut ActionLog,
+    reason: &str,
+    observation_error: Option<String>,
+) -> ThreadPrioritySnapshot {
+    let failures = record_release(controller.release_all_policy(), action_log, reason);
     ThreadPrioritySnapshot {
         enabled: true,
+        observation_paused: true,
         failed_processes: failures.count,
-        message: message.to_owned(),
-        last_error: failures.last_error,
+        last_error: failures.last_error.or(observation_error),
         ..Default::default()
     }
 }

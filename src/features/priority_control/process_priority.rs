@@ -35,7 +35,7 @@ pub struct ProcessPrioritySnapshot {
     pub failed_processes: usize,
     pub adjusted_apps: Vec<String>,
     pub auto_excluded_processes: Vec<String>,
-    pub message: String,
+    pub(crate) observation_paused: bool,
     pub last_error: Option<String>,
 }
 
@@ -93,7 +93,7 @@ impl ProcessPriorityManager {
                 controller,
                 action_log,
                 "current Windows session is unknown",
-                "Paused: current Windows session is unknown.",
+                None,
             );
         };
 
@@ -104,7 +104,7 @@ impl ProcessPriorityManager {
                     controller,
                     action_log,
                     "process list unavailable",
-                    &error,
+                    Some(error),
                 );
             }
         };
@@ -115,7 +115,7 @@ impl ProcessPriorityManager {
                     controller,
                     action_log,
                     "visible windows are unavailable",
-                    "Paused: visible windows are unavailable.",
+                    None,
                 );
             };
             ProtectedProcesses::capture(processes.as_ref(), false, None, process_ids)
@@ -295,7 +295,7 @@ impl ProcessPriorityManager {
                     .map(String::as_str),
             ),
             auto_excluded_processes: auto_excluded_processes.into_iter().collect(),
-            message: "Process priority defaults active.".to_owned(),
+            observation_paused: false,
             last_error: failures.last_error,
         }
     }
@@ -315,13 +315,7 @@ impl ProcessPriorityManager {
         );
         self.failure_suppression.clear();
         ProcessPrioritySnapshot {
-            enabled: false,
             failed_processes: failures.count,
-            message: if reason == "automation disabled" {
-                "Automation disabled.".to_owned()
-            } else {
-                "Process priority defaults disabled.".to_owned()
-            },
             last_error: failures.last_error,
             ..Default::default()
         }
@@ -332,12 +326,7 @@ impl ProcessPriorityManager {
         controller: &mut PriorityEfficiencyController,
         action_log: &mut ActionLog,
     ) -> ProcessPrioritySnapshot {
-        self.paused_snapshot(
-            controller,
-            action_log,
-            "foreground app is unknown",
-            "Paused: foreground app is unknown.",
-        )
+        self.paused_snapshot(controller, action_log, "foreground app is unknown", None)
     }
 
     fn paused_snapshot(
@@ -345,7 +334,7 @@ impl ProcessPriorityManager {
         controller: &mut PriorityEfficiencyController,
         action_log: &mut ActionLog,
         reason: &str,
-        message: &str,
+        observation_error: Option<String>,
     ) -> ProcessPrioritySnapshot {
         let mut failures = ProcessPriorityFailures::default();
         self.merge_release_summary(
@@ -356,9 +345,9 @@ impl ProcessPriorityManager {
         );
         ProcessPrioritySnapshot {
             enabled: true,
+            observation_paused: true,
             failed_processes: failures.count,
-            message: message.to_owned(),
-            last_error: failures.last_error,
+            last_error: failures.last_error.or(observation_error),
             ..Default::default()
         }
     }
