@@ -170,17 +170,25 @@ fn indicator(status: Option<&SleepPreventionSnapshot>, rule: &SleepPreventionRul
     let Some(status) = status else {
         return t!("common.unknown").to_string();
     };
-    let contains = |paths: &[String]| {
-        paths
+    let matches = |path: &str| process_setting_matches(path, &rule.executable_path);
+    let contains = |paths: &[String]| paths.iter().any(|path| matches(path));
+    let accepted_request = || {
+        if !status.system_requested {
+            return None;
+        }
+        status
+            .requesting_apps
             .iter()
-            .any(|path| process_setting_matches(path, &rule.executable_path))
+            .find(|request| matches(&request.path))
     };
     let key = if !status.enabled {
         "common.off"
     } else if !status.observation_known {
         "common.unknown"
-    } else if status.system_requested && contains(&status.requesting_apps) {
-        if rule.keep_display_on && !status.display_requested {
+    } else if let Some(request) = accepted_request() {
+        let display_expected = request.keep_display_on || rule.keep_display_on;
+        let display_accepted = request.keep_display_on && status.display_requested;
+        if display_expected && !display_accepted {
             "sleep_prevention.system_request_accepted"
         } else {
             "sleep_prevention.request_accepted"
@@ -199,6 +207,7 @@ fn indicator(status: Option<&SleepPreventionSnapshot>, rule: &SleepPreventionRul
 mod tests {
     use super::*;
     use crate::config::{PowerSourceProfile, Settings};
+    use crate::sleep_prevention::RequestingApp;
 
     #[test]
     fn adding_a_rule_requires_a_full_drive_or_network_path() {
@@ -238,7 +247,10 @@ mod tests {
             enabled: true,
             observation_known: true,
             running_apps: vec![rule.executable_path.clone()],
-            requesting_apps: vec![rule.executable_path.clone()],
+            requesting_apps: vec![RequestingApp {
+                path: rule.executable_path.as_str().into(),
+                keep_display_on: false,
+            }],
             ..Default::default()
         };
         assert_eq!(indicator(None, &rule), t!("common.unknown"));
@@ -249,6 +261,18 @@ mod tests {
             t!("sleep_prevention.request_accepted")
         );
         rule.keep_display_on = true;
+        assert_eq!(
+            indicator(Some(&status), &rule),
+            t!("sleep_prevention.system_request_accepted")
+        );
+        status.display_requested = true;
+        assert_eq!(
+            indicator(Some(&status), &rule),
+            t!("sleep_prevention.system_request_accepted")
+        );
+        status.requesting_apps[0].keep_display_on = true;
+        status.display_requested = false;
+        rule.keep_display_on = false;
         assert_eq!(
             indicator(Some(&status), &rule),
             t!("sleep_prevention.system_request_accepted")

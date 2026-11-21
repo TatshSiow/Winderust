@@ -21,12 +21,18 @@ pub struct SleepPreventionSnapshot {
     pub matched_processes: usize,
     pub running_apps: Vec<String>,
     pub suppressed_apps: Vec<String>,
-    pub requesting_apps: Vec<String>,
+    pub(crate) requesting_apps: Vec<RequestingApp>,
     pub system_requested: bool,
     pub display_requested: bool,
     pub observation_known: bool,
     pub failed_actions: usize,
     pub last_error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RequestingApp {
+    pub(crate) path: Box<str>,
+    pub(crate) keep_display_on: bool,
 }
 
 type AppIdentity = (u32, u64);
@@ -280,21 +286,31 @@ impl SleepPreventionManager {
             if self.suppressed.contains_key(identity) {
                 snapshot.suppressed_apps.push(app.path.clone());
             } else {
-                snapshot.requesting_apps.push(app.path.clone());
+                snapshot.requesting_apps.push(RequestingApp {
+                    path: app.path.as_str().into(),
+                    keep_display_on: app.display,
+                });
             }
         }
-        for paths in [
-            &mut snapshot.running_apps,
-            &mut snapshot.suppressed_apps,
-            &mut snapshot.requesting_apps,
-        ] {
+        for paths in [&mut snapshot.running_apps, &mut snapshot.suppressed_apps] {
             paths.sort();
             paths.dedup();
         }
-        // A fresh instance can request sleep prevention while an older instance stays suppressed.
+        snapshot.requesting_apps.sort_unstable_by(|left, right| {
+            left.path
+                .cmp(&right.path)
+                .then(right.keep_display_on.cmp(&left.keep_display_on))
+        });
         snapshot
-            .suppressed_apps
-            .retain(|path| !snapshot.requesting_apps.contains(path));
+            .requesting_apps
+            .dedup_by(|left, right| left.path == right.path);
+        // A fresh instance can request sleep prevention while an older instance stays suppressed.
+        snapshot.suppressed_apps.retain(|path| {
+            snapshot
+                .requesting_apps
+                .binary_search_by(|request| request.path.as_ref().cmp(path.as_str()))
+                .is_err()
+        });
         snapshot
     }
 

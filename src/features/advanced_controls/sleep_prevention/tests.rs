@@ -114,6 +114,32 @@ fn matching_rejects_wrong_paths_protected_apps_and_disallowed_sessions() {
 }
 
 #[test]
+fn requesting_instances_share_their_path_and_take_precedence_over_suppression() {
+    let settings = settings();
+    let path = settings.rules[1].executable_path.as_str();
+    let mut manager = SleepPreventionManager::default();
+    let original = process(8, path);
+    observe(&mut manager, &settings, std::slice::from_ref(&original));
+    manager.suppress_current();
+    observe(&mut manager, &settings, std::slice::from_ref(&original));
+
+    let replacement = process(9, path);
+    let duplicate = process(10, path);
+    observe(&mut manager, &settings, &[original, replacement, duplicate]);
+    let snapshot = manager.matching_snapshot();
+    assert_eq!(manager.suppressed.len(), 1);
+    assert_eq!(snapshot.matched_processes, 3);
+    assert!(snapshot.suppressed_apps.is_empty());
+    assert_eq!(
+        snapshot.requesting_apps,
+        [RequestingApp {
+            path: path.into(),
+            keep_display_on: true,
+        }]
+    );
+}
+
+#[test]
 fn sleep_suppression_survives_unknown_observations_and_pid_reuse_cannot_inherit_it() {
     let settings = settings();
     let mut manager = SleepPreventionManager::default();
