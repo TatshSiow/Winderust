@@ -1057,22 +1057,52 @@ fn failed_policy_releases_retry_without_claims_or_another_policy_update() {
     assert_eq!(early.restored_processes, 0);
     assert!(early.failures.is_empty());
     let due = controller.release_retry_at.unwrap();
-    assert_eq!(
-        controller
-            .retry_pending_releases(due - Duration::from_millis(1))
-            .restored_processes,
-        0
-    );
+    assert!(controller
+        .retry_pending_releases(due - Duration::from_millis(1))
+        .background_efficiency
+        .is_none());
     // A second transient failure must preserve the queue and its bounded retry deadline.
     controller.platform.fail_next_priority_apply = true;
-    assert_eq!(controller.retry_pending_releases(due).failures.len(), 1);
+    let partial = controller
+        .retry_pending_releases(due)
+        .background_efficiency
+        .unwrap();
+    assert_eq!(partial.restored_processes, 0);
+    assert!(partial.failures.is_empty());
+    assert_eq!(
+        controller.background_efficiency_release_failures().count(),
+        1
+    );
     assert_eq!(
         controller.release_retry_delay(due),
         Some(Duration::from_secs(1))
     );
-    let restored = controller.retry_pending_releases(due + Duration::from_secs(1));
+
+    for (seconds, newly_reported) in [(1, true), (2, false)] {
+        controller.platform.fail_next_priority_begin = true;
+        let retries = controller.retry_pending_releases(due + Duration::from_secs(seconds));
+        let background = retries.background_efficiency.unwrap();
+        assert_eq!(background.failures.len(), usize::from(newly_reported));
+        let pending = controller
+            .background_efficiency_release_failures()
+            .next()
+            .unwrap();
+        assert!(pending
+            .error
+            .to_string()
+            .contains("injected priority begin failure"));
+    }
+
+    let restored = controller
+        .retry_pending_releases(due + Duration::from_secs(3))
+        .background_efficiency
+        .unwrap();
     assert!(restored.failures.is_empty());
     assert_eq!(restored.restored_processes, 1);
+    assert_eq!(
+        controller.background_efficiency_release_failures().count(),
+        0
+    );
     assert_eq!(
         controller.platform.processes[&7].priority,
         NORMAL_PRIORITY_CLASS
@@ -1080,6 +1110,40 @@ fn failed_policy_releases_retry_without_claims_or_another_policy_update() {
     assert_eq!(controller.platform.processes[&7].power, baseline_power());
     assert!(!controller.has_managed_state());
     assert_eq!(controller.release_retry_delay(due), None);
+}
+
+#[test]
+fn verified_baseline_is_not_reported_restored_while_journal_release_is_unconfirmed() {
+    let mut controller =
+        PriorityEfficiencyController::with_platform(platform_with(7, 1, NORMAL_PRIORITY_CLASS));
+    controller
+        .apply_efficiency_claim(efficiency_claim(7, 1), true)
+        .unwrap();
+    controller.platform.fail_next_power_commit = true;
+    controller.platform.fail_power_relinquish = true;
+
+    let released = controller.release_all_efficiency_policy(ControlOwner::BackgroundEfficiency);
+    assert_eq!(controller.platform.processes[&7].power, baseline_power());
+    assert_eq!(released.restored_processes, 0);
+    assert_eq!(
+        controller.background_efficiency_release_failures().count(),
+        1
+    );
+    assert!(controller.has_managed_state());
+
+    controller.platform.fail_power_relinquish = false;
+    let due = controller.release_retry_at.unwrap();
+    let report = controller
+        .retry_pending_releases(due)
+        .background_efficiency
+        .unwrap();
+    assert_eq!(report.restored_processes, 0);
+    assert!(report.failures.is_empty());
+    assert_eq!(
+        controller.background_efficiency_release_failures().count(),
+        0
+    );
+    assert!(!controller.has_managed_state());
 }
 
 #[test]
@@ -1112,7 +1176,9 @@ fn pending_release_reconciles_the_current_claim_instead_of_restoring_over_it() {
         1
     );
     let due = controller.release_retry_at.unwrap();
-    assert!(controller.retry_pending_releases(due).failures.is_empty());
+    let retries = controller.retry_pending_releases(due);
+    assert!(retries.other.failures.is_empty());
+    assert!(retries.background_efficiency.is_none());
     assert_eq!(
         controller.platform.processes[&7].priority,
         BELOW_NORMAL_PRIORITY_CLASS

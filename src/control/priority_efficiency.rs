@@ -143,7 +143,7 @@ pub(crate) enum ProcessPropertyApplyOutcome {
     Shadowed,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PriorityEfficiencyReleaseFailure {
     pub(crate) process_id: u32,
     pub(crate) process_name: String,
@@ -156,6 +156,18 @@ pub(crate) struct PriorityEfficiencyReleaseFailure {
 pub(crate) struct PriorityEfficiencyReleaseSummary {
     pub(crate) restored_processes: usize,
     pub(crate) failures: Vec<PriorityEfficiencyReleaseFailure>,
+}
+
+#[derive(Default)]
+pub(crate) struct PriorityEfficiencyReleaseRetries {
+    pub(crate) other: PriorityEfficiencyReleaseSummary,
+    pub(crate) background_efficiency: Option<PriorityEfficiencyReleaseSummary>,
+}
+
+#[derive(Clone)]
+struct PendingRelease {
+    owner: ControlOwner,
+    failure: PriorityEfficiencyReleaseFailure,
 }
 
 impl PowerThrottlingState {
@@ -368,8 +380,8 @@ pub(crate) struct PriorityEfficiencyController<
     power_claims: BTreeMap<ControlOwner, BTreeMap<ProcessTargetKey, PowerThrottlingClaim>>,
     managed_priorities: BTreeMap<ProcessIdentity, ManagedValue<u32>>,
     managed_power: BTreeMap<ProcessIdentity, ManagedValue<PowerThrottlingState>>,
-    pending_priority_releases: BTreeMap<ProcessTargetKey, ControlOwner>,
-    pending_power_releases: BTreeMap<ProcessTargetKey, ControlOwner>,
+    pending_priority_releases: BTreeMap<ProcessTargetKey, PendingRelease>,
+    pending_power_releases: BTreeMap<ProcessTargetKey, PendingRelease>,
     release_retry_at: Option<Instant>,
     next_apply_sequence: u64,
 }
@@ -512,6 +524,18 @@ impl<P: PriorityEfficiencyPlatform> PriorityEfficiencyController<P> {
                 previous_priority,
             );
             restore_claim(&mut self.power_claims, claim.owner, key, previous_power);
+        } else {
+            for pending in [
+                &mut self.pending_priority_releases,
+                &mut self.pending_power_releases,
+            ] {
+                if pending
+                    .get(&key)
+                    .is_some_and(|entry| entry.owner == claim.owner)
+                {
+                    pending.remove(&key);
+                }
+            }
         }
         result
     }
@@ -1138,7 +1162,10 @@ impl<P: PriorityEfficiencyPlatform> PriorityEfficiencyController<P> {
             if power_keys.contains(key) {
                 self.reconcile_power_key(owner, key, &mut summary);
             }
-            summary.restored_processes = before + usize::from(summary.restored_processes > before);
+            summary.restored_processes = before
+                + usize::from(
+                    summary.restored_processes > before && !self.release_pending_for(owner, key),
+                );
         }
         summary
     }
@@ -1172,11 +1199,17 @@ impl<P: PriorityEfficiencyPlatform> PriorityEfficiencyController<P> {
     ) {
         let failures = summary.failures.len();
         self.reconcile_priority_key_once(owner, key, summary);
-        if summary.failures.len() > failures {
+        if let Some(failure) = summary.failures.get(failures) {
             if self.pending_priority_releases.is_empty() && self.pending_power_releases.is_empty() {
                 self.release_retry_at = Some(Instant::now() + Duration::from_secs(1));
             }
-            self.pending_priority_releases.insert(key.clone(), owner);
+            self.pending_priority_releases.insert(
+                key.clone(),
+                PendingRelease {
+                    owner,
+                    failure: failure.clone(),
+                },
+            );
         } else {
             self.pending_priority_releases.remove(key);
         }
@@ -1242,11 +1275,17 @@ impl<P: PriorityEfficiencyPlatform> PriorityEfficiencyController<P> {
     ) {
         let failures = summary.failures.len();
         self.reconcile_power_key_once(owner, key, summary);
-        if summary.failures.len() > failures {
+        if let Some(failure) = summary.failures.get(failures) {
             if self.pending_priority_releases.is_empty() && self.pending_power_releases.is_empty() {
                 self.release_retry_at = Some(Instant::now() + Duration::from_secs(1));
             }
-            self.pending_power_releases.insert(key.clone(), owner);
+            self.pending_power_releases.insert(
+                key.clone(),
+                PendingRelease {
+                    owner,
+                    failure: failure.clone(),
+                },
+            );
         } else {
             self.pending_power_releases.remove(key);
         }
@@ -1499,22 +1538,67 @@ impl<P: PriorityEfficiencyPlatform> PriorityEfficiencyController<P> {
             .map(|due| due.saturating_duration_since(now))
     }
 
+    pub(crate) fn background_efficiency_release_failures(
+        &self,
+    ) -> impl Iterator<Item = &PriorityEfficiencyReleaseFailure> {
+        self.pending_priority_releases
+            .values()
+            .chain(self.pending_power_releases.values())
+            .filter(|entry| entry.owner == ControlOwner::BackgroundEfficiency)
+            .map(|entry| &entry.failure)
+    }
+
+    fn release_pending_for(&self, owner: ControlOwner, key: &ProcessTargetKey) -> bool {
+        self.pending_priority_releases
+            .get(key)
+            .into_iter()
+            .chain(self.pending_power_releases.get(key))
+            .any(|entry| entry.owner == owner)
+    }
+
     pub(crate) fn retry_pending_releases(
         &mut self,
         now: Instant,
-    ) -> PriorityEfficiencyReleaseSummary {
-        let mut summary = PriorityEfficiencyReleaseSummary::default();
+    ) -> PriorityEfficiencyReleaseRetries {
+        let mut retries = PriorityEfficiencyReleaseRetries::default();
         if self.release_retry_delay(now) != Some(Duration::ZERO) {
-            return summary;
+            return retries;
         }
-        for (key, owner) in self.pending_priority_releases.clone() {
-            self.reconcile_priority_key(owner, &key, &mut summary);
-        }
-        for (key, owner) in self.pending_power_releases.clone() {
-            self.reconcile_power_key(owner, &key, &mut summary);
+        let priority = self
+            .pending_priority_releases
+            .clone()
+            .into_iter()
+            .map(|(key, pending)| (ManagedProperty::Priority, key, pending));
+        let power = self
+            .pending_power_releases
+            .clone()
+            .into_iter()
+            .map(|(key, pending)| (ManagedProperty::Power, key, pending));
+        for (property, key, pending) in priority.chain(power) {
+            let owner = pending.owner;
+            let mut outcome = PriorityEfficiencyReleaseSummary::default();
+            match property {
+                ManagedProperty::Priority => self.reconcile_priority_key(owner, &key, &mut outcome),
+                ManagedProperty::Power => self.reconcile_power_key(owner, &key, &mut outcome),
+            }
+            if owner == ControlOwner::BackgroundEfficiency {
+                let background = retries.background_efficiency.get_or_insert_default();
+                if outcome.restored_processes != 0 && !self.release_pending_for(owner, &key) {
+                    background.restored_processes += 1;
+                }
+                background.failures.extend(
+                    outcome
+                        .failures
+                        .into_iter()
+                        .filter(|failure| failure != &pending.failure),
+                );
+            } else {
+                retries.other.restored_processes += outcome.restored_processes;
+                retries.other.failures.extend(outcome.failures);
+            }
         }
         self.release_retry_at = Some(now + Duration::from_secs(1));
-        summary
+        retries
     }
 
     pub(crate) fn has_managed_state(&self) -> bool {
@@ -1914,7 +1998,7 @@ fn restore_claim<C>(
 fn stale_policy_keys<C, T>(
     claims: &BTreeMap<ControlOwner, BTreeMap<ProcessTargetKey, C>>,
     managed: &BTreeMap<ProcessIdentity, ManagedValue<T>>,
-    pending_releases: &BTreeMap<ProcessTargetKey, ControlOwner>,
+    pending_releases: &BTreeMap<ProcessTargetKey, PendingRelease>,
     owner: ControlOwner,
     active_targets: &BTreeSet<ProcessTargetKey>,
 ) -> BTreeSet<ProcessTargetKey> {

@@ -1423,13 +1423,36 @@ impl RuntimeCore {
         statuses
     }
 
-    pub(super) fn retry_control_releases(&mut self, now: Instant) -> Option<String> {
+    pub(super) fn retry_control_releases(
+        &mut self,
+        shared: &SharedAutomationState,
+        now: Instant,
+    ) -> Option<String> {
         let process_failure = |property, process_name, process_id, error| {
             format!("{property} restoration failed for {process_name} ({process_id}): {error}")
         };
-        let mut errors = self
+        let retries = self
             .priority_efficiency_controller
-            .retry_pending_releases(now)
+            .retry_pending_releases(now);
+        if let Some(summary) = retries.background_efficiency {
+            BackgroundEfficiencyManager::record_release_summary(
+                summary,
+                &mut self.action_log,
+                "restoration retry completed",
+            );
+            let status = lock_unpoisoned(&shared.state)
+                .status
+                .feature_status
+                .background_efficiency
+                .clone();
+            update_background_efficiency_status(
+                shared,
+                self.background_efficiency_manager
+                    .with_release_status(&self.priority_efficiency_controller, status),
+            );
+        }
+        let mut errors = retries
+            .other
             .failures
             .into_iter()
             .map(|failure| {

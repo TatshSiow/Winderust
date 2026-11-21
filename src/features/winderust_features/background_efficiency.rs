@@ -105,6 +105,7 @@ pub struct BackgroundEfficiencySnapshot {
 #[derive(Default)]
 pub struct BackgroundEfficiencyManager {
     failure_suppression: ExecutionFailureTracker,
+    apply_failures: BackgroundEfficiencyFailures,
 }
 
 struct BackgroundEfficiencyTarget {
@@ -256,16 +257,13 @@ impl BackgroundEfficiencyManager {
         self.failure_suppression.retain_keys(&active_target_names);
 
         let mut failures = BackgroundEfficiencyFailures::default();
-        let mut unsupported = false;
-        self.merge_release_summary(
+        self.record_policy_release(
             controller.release_efficiency_policy_except(
                 ControlOwner::BackgroundEfficiency,
                 &active_targets,
             ),
             action_log,
             "process no longer matches Background Efficiency",
-            &mut failures,
-            &mut unsupported,
         );
 
         let mut skipped_processes = 0;
@@ -325,7 +323,7 @@ impl BackgroundEfficiencyManager {
                 }
                 Err(ProcessControlError::Unavailable(message)) => {
                     skipped_processes += 1;
-                    unsupported = true;
+                    failures.unsupported = true;
                     self.failure_suppression
                         .suppress_process_failure(&target.executable_path);
                     action_log.record(
@@ -349,18 +347,16 @@ impl BackgroundEfficiencyManager {
             }
         }
 
-        BackgroundEfficiencySnapshot {
+        self.apply_failures = failures;
+        let status = BackgroundEfficiencySnapshot {
             enabled: true,
-            unsupported,
             scanned_processes,
-            throttled_processes: controller
-                .policy_managed_process_count(ControlOwner::BackgroundEfficiency),
             skipped_processes,
             access_denied_processes,
-            failed_processes: failures.count,
             message: "Background Efficiency active.".to_owned(),
-            last_error: failures.last_error,
-        }
+            ..Default::default()
+        };
+        self.with_release_status(controller, status)
     }
 
     fn disabled_snapshot(
@@ -369,28 +365,22 @@ impl BackgroundEfficiencyManager {
         action_log: &mut ActionLog,
         reason: &str,
     ) -> BackgroundEfficiencySnapshot {
-        let mut failures = BackgroundEfficiencyFailures::default();
-        let mut unsupported = false;
-        self.merge_release_summary(
+        self.apply_failures = BackgroundEfficiencyFailures::default();
+        self.record_policy_release(
             controller.release_all_efficiency_policy(ControlOwner::BackgroundEfficiency),
             action_log,
             reason,
-            &mut failures,
-            &mut unsupported,
         );
         self.failure_suppression.clear();
-        BackgroundEfficiencySnapshot {
-            enabled: false,
-            unsupported,
-            failed_processes: failures.count,
+        let status = BackgroundEfficiencySnapshot {
             message: if reason == "automation disabled" {
                 "Automation disabled.".to_owned()
             } else {
                 "Background Efficiency disabled.".to_owned()
             },
-            last_error: failures.last_error,
             ..Default::default()
-        }
+        };
+        self.with_release_status(controller, status)
     }
 
     fn paused_snapshot(
@@ -400,32 +390,66 @@ impl BackgroundEfficiencyManager {
         reason: &str,
         message: &str,
     ) -> BackgroundEfficiencySnapshot {
-        let mut failures = BackgroundEfficiencyFailures::default();
-        let mut unsupported = false;
-        self.merge_release_summary(
+        self.apply_failures = BackgroundEfficiencyFailures::default();
+        self.record_policy_release(
             controller.release_all_efficiency_policy(ControlOwner::BackgroundEfficiency),
             action_log,
             reason,
-            &mut failures,
-            &mut unsupported,
         );
-        BackgroundEfficiencySnapshot {
+        let status = BackgroundEfficiencySnapshot {
             enabled: true,
-            unsupported,
-            failed_processes: failures.count,
             message: message.to_owned(),
-            last_error: failures.last_error,
             ..Default::default()
-        }
+        };
+        self.with_release_status(controller, status)
     }
 
-    fn merge_release_summary(
+    pub(crate) fn with_release_status(
+        &self,
+        controller: &PriorityEfficiencyController,
+        mut status: BackgroundEfficiencySnapshot,
+    ) -> BackgroundEfficiencySnapshot {
+        status.throttled_processes =
+            controller.policy_managed_process_count(ControlOwner::BackgroundEfficiency);
+        status.failed_processes = self.apply_failures.count;
+        status.unsupported = self.apply_failures.unsupported;
+        let mut pending = controller
+            .background_efficiency_release_failures()
+            .peekable();
+        status.last_error = pending
+            .peek()
+            .map(|failure| {
+                process_failure_message(
+                    &format!("Restore {}", failure.property),
+                    failure.process_id,
+                    &failure.process_name,
+                    &failure.error.to_string(),
+                )
+            })
+            .or_else(|| self.apply_failures.last_error.clone());
+        for failure in pending {
+            status.failed_processes += 1;
+            status.unsupported |= matches!(failure.error, ProcessControlError::Unavailable(_));
+        }
+        status
+    }
+
+    fn record_policy_release(
         &mut self,
         summary: PriorityEfficiencyReleaseSummary,
         action_log: &mut ActionLog,
         reason: &str,
-        failures: &mut BackgroundEfficiencyFailures,
-        unsupported: &mut bool,
+    ) {
+        for failure in &summary.failures {
+            self.record_process_failure(&failure.executable_path);
+        }
+        Self::record_release_summary(summary, action_log, reason);
+    }
+
+    pub(crate) fn record_release_summary(
+        summary: PriorityEfficiencyReleaseSummary,
+        action_log: &mut ActionLog,
+        reason: &str,
     ) {
         if summary.restored_processes > 0 {
             action_log.record(
@@ -440,14 +464,12 @@ impl BackgroundEfficiencyManager {
             );
         }
         for failure in summary.failures {
-            *unsupported |= matches!(failure.error, ProcessControlError::Unavailable(_));
-            self.record_process_failure(&failure.executable_path);
-            failures.record(
-                &format!("Restore {}", failure.property),
-                failure.process_id,
-                &failure.process_name,
-                failure.error,
-                action_log,
+            action_log.record(
+                ActionLogFeature::BackgroundEfficiency,
+                Some(failure.process_id),
+                failure.process_name,
+                ActionLogResult::Failed,
+                format!("Restore {} failed. {}", failure.property, failure.error),
             );
         }
     }
@@ -516,6 +538,7 @@ impl Default for BackgroundEfficiencySnapshot {
 
 #[derive(Default)]
 struct BackgroundEfficiencyFailures {
+    unsupported: bool,
     count: usize,
     last_error: Option<String>,
 }

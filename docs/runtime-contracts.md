@@ -665,6 +665,9 @@ Read the relevant section before changing feature policy, ownership, restoration
   When a Priority or Efficiency policy yields, restoration also checks exact
   writes retained after an unsuccessful apply. A blocked recovery transport
   leaves the tracked baseline available for recovery and reports the failure.
+  Background Efficiency counts a process as restored only after its pending
+  priority and power changes settle. A retry updates its current failure status
+  and keeps the original failure in the Action Log.
   Memory Priority's raw class constants and live query/set pair are isolated in
   `src/platform/windows/memory_priority.rs`; unknown raw baselines remain controller-owned and
   exactly restorable.

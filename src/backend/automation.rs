@@ -1809,7 +1809,7 @@ fn run_background_automation(
             );
         }
 
-        if let Some(error) = runner.retry_control_releases(Instant::now()) {
+        if let Some(error) = runner.retry_control_releases(&shared, Instant::now()) {
             update_worker_error(&shared, Some(error));
         }
         let wait_now = Instant::now();
