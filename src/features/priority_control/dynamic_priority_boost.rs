@@ -351,6 +351,7 @@ impl DynamicPriorityBoostManager {
     ) -> DynamicPriorityBoostSnapshot {
         let failures =
             Self::record_release_summary(summary, action_log, "restoration retry completed", false);
+        status.auto_excluded_processes.clear();
         status.failed_processes = self.non_release_failures.count + failures.count;
         status.last_error = failures
             .last_error
