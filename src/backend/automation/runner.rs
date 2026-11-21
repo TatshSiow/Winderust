@@ -1763,11 +1763,12 @@ impl RuntimeCore {
         let foreground_process_id = observe_foreground
             .then(|| observations.foreground_process_id())
             .flatten();
-        let foreground_executable_path = observe_foreground
+        let (foreground_executable_path, focus_process_name) = observe_foreground
             .then(|| observations.foreground_process())
             .flatten()
             .filter(|process| process_is_critical(process.id) == Some(false))
-            .map(|process| process.executable_path);
+            .map(|process| (process.executable_path, process.name))
+            .unzip();
         let by_time_decision = current_by_time_decision(&settings.by_time, wall_time);
         let by_cpu_load_decision = self.by_cpu_load_scheduler.current_decision_for_sample_at(
             &settings.by_cpu_load,
@@ -1786,10 +1787,9 @@ impl RuntimeCore {
                 power_plan_guid,
             },
         );
-        let action_process_name = by_running_app
+        let running_process_name = by_running_app
             .as_ref()
-            .map(|decision| decision.process_name.clone())
-            .unwrap_or_default();
+            .map(|decision| decision.process_name.clone());
         let decision_input = DecisionInput {
             activity_state: activity.state,
             foreground_executable_path,
@@ -1824,6 +1824,12 @@ impl RuntimeCore {
             .power_plan_controller
             .reconcile_ordinary(decision, Instant::now());
         let status = self.power_plan_controller.status();
+        let action_process_name = match (status.decision_state, status.rule_index) {
+            (Some(DecisionState::ByFocus), Some(_)) => focus_process_name,
+            (Some(DecisionState::ByRunningApp), Some(_)) => running_process_name,
+            _ => None,
+        }
+        .unwrap_or_default();
         let feature = status
             .decision_state
             .and_then(power_plan_action_log_feature);
