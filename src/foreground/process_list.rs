@@ -1,4 +1,5 @@
 use std::{
+    borrow::Cow,
     collections::{BTreeMap, BTreeSet},
     ffi::OsString,
     os::windows::ffi::{OsStrExt, OsStringExt},
@@ -846,18 +847,23 @@ pub fn same_process_name(left: &str, right: &str) -> bool {
 }
 
 pub fn executable_path_key(path: &Path) -> String {
-    normalize_executable_path(&path.to_string_lossy())
+    normalize_executable_path(&path.to_string_lossy()).into_owned()
 }
 
 pub(crate) fn executable_grouping_key(path: &Path) -> OsString {
     match path.to_str() {
-        Some(path) => normalize_executable_path(path).into(),
+        Some(path) => normalize_executable_path(path).into_owned().into(),
         None => path.as_os_str().to_owned(),
     }
 }
 
-fn normalize_executable_path(path: &str) -> String {
-    path.trim().replace('/', std::path::MAIN_SEPARATOR_STR)
+fn normalize_executable_path(path: &str) -> Cow<'_, str> {
+    let path = path.trim();
+    if path.contains('/') {
+        Cow::Owned(path.replace('/', std::path::MAIN_SEPARATOR_STR))
+    } else {
+        Cow::Borrowed(path)
+    }
 }
 
 pub fn same_executable_path(left: &Path, right: &Path) -> bool {
