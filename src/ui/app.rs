@@ -1302,7 +1302,7 @@ impl WinderustApp {
             }
             Message::ExportLog(path) => {
                 if let Some(path) = path {
-                    if let Err(error) = crate::config::storage::write_bytes_atomically(
+                    if let Err(error) = crate::config::storage::export_bytes(
                         &path,
                         action_log::action_log_entries_to_csv(&self.status.action_log_entries)
                             .as_bytes(),

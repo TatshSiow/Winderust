@@ -140,6 +140,7 @@ nav:
   about: "About"
 
 common:
+  export_active_settings: "Choose a different file. Winderust uses this file for its active settings."
   preset_details: "Preset details"
   rule_details: "Rule details"
   power_plan_selection: "Power plan selection"
@@ -449,6 +450,7 @@ settings:
   win32_priority_separation_restore_failed: "Could not restore Win32PrioritySeparation backup: %{error}"
   settings_files: "Settings Files"
   export_settings: "Export settings (.toml)"
+  export_failed: "Could not export settings to %{path}. %{error}"
   import_settings: "Import settings (.toml)"
 
 processor_power:

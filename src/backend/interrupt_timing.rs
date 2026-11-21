@@ -7,7 +7,7 @@ pub(crate) use crate::platform::windows::interrupt_timing::{
 
 pub(crate) fn export_report(path: &Path, report: &InterruptTimingReport) -> Result<(), String> {
     let bytes = serde_json::to_vec_pretty(report).map_err(|error| error.to_string())?;
-    crate::config::storage::write_bytes_atomically(path, &bytes)
+    crate::config::storage::export_bytes(path, &bytes)
         .map_err(|error| format!("{}: {error}", path.display()))
 }
 

@@ -358,6 +358,7 @@ to typed controllers and their narrow Windows adapters.
 - If a setting is edited through the UI, update the relevant page module and
   editor reset and message handling in `src/ui/app.rs`.
 - TOML import/export uses native Windows file dialogs from `src/backend/file_dialog.rs`, invoked by the UI.
+- Exports cannot replace the active `settings.toml`. Save and Import own settings replacement.
 - CPU selections store explicit `{ group, number }` members and a topology
   snapshot. Active-group masks inside that snapshot use quoted `0x` plus 16
   hexadecimal digits; TOML signed integers cannot represent processor 63. Keep

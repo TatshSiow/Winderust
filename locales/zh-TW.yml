@@ -140,6 +140,7 @@ nav:
   about: "關於"
 
 common:
+  export_active_settings: "請選擇其他檔案。這是 Winderust 目前使用的設定檔。"
   preset_details: "預設詳細資料"
   rule_details: "規則詳細資料"
   power_plan_selection: "電源計畫選擇"
@@ -450,6 +451,7 @@ settings:
   win32_priority_separation_restored: "已還原 Win32PrioritySeparation 備份 %{value}。可能需要重新啟動才會完整套用。"
   win32_priority_separation_restore_failed: "無法還原 Win32PrioritySeparation 備份：%{error}"
   settings_files: "設定檔"
+  export_failed: "無法將設定匯出至 %{path}。%{error}"
   export_settings: "匯出設定（.toml）"
   import_settings: "匯入設定（.toml）"
 

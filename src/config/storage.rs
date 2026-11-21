@@ -54,8 +54,47 @@ pub fn save(settings: &Settings) -> Result<(), String> {
 }
 
 pub fn export_toml_to(path: &Path, settings: &Settings) -> Result<(), String> {
-    write_toml_settings(path, settings)
-        .map_err(|err| format!("Failed to export {}: {err}", path.display()))
+    export_destination(path, &config_path())
+        .and_then(|destination| write_toml_settings(&destination, settings))
+        .map_err(|error| {
+            rust_i18n::t!(
+                "settings.export_failed",
+                path = path.display(),
+                error = error
+            )
+            .to_string()
+        })
+}
+
+pub fn export_bytes(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    write_bytes_atomically(&export_destination(path, &config_path())?, bytes)
+}
+
+fn export_destination(path: &Path, active_settings: &Path) -> io::Result<PathBuf> {
+    let path = std::path::absolute(path)?;
+    let active_settings = std::path::absolute(active_settings)?;
+    // The directory entry is reserved even before settings.toml exists.
+    let same_entry = path.as_os_str().eq_ignore_ascii_case(&active_settings)
+        || path
+            .file_name()
+            .zip(active_settings.file_name())
+            .is_some_and(|(name, active_name)| name.eq_ignore_ascii_case(active_name))
+            && path
+                .parent()
+                .zip(active_settings.parent())
+                .is_some_and(|(parent, active_parent)| same_canonical_path(parent, active_parent));
+    if same_entry || same_canonical_path(&path, &active_settings) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            rust_i18n::t!("common.export_active_settings").to_string(),
+        ));
+    }
+    Ok(path)
+}
+
+fn same_canonical_path(left: &Path, right: &Path) -> bool {
+    left.canonicalize()
+        .is_ok_and(|left| right.canonicalize().ok().as_ref() == Some(&left))
 }
 
 pub fn import_toml_from(path: &Path) -> Result<Settings, String> {
@@ -84,7 +123,7 @@ fn write_toml_settings(path: &Path, settings: &Settings) -> io::Result<()> {
     write_bytes_atomically(path, raw.as_bytes())
 }
 
-pub fn write_bytes_atomically(path: &Path, bytes: &[u8]) -> io::Result<()> {
+fn write_bytes_atomically(path: &Path, bytes: &[u8]) -> io::Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }

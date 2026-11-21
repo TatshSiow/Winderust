@@ -1,6 +1,25 @@
 use super::*;
 
 #[test]
+fn export_destination_reserves_active_settings_even_when_missing() {
+    let directory =
+        std::env::temp_dir().join(format!("winderust-export-path-{}", std::process::id()));
+    fs::create_dir(&directory).unwrap();
+    let active = directory.join(CONFIG_FILE);
+    let alias = directory.canonicalize().unwrap().join("SETTINGS.TOML");
+    for path in [&active, &alias] {
+        assert_eq!(
+            export_destination(path, &active).unwrap_err().kind(),
+            io::ErrorKind::InvalidInput
+        );
+    }
+    assert!(!active.exists());
+    let separate = directory.join("backup").join(CONFIG_FILE);
+    assert_eq!(export_destination(&separate, &active).unwrap(), separate);
+    fs::remove_dir(directory).unwrap();
+}
+
+#[test]
 fn instance_limits_validation_guards_persistence_without_overwriting_files() {
     let path = std::env::temp_dir().join(format!(
         "winderust-instance-limits-{}.toml",
