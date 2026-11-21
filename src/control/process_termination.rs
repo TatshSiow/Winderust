@@ -1,3 +1,5 @@
+use std::fmt;
+
 use crate::{
     foreground::ProcessActionTarget, platform::windows::process_termination, win_util::WinHandle,
 };
@@ -23,39 +25,72 @@ pub(crate) struct ProcessTerminationBatchResult {
     pub(crate) preflight_failed: bool,
 }
 
+#[derive(Debug)]
+pub(crate) enum ProcessTerminationFailure {
+    NoTargets,
+    Preflight {
+        detail: Option<String>,
+    },
+    RequestsRejected {
+        requested: usize,
+        total: usize,
+        detail: Option<String>,
+    },
+}
+
+impl fmt::Display for ProcessTerminationFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NoTargets => formatter.write_str("No process targets were available."),
+            Self::Preflight { detail } => write!(
+                formatter,
+                "Process termination preflight failed. No termination requests were sent. {}",
+                detail.as_deref().unwrap_or("A process target could not be validated.")
+            ),
+            Self::RequestsRejected { requested, total, detail } => write!(
+                formatter,
+                "Windows accepted termination requests for {requested} of {total} processes. {} failed. {}",
+                total - requested,
+                detail.as_deref().unwrap_or("Windows did not accept a termination request.")
+            ),
+        }
+    }
+}
+
 impl ProcessTerminationBatchResult {
     pub(crate) fn into_termination_result(self) -> Result<usize, String> {
-        if self.results.is_empty() {
-            return Err("No process targets were available.".to_owned());
-        }
+        self.into_outcome().map_err(|error| error.to_string())
+    }
+
+    pub(crate) fn into_outcome(self) -> Result<usize, ProcessTerminationFailure> {
         let total = self.results.len();
+        if total == 0 {
+            return Err(ProcessTerminationFailure::NoTargets);
+        }
         let requested = self
             .results
             .iter()
             .filter(|result| matches!(result.outcome, ProcessTerminationOutcome::Requested))
             .count();
-        let first_error =
+        if !self.preflight_failed && requested == total {
+            return Ok(requested);
+        }
+        let detail =
             self.results
-                .iter()
-                .find_map(|result| match &result.outcome {
-                    ProcessTerminationOutcome::Failed(error) => Some(error.as_str()),
+                .into_iter()
+                .find_map(|result| match result.outcome {
+                    ProcessTerminationOutcome::Failed(error) => Some(error),
                     ProcessTerminationOutcome::Requested
                     | ProcessTerminationOutcome::NotAttempted => None,
                 });
         if self.preflight_failed {
-            return Err(format!(
-                "Process termination preflight failed. No termination requests were sent. {}",
-                first_error.unwrap_or("A process target could not be validated.")
-            ));
-        }
-        if requested == total {
-            Ok(requested)
+            Err(ProcessTerminationFailure::Preflight { detail })
         } else {
-            Err(format!(
-                "Windows accepted termination requests for {requested} of {total} processes. {} failed. {}",
-                total - requested,
-                first_error.unwrap_or("Windows did not accept a termination request.")
-            ))
+            Err(ProcessTerminationFailure::RequestsRejected {
+                requested,
+                total,
+                detail,
+            })
         }
     }
 }
