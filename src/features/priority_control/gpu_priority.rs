@@ -7,7 +7,7 @@ use windows_sys::Win32::System::Threading::GetCurrentProcessId;
 
 use crate::{
     action_log::{ActionLog, ActionLogFeature, ActionLogResult},
-    config::GpuPrioritySettings,
+    config::{GpuPrioritySettings, ProcessGpuPriority},
     control::{
         gpu_priority::{
             GpuPriorityApplyOutcome, GpuPriorityClaim, GpuPriorityController,
@@ -85,9 +85,9 @@ impl GpuPriorityManager {
             };
         }
 
-        let foreground_sensitive = settings.foreground_detection_enabled
-            && settings.foreground_priority != settings.background_priority;
-        if foreground_sensitive && foreground_process_id.is_none() {
+        let focus_unknown =
+            settings.foreground_detection_enabled && foreground_process_id.is_none();
+        if focus_unknown && settings.foreground_priority != settings.background_priority {
             return self.paused_snapshot(controller, action_log, "foreground app is unknown", None);
         }
 
@@ -174,29 +174,26 @@ impl GpuPriorityManager {
                 && settings.visible_window_detection_enabled
                 && visible_processes.contains(process.id, &executable_path);
             let tier = PriorityProcessTier::from_flags(foreground, visible_window);
-            let configured_override = settings.override_for(
-                executable_path.to_string_lossy().as_ref(),
-                foreground,
-                visible_window,
-            );
-            let default_priority = tier.select(
-                settings.foreground_priority,
-                settings.visible_window_priority,
-                settings.background_priority,
-            );
-            let priority = match configured_override {
-                Some(Some(priority)) => priority,
-                Some(None) => continue,
-                None => default_priority,
-            };
-            if let Some(priority) = priority.priority() {
+            let path = executable_path.to_string_lossy();
+            let policy = priority_policy(settings, &path, tier);
+            if focus_unknown
+                && policy != priority_policy(settings, &path, PriorityProcessTier::Foreground)
+            {
+                return self.paused_snapshot(
+                    controller,
+                    action_log,
+                    "foreground app is unknown",
+                    None,
+                );
+            }
+            if let Some((priority, preservation)) = policy {
                 target_processes.insert(
                     process.id,
                     (
                         process.name.clone(),
                         executable_path,
                         priority,
-                        tier,
+                        preservation,
                         creation_time,
                     ),
                 );
@@ -221,7 +218,7 @@ impl GpuPriorityManager {
         let mut suppressed_processes = 0;
         let mut auto_excluded_processes = BTreeSet::new();
         let mut claims = Vec::new();
-        for (process_id, (process_name, executable_path, priority, tier, creation_time)) in
+        for (process_id, (process_name, executable_path, priority, preservation, creation_time)) in
             target_processes
         {
             let executable_path_text = executable_path.to_string_lossy().into_owned();
@@ -245,7 +242,7 @@ impl GpuPriorityManager {
                 ),
                 owner,
                 priority,
-                preservation: tier_preservation(settings, tier),
+                preservation,
             });
         }
 
@@ -562,6 +559,28 @@ fn gpu_priority_skip_summary_message(
 
 fn gpu_priority_summary_log_due(last_logged_at: Option<Instant>, now: Instant) -> bool {
     last_logged_at.is_none_or(|last| now.duration_since(last) >= GPU_PRIORITY_SUMMARY_LOG_INTERVAL)
+}
+
+fn priority_policy(
+    settings: &GpuPrioritySettings,
+    path: &str,
+    tier: PriorityProcessTier,
+) -> Option<(ProcessGpuPriority, GpuPriorityPreservation)> {
+    let priority = settings
+        .override_for(
+            path,
+            tier == PriorityProcessTier::Foreground,
+            tier == PriorityProcessTier::VisibleWindow,
+        )
+        .unwrap_or_else(|| {
+            Some(tier.select(
+                settings.foreground_priority,
+                settings.visible_window_priority,
+                settings.background_priority,
+            ))
+        })?
+        .priority()?;
+    Some((priority, tier_preservation(settings, tier)))
 }
 
 fn tier_preservation(

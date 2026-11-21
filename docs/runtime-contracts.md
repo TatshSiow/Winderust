@@ -693,7 +693,8 @@ Read the relevant section before changing feature policy, ownership, restoration
   Thread Priority identity includes the exact process instance, thread ID, and
   thread creation time. Do not restore feature-owned setters, Process List
   restore closures, or duplicate Adaptive Engine setters for these properties.
-  When focus is unavailable, Process Priority and Thread Priority pause before
+  When focus is unavailable, Process Priority, Thread Priority, GPU Priority,
+  and static Memory Priority pause before
   applying a Visible Window or Background policy that differs from what the
   same eligible process would receive as the Focus App. This comparison covers
   custom rules and preservation as well as priority values. Existing claims
