@@ -114,14 +114,17 @@ impl CpuLimiter {
                 return;
             }
             Message::SaveRule => {
-                if self.has_invalid_inputs() {
+                let Some((index, draft)) = &self.draft else {
+                    return;
+                };
+                let edited = &draft.rules[*index];
+                if self.has_invalid_inputs_for(Some(&edited.executable_path)) {
                     return;
                 }
-                if let Some((index, draft)) = self.draft.take() {
-                    if let Some(rule) = settings.rules.get_mut(index) {
-                        *rule = draft.rules[index].clone();
-                    }
+                if let Some(rule) = settings.rules.get_mut(*index) {
+                    *rule = edited.clone();
                 }
+                self.draft = None;
                 return;
             }
             _ => {}
@@ -211,10 +214,16 @@ impl CpuLimiter {
     }
 
     pub(super) fn has_invalid_inputs(&self) -> bool {
-        self.numbers.values().any(|raw| {
-            raw.parse::<u8>()
-                .ok()
-                .is_none_or(|value| !(1..=100).contains(&value))
+        self.has_invalid_inputs_for(None)
+    }
+
+    fn has_invalid_inputs_for(&self, executable_path: Option<&str>) -> bool {
+        self.numbers.iter().any(|((path, _), raw)| {
+            executable_path.is_none_or(|target| path == target)
+                && raw
+                    .parse::<u8>()
+                    .ok()
+                    .is_none_or(|value| !(1..=100).contains(&value))
         })
     }
     fn number(&self, path: &str, tier: Tier, value: u8) -> String {
@@ -454,7 +463,10 @@ impl CpuLimiter {
                 .on_press(Message::CancelRule),
             action_button(t!("common.save").to_string())
                 .style(super::widgets::primary_button)
-                .on_press_maybe((!self.has_invalid_inputs()).then_some(Message::SaveRule))
+                .on_press_maybe(
+                    (!self.has_invalid_inputs_for(Some(&rule.executable_path)))
+                        .then_some(Message::SaveRule)
+                )
         ]
         .spacing(design::space::SMALL);
         Some(super::widgets::modal_frame(
@@ -570,19 +582,35 @@ mod tests {
             .rules
             .push(new_cpu_limiter_rule(r"C:\Apps\test.exe"));
         let before = settings.clone();
+        editor.update(&mut settings, Message::Number(None, Tier::Focus, "".into()));
         editor.update(&mut settings, Message::Edit(0));
         assert!(editor.has_pending_editor());
         editor.update(&mut settings, Message::RuleLimit(0, Tier::Focus, 25));
         assert_eq!(settings, before);
         editor.update(&mut settings, Message::CancelRule);
         assert!(!editor.has_pending_editor());
+        assert!(editor.has_invalid_inputs());
         assert_eq!(settings, before);
         editor.update(&mut settings, Message::Edit(0));
+        editor.update(
+            &mut settings,
+            Message::Number(Some(0), Tier::Focus, "101".into()),
+        );
+        editor.update(&mut settings, Message::SaveRule);
         assert!(editor.has_pending_editor());
-        editor.update(&mut settings, Message::RuleLimit(0, Tier::Focus, 25));
+        assert_eq!(settings, before);
+        editor.update(
+            &mut settings,
+            Message::Number(Some(0), Tier::Focus, "25".into()),
+        );
         editor.update(&mut settings, Message::SaveRule);
         assert!(!editor.has_pending_editor());
         assert_eq!(settings.rules[0].focus_allowed_cpu_time_percent, 25);
+        assert_eq!(
+            settings.focus_allowed_cpu_time_percent,
+            before.focus_allowed_cpu_time_percent
+        );
+        assert!(editor.has_invalid_inputs());
     }
     #[test]
     fn invalid_number_drafts_cannot_change_settings_and_removal_is_immediate() {
