@@ -876,7 +876,7 @@ impl WinderustApp {
             };
         }
         if !(repeat
-            || self.pending_editor()
+            || self.blocking_editor_open()
             || self.page == Page::ProcessList && self.processes.modal_open())
             && super::hotkeys::opens_search(
                 &self.settings.global().general.search_hotkeys,
@@ -1502,8 +1502,11 @@ impl WinderustApp {
                 ) {
                     self.side_panel_tab = SidePanelTab::Presets;
                 }
-                self.settings
-                    .edit_with_presets(|settings| self.adaptive.update(settings, message));
+                if let Some(message) = self.adaptive.update_view(&self.settings, message) {
+                    self.settings.edit_with_presets(|settings| {
+                        self.adaptive.update_settings(settings, message)
+                    });
+                }
             }
             Message::Catalog(result) => {
                 self.catalog_loading = false;
@@ -1828,7 +1831,7 @@ impl WinderustApp {
                 }
             }
             Message::NavigateHistory(forward) => {
-                if !self.closing && self.error_message.is_empty() && !self.pending_editor() {
+                if !self.closing && self.error_message.is_empty() && !self.blocking_editor_open() {
                     if let Some(page) = self.navigation_history.travel(forward) {
                         return self.update(Message::Page(page));
                     }
@@ -2221,7 +2224,7 @@ impl WinderustApp {
                 }
                 return self.shutdown();
             }
-            Message::SettingsFile(_) if self.pending_editor() || self.invalid_inputs() => {
+            Message::SettingsFile(_) if self.blocking_editor_open() || self.invalid_inputs() => {
                 self.error_message = t!("unsaved.message").to_string();
             }
             Message::SettingsFile(mode) => {
@@ -2414,6 +2417,10 @@ impl WinderustApp {
             || self.cpu_rules.has_pending_editor()
     }
 
+    fn blocking_editor_open(&self) -> bool {
+        self.adaptive.preset_open() || self.pending_editor()
+    }
+
     fn process_power_plan_preview(
         &self,
     ) -> Option<(process_power_plans::Kind, &process_power_plans::Editor)> {
@@ -2432,7 +2439,7 @@ impl WinderustApp {
         if source == self.power_source {
             return true;
         }
-        if self.pending_editor() || self.invalid_inputs() {
+        if self.blocking_editor_open() || self.invalid_inputs() {
             self.error_message = t!("unsaved.message").to_string();
             return false;
         }
@@ -3235,7 +3242,7 @@ impl WinderustApp {
                 .power_tuning
                 .preset_modal(&self.settings.advanced_power_plan_tuning_presets)
                 .map(|modal| modal.map(Message::PowerTuning)),
-            Page::AdaptiveEngine if self.adaptive.has_pending_editor() => Some(
+            Page::AdaptiveEngine if self.adaptive.preset_open() => Some(
                 self.adaptive
                     .preset_modal(&self.settings, &self.candidates)
                     .map(Message::Adaptive),

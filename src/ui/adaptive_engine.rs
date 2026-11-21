@@ -142,7 +142,7 @@ impl Editor {
         self.tuning_tabs[0] = TuningTab::ProcessorPower;
     }
 
-    pub(super) fn update(&mut self, s: &mut Settings, m: Message) {
+    pub(super) fn update_view(&mut self, s: &Settings, m: Message) -> Option<Message> {
         if matches!(
             m,
             Message::ViewBuiltIn(_)
@@ -173,6 +173,21 @@ impl Editor {
                     *value = !*value;
                 }
             }
+            Message::ViewBuiltIn(p) => {
+                let mut draft = s.clone();
+                apply_built_in_adaptive_engine_preset(&mut draft, p);
+                self.draft = Some(draft);
+                self.read_only = true;
+                self.name = built_in_adaptive_engine_preset_label(p);
+            }
+            Message::Cancel => self.draft = None,
+            m => return Some(m),
+        }
+        None
+    }
+
+    pub(super) fn update_settings(&mut self, s: &mut Settings, m: Message) {
+        match m {
             Message::BuiltIn(p) => {
                 self.error.clear();
                 self.live_numbers.drafts.clear();
@@ -184,13 +199,6 @@ impl Editor {
                 apply_built_in_adaptive_engine_preset(&mut draft, p);
                 let preset = capture_adaptive_engine_preset(&draft, String::new());
                 apply_adaptive_engine_preset(s, &preset);
-            }
-            Message::ViewBuiltIn(p) => {
-                let mut draft = s.clone();
-                apply_built_in_adaptive_engine_preset(&mut draft, p);
-                self.draft = Some(draft);
-                self.read_only = true;
-                self.name = built_in_adaptive_engine_preset_label(p);
             }
             Message::Apply(i) => {
                 if let Some(p) = s.adaptive_engine_presets.get(i).cloned() {
@@ -256,10 +264,6 @@ impl Editor {
                 }
                 self.draft = None;
                 self.preset_numbers.drafts.clear();
-            }
-            Message::Cancel => {
-                self.draft = None;
-                self.error.clear();
             }
             Message::UseCurrent => {
                 if !self.read_only {
@@ -439,8 +443,11 @@ impl Editor {
     pub(super) fn validation_error(&self) -> Option<String> {
         self.live_numbers.validation_error()
     }
-    pub(super) fn has_pending_editor(&self) -> bool {
+    pub(super) fn preset_open(&self) -> bool {
         self.draft.is_some()
+    }
+    pub(super) fn has_pending_editor(&self) -> bool {
+        self.preset_open() && !self.read_only
     }
     pub(super) fn view<'a>(
         &'a self,
@@ -2452,6 +2459,14 @@ mod tests {
     }
 
     use super::*;
+
+    impl Editor {
+        fn update(&mut self, settings: &mut Settings, message: Message) {
+            if let Some(message) = self.update_view(settings, message) {
+                self.update_settings(settings, message);
+            }
+        }
+    }
     #[test]
     fn priority_card_changes_keep_repaint_regions_bounded() {
         use iced::advanced::Renderer as _;
@@ -2765,6 +2780,8 @@ mod tests {
             &mut settings,
             Message::ViewBuiltIn(BuiltInAdaptiveEnginePreset::Speed),
         );
+        assert!(editor.preset_open());
+        assert!(!editor.has_pending_editor());
         let draft = editor.draft.clone();
         editor.update(
             &mut settings,
