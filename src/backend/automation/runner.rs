@@ -1665,6 +1665,7 @@ impl RuntimeCore {
         &mut self,
         configured_settings: &Arc<Settings>,
         plugged_in: Option<bool>,
+        wall_time: DateTime<Local>,
         observations: &mut CycleObservations,
     ) -> Result<(), String> {
         let settings = active_power_source_settings(configured_settings, plugged_in);
@@ -1710,7 +1711,7 @@ impl RuntimeCore {
             .flatten()
             .filter(|process| process_is_critical(process.id) == Some(false))
             .map(|process| process.executable_path);
-        let by_time_decision = current_by_time_decision(&settings.by_time);
+        let by_time_decision = current_by_time_decision(&settings.by_time, wall_time);
         let by_cpu_load_decision = self
             .by_cpu_load_scheduler
             .current_decision(&settings.by_cpu_load, self.cpu_usage.percent);
@@ -1942,7 +1943,12 @@ mod settings_tests {
             source: PowerSourceProfile::PluggedIn,
         });
         assert!(runner
-            .run_check(&settings, Some(true), &mut CycleObservations::default())
+            .run_check(
+                &settings,
+                Some(true),
+                Local::now(),
+                &mut CycleObservations::default(),
+            )
             .is_ok());
         assert!(runner.power_plan_rule_context.is_none());
         assert!(!runner.has_temporary_power_plan());

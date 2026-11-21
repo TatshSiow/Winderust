@@ -4,6 +4,6 @@ pub(crate) mod by_time;
 
 pub(crate) use by_cpu_load::{ByCpuLoadDecision, ByCpuLoadMatch, ByCpuLoadScheduler};
 pub(crate) use by_time::{
-    current_decision as current_by_time_decision, next_change_delay as next_by_time_change_delay,
-    ByTimeDecision,
+    current_decision_at as current_by_time_decision,
+    next_change_delay as next_by_time_change_delay, ByTimeDecision,
 };

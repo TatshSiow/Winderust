@@ -288,6 +288,8 @@ Read the relevant section before changing feature policy, ownership, restoration
 - By Running App Preview matches uses the same eligibility checks to report matches
   and the winning rule for the current draft.
 - By Time rule clocks use parsed minute-precision local times and serialize as `HH:MM`.
+  Rule selection and the next deadline use the same local time reading. Time
+  spent verifying a plan switch counts toward the wait for that deadline.
   Invalid clock values fail settings load or import; raw incomplete edits stay in the UI editor.
   Repeated local clock boundaries retain both occurrences. A maximum 60-second
   scheduled recheck also covers local offset changes between rule endpoints.

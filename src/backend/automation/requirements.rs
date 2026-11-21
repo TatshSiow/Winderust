@@ -596,6 +596,7 @@ pub(super) fn power_plan_check_delay(
     settings: &Settings,
     windows_event_watcher_active: bool,
     activity_idle_for: Option<Duration>,
+    wall_time: DateTime<Local>,
 ) -> Option<Duration> {
     if !windows_event_watcher_active {
         return Some(configured_check_interval(settings));
@@ -607,7 +608,7 @@ pub(super) fn power_plan_check_delay(
     }
     if by_time_rules_required(settings) {
         let schedule_delay = bounded_by_time_check_delay(
-            next_by_time_change_delay(&settings.by_time),
+            next_by_time_change_delay(&settings.by_time, wall_time),
             configured_check_interval(settings),
         );
         delay = Some(min_worker_wait(delay, schedule_delay));

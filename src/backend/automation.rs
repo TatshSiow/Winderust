@@ -10,6 +10,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+use chrono::{DateTime, Local};
+
 use crate::{
     action_log::{ActionLog, ActionLogEntry, ActionLogSummaries},
     activity::{
@@ -1793,21 +1795,26 @@ fn run_background_automation(
             );
         }
 
-        let wait_now = Instant::now();
-        if let Some(error) = runner.retry_control_releases(wait_now) {
+        if let Some(error) = runner.retry_control_releases(Instant::now()) {
             update_worker_error(&shared, Some(error));
         }
+        let wait_now = Instant::now();
         let mut wait_for = if power_plan_checks_required {
             run_scheduled_power_plan_check(&mut scheduler, wait_now, || {
-                if let Err(error) =
-                    runner.run_check(&configured_settings, plugged_in, &mut observations)
-                {
+                let wall_time = Local::now();
+                if let Err(error) = runner.run_check(
+                    &configured_settings,
+                    plugged_in,
+                    wall_time,
+                    &mut observations,
+                ) {
                     update_worker_error(&shared, Some(error));
                 }
                 let delay = power_plan_check_delay(
                     settings,
                     windows_event_watcher_active,
                     runner.activity_snapshot(settings, Instant::now()).idle_for,
+                    wall_time,
                 );
                 runner
                     .temporary_power_plan_retry_delay()
@@ -1993,7 +2000,9 @@ fn run_background_automation(
             continue;
         }
 
-        if let Some(delay) = runner.control_release_retry_delay(Instant::now()) {
+        let sleep_now = Instant::now();
+        wait_for = wait_for.map(|delay| delay.saturating_sub(sleep_now - wait_now));
+        if let Some(delay) = runner.control_release_retry_delay(sleep_now) {
             wait_for = Some(min_worker_wait(wait_for, delay));
         }
 

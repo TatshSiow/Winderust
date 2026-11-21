@@ -17,11 +17,7 @@ pub struct ByTimeDecision {
     pub power_plan_guid: String,
 }
 
-pub fn current_decision(settings: &ByTimeSettings) -> Option<ByTimeDecision> {
-    current_decision_at(settings, Local::now())
-}
-
-fn current_decision_at<Tz: TimeZone>(
+pub(crate) fn current_decision_at<Tz: TimeZone>(
     settings: &ByTimeSettings,
     now: DateTime<Tz>,
 ) -> Option<ByTimeDecision>
@@ -46,8 +42,10 @@ where
         })
 }
 
-pub fn next_change_delay(settings: &ByTimeSettings) -> Option<Duration> {
-    let now = Local::now();
+pub(crate) fn next_change_delay(
+    settings: &ByTimeSettings,
+    now: DateTime<Local>,
+) -> Option<Duration> {
     next_change_at(settings, now)
         .and_then(|next| next.signed_duration_since(now).to_std().ok())
         .map(|delay| delay.max(MIN_BY_TIME_DELAY))

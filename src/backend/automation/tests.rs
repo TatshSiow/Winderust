@@ -2203,8 +2203,9 @@ fn event_driven_power_checks_drop_idle_polling_for_focus_only_rules() {
 
     assert!(power_plan_checks_required(&settings));
     assert!(windows_event_watcher_required(&settings));
-    assert!(power_plan_check_delay(&settings, true, None).is_none());
-    assert!(power_plan_check_delay(&settings, false, None).is_some());
+    let wall_time = Local::now();
+    assert!(power_plan_check_delay(&settings, true, None, wall_time).is_none());
+    assert!(power_plan_check_delay(&settings, false, None, wall_time).is_some());
 }
 
 #[test]
@@ -2215,8 +2216,9 @@ fn activity_input_resume_waits_for_hook_event() {
 
     assert!(power_plan_checks_required(&settings));
     assert!(windows_event_watcher_required(&settings));
-    assert!(power_plan_check_delay(&settings, true, None).is_none());
-    assert!(power_plan_check_delay(&settings, false, None).is_some());
+    let wall_time = Local::now();
+    assert!(power_plan_check_delay(&settings, true, None, wall_time).is_none());
+    assert!(power_plan_check_delay(&settings, false, None, wall_time).is_some());
 }
 
 #[test]
@@ -2259,7 +2261,8 @@ fn schedule_checks_recheck_within_a_minute_without_clock_events() {
     let mut settings = Settings::default();
     settings.by_activity.enabled = false;
     settings.by_time.enabled = true;
-    let starts_at = Local::now() + ChronoDuration::days(1);
+    let wall_time = Local::now();
+    let starts_at = wall_time + ChronoDuration::days(1);
     let ends_at = starts_at + ChronoDuration::minutes(1);
     settings.by_time.rules = vec![ByTimeRule {
         enabled: true,
@@ -2270,7 +2273,7 @@ fn schedule_checks_recheck_within_a_minute_without_clock_events() {
         power_plan_guid: Some("scheduled-guid".to_owned()),
     }];
 
-    let delay = power_plan_check_delay(&settings, true, None).unwrap();
+    let delay = power_plan_check_delay(&settings, true, None, wall_time).unwrap();
     assert_eq!(delay, Duration::from_secs(60));
     let now = Instant::now();
     let mut scheduler = RefreshScheduler::new(now);
