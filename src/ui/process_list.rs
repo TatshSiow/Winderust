@@ -346,6 +346,7 @@ impl ProcessList {
                 match result {
                     Ok(data) => {
                         self.population_loaded = true;
+                        let mut cpu_usage = crate::cpu::process_cpu_usage_batch();
                         self.cpu = data
                             .samples
                             .iter()
@@ -353,9 +354,7 @@ impl ProcessList {
                                 self.samples
                                     .get(id)
                                     .filter(|old| old.creation_time == s.creation_time)
-                                    .and_then(|old| {
-                                        crate::cpu::process_cpu_usage_percent(old.cpu, s.cpu)
-                                    })
+                                    .and_then(|old| cpu_usage(old.cpu, s.cpu))
                                     .map(|cpu| (*id, cpu))
                             })
                             .collect();

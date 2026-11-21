@@ -307,6 +307,18 @@ pub fn process_cpu_usage_percent(
     process_cpu_time_percent(previous, current, logical_processor_count())
 }
 
+pub(crate) fn process_cpu_usage_batch(
+) -> impl FnMut(ProcessCpuSample, ProcessCpuSample) -> Option<f32> {
+    let mut processor_count = None;
+    move |previous, current| {
+        process_cpu_time_percent(
+            previous,
+            current,
+            *processor_count.get_or_insert_with(logical_processor_count),
+        )
+    }
+}
+
 pub fn process_cpu_demand_percent(
     previous: ProcessCpuSample,
     current: ProcessCpuSample,
