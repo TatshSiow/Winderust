@@ -525,6 +525,14 @@ fn sidebar_state(
     {
         return FeatureRunState::Blocked;
     }
+    if page == Page::GpuPriority {
+        if features.gpu_priority.observation_paused {
+            return FeatureRunState::Paused;
+        }
+        if !features.gpu_priority.enabled {
+            return FeatureRunState::Unknown;
+        }
+    }
     if page == Page::AppSuspension && features.app_suspension.status_unknown {
         return FeatureRunState::Unknown;
     }
@@ -728,11 +736,12 @@ fn feature_status_summary(
         }
         Page::GpuPriority => {
             let status = &runtime.feature_status.gpu_priority;
+            let observed = status.enabled && !status.observation_paused;
             FeatureStatusSummary {
-                scanned: Some(status.scanned_processes),
-                adjusted: Some(status.adjusted_processes),
-                protected_or_denied: Some(status.denied_processes),
-                skipped: Some(status.skipped_processes),
+                scanned: observed.then_some(status.scanned_processes),
+                adjusted: observed.then_some(status.adjusted_processes),
+                protected_or_denied: observed.then_some(status.denied_processes),
+                skipped: observed.then_some(status.skipped_processes),
                 last_error: status.last_error.as_deref(),
                 action_log_feature: ActionLogFeature::GpuPriority,
             }

@@ -686,6 +686,10 @@ Read the relevant section before changing feature policy, ownership, restoration
   Thread Priority identity includes the exact process instance, thread ID, and
   thread creation time. Do not restore feature-owned setters, Process List
   restore closures, or duplicate Adaptive Engine setters for these properties.
+  GPU Priority pauses the policy when required focus, session, window or process
+  observations are unavailable. Its Home summary and status rail distinguish
+  missing observations from a completed scan. A restoration error takes
+  precedence over a process inventory error in runtime status.
   GPU Priority treats a temporarily unavailable GPU scheduling context as
   pending and retries without auto-excluding the process. Adaptive Engine keeps
   Process Priority independent when Power Throttling is unavailable and

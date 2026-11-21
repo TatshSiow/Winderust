@@ -39,7 +39,7 @@ pub struct GpuPrioritySnapshot {
     pub failed_processes: usize,
     pub adjusted_apps: Vec<String>,
     pub auto_excluded_processes: Vec<String>,
-    pub message: String,
+    pub(crate) observation_paused: bool,
     pub last_error: Option<String>,
 }
 
@@ -70,25 +70,16 @@ impl GpuPriorityManager {
         observations: &mut CycleObservations,
         action_log: &mut ActionLog,
     ) -> GpuPrioritySnapshot {
-        if !automation_enabled {
-            let failures = self.clear_all(controller, action_log, "automation disabled");
-            self.failure_suppression.clear();
-            return GpuPrioritySnapshot {
-                enabled: false,
-                failed_processes: failures.count,
-                message: "Automation disabled.".to_owned(),
-                last_error: failures.last_error,
-                ..Default::default()
+        if !automation_enabled || !settings.enabled {
+            let reason = if automation_enabled {
+                "GPU priority defaults disabled"
+            } else {
+                "automation disabled"
             };
-        }
-
-        if !settings.enabled {
-            let failures = self.clear_all(controller, action_log, "GPU priority defaults disabled");
+            let failures = self.clear_all(controller, action_log, reason);
             self.failure_suppression.clear();
             return GpuPrioritySnapshot {
-                enabled: false,
                 failed_processes: failures.count,
-                message: "GPU priority defaults disabled.".to_owned(),
                 last_error: failures.last_error,
                 ..Default::default()
             };
@@ -97,55 +88,40 @@ impl GpuPriorityManager {
         let foreground_sensitive = settings.foreground_detection_enabled
             && settings.foreground_priority != settings.background_priority;
         if foreground_sensitive && foreground_process_id.is_none() {
-            let failures = self.clear_all(controller, action_log, "foreground app is unknown");
-            return GpuPrioritySnapshot {
-                enabled: true,
-                failed_processes: failures.count,
-                message: "Paused: foreground app is unknown.".to_owned(),
-                last_error: failures.last_error,
-                ..Default::default()
-            };
+            return self.paused_snapshot(controller, action_log, "foreground app is unknown", None);
         }
 
         // SAFETY: GetCurrentProcessId takes no arguments and has no caller requirements.
         let current_process_id = unsafe { GetCurrentProcessId() };
         let Some(current_session_id) = process_session_id(current_process_id) else {
-            let failures =
-                self.clear_all(controller, action_log, "current Windows session is unknown");
-            return GpuPrioritySnapshot {
-                enabled: true,
-                failed_processes: failures.count,
-                message: "Paused: current Windows session is unknown.".to_owned(),
-                last_error: failures.last_error,
-                ..Default::default()
-            };
+            return self.paused_snapshot(
+                controller,
+                action_log,
+                "current Windows session is unknown",
+                None,
+            );
         };
 
         let processes = match observations.processes_with_paths() {
             Ok(processes) => processes,
             Err(err) => {
-                let failures = self.clear_all(controller, action_log, "process list unavailable");
-                return GpuPrioritySnapshot {
-                    enabled: true,
-                    failed_processes: failures.count,
-                    message: err,
-                    last_error: failures.last_error,
-                    ..Default::default()
-                };
+                return self.paused_snapshot(
+                    controller,
+                    action_log,
+                    "process list unavailable",
+                    Some(err),
+                );
             }
         };
 
         let visible_processes = if settings.visible_window_detection_enabled {
             let Ok(process_ids) = observations.visible_window_process_ids() else {
-                let failures =
-                    self.clear_all(controller, action_log, "visible windows are unavailable");
-                return GpuPrioritySnapshot {
-                    enabled: true,
-                    failed_processes: failures.count,
-                    message: "Paused: visible windows are unavailable.".to_owned(),
-                    last_error: failures.last_error,
-                    ..Default::default()
-                };
+                return self.paused_snapshot(
+                    controller,
+                    action_log,
+                    "visible windows are unavailable",
+                    None,
+                );
             };
             ProtectedProcesses::capture(processes.as_ref(), false, None, process_ids)
         } else {
@@ -356,13 +332,25 @@ impl GpuPriorityManager {
             failed_processes: failures.count,
             adjusted_apps: unique_app_names(adjusted_apps.iter().map(String::as_str)),
             auto_excluded_processes: auto_excluded_processes.into_iter().collect(),
-            message: gpu_priority_status_message(
-                pending_processes,
-                denied_processes,
-                suppressed_processes,
-                failures.count,
-            ),
+            observation_paused: false,
             last_error: failures.last_error,
+        }
+    }
+
+    fn paused_snapshot(
+        &mut self,
+        controller: &mut GpuPriorityController,
+        action_log: &mut ActionLog,
+        reason: &str,
+        observation_error: Option<String>,
+    ) -> GpuPrioritySnapshot {
+        let failures = self.clear_all(controller, action_log, reason);
+        GpuPrioritySnapshot {
+            enabled: true,
+            observation_paused: true,
+            failed_processes: failures.count,
+            last_error: failures.last_error.or(observation_error),
+            ..Default::default()
         }
     }
 
@@ -574,25 +562,6 @@ fn gpu_priority_skip_summary_message(
 
 fn gpu_priority_summary_log_due(last_logged_at: Option<Instant>, now: Instant) -> bool {
     last_logged_at.is_none_or(|last| now.duration_since(last) >= GPU_PRIORITY_SUMMARY_LOG_INTERVAL)
-}
-
-fn gpu_priority_status_message(
-    pending_processes: usize,
-    denied_processes: usize,
-    suppressed_processes: usize,
-    failed_processes: usize,
-) -> String {
-    if failed_processes > 0 {
-        "GPU priority defaults active with failures.".to_owned()
-    } else if denied_processes > 0 {
-        "GPU priority defaults active; some protected processes were skipped.".to_owned()
-    } else if suppressed_processes > 0 {
-        "GPU priority defaults active; repeated failures are being suppressed.".to_owned()
-    } else if pending_processes > 0 {
-        "GPU priority defaults active; waiting for GPU scheduling contexts.".to_owned()
-    } else {
-        "GPU priority defaults active.".to_owned()
-    }
 }
 
 fn tier_preservation(

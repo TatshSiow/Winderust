@@ -1462,14 +1462,26 @@ fn enabled_features(
         )
         .to_string()
     );
+    let gpu_priority = &status.gpu_priority;
     feature!(
         GpuPriority,
         gpu_priority,
-        t!(
-            "home.adjusted_count",
-            count = status.gpu_priority.adjusted_processes
-        )
-        .to_string()
+        if gpu_priority.observation_paused {
+            t!(if gpu_priority.last_error.is_some() {
+                "common.error"
+            } else {
+                "sidebar_status.paused"
+            })
+            .to_string()
+        } else if gpu_priority.enabled {
+            t!(
+                "home.adjusted_count",
+                count = gpu_priority.adjusted_processes
+            )
+            .to_string()
+        } else {
+            t!("common.unknown").to_string()
+        }
     );
     feature!(
         MemoryPriority,
