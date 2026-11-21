@@ -246,6 +246,8 @@ accent:
   invalid_hex: "請輸入 6 位十六進位色碼來設定自訂強調色，例如 #3366FF。"
 
 status:
+  previous_recovery_running: "Winderust 仍在還原上次工作階段的變更。請在還原完成後重新開啟。"
+  previous_recovery_wait_failed: "Winderust 無法確認上次工作階段的變更是否已還原。%{error}"
   action_log_export_failed: "無法將動作記錄匯出至 %{path}：%{error}"
 
 unsaved:

@@ -5,10 +5,12 @@ mod cpu_limiter;
 
 use super::presets::{apply_built_in_adaptive_engine_preset, BuiltInAdaptiveEnginePreset};
 use crate::{
+    acquire_single_instance,
     application::settings::RuntimeSettingsSnapshot,
     backend::{automation::RuntimeHandle, crash_recovery, privilege},
     config::{ProcessExclusionRule, ProcessThreadPrioritySetting, Settings},
-    power, SingleInstanceGuard,
+    power,
+    win_util::NamedMutexGuard,
 };
 use std::{
     fs,
@@ -191,6 +193,17 @@ pub(crate) fn run_if_requested() -> bool {
     true
 }
 
+fn acquire_benchmark_session() -> Result<NamedMutexGuard, String> {
+    let guard = acquire_single_instance(0)
+        .map_err(|error| format!("Could not check for a running Winderust instance: {error}"))?
+        .ok_or_else(|| {
+            "Close Winderust before benchmarking; another instance owns the runtime".to_owned()
+        })?;
+    crash_recovery::acquire_watchdog_handoff()
+        .map_err(|error| format!("Could not wait for previous Winderust recovery: {error}"))?;
+    Ok(guard)
+}
+
 fn run(path: &Path, case: &str) -> Result<(), String> {
     if !path.is_dir() {
         return Err("Benchmark directory does not exist".to_owned());
@@ -198,9 +211,7 @@ fn run(path: &Path, case: &str) -> Result<(), String> {
     if !privilege::is_running_as_admin() {
         return Err("Benchmark host must run elevated".to_owned());
     }
-    let _guard = SingleInstanceGuard::acquire(false).ok_or_else(|| {
-        "Close Winderust before benchmarking; another instance owns the runtime".to_owned()
-    })?;
+    let _guard = acquire_benchmark_session()?;
     let settings = export_settings(path, case)?;
     let topology = crate::features::cpu_control::cpu_allocation::logical_processors();
     let mut topology_csv = "index,core,kind,efficiency_class\n".to_owned();

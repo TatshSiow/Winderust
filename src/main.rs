@@ -67,8 +67,12 @@ fn main() {
     }
 
     let wait_for_previous_instance = privilege::elevated_relaunch_requested();
-    let Some(_single_instance_guard) = SingleInstanceGuard::acquire(wait_for_previous_instance)
-    else {
+    let wait_ms = if wait_for_previous_instance {
+        windows_sys::Win32::System::Threading::INFINITE
+    } else {
+        0
+    };
+    let Ok(Some(_single_instance_guard)) = acquire_single_instance(wait_ms) else {
         if !wait_for_previous_instance {
             SingleInstanceRestoreEvent::signal_existing();
         }
@@ -78,11 +82,34 @@ fn main() {
         privilege::relaunch_as_admin();
         return;
     }
+    let restore_event = SingleInstanceRestoreEvent::create();
     backend::diagnostics::initialize("winderust-diagnostics");
+    let previous_recovery = match crash_recovery::acquire_watchdog_handoff() {
+        Ok(guard) => guard,
+        Err(error) => {
+            let locale = SettingsEditor::saved_language().locale();
+            let message = if error.kind() == std::io::ErrorKind::TimedOut {
+                rust_i18n::t!("status.previous_recovery_running", locale = locale)
+            } else {
+                rust_i18n::t!(
+                    "status.previous_recovery_wait_failed",
+                    locale = locale,
+                    error = error
+                )
+            };
+            backend::diagnostics::error(&message);
+            backend::diagnostics::finish();
+            let _ = rfd::MessageDialog::new()
+                .set_title("Winderust")
+                .set_description(message)
+                .set_level(rfd::MessageLevel::Warning)
+                .show();
+            return;
+        }
+    };
     if let Err(error) = backend::interrupt_timing::recover_at_startup() {
         backend::diagnostics::error(&format!("Interrupt Timing startup cleanup failed: {error}"));
     }
-    let restore_event = SingleInstanceRestoreEvent::create();
 
     let (mut settings, outcome) = SettingsEditor::load();
     let settings_load_error = settings.load_error().map(str::to_owned).or_else(|| {
@@ -90,12 +117,13 @@ fn main() {
             .startup_registration_error()
             .map(|error| format!("Startup registration reconciliation failed: {error}"))
     });
-    let recovery_client = std::sync::Arc::new(std::sync::Mutex::new(
-        crash_recovery::RecoveryClient::start(),
-    ));
     let adaptive_plan_recovery_error = power::restore_stale_adaptive_plans()
         .err()
         .map(|error| format!("Adaptive power plan recovery failed: {error}"));
+    drop(previous_recovery);
+    let recovery_client = std::sync::Arc::new(std::sync::Mutex::new(
+        crash_recovery::RecoveryClient::start(),
+    ));
     let settings_load_error = settings_load_error.or(adaptive_plan_recovery_error);
     if let Some(error) = &settings_load_error {
         backend::diagnostics::error(error);
@@ -191,62 +219,13 @@ impl SingleInstanceRestoreEvent {
     }
 }
 
-struct SingleInstanceGuard {
-    handle: win_util::WinHandle,
-}
-
-impl SingleInstanceGuard {
-    fn acquire(wait_for_previous_instance: bool) -> Option<Self> {
-        let wait_milliseconds = if wait_for_previous_instance {
-            windows_sys::Win32::System::Threading::INFINITE
-        } else {
-            0
-        };
-        Self::acquire_named(
-            &single_instance_object_name("SingleInstance"),
-            wait_milliseconds,
-        )
-    }
-
-    fn acquire_named(name: &str, wait_milliseconds: u32) -> Option<Self> {
-        use windows_sys::Win32::{
-            Foundation::{WAIT_ABANDONED, WAIT_OBJECT_0},
-            System::Threading::{CreateMutexW, WaitForSingleObject},
-        };
-
-        let name = name
-            .encode_utf16()
-            .chain(std::iter::once(0))
-            .collect::<Vec<_>>();
-
-        // SAFETY: name is terminated UTF-16 and the returned handle is owned by this process.
-        let handle = unsafe { CreateMutexW(std::ptr::null(), 0, name.as_ptr()) };
-        if handle.is_null() {
-            return None;
-        }
-
-        let handle = win_util::WinHandle::new(handle);
-        // SAFETY: handle owns a live mutex and the wait does not retain pointers. Only the
-        // explicitly elevated replacement waits for the previous instance to finish shutdown.
-        let wait_status = unsafe { WaitForSingleObject(handle.raw(), wait_milliseconds) };
-        matches!(wait_status, WAIT_OBJECT_0 | WAIT_ABANDONED).then_some(Self { handle })
-    }
-}
-
-impl Drop for SingleInstanceGuard {
-    fn drop(&mut self) {
-        use windows_sys::Win32::System::Threading::ReleaseMutex;
-
-        // SAFETY: acquire only constructs the guard after this thread owns the mutex.
-        unsafe {
-            ReleaseMutex(self.handle.raw());
-        }
-    }
-}
-
 fn single_instance_object_name(kind: &str) -> String {
     // All builds and portable copies share one automation instance per Windows session.
     format!("Local\\Winderust.{kind}")
+}
+
+fn acquire_single_instance(wait_ms: u32) -> std::io::Result<Option<win_util::NamedMutexGuard>> {
+    win_util::NamedMutexGuard::acquire(&single_instance_object_name("SingleInstance"), wait_ms)
 }
 
 #[cfg(test)]
@@ -363,7 +342,8 @@ mod tests {
         let (release_tx, release_rx) = mpsc::sync_channel(1);
         let owner_name = name.clone();
         let owner = thread::spawn(move || {
-            let guard = SingleInstanceGuard::acquire_named(&owner_name, 0)
+            let guard = win_util::NamedMutexGuard::acquire(&owner_name, 0)
+                .expect("open mutex")
                 .expect("test owner acquires mutex");
             owned_tx.send(()).expect("report mutex ownership");
             release_rx.recv().expect("wait for handoff");
@@ -371,11 +351,15 @@ mod tests {
         });
 
         owned_rx.recv().expect("wait for mutex ownership");
-        assert!(SingleInstanceGuard::acquire_named(&name, 0).is_none());
+        assert!(win_util::NamedMutexGuard::acquire(&name, 0)
+            .expect("wait for occupied mutex")
+            .is_none());
         let (waiting_tx, waiting_rx) = mpsc::sync_channel(1);
         let waiter = thread::spawn(move || {
             waiting_tx.send(()).expect("report handoff wait");
-            SingleInstanceGuard::acquire_named(&name, 1_000).is_some()
+            win_util::NamedMutexGuard::acquire(&name, 1_000)
+                .expect("wait for previous owner")
+                .is_some()
         });
         waiting_rx.recv().expect("wait for elevated handoff");
         release_tx.send(()).expect("release previous instance");
@@ -400,7 +384,7 @@ mod tests {
             .split_once("fn main()")
             .expect("main function")
             .1
-            .split_once("struct SingleInstanceGuard")
+            .split_once("struct SingleInstanceRestoreEvent")
             .expect("main function end")
             .0;
         let helper_mode = main_body
@@ -410,7 +394,7 @@ mod tests {
             .find("elevated_relaunch_requested")
             .expect("elevated relaunch handoff");
         let single_instance = main_body
-            .find("SingleInstanceGuard::acquire")
+            .find("acquire_single_instance")
             .expect("single-instance guard");
         let admin_check = main_body
             .find("is_running_as_admin")
@@ -418,6 +402,15 @@ mod tests {
         let admin_relaunch = main_body
             .find("relaunch_as_admin")
             .expect("administrator relaunch");
+        let restore_event = main_body
+            .find("SingleInstanceRestoreEvent::create")
+            .expect("duplicate launch restore event");
+        let handoff = main_body
+            .find("acquire_watchdog_handoff")
+            .expect("previous recovery handoff");
+        let release_handoff = main_body
+            .find("drop(previous_recovery)")
+            .expect("release previous recovery handoff");
         let settings = main_body
             .find("SettingsEditor::load")
             .expect("settings load");
@@ -437,10 +430,13 @@ mod tests {
         assert!(elevated_relaunch < single_instance);
         assert!(single_instance < admin_check);
         assert!(admin_check < admin_relaunch);
-        assert!(admin_relaunch < settings);
-        assert!(settings < recovery);
-        assert!(recovery < stale_plan_recovery);
-        assert!(stale_plan_recovery < runtime);
+        assert!(admin_relaunch < restore_event);
+        assert!(restore_event < handoff);
+        assert!(handoff < settings);
+        assert!(settings < stale_plan_recovery);
+        assert!(stale_plan_recovery < release_handoff);
+        assert!(release_handoff < recovery);
+        assert!(recovery < runtime);
         assert!(runtime < application);
         assert!(application < finish);
 

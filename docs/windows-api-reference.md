@@ -245,13 +245,13 @@ no shell command or parameters, and reports return codes at or below 32 as failu
 
 ## Administrator Relaunch And Single-Instance Handoff
 
-`src/main.rs` acquires the path-scoped single-instance mutex before its administrator check. A fresh
+`src/main.rs` acquires the session-local single-instance mutex before its administrator check. A fresh
 normal launch therefore requests elevation immediately through `src/backend/privilege.rs`, then
 exits while the elevated replacement waits for its mutex ownership to end. `ShellExecuteExW` uses
 the private elevated-relaunch argument, `SEE_MASK_NOASYNC` completes process creation before the
 standard process exits, and `SEE_MASK_NOCLOSEPROCESS` confirms that Windows returned a live
 replacement-process handle. If an instance already owns the mutex, an ordinary duplicate instead
-signals the path-scoped auto-reset event that restores the existing Iced window through
+signals the session-local auto-reset event that restores the existing Iced window through
 `src/backend/tray.rs`; it does not open another UAC prompt or elevated waiter. The primary waits on
 that event from a blocked listener thread, so the handoff adds no polling wake source.
 
@@ -260,7 +260,7 @@ that event from a blocked listener thread, so the handoff adds no polling wake s
 | `ShellExecuteExW` / `SHELLEXECUTEINFOW` | Starts the current executable with the `runas` verb and confirms creation of the elevated replacement before the caller exits. | https://learn.microsoft.com/en-us/windows/win32/api/shellapi/nf-shellapi-shellexecuteexw / https://learn.microsoft.com/en-us/windows/win32/api/shellapi/ns-shellapi-shellexecuteinfow |
 | `SEE_MASK_NOASYNC` | Keeps shell activation synchronous because the standard instance exits immediately after a successful launch. | https://learn.microsoft.com/en-us/windows/win32/api/shellapi/ns-shellapi-shellexecuteinfow |
 | `SEE_MASK_NOCLOSEPROCESS` | Requests the replacement process handle used to distinguish accepted shell execution from an actual process launch. | https://learn.microsoft.com/en-us/windows/win32/api/shellapi/ns-shellapi-shellexecuteinfow |
-| Named mutex / `WaitForSingleObject` | Keeps normal launches single-instance while allowing the explicit elevated replacement to wait for the closing instance's ownership to end. | https://learn.microsoft.com/en-us/windows/win32/sync/mutex-objects / https://learn.microsoft.com/en-us/windows/win32/api/synchapi/nf-synchapi-waitforsingleobject |
+| Named mutex / `WaitForSingleObject` | Keeps normal launches single-instance and protects watchdog recovery from startup cleanup. `src/backend/win_util.rs` releases ownership on the acquiring thread. | https://learn.microsoft.com/en-us/windows/win32/sync/mutex-objects / https://learn.microsoft.com/en-us/windows/win32/api/synchapi/nf-synchapi-waitforsingleobject |
 | `CreateEventW` / `OpenEventW` / `SetEvent` | Carries a duplicate normal launch to the existing process as a coalescing restore request without polling. | https://learn.microsoft.com/en-us/windows/win32/api/synchapi/nf-synchapi-createeventw / https://learn.microsoft.com/en-us/windows/win32/api/synchapi/nf-synchapi-openeventw / https://learn.microsoft.com/en-us/windows/win32/api/synchapi/nf-synchapi-setevent |
 
 ## Winderust Self-Power
@@ -1085,7 +1085,7 @@ Processor-value application in `src/power/powercfg.rs` treats failure to query t
 The restore listener requests restoration through the daemon without retaining a GUI HWND,
 so duplicate launches also work before the first window opens or after one is destroyed.
 
-`src/main.rs` uses `Local\Winderust.SingleInstance` and `Local\Winderust.RestoreWindow` for every build and executable location. The session-local mutex prevents debug, release, and separate portable copies from running automation together; duplicate launches signal the shared restore event. Elevation handoff and watchdog startup bypass remain unchanged. Reference: [Kernel object namespaces](https://learn.microsoft.com/en-us/windows/win32/termserv/kernel-object-namespaces).
+`src/main.rs` uses `Local\Winderust.SingleInstance` and `Local\Winderust.RestoreWindow` for every build and executable location. The session-local mutex prevents debug, release, and separate portable copies from running automation together; duplicate launches signal the shared restore event. The watchdog bypasses this mutex so it can finish after the app exits. Its separate `Local\Winderust.RecoveryHandoff` mutex protects journal replay and Adaptive plan cleanup from the next startup. Reference: [Kernel object namespaces](https://learn.microsoft.com/en-us/windows/win32/termserv/kernel-object-namespaces).
 
 ## Tray UI wakeups
 

@@ -1,5 +1,42 @@
-use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, FILETIME, HANDLE};
-use windows_sys::Win32::System::Threading::GetProcessTimes;
+use std::io;
+
+use windows_sys::Win32::Foundation::{
+    CloseHandle, GetLastError, FILETIME, HANDLE, WAIT_ABANDONED, WAIT_FAILED, WAIT_OBJECT_0,
+    WAIT_TIMEOUT,
+};
+use windows_sys::Win32::System::Threading::{
+    CreateMutexW, GetProcessTimes, ReleaseMutex, WaitForSingleObject,
+};
+
+pub(crate) struct NamedMutexGuard(WinHandle);
+
+impl NamedMutexGuard {
+    pub(crate) fn acquire(name: &str, wait_ms: u32) -> io::Result<Option<Self>> {
+        let name = wide_null(name);
+        // SAFETY: name is terminated UTF-16 and the returned handle is owned here.
+        let handle = unsafe { CreateMutexW(std::ptr::null(), 0, name.as_ptr()) };
+        if handle.is_null() {
+            return Err(io::Error::last_os_error());
+        }
+        let handle = WinHandle::new(handle);
+        // SAFETY: handle owns a live mutex for the duration of the wait.
+        match unsafe { WaitForSingleObject(handle.raw(), wait_ms) } {
+            WAIT_OBJECT_0 | WAIT_ABANDONED => Ok(Some(Self(handle))),
+            WAIT_TIMEOUT => Ok(None),
+            WAIT_FAILED => Err(io::Error::last_os_error()),
+            status => Err(io::Error::other(format!(
+                "Unexpected mutex wait status {status}."
+            ))),
+        }
+    }
+}
+
+impl Drop for NamedMutexGuard {
+    fn drop(&mut self) {
+        // SAFETY: acquisition grants ownership to this thread, and the guard cannot move threads.
+        unsafe { ReleaseMutex(self.0.raw()) };
+    }
+}
 
 pub(crate) struct WinHandle(HANDLE);
 

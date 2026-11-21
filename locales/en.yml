@@ -246,6 +246,8 @@ accent:
   invalid_hex: "Enter a six-digit hex color for the custom accent, such as #3366FF."
 
 status:
+  previous_recovery_running: "Winderust is still restoring changes from its previous session. Try opening it again when recovery finishes."
+  previous_recovery_wait_failed: "Winderust could not check whether its previous session finished restoring changes. %{error}"
   action_log_export_failed: "Failed to export log to %{path}: %{error}"
 
 unsaved:

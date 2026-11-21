@@ -364,6 +364,13 @@ impl SettingsEditor {
         )
     }
 
+    pub(crate) fn saved_language() -> config::AppLanguage {
+        ConfigStorage
+            .load()
+            .map(|settings| settings.general.language)
+            .unwrap_or_default()
+    }
+
     #[cfg(any(test, feature = "render-smoke"))]
     pub(crate) fn with_settings(settings: Settings) -> Self {
         let (coordinator, draft) =

@@ -43,7 +43,6 @@ use crate::{
     },
     power,
     win_util::WinHandle,
-    SingleInstanceGuard,
 };
 
 const WARMUP: Duration = Duration::from_secs(2);
@@ -110,9 +109,7 @@ fn run(path: &Path) -> Result<(), String> {
     if !path.is_dir() {
         return Err("Benchmark directory does not exist".to_owned());
     }
-    let _guard = SingleInstanceGuard::acquire(false).ok_or_else(|| {
-        "Close Winderust before benchmarking; another instance owns the runtime".to_owned()
-    })?;
+    let _guard = super::acquire_benchmark_session()?;
     let topology = windows_cpu_allocation::topology::query().map_err(|e| format!("{e:?}"))?;
     if topology.groups().len() != 1 || topology.groups()[0].number != 0 {
         return Err(

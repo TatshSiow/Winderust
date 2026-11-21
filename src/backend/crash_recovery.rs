@@ -50,10 +50,11 @@ use crate::{
         thread_suspension::{self, CapturedThread, ThreadSuspensionError},
     },
     power::powercfg::{active_plan, restore_stale_adaptive_plans, set_active},
-    win_util::{last_error, WinHandle},
+    win_util::{last_error, NamedMutexGuard, WinHandle},
 };
 
 const WATCHDOG_ARGUMENT: &str = "--winderust-recovery-watchdog";
+const WATCHDOG_HANDOFF_MUTEX: &str = r"Local\Winderust.RecoveryHandoff";
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const PROCESS_IO_PRIORITY: u32 = 33;
 const THREAD_PRIORITY_ERROR_RETURN: i32 = i32::MAX;
@@ -424,17 +425,28 @@ fn thread_suspension_recovery_key(
     )
 }
 
+pub(crate) fn acquire_watchdog_handoff() -> std::io::Result<NamedMutexGuard> {
+    NamedMutexGuard::acquire(WATCHDOG_HANDOFF_MUTEX, 5_000)?
+        .ok_or_else(|| std::io::ErrorKind::TimedOut.into())
+}
+
 pub(crate) fn run_watchdog_if_requested() -> bool {
     if std::env::args().nth(1).as_deref() != Some(WATCHDOG_ARGUMENT) {
         return false;
     }
     super::diagnostics::initialize("winderust-recovery");
-    if let Err(error) = run_watchdog_loop(
-        BufReader::new(std::io::stdin()),
-        std::io::stdout(),
-        |_| Ok(()),
-        restore_stale_adaptive_plans,
-    ) {
+    // Take ownership before acknowledging any mutation, and hold it through recovery.
+    let recovery = acquire_watchdog_handoff()
+        .map_err(|error| format!("Could not acquire the recovery handoff: {error}"))
+        .and_then(|_handoff| {
+            run_watchdog_loop(
+                BufReader::new(std::io::stdin()),
+                std::io::stdout(),
+                |_| Ok(()),
+                restore_stale_adaptive_plans,
+            )
+        });
+    if let Err(error) = recovery {
         super::diagnostics::error(&format!("Crash recovery failed: {error}"));
         eprintln!("Winderust crash recovery failed: {error}");
         super::diagnostics::finish();
