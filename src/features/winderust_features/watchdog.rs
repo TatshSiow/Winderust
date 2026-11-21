@@ -20,6 +20,7 @@ use crate::{
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct WatchdogSnapshot {
+    pub observation_known: bool,
     pub monitored_processes: usize,
     pub alerting_processes: usize,
     pub skipped_processes: usize,
@@ -257,7 +258,10 @@ impl WatchdogManager {
     ) -> (WatchdogSnapshot, Vec<WatchdogEvent>) {
         self.note_settings(settings);
         let mut states = BTreeMap::new();
-        let mut snapshot = WatchdogSnapshot::default();
+        let mut snapshot = WatchdogSnapshot {
+            observation_known: true,
+            ..Default::default()
+        };
         let mut events = Vec::new();
         let groups = settings
             .rules

@@ -497,6 +497,12 @@ fn sidebar_state(
         };
     }
     let features = &runtime.feature_status;
+    if page == Page::Watchdog
+        && !features.watchdog.observation_known
+        && settings.watchdog.rules.iter().any(|rule| rule.enabled)
+    {
+        return FeatureRunState::Unknown;
+    }
     if page == Page::InstanceBalancing
         && (!features.instance_balancing.enabled || features.instance_balancing.detail.is_none())
     {
@@ -732,11 +738,12 @@ fn feature_status_summary(
         }
         Page::Watchdog => {
             let status = &runtime.feature_status.watchdog;
+            let observed = status.observation_known;
             FeatureStatusSummary {
-                scanned: Some(status.monitored_processes),
-                adjusted: Some(status.alerting_processes),
+                scanned: observed.then_some(status.monitored_processes),
+                adjusted: observed.then_some(status.alerting_processes),
                 protected_or_denied: None,
-                skipped: Some(status.skipped_processes),
+                skipped: observed.then_some(status.skipped_processes),
                 last_error: status.last_error.as_deref(),
                 action_log_feature: ActionLogFeature::Watchdog,
             }
@@ -926,6 +933,40 @@ fn feature_status_summary(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn watchdog_counts_require_a_completed_observation() {
+        use crate::{
+            config::WatchdogRule, features::winderust_features::watchdog::WatchdogManager,
+        };
+
+        let mut settings = Settings::default();
+        settings.general.enabled = true;
+        settings.watchdog.enabled = true;
+        settings.watchdog.rules = vec![WatchdogRule::new(r"C:\Apps\worker.exe".into())];
+        let mut runtime = RuntimeStatusSnapshot {
+            generation: 1,
+            ..Default::default()
+        };
+        let status = |runtime: &RuntimeStatusSnapshot| {
+            let summary = feature_status_summary(Page::Watchdog, runtime).unwrap();
+            (
+                sidebar_state(Page::Watchdog, &settings, runtime, &summary),
+                [summary.scanned, summary.adjusted, summary.skipped],
+            )
+        };
+        assert_eq!(status(&runtime), (FeatureRunState::Unknown, [None; 3]));
+
+        let (sample, events) = WatchdogManager::default().update(
+            &settings.watchdog,
+            true,
+            &mut crate::runtime::observations::CycleObservations::with_processes(Vec::new()),
+        );
+        assert!(events.is_empty());
+        assert_ne!(sample, Default::default());
+        std::sync::Arc::make_mut(&mut runtime.feature_status).watchdog = sample;
+        assert_eq!(status(&runtime), (FeatureRunState::Waiting, [Some(0); 3]));
+    }
 
     #[test]
     fn sidebar_shows_a_current_error_alongside_an_older_failed_action() {
