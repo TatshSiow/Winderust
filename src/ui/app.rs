@@ -3063,10 +3063,15 @@ impl WinderustApp {
                     .map(|m| Message::Allocation(cpu_allocation::Kind::Hard, m)),
             )
         } else {
-            let settings = status_rail::saved_runtime_settings(
-                &self.settings,
-                crate::backend::power_source::is_plugged_in(),
-            );
+            let plugged_in = crate::backend::power_source::is_plugged_in().or_else(|| {
+                self.status
+                    .feature_status
+                    .sleep_prevention
+                    .source
+                    .filter(|_| page == Page::SleepPrevention)
+                    .map(|source| source == PowerSourceProfile::PluggedIn)
+            });
+            let settings = status_rail::saved_runtime_settings(&self.settings, plugged_in);
             status_rail::view(page, settings, &self.status, &self.power_plans).map(|panel| {
                 let panel = panel.map(Message::Status);
                 if page == Page::MemoryTrim {
