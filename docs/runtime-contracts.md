@@ -458,6 +458,8 @@ Read the relevant section before changing feature policy, ownership, restoration
 - App Suspension releases a rule-owned freeze when its stored executable path
   no longer matches an enabled rule, even if focus, session, or process
   observations are unavailable. Process List freezes have separate ownership.
+  User-initiated recovery preserves the saved enablement mode and reports thaw
+  failures in the returned status.
 - App Suspension is a complete typed cutover through `src/control/suspension.rs`. Automatic rules,
   App-page Freeze, and Process List Suspend/Resume share the RuntimeCore controller; feature code
   owns grace/wake/reporting policy only. The controller retains failed thaw/finalization state for

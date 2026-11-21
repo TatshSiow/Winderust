@@ -1346,7 +1346,10 @@ fn run_background_automation(
                     runner.run_app_suspension_shell_click_release()
                 };
                 if let Some(app_suspension_status) = app_suspension_status {
-                    update_app_suspension_status(&shared, app_suspension_status);
+                    update_app_suspension_status(
+                        &shared,
+                        app_suspension_release_status(app_suspension_status, settings),
+                    );
                 }
             }
         }
@@ -1453,7 +1456,10 @@ fn run_background_automation(
             if let Some(app_suspension_status) =
                 runner.run_app_suspension_foreground_release(&mut observations)
             {
-                update_app_suspension_status(&shared, app_suspension_status);
+                update_app_suspension_status(
+                    &shared,
+                    app_suspension_release_status(app_suspension_status, settings),
+                );
             }
             scheduler.schedule_after(
                 RefreshDomain::AppSuspensionForegroundRelease,

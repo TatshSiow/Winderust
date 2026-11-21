@@ -13,6 +13,21 @@ fn app_suspension_lock_failure(error: String) -> AppSuspensionSnapshot {
     }
 }
 
+pub(super) fn app_suspension_release_status(
+    mut status: AppSuspensionSnapshot,
+    settings: &Settings,
+) -> AppSuspensionSnapshot {
+    status.status = if !settings.general.enabled {
+        AppSuspensionStatus::AutomationDisabled
+    } else if !settings.app_suspension.enabled {
+        AppSuspensionStatus::Disabled
+    } else {
+        return status;
+    };
+    status.enabled = false;
+    status
+}
+
 pub(super) fn adaptive_power_plan_required(settings: &Settings) -> bool {
     settings.adaptive_engine.enabled && settings.adaptive_engine.processor_power_policy_enabled
 }
@@ -1363,6 +1378,7 @@ impl RuntimeCore {
                                 )
                             })
                             .unwrap_or_else(app_suspension_lock_failure);
+                        let status = app_suspension_release_status(status, settings);
                         let reply = match &status.last_error {
                             Some(error) => Err(RuntimeCommandError::CommandFailed(error.clone())),
                             None => Ok(status.clone()),
