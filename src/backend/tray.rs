@@ -123,10 +123,30 @@ fn menu_action(command: usize, state: &MenuState) -> Option<MenuAction> {
 static TASKBAR_CREATED: AtomicU32 = AtomicU32::new(0);
 static NOTIFICATION_WINDOW: AtomicIsize = AtomicIsize::new(0);
 
-pub(crate) fn show_notification(title: &str, body: &str, critical: bool) -> Result<(), String> {
+#[derive(Debug)]
+pub(crate) enum NotificationError {
+    TrayUnavailable,
+    Rejected,
+}
+
+impl NotificationError {
+    pub(crate) fn localized(self) -> String {
+        t!(match self {
+            Self::TrayUnavailable => "tray.notification_icon_unavailable",
+            Self::Rejected => "tray.notification_rejected",
+        })
+        .into_owned()
+    }
+}
+
+pub(crate) fn show_notification(
+    title: &str,
+    body: &str,
+    critical: bool,
+) -> Result<(), NotificationError> {
     let hwnd = NOTIFICATION_WINDOW.load(Ordering::Acquire);
     if hwnd == 0 {
-        return Err("Windows notification tray icon is unavailable.".into());
+        return Err(NotificationError::TrayUnavailable);
     }
     let mut data = notify_data(hwnd as HWND);
     data.uFlags = NIF_INFO;
@@ -136,7 +156,7 @@ pub(crate) fn show_notification(title: &str, body: &str, critical: bool) -> Resu
     // SAFETY: data is initialized and identifies the registered tray icon. Shell validates
     // the window if teardown raced with this call; no borrowed pointers escape.
     if unsafe { Shell_NotifyIconW(NIM_MODIFY, &data) } == 0 {
-        Err("Windows rejected the notification.".into())
+        Err(NotificationError::Rejected)
     } else {
         Ok(())
     }

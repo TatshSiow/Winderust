@@ -27,6 +27,8 @@ app:
   description: "Windows Performance & Power Manager"
 
 tray:
+  notification_icon_unavailable: "無法使用 Windows 通知的系統匣圖示。"
+  notification_rejected: "Windows 已拒絕通知要求。"
   show_winderust: "顯示 Winderust"
   exit: "結束"
 

@@ -392,6 +392,7 @@ impl RuntimeCore {
                         format!("{detail}. {}", t!("watchdog.notification_sent")),
                     ),
                     Err(error) => {
+                        let error = error.localized();
                         snapshot.last_error = Some(error.clone());
                         (ActionLogResult::Failed, format!("{detail}. {error}"))
                     }

@@ -27,6 +27,8 @@ app:
   description: "Windows Performance & Power Manager"
 
 tray:
+  notification_icon_unavailable: "Windows notification tray icon is unavailable."
+  notification_rejected: "Windows rejected the notification."
   show_winderust: "Show Winderust"
   exit: "Exit"
 

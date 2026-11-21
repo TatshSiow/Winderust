@@ -145,7 +145,8 @@ impl RuntimeCore {
                             maximum = maximum
                         ),
                         false,
-                    );
+                    )
+                    .map_err(tray::NotificationError::localized);
                     let report = match &result {
                         Ok(()) => (
                             ActionLogResult::Applied,
