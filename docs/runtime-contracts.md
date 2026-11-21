@@ -333,6 +333,8 @@ Read the relevant section before changing feature policy, ownership, restoration
   duration timers; time in an inactive profile cannot satisfy a rule's duration.
   Deferring ordinary switching while Adaptive owns the active plan also resets
   qualification; unobserved time cannot complete an ordinary load condition.
+  Duration starts at the first matching evaluation and advances with sampled CPU
+  usage. Focus changes and other checks can reuse a sample without advancing it.
 - By CPU Load durations range from zero through `i64::MAX` seconds, matching TOML
   integer storage. Larger edits remain invalid drafts and fail persistence preflight.
 - By CPU Load Switching stability is optional and leaves existing rules unchanged

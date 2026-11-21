@@ -100,6 +100,33 @@ fn unavailable_cpu_observations_restart_the_sustained_condition_interval() {
 }
 
 #[test]
+fn sustained_condition_uses_the_sample_time_and_starts_at_first_evaluation() {
+    let mut rule = rule_with_else(CpuUsageComparison::AtOrAbove);
+    rule.duration_seconds = 2;
+    let settings = ByCpuLoadSettings {
+        enabled: true,
+        rules: vec![rule],
+    };
+    let mut scheduler = ByCpuLoadScheduler::default();
+    let start = Instant::now();
+    for (sample, evaluation, expected) in [
+        (0, 1, ByCpuLoadMatch::Else),
+        (2, 2, ByCpuLoadMatch::Else),
+        (2, 3, ByCpuLoadMatch::Else),
+        (3, 3, ByCpuLoadMatch::Condition),
+    ] {
+        let decision = scheduler
+            .current_decision_for_sample_at(
+                &settings,
+                Some((80.0, start + Duration::from_secs(sample))),
+                start + Duration::from_secs(evaluation),
+            )
+            .unwrap();
+        assert_eq!(decision.selection, expected);
+    }
+}
+
+#[test]
 fn selected_rule_index_survives_else_branch_and_arbitration() {
     let mut settings = crate::config::Settings::default();
     settings.general.enabled = true;

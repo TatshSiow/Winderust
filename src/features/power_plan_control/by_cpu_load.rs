@@ -85,7 +85,8 @@ impl ByCpuLoadScheduler {
         }
     }
 
-    pub fn current_decision(
+    #[cfg(test)]
+    fn current_decision(
         &mut self,
         settings: &ByCpuLoadSettings,
         usage_percent: Option<f32>,
@@ -93,10 +94,20 @@ impl ByCpuLoadScheduler {
         self.current_decision_at(settings, usage_percent, Instant::now())
     }
 
+    #[cfg(test)]
     pub(crate) fn current_decision_at(
         &mut self,
         settings: &ByCpuLoadSettings,
         usage_percent: Option<f32>,
+        now: Instant,
+    ) -> Option<ByCpuLoadDecision> {
+        self.current_decision_for_sample_at(settings, usage_percent.map(|usage| (usage, now)), now)
+    }
+
+    pub(crate) fn current_decision_for_sample_at(
+        &mut self,
+        settings: &ByCpuLoadSettings,
+        sample: Option<(f32, Instant)>,
         now: Instant,
     ) -> Option<ByCpuLoadDecision> {
         if !settings.enabled || settings.rules.is_empty() {
@@ -104,8 +115,8 @@ impl ByCpuLoadScheduler {
             return None;
         }
 
-        let Some(usage_percent) =
-            usage_percent.filter(|usage| usage.is_finite() && (0.0..=100.0).contains(usage))
+        let Some((usage_percent, sampled_at)) =
+            sample.filter(|(usage, _)| usage.is_finite() && (0.0..=100.0).contains(usage))
         else {
             self.reset();
             return None;
@@ -152,7 +163,10 @@ impl ByCpuLoadScheduler {
 
             let qualified = if rule.matches_usage(usage_percent) {
                 let matched_since = self.matched_since[index].get_or_insert(now);
-                now.saturating_duration_since(*matched_since).as_secs() >= rule.duration_seconds
+                sampled_at
+                    .saturating_duration_since(*matched_since)
+                    .as_secs()
+                    >= rule.duration_seconds
             } else {
                 self.matched_since[index] = None;
                 false

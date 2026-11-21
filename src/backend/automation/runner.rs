@@ -66,7 +66,7 @@ pub(super) struct RuntimeCore {
     power_plan_controller: PowerPlanController,
     power_plan_rule_context: Option<PowerPlanRuleContext>,
     cpu_usage: CpuUsageSnapshot,
-    next_cpu_usage_refresh: Option<Instant>,
+    cpu_usage_sampled_at: Option<Instant>,
     cpu_monitor: CpuUsageMonitor,
     bottleneck_classifier: BottleneckClassifier,
     per_processor_cpu_monitor: PerProcessorUsageMonitor,
@@ -539,7 +539,7 @@ impl RuntimeCore {
         }
         if source_changed || events.suspend_resume {
             self.cpu_usage = CpuUsageSnapshot::default();
-            self.next_cpu_usage_refresh = None;
+            self.cpu_usage_sampled_at = None;
             self.cpu_monitor = CpuUsageMonitor::default();
         }
         let explicitly_changed = events.settings_changed || events.suspend_resume || source_changed;
@@ -1730,9 +1730,11 @@ impl RuntimeCore {
             .filter(|process| process_is_critical(process.id) == Some(false))
             .map(|process| process.executable_path);
         let by_time_decision = current_by_time_decision(&settings.by_time, wall_time);
-        let by_cpu_load_decision = self
-            .by_cpu_load_scheduler
-            .current_decision(&settings.by_cpu_load, self.cpu_usage.percent);
+        let by_cpu_load_decision = self.by_cpu_load_scheduler.current_decision_for_sample_at(
+            &settings.by_cpu_load,
+            self.cpu_usage.percent.zip(self.cpu_usage_sampled_at),
+            Instant::now(),
+        );
         let primary_cpu_load_rule_index = by_cpu_load_decision
             .as_ref()
             .filter(|decision| !decision.is_else())
@@ -1850,12 +1852,11 @@ impl RuntimeCore {
     }
 
     pub(super) fn refresh_cpu_usage(&mut self) {
-        if self
-            .next_cpu_usage_refresh
-            .is_none_or(|refresh_at| Instant::now() >= refresh_at)
-        {
+        if self.cpu_usage_sampled_at.is_none_or(|sampled_at| {
+            Instant::now().saturating_duration_since(sampled_at) >= CPU_USAGE_REFRESH_INTERVAL
+        }) {
             self.cpu_usage = self.cpu_monitor.sample_usage();
-            self.next_cpu_usage_refresh = Some(Instant::now() + CPU_USAGE_REFRESH_INTERVAL);
+            self.cpu_usage_sampled_at = Some(Instant::now());
         }
     }
 
@@ -1971,7 +1972,7 @@ mod settings_tests {
         assert!(runner.power_plan_rule_context.is_none());
         assert!(!runner.has_temporary_power_plan());
         assert!(runner.power_plan_controller.adaptive_active());
-        assert!(runner.next_cpu_usage_refresh.is_none());
+        assert!(runner.cpu_usage_sampled_at.is_none());
         runner.power_plan_controller = PowerPlanController::default();
     }
 
@@ -2034,9 +2035,8 @@ mod settings_tests {
             let mut runner = RuntimeCore::default();
             runner.note_settings(&settings, AutomationWakeEvents::default(), previous_source);
             let start = Instant::now();
-            let refresh_at = start + Duration::from_secs(1);
             runner.cpu_usage.percent = Some(80.0);
-            runner.next_cpu_usage_refresh = Some(refresh_at);
+            runner.cpu_usage_sampled_at = Some(start);
 
             runner.note_settings(&settings, events, next_source);
             let decision = runner.by_cpu_load_scheduler.current_decision_at(
@@ -2045,10 +2045,7 @@ mod settings_tests {
                 start,
             );
             assert_eq!(decision.is_none(), discard);
-            assert_eq!(
-                runner.next_cpu_usage_refresh,
-                (!discard).then_some(refresh_at)
-            );
+            assert_eq!(runner.cpu_usage_sampled_at, (!discard).then_some(start));
         }
     }
 
