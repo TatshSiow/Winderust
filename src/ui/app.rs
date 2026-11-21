@@ -2637,6 +2637,7 @@ impl WinderustApp {
     fn picker_open(&self) -> bool {
         !self.navigation_search_open
             && !self.closing
+            && !self.preferences.show_update
             && self.power_tuning.review_origin().is_none()
             && self.error_message.is_empty()
             && match self.page {
