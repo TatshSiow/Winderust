@@ -44,7 +44,6 @@ pub struct CpuLimiterManager {
     release_pending: bool,
 }
 
-#[derive(Clone)]
 struct LimitedProcess {
     process_id: u32,
     process_name: String,
@@ -281,29 +280,16 @@ impl CpuLimiterManager {
             }
         }
 
-        let active_keys = selected
-            .keys()
-            .filter(|key| !failed_keys.contains(*key))
-            .cloned()
-            .collect::<BTreeSet<_>>();
+        let tracked_processes = selected.len();
+        selected.retain(|key, _| !failed_keys.contains(key));
+        let limited_processes = selected.len();
         let managed_keys = controller
             .managed_target_keys()
             .unwrap_or_else(|_| self.limited.keys().cloned().collect());
-        let previous = std::mem::take(&mut self.limited);
-        let previous_keys = previous.keys().cloned().collect::<BTreeSet<_>>();
-        self.limited = retain_unreleased_limits(previous, &active_keys, &managed_keys, action_log);
-        for key in &active_keys {
-            let target = &selected[key];
-            self.limited.insert(
-                key.clone(),
-                LimitedProcess {
-                    process_id: target.control.suspension_target.process.id,
-                    process_name: target.process_name.clone(),
-                    executable_path: target.executable_path.clone(),
-                },
-            );
-            if !previous_keys.contains(key) {
-                match controller.target_activation(key) {
+        retain_owned_limits(&mut self.limited, &selected, &managed_keys, action_log);
+        for (key, target) in selected {
+            if !self.limited.contains_key(&key) {
+                match controller.target_activation(&key) {
                     Ok(Some(activation)) => action_log.record(
                         ActionLogFeature::CpuLimiter,
                         Some(target.control.suspension_target.process.id),
@@ -317,6 +303,14 @@ impl CpuLimiterManager {
                     }
                 }
             }
+            self.limited.insert(
+                key,
+                LimitedProcess {
+                    process_id: target.control.suspension_target.process.id,
+                    process_name: target.process_name,
+                    executable_path: target.executable_path,
+                },
+            );
         }
 
         for rule in &settings.rules {
@@ -338,9 +332,9 @@ impl CpuLimiterManager {
             enabled: true,
             observation_paused: false,
             scanned_processes,
-            limited_processes: active_keys.len(),
+            limited_processes,
             failed_apps: failed_apps.into_iter().collect(),
-            tracked_processes: selected.len(),
+            tracked_processes,
             skipped_processes,
             failed_processes,
             limited_apps: self
@@ -395,9 +389,9 @@ impl CpuLimiterManager {
                 self.limited.keys().cloned().collect()
             }
         };
-        self.limited = retain_unreleased_limits(
-            std::mem::take(&mut self.limited),
-            &BTreeSet::new(),
+        retain_owned_limits(
+            &mut self.limited,
+            &BTreeMap::new(),
             &managed_keys,
             action_log,
         );
@@ -565,30 +559,25 @@ fn requires_visible_window_observation(settings: &CpuLimiterSettings) -> bool {
         })
 }
 
-fn retain_unreleased_limits(
-    previous: BTreeMap<ProcessTargetKey, LimitedProcess>,
-    active_keys: &BTreeSet<ProcessTargetKey>,
+fn retain_owned_limits(
+    limited: &mut BTreeMap<ProcessTargetKey, LimitedProcess>,
+    selected: &BTreeMap<ProcessTargetKey, SelectedTarget>,
     managed_keys: &BTreeSet<ProcessTargetKey>,
     action_log: &mut ActionLog,
-) -> BTreeMap<ProcessTargetKey, LimitedProcess> {
-    let mut pending = BTreeMap::new();
-    for (key, limited) in previous {
-        if active_keys.contains(&key) {
-            continue;
-        }
-        if managed_keys.contains(&key) {
-            pending.insert(key, limited);
-            continue;
+) {
+    limited.retain(|key, process| {
+        if selected.contains_key(key) || managed_keys.contains(key) {
+            return true;
         }
         action_log.record(
             ActionLogFeature::CpuLimiter,
-            Some(limited.process_id),
-            limited.process_name,
+            Some(process.process_id),
+            std::mem::take(&mut process.process_name),
             ActionLogResult::Restored,
             "Released the CPU Limiter duty cycle.".to_owned(),
         );
-    }
-    pending
+        false
+    });
 }
 
 fn verified_ancestor_process_ids(
@@ -847,17 +836,35 @@ mod tests {
     }
 
     #[test]
-    fn pending_release_is_not_reported_as_restored() {
+    fn only_confirmed_release_is_reported_as_restored() {
         let (key, process) = limited_process(42);
-        let previous = BTreeMap::from([(key.clone(), process)]);
+        let mut limited = BTreeMap::from([(key.clone(), process)]);
         let managed_keys = BTreeSet::from([key.clone()]);
         let mut action_log = ActionLog::default();
 
-        let pending =
-            retain_unreleased_limits(previous, &BTreeSet::new(), &managed_keys, &mut action_log);
+        retain_owned_limits(
+            &mut limited,
+            &BTreeMap::new(),
+            &managed_keys,
+            &mut action_log,
+        );
 
-        assert!(pending.contains_key(&key));
+        assert!(limited.contains_key(&key));
         assert!(action_log.entries().is_empty());
+
+        retain_owned_limits(
+            &mut limited,
+            &BTreeMap::new(),
+            &BTreeSet::new(),
+            &mut action_log,
+        );
+
+        assert!(limited.is_empty());
+        let entries = action_log.entries();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].process_id, Some(42));
+        assert_eq!(entries[0].process_name, "encoder.exe");
+        assert_eq!(entries[0].result, ActionLogResult::Restored);
     }
 
     #[test]
