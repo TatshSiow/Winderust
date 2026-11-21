@@ -357,11 +357,11 @@ impl MemoryTrimManager {
             .chain(target_processes.range(..=cursor))
         {
             let process_id = target.id;
-            let process_name = target.name.clone();
-            let executable_path = target.executable_path.to_string_lossy().into_owned();
+            let process_name = target.name.as_str();
+            let executable_path = target.executable_path.to_string_lossy();
             if self.is_process_suppressed(
                 process_id,
-                &process_name,
+                process_name,
                 &executable_path,
                 action_log,
                 &mut auto_excluded_processes,
@@ -420,7 +420,7 @@ impl MemoryTrimManager {
                     let key = process_failure_key(&executable_path);
                     self.failure_suppression.record_key_failure(&key);
                     unresolved_trim_paths.insert(key);
-                    failures.record(process_id, &process_name, err, action_log);
+                    failures.record(process_id, process_name, err, action_log);
                 }
             }
         }
@@ -457,7 +457,6 @@ impl MemoryTrimManager {
         now: Instant,
     ) -> Result<ProcessUpdate, ProcessControlError> {
         let process_id = target.id;
-        let executable_path = target.executable_path.to_string_lossy().into_owned();
         if self.tracked.get(&process_id).is_some_and(|state| {
             state.creation_time != target.creation_time
                 || !same_executable_path(Path::new(&state.executable_path), &target.executable_path)
@@ -508,17 +507,24 @@ impl MemoryTrimManager {
                 "Memory Trim CPU sample is unavailable.".to_owned(),
             ));
         };
+        let executable_path = target.executable_path.to_string_lossy();
         let state = self
             .tracked
             .entry(process_id)
+            .and_modify(|state| {
+                if state.executable_path != executable_path.as_ref() {
+                    executable_path
+                        .as_ref()
+                        .clone_into(&mut state.executable_path);
+                }
+            })
             .or_insert_with(|| TrackedProcess {
-                executable_path: executable_path.clone(),
+                executable_path: executable_path.into_owned(),
                 creation_time: target.creation_time,
                 previous_cpu_time: None,
                 idle_since: None,
                 trimmed_while_idle: false,
             });
-        state.executable_path = executable_path;
 
         if !state.observe_cpu(
             cpu_sample,
@@ -581,7 +587,7 @@ impl MemoryTrimManager {
             action_log.record(
                 ActionLogFeature::MemoryTrim,
                 Some(process_id),
-                process_name.to_owned(),
+                process_name,
                 ActionLogResult::Skipped,
                 format!(
                     "Stopped retrying Memory Trim after {} failed attempts.",
@@ -663,7 +669,7 @@ impl MemoryTrimFailures {
         action_log.record(
             ActionLogFeature::MemoryTrim,
             Some(process_id),
-            process_name.to_owned(),
+            process_name,
             ActionLogResult::Failed,
             message,
         );
