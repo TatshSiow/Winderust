@@ -95,25 +95,24 @@ pub(super) fn update(s: &mut SettingsEditor, path: &str, m: Message) -> Option<S
         Message::Adaptive(included) => {
             let matches_path =
                 |rule: &ProcessExclusionRule| process_setting_matches(&rule.executable_path, &path);
-            if included
-                && !s
+            let rules = &s.adaptive_engine_process.custom_rules;
+            match (included, rules.iter().position(matches_path)) {
+                (true, Some(_)) => s
                     .adaptive_engine_process
                     .custom_rules
-                    .iter()
-                    .any(matches_path)
-            {
-                return None;
-            }
-            let rules = &mut s.adaptive_engine_process.custom_rules;
-            if included {
-                rules.retain(|rule| !matches_path(rule));
-            } else if let Some(rule) = rules.iter_mut().find(|rule| matches_path(rule)) {
-                rule.enabled = true;
-            } else {
-                rules.push(ProcessExclusionRule {
-                    executable_path: path,
-                    ..Default::default()
-                });
+                    .retain(|rule| !matches_path(rule)),
+                (false, Some(index)) if !rules[index].enabled => {
+                    s.adaptive_engine_process.custom_rules[index].enabled = true;
+                }
+                (false, None) => {
+                    s.adaptive_engine_process
+                        .custom_rules
+                        .push(ProcessExclusionRule {
+                            executable_path: path,
+                            ..Default::default()
+                        })
+                }
+                _ => {}
             }
         }
         Message::Efficiency(included) => {
@@ -671,11 +670,18 @@ mod tests {
     }
 
     #[test]
-    fn including_process_without_an_exclusion_preserves_battery_inheritance() {
-        for message in [Message::Adaptive(true), Message::Efficiency(true)] {
-            let mut s = SettingsEditor::with_settings(Settings::default());
-            s.select_power_source(PowerSourceProfile::OnBattery);
-            let _ = update(&mut s, r"C:\App\app.exe", message);
+    fn unchanged_feature_exclusions_preserve_battery_inheritance() {
+        let included = r"C:\App\included.exe";
+        let excluded = r"C:\App\excluded.exe";
+        let mut s = SettingsEditor::with_settings(Settings::default());
+        let _ = update(&mut s, excluded, Message::Adaptive(false));
+        s.select_power_source(PowerSourceProfile::OnBattery);
+        for (path, message) in [
+            (included, Message::Adaptive(true)),
+            (included, Message::Efficiency(true)),
+            (excluded, Message::Adaptive(false)),
+        ] {
+            let _ = update(&mut s, path, message);
             assert!(s.global().on_battery.is_none());
         }
     }
