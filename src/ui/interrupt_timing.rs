@@ -220,8 +220,8 @@ impl State {
                 export,
             } => {
                 let feedback = match export {
-                    ExportStatus::Ready => None,
-                    ExportStatus::ChoosingDestination | ExportStatus::Writing => {
+                    ExportStatus::Ready | ExportStatus::ChoosingDestination => None,
+                    ExportStatus::Writing => {
                         Some(text(t!("interrupt_timing.export_saving")).style(text::secondary))
                     }
                     ExportStatus::Saved => {
