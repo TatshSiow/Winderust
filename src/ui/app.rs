@@ -1920,6 +1920,7 @@ impl WinderustApp {
                 let load_plans = matches!(
                     message,
                     process_list::Message::ProcessTab(process_list::ProcessTab::Rulesets)
+                        | process_list::Message::OpenDetails
                 );
                 let task = self
                     .processes
