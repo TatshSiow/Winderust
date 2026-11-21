@@ -3620,7 +3620,7 @@ impl WinderustApp {
                 .map(Message::Processes),
             Page::Home => self
                 .home
-                .view(self.settings.global(), &self.status)
+                .view(self.settings.persisted(), &self.status)
                 .map(Message::Home),
             Page::WinderustBehaviour
             | Page::LanguageAndAppearance
