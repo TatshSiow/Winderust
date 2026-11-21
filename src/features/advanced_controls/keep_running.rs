@@ -2,11 +2,12 @@
 //! the runtime adapter; a complete observation here is caller-verified evidence, not a scan.
 use std::{
     collections::BTreeSet,
+    fmt,
     sync::Arc,
     time::{Duration, Instant},
 };
 
-use crate::control::process::ProcessTargetKey;
+use crate::{config::KeepRunningRule, control::process::ProcessTargetKey};
 
 const RETRY_DELAYS: [Duration; 3] = [
     Duration::from_secs(1),
@@ -88,13 +89,26 @@ pub(crate) struct KeepRunningSnapshot {
     pub(crate) last_error: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub(crate) struct KeepRunningRuleSnapshot {
-    pub(crate) executable_path: String,
+    pub(crate) rule: Arc<KeepRunningRule>,
     pub(crate) state: KeepRunningState,
     pub(crate) attempts: usize,
     pub(crate) next_retry_seconds: Option<u64>,
     pub(crate) last_error: Option<String>,
+}
+
+impl fmt::Debug for KeepRunningRuleSnapshot {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Launch arguments and working directory are not status diagnostics.
+        f.debug_struct("KeepRunningRuleSnapshot")
+            .field("executable_path", &self.rule.executable_path)
+            .field("state", &self.state)
+            .field("attempts", &self.attempts)
+            .field("next_retry_seconds", &self.next_retry_seconds)
+            .field("last_error", &self.last_error)
+            .finish()
+    }
 }
 
 #[derive(Clone, Copy)]

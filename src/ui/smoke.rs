@@ -185,11 +185,16 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             let status = &mut Arc::make_mut(&mut app.status.feature_status).keep_running;
             status.enabled = true;
             status.observation_known = true;
-            status.rules = paths
+            status.rules = app
+                .settings
+                .global()
+                .keep_running
+                .rules
                 .iter()
+                .cloned()
                 .enumerate()
-                .map(|(index, path)| KeepRunningRuleSnapshot {
-                    executable_path: (*path).into(),
+                .map(|(index, rule)| KeepRunningRuleSnapshot {
+                    rule: Arc::new(rule),
                     state: if index == 0 {
                         KeepRunningState::Armed
                     } else {

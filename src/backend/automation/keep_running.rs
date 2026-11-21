@@ -132,7 +132,7 @@ impl RuleError {
 
 struct Owner<P: Platform> {
     id: Arc<()>,
-    rule: KeepRunningRule,
+    rule: Arc<KeepRunningRule>,
     active: bool,
     policy: KeepRunningManager,
     identity: Option<P::Identity>,
@@ -222,7 +222,7 @@ impl<P: Platform> Coordinator<P> {
             } else {
                 self.owners.push(Owner {
                     id: Arc::new(()),
-                    rule: rule.clone(),
+                    rule: Arc::new(rule.clone()),
                     active: true,
                     policy: KeepRunningManager::default(),
                     identity: None,
@@ -237,9 +237,9 @@ impl<P: Platform> Coordinator<P> {
                 owner
             };
             owner.active = true;
-            if owner.rule != *rule {
+            if owner.rule.as_ref() != rule {
                 owner.policy.launch_settings_changed();
-                owner.rule = rule.clone();
+                owner.rule = Arc::new(rule.clone());
                 owner.members.clear();
                 owner.identity = None;
                 owner.last_error = None;
@@ -768,7 +768,7 @@ impl<P: Platform> Coordinator<P> {
                             },
                         )
                     {
-                        let rule = self.owners[index].rule.clone();
+                        let rule = self.owners[index].rule.as_ref().clone();
                         let owner = self.owners[index].id.clone();
                         let Some(identity) = self.owners[index].identity.clone() else {
                             self.owners[index].policy.failed(
@@ -865,7 +865,7 @@ impl<P: Platform> Coordinator<P> {
                 continue;
             }
             snapshot.rules.push(KeepRunningRuleSnapshot {
-                executable_path: owner.rule.executable_path.clone(),
+                rule: Arc::clone(&owner.rule),
                 state,
                 attempts: owner.policy.attempts(),
                 next_retry_seconds: if let KeepRunningState::Retrying { next_attempt } = state {

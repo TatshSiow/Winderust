@@ -125,16 +125,16 @@ impl Editor {
             .iter()
             .enumerate()
             .map(|(index, rule)| {
-                let runtime = status.rules.iter().find(|entry| {
-                    entry
-                        .executable_path
-                        .eq_ignore_ascii_case(&rule.executable_path)
-                });
+                let runtime = status
+                    .rules
+                    .iter()
+                    .find(|entry| entry.rule.as_ref() == rule);
                 let state = if !settings.enabled || !rule.enabled {
-                    KeepRunningState::Disabled
+                    Some(KeepRunningState::Disabled)
                 } else {
-                    runtime.map_or(KeepRunningState::WaitingForApp, |entry| entry.state)
+                    runtime.map(|entry| entry.state)
                 };
+                let state_label = state.map_or("common.unknown", KeepRunningState::label_key);
                 let header = widgets::process_rule_header(
                     &rule.executable_path,
                     candidates,
@@ -142,7 +142,7 @@ impl Editor {
                         .on_toggle(move |value| Message::RuleEnabled(index, value))
                         .into(),
                     Some(
-                        text(t!(state.label_key()).to_string())
+                        text(t!(state_label).to_string())
                             .size(design::typography::SECONDARY)
                             .into(),
                     ),
@@ -174,7 +174,7 @@ impl Editor {
                         details = details.push(text(error).style(text::danger));
                     }
                 }
-                if matches!(state, KeepRunningState::Paused(_)) {
+                if matches!(state, Some(KeepRunningState::Paused(_))) {
                     details = details.push(
                         widgets::action_button(t!("keep_running.resume").to_string())
                             .on_press(Message::Resume(rule.executable_path.clone())),
