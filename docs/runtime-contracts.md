@@ -782,7 +782,9 @@ Read the relevant section before changing feature policy, ownership, restoration
   journal.
 - Timer Resolution releases its owned request before refreshing capability bounds.
   A failed release keeps Timer Resolution scheduled while it owns the request.
-  Status shows the latest outcome, and the Action Log records a repeated
+  Status shows Paused when an enabled rule needs a foreground observation
+  that is unavailable. A known nonmatch stays Waiting, and an active release or
+  capability error takes precedence. The Action Log records a repeated
   identical release error once until the request is renewed or released.
 
 ## Dynamic Resource Zones

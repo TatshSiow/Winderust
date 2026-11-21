@@ -585,6 +585,7 @@ fn sidebar_state(
         return FeatureRunState::Unknown;
     }
     if (page == Page::CpuLimiter && features.cpu_limiter.observation_paused)
+        || (page == Page::TimerResolution && features.timer_resolution.observation_paused)
         || (page == Page::CpuSetsSoft && features.cpu_sets_soft.observation_paused)
         || (page == Page::ProcessorAffinityHard
             && features.processor_affinity_hard.observation_paused)

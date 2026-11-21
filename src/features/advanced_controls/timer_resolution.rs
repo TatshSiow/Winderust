@@ -16,7 +16,7 @@ pub struct TimerResolutionSnapshot {
     pub maximum_100ns: Option<u32>,
     pub minimum_100ns: Option<u32>,
     pub failed_actions: usize,
-    pub message: String,
+    pub observation_paused: bool,
     pub last_error: Option<String>,
 }
 
@@ -52,7 +52,7 @@ impl TimerResolutionManager {
                 false,
                 action_log,
                 "no timer resolution foreground rules are enabled",
-                "No timer resolution foreground rules configured.",
+                false,
             );
         }
 
@@ -65,7 +65,7 @@ impl TimerResolutionManager {
                 true,
                 action_log,
                 "foreground app is unknown",
-                "Paused: foreground app is unknown.",
+                true,
             );
         };
 
@@ -78,7 +78,7 @@ impl TimerResolutionManager {
                 true,
                 action_log,
                 "no foreground timer resolution rule matched",
-                "Waiting for a matching foreground app.",
+                false,
             );
         };
 
@@ -91,7 +91,6 @@ impl TimerResolutionManager {
                     requested_100ns: controller.active_request_100ns(),
                     active_rule_process: self.active_rule_process.clone(),
                     failed_actions: 1,
-                    message: "Timer resolution query failed.".to_owned(),
                     last_error: Some(error),
                     ..Default::default()
                 };
@@ -149,22 +148,17 @@ impl TimerResolutionManager {
                     );
                 }
 
-                let (failed_target, action_message, snapshot_message) = match error.stage {
+                let (failed_target, action_message) = match error.stage {
                     TimerResolutionTransitionStage::ReleasePrevious => (
                         previous_target,
                         format!(
                             "Failed to release previous timer resolution request: {}",
                             error.message
                         ),
-                        "Timer resolution request update failed.",
                     ),
                     TimerResolutionTransitionStage::RequestDesired => {
                         self.active_rule_process = None;
-                        (
-                            rule_process_name,
-                            error.message.clone(),
-                            "Timer resolution request failed.",
-                        )
+                        (rule_process_name, error.message.clone())
                     }
                 };
                 action_log.record(
@@ -181,7 +175,7 @@ impl TimerResolutionManager {
                     Some(info),
                     1,
                     Some(error.message),
-                    snapshot_message,
+                    false,
                 );
             }
         }
@@ -193,7 +187,7 @@ impl TimerResolutionManager {
             Some(info),
             0,
             None,
-            "Timer resolution request active.",
+            false,
         )
     }
 
@@ -203,14 +197,7 @@ impl TimerResolutionManager {
         action_log: &mut ActionLog,
         reason: &str,
     ) -> TimerResolutionSnapshot {
-        self.release_inactive(
-            controller,
-            false,
-            true,
-            action_log,
-            reason,
-            "Timer resolution control disabled.",
-        )
+        self.release_inactive(controller, false, true, action_log, reason, false)
     }
 
     fn release_inactive(
@@ -220,7 +207,7 @@ impl TimerResolutionManager {
         refresh_bounds: bool,
         action_log: &mut ActionLog,
         reason: &str,
-        mut message: &str,
+        observation_paused: bool,
     ) -> TimerResolutionSnapshot {
         let mut failures = 0;
         let mut last_error = None;
@@ -269,7 +256,6 @@ impl TimerResolutionManager {
                     record_query_failure(action_log, &error);
                     failures += 1;
                     last_error = Some(error);
-                    message = "Timer resolution query failed.";
                     None
                 }
                 Err(_) => None,
@@ -284,7 +270,7 @@ impl TimerResolutionManager {
             info,
             failures,
             last_error,
-            message,
+            observation_paused,
         )
     }
 }
@@ -328,7 +314,7 @@ fn snapshot_from_query(
     info: Option<TimerResolutionInfo>,
     failed_actions: usize,
     last_error: Option<String>,
-    message: &str,
+    observation_paused: bool,
 ) -> TimerResolutionSnapshot {
     TimerResolutionSnapshot {
         enabled,
@@ -337,7 +323,7 @@ fn snapshot_from_query(
         maximum_100ns: info.map(|info| info.maximum_100ns),
         minimum_100ns: info.map(|info| info.minimum_100ns),
         failed_actions,
-        message: message.to_owned(),
+        observation_paused,
         last_error,
     }
 }
