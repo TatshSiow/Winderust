@@ -43,7 +43,6 @@ pub struct MemoryTrimSnapshot {
     pub skipped_processes: usize,
     pub failed_processes: usize,
     pub memory_load_percent: Option<u8>,
-    pub trimmed_apps: Vec<String>,
     pub auto_excluded_processes: Vec<String>,
     pub status: MemoryTrimStatus,
     pub last_error: Option<String>,
@@ -342,7 +341,6 @@ impl MemoryTrimManager {
         let mut trimmed_processes = 0;
         let mut skipped_processes = 0;
         let mut failures = MemoryTrimFailures::default();
-        let mut trimmed_apps = BTreeSet::new();
         let mut auto_excluded_processes = BTreeSet::new();
         let mut successful_trim_paths = BTreeSet::new();
         let mut unresolved_trim_paths = BTreeSet::new();
@@ -392,7 +390,6 @@ impl MemoryTrimManager {
                 }) => {
                     candidate_processes += 1;
                     trimmed_processes += 1;
-                    trimmed_apps.insert(process_name.clone());
                     successful_trim_paths.insert(process_failure_key(&executable_path));
                     action_log.record(
                         ActionLogFeature::MemoryTrim,
@@ -441,7 +438,6 @@ impl MemoryTrimManager {
             skipped_processes,
             failed_processes: failures.count,
             memory_load_percent: Some(memory_load_percent),
-            trimmed_apps: trimmed_apps.into_iter().collect(),
             auto_excluded_processes: auto_excluded_processes.into_iter().collect(),
             status: match mode {
                 MemoryTrimMode::Automatic => MemoryTrimStatus::Active,
