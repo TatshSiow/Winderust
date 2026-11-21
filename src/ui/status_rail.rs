@@ -851,11 +851,12 @@ fn feature_status_summary(
         }
         Page::CpuLimiter => {
             let status = &runtime.feature_status.cpu_limiter;
+            let observed = !status.observation_paused;
             FeatureStatusSummary {
-                scanned: Some(status.scanned_processes),
-                adjusted: Some(status.limited_processes),
+                scanned: observed.then_some(status.scanned_processes),
+                adjusted: observed.then_some(status.limited_processes),
                 protected_or_denied: None,
-                skipped: Some(status.skipped_processes),
+                skipped: observed.then_some(status.skipped_processes),
                 last_error: status.last_error.as_deref(),
                 action_log_feature: ActionLogFeature::CpuLimiter,
             }
@@ -1083,9 +1084,10 @@ mod tests {
     }
 
     #[test]
-    fn cpu_allocation_sidebar_preserves_pause_and_restore_errors() {
+    fn cpu_control_sidebar_preserves_pause_and_restore_errors() {
         let mut settings = Settings::default();
         settings.general.enabled = true;
+        settings.cpu_limiter.enabled = true;
         settings.cpu_sets_soft.enabled = true;
         settings.processor_affinity_hard.enabled = true;
         let mut runtime = RuntimeStatusSnapshot {
@@ -1093,7 +1095,12 @@ mod tests {
             ..Default::default()
         };
         let activity = |runtime: &RuntimeStatusSnapshot| {
-            [Page::CpuSetsSoft, Page::ProcessorAffinityHard].map(|page| {
+            [
+                Page::CpuLimiter,
+                Page::CpuSetsSoft,
+                Page::ProcessorAffinityHard,
+            ]
+            .map(|page| {
                 let summary = feature_status_summary(page, runtime).unwrap();
                 (
                     sidebar_state(page, &settings, runtime, &summary),
@@ -1103,21 +1110,23 @@ mod tests {
         };
         assert_eq!(
             activity(&runtime),
-            [(FeatureRunState::Waiting, [Some(0); 3]); 2]
+            [(FeatureRunState::Waiting, [Some(0); 3]); 3]
         );
 
         let features = std::sync::Arc::make_mut(&mut runtime.feature_status);
+        features.cpu_limiter.observation_paused = true;
         features.cpu_sets_soft.observation_paused = true;
         features.processor_affinity_hard.observation_paused = true;
         assert_eq!(
             activity(&runtime),
-            [(FeatureRunState::Paused, [None; 3]); 2]
+            [(FeatureRunState::Paused, [None; 3]); 3]
         );
 
         let features = std::sync::Arc::make_mut(&mut runtime.feature_status);
+        features.cpu_limiter.last_error = Some("restore failed".into());
         features.cpu_sets_soft.last_error = Some("restore failed".into());
         features.processor_affinity_hard.last_error = Some("restore failed".into());
-        assert_eq!(activity(&runtime), [(FeatureRunState::Error, [None; 3]); 2]);
+        assert_eq!(activity(&runtime), [(FeatureRunState::Error, [None; 3]); 3]);
     }
 
     #[test]

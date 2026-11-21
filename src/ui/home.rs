@@ -1373,14 +1373,15 @@ fn enabled_features(
         by_time,
         t!("common.rule_count", count = settings.by_time.rules.len()).to_string()
     );
+    let cpu_limiter = &status.cpu_limiter;
     feature!(
         CpuLimiter,
         cpu_limiter,
-        t!(
-            "home.limited_count",
-            count = status.cpu_limiter.limited_processes
-        )
-        .to_string()
+        if cpu_limiter.observation_paused {
+            observation_pause_detail(cpu_limiter.last_error.is_some())
+        } else {
+            t!("home.limited_count", count = cpu_limiter.limited_processes).into_owned()
+        }
     );
     feature!(
         CpuSetsSoft,
