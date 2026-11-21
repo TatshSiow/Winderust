@@ -113,9 +113,23 @@ impl<'a, Message: 'a> Widget<Message, Theme, Renderer> for Popover<'a, Message> 
         renderer: &Renderer,
         operation: &mut dyn Operation,
     ) {
-        self.anchor
-            .as_widget_mut()
-            .operate(&mut tree.children[0], layout, renderer, operation);
+        let anchor = self.anchor.as_widget_mut();
+        let anchor_tree = &mut tree.children[0];
+        // Iced visits an open context menu separately with its overlay layout.
+        if self.content.is_none()
+            && anchor
+                .overlay(
+                    anchor_tree,
+                    layout,
+                    renderer,
+                    &layout.bounds(),
+                    Vector::ZERO,
+                )
+                .is_some()
+        {
+            return;
+        }
+        anchor.operate(anchor_tree, layout, renderer, operation);
     }
     fn update(
         &mut self,
@@ -360,13 +374,19 @@ mod tests {
         fn menu(id: u64) -> Element<'static, ()> {
             context_menu(
                 id,
-                iced::widget::button("Color").width(42).height(42).into(),
+                crate::ui::widgets::button(iced::widget::Space::new())
+                    .width(42)
+                    .height(42)
+                    .on_press(())
+                    .into(),
                 || {
-                    iced::widget::button("Edit")
-                        .width(140)
-                        .height(32)
-                        .on_press(())
-                        .into()
+                    iced::widget::container(iced::widget::column![
+                        crate::ui::widgets::action_button("Edit")
+                            .width(iced::Fill)
+                            .on_press(())
+                    ])
+                    .width(140)
+                    .into()
                 },
             )
         }
@@ -393,6 +413,9 @@ mod tests {
                 &mut Shell::new(&mut messages),
                 &viewport,
             );
+            let mut focus = iced::advanced::widget::operation::focusable::focus_next::<()>();
+            view.as_widget_mut()
+                .operate(&mut tree, Layout::new(&node), &renderer, &mut focus);
             {
                 let mut overlay = view
                     .as_widget_mut()
@@ -406,6 +429,7 @@ mod tests {
                     .unwrap();
                 let overlay = overlay.as_overlay_mut();
                 let node = overlay.layout(&renderer, viewport.size());
+                overlay.operate(Layout::new(&node), &renderer, &mut focus);
                 let content = node.children()[0].bounds();
                 assert!(viewport.contains(content.center()));
                 overlay.update(
