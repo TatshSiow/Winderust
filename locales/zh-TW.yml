@@ -350,6 +350,7 @@ process_list:
 
   immediate_actions: "即時操作"
   rulesets: "規則集"
+  rulesets_unsupported_path: "執行檔路徑包含無效的 Unicode 字元，無法為此路徑設定規則集。"
   details_exclusions: "功能排除"
   details_priority: "優先順序控制"
   use_page_defaults: "使用頁面預設值"

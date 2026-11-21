@@ -477,8 +477,9 @@ Read the relevant section before changing feature policy, ownership, restoration
 - Process List groups executable paths by normalized text or, for paths with
   unpaired UTF-16 units, by their original native spelling. Live actions require
   an exact observed identity, and Stop requires one for every selected root.
-  A row with a known path and missing creation time can still open Rulesets and
-  file information.
+  Rulesets require an executable path representable in settings. Properties and
+  Open process location use the original native path. Creation time is optional
+  for these views and file commands.
 - App Suspension releases a rule-owned freeze when its stored executable path
   no longer matches an enabled rule, even if focus, session, or process
   observations are unavailable. Process List freezes have separate ownership.

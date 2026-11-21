@@ -348,6 +348,7 @@ process_list:
   details_power: "Power plans"
   immediate_actions: "Immediate Action"
   rulesets: "Rulesets"
+  rulesets_unsupported_path: "The executable path contains invalid Unicode. Rulesets are unavailable for this path."
   details_exclusions: "Feature exclusions"
   details_priority: "Priority Control"
   use_page_defaults: "Use page defaults"

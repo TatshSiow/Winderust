@@ -56,10 +56,23 @@ struct FocusedRow {
 pub(super) struct Selection {
     nested: bool,
     processes: Vec<ProcessInfo>,
-    path: String,
     name: String,
 }
 impl Selection {
+    fn path(&self) -> Option<&Path> {
+        self.processes
+            .first()?
+            .image_path
+            .as_deref()
+            .filter(|path| !path.as_os_str().is_empty())
+    }
+
+    fn ruleset_path(&self) -> Option<&str> {
+        self.path()
+            .and_then(Path::to_str)
+            .filter(|_| self.processes.iter().any(|process| !inaccessible(process)))
+    }
+
     fn can_stop(&self) -> bool {
         self.processes.iter().any(|p| !inaccessible(p))
             && self
@@ -287,7 +300,12 @@ impl Default for ProcessList {
 }
 impl ProcessList {
     pub(super) fn rulesets_open(&self) -> bool {
-        self.selected.is_some() && self.process_tab == ProcessTab::Rulesets
+        self.process_tab == ProcessTab::Rulesets
+            && self
+                .selected
+                .as_ref()
+                .and_then(Selection::ruleset_path)
+                .is_some()
     }
 
     fn refresh_if_due(&mut self, now: std::time::Instant) -> Task<Message> {
@@ -643,8 +661,8 @@ impl ProcessList {
             }
             Message::DismissActionFeedback => self.action_feedback = None,
             Message::Properties => {
-                if let Some(selection) = &self.selected {
-                    let path = PathBuf::from(&selection.path);
+                if let Some(path) = self.selected.as_ref().and_then(Selection::path) {
+                    let path = path.to_path_buf();
                     let detail_action = self.begin_detail_action();
                     return background(
                         move || foreground::open_process_properties(&path),
@@ -653,8 +671,8 @@ impl ProcessList {
                 }
             }
             Message::OpenLocation => {
-                if let Some(selection) = &self.selected {
-                    let path = PathBuf::from(&selection.path);
+                if let Some(path) = self.selected.as_ref().and_then(Selection::path) {
+                    let path = path.to_path_buf();
                     let detail_action = self.begin_detail_action();
                     return background(
                         move || foreground::open_process_location(&path),
@@ -663,8 +681,8 @@ impl ProcessList {
                 }
             }
             Message::Details(message) => {
-                if let Some(selection) = &self.selected {
-                    self.rulesets_error = details::update(settings, &selection.path, message);
+                if let Some(path) = self.selected.as_ref().and_then(Selection::ruleset_path) {
+                    self.rulesets_error = details::update(settings, path, message);
                 }
             }
         }
@@ -1013,11 +1031,6 @@ impl ProcessList {
                 .iter()
                 .map(|i| self.processes[*i].clone())
                 .collect(),
-            path: process
-                .image_path
-                .as_ref()
-                .map(|p| p.to_string_lossy().into_owned())
-                .unwrap_or_default(),
             name: process.name.clone(),
         }
     }
@@ -1626,6 +1639,7 @@ impl ProcessList {
             .into();
         }
         if let Some(selection) = &self.selected {
+            let path = selection.path();
             let eligible = selection.processes.iter().any(live_action_available);
             let can_stop = selection.can_stop();
             let tree = selection.processes.len() > 1;
@@ -1707,12 +1721,12 @@ impl ProcessList {
                             (
                                 "process_list.open_process_location",
                                 Message::Menu(Box::new(Message::OpenLocation)),
-                                !selection.path.is_empty(),
+                                path.is_some(),
                             ),
                             (
                                 "process_list.properties",
                                 Message::Menu(Box::new(Message::Properties)),
-                                !selection.path.is_empty(),
+                                path.is_some(),
                             ),
                         ] {
                             if (key == "process_list.stop_process" && !stop_process)
@@ -1896,10 +1910,7 @@ impl ProcessList {
                 ]
                 .into();
             }
-            let icon: Element<'_, Message> = selection
-                .processes
-                .first()
-                .and_then(|p| p.image_path.as_ref())
+            let icon: Element<'_, Message> = path
                 .and_then(|path| self.icons.get(path))
                 .and_then(Option::as_ref)
                 .map(|icon| image((**icon).clone()).width(20).height(20).into())
@@ -1909,7 +1920,7 @@ impl ProcessList {
                     icon,
                     column![
                         text(&selection.name),
-                        text(&selection.path)
+                        text(path.map(Path::to_string_lossy).unwrap_or_default())
                             .size(design::typography::SECONDARY)
                             .style(iced::widget::text::secondary),
                     ]
@@ -1935,9 +1946,7 @@ impl ProcessList {
             let mut pane = column![].spacing(super::widgets::CARD_GAP);
             match self.process_tab {
                 ProcessTab::Rulesets => {
-                    if !selection.path.is_empty()
-                        && selection.processes.iter().any(|p| !inaccessible(p))
-                    {
+                    if let Some(path) = selection.ruleset_path() {
                         let profile = t!(match settings.selected_power_source() {
                             PowerSourceProfile::PluggedIn => "power_source.plugged_in",
                             PowerSourceProfile::OnBattery => "power_source.on_battery",
@@ -1947,12 +1956,14 @@ impl ProcessList {
                                 "power_source.editing_profile",
                                 text(profile.into_owned()),
                             )))
-                            .push(
-                                details::view(settings, &selection.path, plans)
-                                    .map(Message::Details),
-                            );
+                            .push(details::view(settings, path, plans).map(Message::Details));
                     } else {
-                        pane = pane.push(text(t!("process_list.status_access_denied").to_string()));
+                        let key = if path.is_some_and(|path| path.to_str().is_none()) {
+                            "process_list.rulesets_unsupported_path"
+                        } else {
+                            "process_list.status_access_denied"
+                        };
+                        pane = pane.push(text(t!(key)));
                     }
                 }
                 ProcessTab::Immediate => {
@@ -1985,10 +1996,7 @@ impl ProcessList {
                                         .then_some(Message::Action(Action::Suspend(!suspended)))
                                 ),
                                 action_button(t!("process_list.open_process_location").to_string())
-                                    .on_press_maybe(
-                                        (!selection.path.is_empty())
-                                            .then_some(Message::OpenLocation)
-                                    ),
+                                    .on_press_maybe(path.map(|_| Message::OpenLocation)),
                                 Space::new().width(Fill),
                                 action_button(t!(stop_label).to_string())
                                     .style(super::widgets::danger_button)
@@ -2435,7 +2443,10 @@ mod tests {
     }
 
     #[test]
-    fn rulesets_need_a_selected_process() {
+    fn rulesets_need_a_representable_selected_process_path() {
+        use std::{ffi::OsString, os::windows::ffi::OsStringExt};
+
+        let raw_path = PathBuf::from(OsString::from_wide(&[0xd800]));
         let mut list = ProcessList {
             process_tab: ProcessTab::Rulesets,
             ..ProcessList::default()
@@ -2444,11 +2455,13 @@ mod tests {
         list.selected = Some(Selection {
             nested: false,
             processes: vec![process(1, 1, "app.exe")],
-            path: "app.exe".into(),
             name: "app.exe".into(),
         });
         assert!(list.rulesets_open());
         list.process_tab = ProcessTab::Immediate;
+        assert!(!list.rulesets_open());
+        list.process_tab = ProcessTab::Rulesets;
+        list.selected.as_mut().unwrap().processes[0].image_path = Some(raw_path);
         assert!(!list.rulesets_open());
     }
     #[test]
@@ -2775,7 +2788,6 @@ mod tests {
                 process(10, 100, r"C:\Apps\app.exe"),
                 process(11, 200, r"C:\Apps\app.exe"),
             ],
-            path: String::new(),
             name: "app.exe".into(),
         };
         let mut list = ProcessList {
@@ -2849,7 +2861,6 @@ mod tests {
         let mut selection = Selection {
             nested: false,
             processes: vec![parent.clone()],
-            path: String::new(),
             name: parent.name.clone(),
         };
         assert_eq!(selection.stop_options(&[]), (true, false));
@@ -2872,7 +2883,6 @@ mod tests {
         let mut selection = Selection {
             nested: false,
             processes: vec![parent.clone()],
-            path: String::new(),
             name: parent.name.clone(),
         };
         assert!(!selection.has_tree(std::slice::from_ref(&parent)));
@@ -2897,7 +2907,6 @@ mod tests {
         list.selected = Some(Selection {
             nested: false,
             processes: vec![process(10, 100, "app.exe")],
-            path: String::new(),
             name: "app.exe".into(),
         });
         for context in [Some(iced::Point::ORIGIN), None] {
@@ -3178,7 +3187,6 @@ mod tests {
             selected: Some(Selection {
                 nested: false,
                 processes: vec![],
-                path: String::new(),
                 name: "original.exe".into(),
             }),
             ..Default::default()
@@ -3198,7 +3206,6 @@ mod tests {
             selected: Some(Selection {
                 nested: false,
                 processes: vec![],
-                path: String::new(),
                 name: "app.exe".into(),
             }),
             rulesets_error: Some("Rulesets failure".into()),
@@ -3231,7 +3238,6 @@ mod tests {
             selected: Some(Selection {
                 nested: false,
                 processes: vec![process(10, 100, r"C:\A\app.exe")],
-                path: r"C:\A\app.exe".into(),
                 name: "app.exe".into(),
             }),
             current_query_id: 2,
@@ -3340,7 +3346,6 @@ mod tests {
         let selected = Selection {
             nested: false,
             processes: vec![old],
-            path: r"C:\A\app.exe".into(),
             name: "app.exe".into(),
         };
         let replacement = process(10, 200, r"C:\A\app.exe");
