@@ -921,6 +921,7 @@ impl RuntimeCore {
 
     pub(super) fn run_cpu_allocation_reconciliation(
         &mut self,
+        shared: &SharedAutomationState,
         settings: &Settings,
         observations: &mut CycleObservations,
         include_release_retries: bool,
@@ -932,6 +933,21 @@ impl RuntimeCore {
             include_release_retries,
         );
         record_cpu_allocation_reconciliation(summary, &mut self.action_log);
+        if let Some(status) = self.cpu_sets_soft_manager.take_settled_release_status(
+            &self.cpu_allocation_coordinator,
+            ControlOwner::CpuSetsSoft,
+        ) {
+            update_cpu_sets_soft_status(shared, status);
+        }
+        if let Some(status) = self
+            .processor_affinity_hard_manager
+            .take_settled_release_status(
+                &self.cpu_allocation_coordinator,
+                ControlOwner::ProcessorAffinityHard,
+            )
+        {
+            update_processor_affinity_hard_status(shared, status);
+        }
     }
 
     pub(super) fn cpu_allocation_immediate_reconciliation_pending(&self) -> bool {

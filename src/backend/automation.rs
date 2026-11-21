@@ -1667,6 +1667,7 @@ fn run_background_automation(
             && scheduler.is_due(RefreshDomain::CpuAllocationReconciliation, now);
         if immediate_cpu_allocation_reconciliation || cpu_allocation_release_retry_due {
             runner.run_cpu_allocation_reconciliation(
+                &shared,
                 settings,
                 &mut observations,
                 cpu_allocation_release_retry_due,

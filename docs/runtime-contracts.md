@@ -578,7 +578,9 @@ Read the relevant section before changing feature policy, ownership, restoration
   Selecting a preset copies its complete selection and topology signature into that tier;
   later preset edits or deletion do not silently rewrite configured rules.
   Both features report Paused while an observation required for rule selection is
-  unavailable. Restoration failures remain visible as errors.
+  unavailable. Restoration failures remain current while the policy's released assignments
+  remain owned. Once reconciliation settles them, Status keeps any independent observation
+  error, and the original restoration failure remains in the Action Log.
 - CPU-selection rules, custom presets, and Adaptive Engine custom selections store
   explicit `{ group, number }` members and an optional exact canonical topology
   snapshot. This signature describes scheduling layout, not permanent hardware

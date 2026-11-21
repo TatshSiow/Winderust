@@ -93,6 +93,7 @@ pub struct CpuAllocationManager {
     zone_retry_after: Option<Instant>,
     zone_error: Option<String>,
     zone_failure: ZoneAllocationFailure,
+    status_after_release: Option<CpuAllocationSnapshot>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -116,6 +117,7 @@ impl CpuAllocationManager {
             zone_retry_after: None,
             zone_error: None,
             zone_failure: ZoneAllocationFailure::Waiting,
+            status_after_release: None,
         }
     }
 
@@ -137,6 +139,7 @@ impl CpuAllocationManager {
     ) -> CpuAllocationSnapshot {
         let (mode, action_log_feature) = allocation;
         self.action_log_feature = action_log_feature;
+        self.status_after_release = None;
         if !automation_enabled {
             return self.disabled_snapshot(
                 coordinator,
@@ -177,6 +180,7 @@ impl CpuAllocationManager {
                 coordinator,
                 owner,
                 "foreground app is unknown",
+                None,
                 action_log,
             );
         }
@@ -187,6 +191,7 @@ impl CpuAllocationManager {
                     coordinator,
                     owner,
                     "visible windows are unavailable",
+                    None,
                     action_log,
                 );
             };
@@ -202,6 +207,7 @@ impl CpuAllocationManager {
                 coordinator,
                 owner,
                 "current Windows session is unknown",
+                None,
                 action_log,
             );
         };
@@ -209,14 +215,13 @@ impl CpuAllocationManager {
         let processes = match observations.processes() {
             Ok(processes) => processes,
             Err(err) => {
-                let mut snapshot = self.paused_snapshot(
+                return self.paused_snapshot(
                     coordinator,
                     owner,
                     "process list unavailable",
+                    Some(err),
                     action_log,
                 );
-                snapshot.last_error.get_or_insert(err);
-                return snapshot;
             }
         };
 
@@ -620,11 +625,66 @@ impl CpuAllocationManager {
         }
     }
 
+    pub(crate) fn take_settled_release_status(
+        &mut self,
+        coordinator: &CpuAllocationCoordinator,
+        owner: ControlOwner,
+    ) -> Option<CpuAllocationSnapshot> {
+        if self.status_after_release.is_some()
+            && coordinator.policy_managed_process_count(owner) == 0
+        {
+            return self.status_after_release.take();
+        }
+        None
+    }
+
     fn disabled_snapshot<P: CpuAllocationPlatform>(
         &mut self,
         coordinator: &mut CpuAllocationCoordinator<P>,
         owner: ControlOwner,
         enabled: bool,
+        reason: &str,
+        action_log: &mut ActionLog,
+    ) -> CpuAllocationSnapshot {
+        self.release_snapshot(
+            coordinator,
+            owner,
+            CpuAllocationSnapshot {
+                enabled,
+                ..Default::default()
+            },
+            reason,
+            action_log,
+        )
+    }
+
+    fn paused_snapshot(
+        &mut self,
+        coordinator: &mut CpuAllocationCoordinator,
+        owner: ControlOwner,
+        reason: &str,
+        observation_error: Option<String>,
+        action_log: &mut ActionLog,
+    ) -> CpuAllocationSnapshot {
+        self.release_snapshot(
+            coordinator,
+            owner,
+            CpuAllocationSnapshot {
+                enabled: true,
+                observation_paused: true,
+                last_error: observation_error,
+                ..Default::default()
+            },
+            reason,
+            action_log,
+        )
+    }
+
+    fn release_snapshot<P: CpuAllocationPlatform>(
+        &mut self,
+        coordinator: &mut CpuAllocationCoordinator<P>,
+        owner: ControlOwner,
+        mut snapshot: CpuAllocationSnapshot,
         reason: &str,
         action_log: &mut ActionLog,
     ) -> CpuAllocationSnapshot {
@@ -637,23 +697,17 @@ impl CpuAllocationManager {
             &mut failures,
         );
         self.failure_suppression.clear();
-        CpuAllocationSnapshot {
-            enabled,
-            failed_processes: failures.count,
-            last_error: failures.last_error,
-            ..Default::default()
+        if let Some(error) = failures.last_error {
+            if matches!(
+                owner,
+                ControlOwner::CpuSetsSoft | ControlOwner::ProcessorAffinityHard
+            ) {
+                // The release error takes precedence until this static owner has settled.
+                self.status_after_release = Some(snapshot.clone());
+            }
+            snapshot.failed_processes = failures.count;
+            snapshot.last_error = Some(error);
         }
-    }
-
-    fn paused_snapshot(
-        &mut self,
-        coordinator: &mut CpuAllocationCoordinator,
-        owner: ControlOwner,
-        reason: &str,
-        action_log: &mut ActionLog,
-    ) -> CpuAllocationSnapshot {
-        let mut snapshot = self.disabled_snapshot(coordinator, owner, true, reason, action_log);
-        snapshot.observation_paused = true;
         snapshot
     }
 
