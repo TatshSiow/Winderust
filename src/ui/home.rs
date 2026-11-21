@@ -1401,14 +1401,27 @@ fn enabled_features(
         )
         .to_string()
     );
+    let efficiency = &status.background_efficiency;
     feature!(
         BackgroundEfficiency,
         background_efficiency,
-        t!(
-            "home.throttled_count",
-            count = status.background_efficiency.throttled_processes
-        )
-        .to_string()
+        if efficiency.last_error.is_some() {
+            t!("common.error").into_owned()
+        } else if efficiency.unsupported
+            || (efficiency.throttled_processes == 0 && efficiency.access_denied_processes > 0)
+        {
+            t!("sidebar_status.blocked").into_owned()
+        } else if efficiency.observation_paused {
+            t!("sidebar_status.paused").into_owned()
+        } else if efficiency.enabled {
+            t!(
+                "home.throttled_count",
+                count = efficiency.throttled_processes
+            )
+            .into_owned()
+        } else {
+            t!("common.unknown").into_owned()
+        }
     );
     feature!(
         AppSuspension,

@@ -539,7 +539,11 @@ fn sidebar_state(
     {
         return FeatureRunState::Blocked;
     }
-    let priority_observation = match page {
+    let process_observation = match page {
+        Page::BackgroundEfficiency => Some((
+            features.background_efficiency.enabled,
+            features.background_efficiency.observation_paused,
+        )),
         Page::ProcessPriority => Some((
             features.process_priority.enabled,
             features.process_priority.observation_paused,
@@ -558,7 +562,7 @@ fn sidebar_state(
         )),
         _ => None,
     };
-    if let Some((enabled, paused)) = priority_observation {
+    if let Some((enabled, paused)) = process_observation {
         if paused {
             return FeatureRunState::Paused;
         }
@@ -696,11 +700,12 @@ fn feature_status_summary(
         }
         Page::BackgroundEfficiency => {
             let status = &runtime.feature_status.background_efficiency;
+            let observed = status.enabled && !status.observation_paused;
             FeatureStatusSummary {
-                scanned: Some(status.scanned_processes),
-                adjusted: Some(status.throttled_processes),
-                protected_or_denied: Some(status.access_denied_processes),
-                skipped: Some(status.skipped_processes),
+                scanned: observed.then_some(status.scanned_processes),
+                adjusted: observed.then_some(status.throttled_processes),
+                protected_or_denied: observed.then_some(status.access_denied_processes),
+                skipped: observed.then_some(status.skipped_processes),
                 last_error: status.last_error.as_deref(),
                 action_log_feature: ActionLogFeature::BackgroundEfficiency,
             }

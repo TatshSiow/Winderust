@@ -662,6 +662,9 @@ Read the relevant section before changing feature policy, ownership, restoration
 - Background Efficiency uses the same explicit Foreground Detection and Visible Window Detection
   layers as Priority Control. Foreground Detection defaults on, Visible Window Detection defaults
   off, and each layer owns an Enabled/Disabled Efficiency Mode default.
+  Home and Status distinguish missing observations from a confirmed zero.
+  Inventory and pending restoration failures surface as errors, with the
+  restoration failure taking precedence until retry succeeds.
 - Every Priority Control page uses three ordered default tiers: Focus App, then apps with visible windows, then background. Visible Window Detection defaults off and has its own selectable value; custom process rules independently override all three tiers. Retired Auto priority values are rejected rather than mapped to current defaults.
 - I/O Priority and Dynamic Priority Boost restoration retries publish their current
   state and record verified baseline writes in Action Log even after the feature is

@@ -89,23 +89,23 @@ const AGGRESSIVE_BUILT_IN_EXCLUSIONS: &[&str] = &[
     "winlogon.exe",
 ];
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct BackgroundEfficiencySnapshot {
     pub enabled: bool,
+    pub observation_paused: bool,
     pub unsupported: bool,
     pub scanned_processes: usize,
     pub throttled_processes: usize,
     pub skipped_processes: usize,
     pub access_denied_processes: usize,
     pub failed_processes: usize,
-    pub message: String,
     pub last_error: Option<String>,
 }
 
 #[derive(Default)]
 pub struct BackgroundEfficiencyManager {
     failure_suppression: ExecutionFailureTracker,
-    apply_failures: BackgroundEfficiencyFailures,
+    non_release_failures: BackgroundEfficiencyFailures,
 }
 
 struct BackgroundEfficiencyTarget {
@@ -144,12 +144,7 @@ impl BackgroundEfficiencyManager {
         let needs_foreground = settings.foreground_detection_enabled;
         let needs_visible_windows = settings.visible_window_detection_enabled;
         if needs_foreground && foreground_process_id.is_none() {
-            return self.paused_snapshot(
-                controller,
-                action_log,
-                "foreground app is unknown",
-                "Paused: foreground app is unknown.",
-            );
+            return self.paused_snapshot(controller, action_log, "foreground app is unknown", None);
         }
 
         let visible_window_process_ids = if needs_visible_windows {
@@ -158,7 +153,7 @@ impl BackgroundEfficiencyManager {
                     controller,
                     action_log,
                     "visible windows are unavailable",
-                    "Paused: visible windows are unavailable.",
+                    None,
                 );
             };
             process_ids
@@ -173,7 +168,7 @@ impl BackgroundEfficiencyManager {
                 controller,
                 action_log,
                 "current Windows session is unknown",
-                "Paused: current Windows session is unknown.",
+                None,
             );
         };
         let processes = match observations.processes() {
@@ -183,7 +178,7 @@ impl BackgroundEfficiencyManager {
                     controller,
                     action_log,
                     "process list unavailable",
-                    &error,
+                    Some(error),
                 );
             }
         };
@@ -347,13 +342,12 @@ impl BackgroundEfficiencyManager {
             }
         }
 
-        self.apply_failures = failures;
+        self.non_release_failures = failures;
         let status = BackgroundEfficiencySnapshot {
             enabled: true,
             scanned_processes,
             skipped_processes,
             access_denied_processes,
-            message: "Background Efficiency active.".to_owned(),
             ..Default::default()
         };
         self.with_release_status(controller, status)
@@ -365,22 +359,14 @@ impl BackgroundEfficiencyManager {
         action_log: &mut ActionLog,
         reason: &str,
     ) -> BackgroundEfficiencySnapshot {
-        self.apply_failures = BackgroundEfficiencyFailures::default();
+        self.non_release_failures = BackgroundEfficiencyFailures::default();
         self.record_policy_release(
             controller.release_all_efficiency_policy(ControlOwner::BackgroundEfficiency),
             action_log,
             reason,
         );
         self.failure_suppression.clear();
-        let status = BackgroundEfficiencySnapshot {
-            message: if reason == "automation disabled" {
-                "Automation disabled.".to_owned()
-            } else {
-                "Background Efficiency disabled.".to_owned()
-            },
-            ..Default::default()
-        };
-        self.with_release_status(controller, status)
+        self.with_release_status(controller, BackgroundEfficiencySnapshot::default())
     }
 
     fn paused_snapshot(
@@ -388,9 +374,12 @@ impl BackgroundEfficiencyManager {
         controller: &mut PriorityEfficiencyController,
         action_log: &mut ActionLog,
         reason: &str,
-        message: &str,
+        observation_error: Option<String>,
     ) -> BackgroundEfficiencySnapshot {
-        self.apply_failures = BackgroundEfficiencyFailures::default();
+        self.non_release_failures = BackgroundEfficiencyFailures {
+            last_error: observation_error,
+            ..Default::default()
+        };
         self.record_policy_release(
             controller.release_all_efficiency_policy(ControlOwner::BackgroundEfficiency),
             action_log,
@@ -398,7 +387,7 @@ impl BackgroundEfficiencyManager {
         );
         let status = BackgroundEfficiencySnapshot {
             enabled: true,
-            message: message.to_owned(),
+            observation_paused: true,
             ..Default::default()
         };
         self.with_release_status(controller, status)
@@ -411,8 +400,8 @@ impl BackgroundEfficiencyManager {
     ) -> BackgroundEfficiencySnapshot {
         status.throttled_processes =
             controller.policy_managed_process_count(ControlOwner::BackgroundEfficiency);
-        status.failed_processes = self.apply_failures.count;
-        status.unsupported = self.apply_failures.unsupported;
+        status.failed_processes = self.non_release_failures.count;
+        status.unsupported = self.non_release_failures.unsupported;
         let mut pending = controller
             .background_efficiency_release_failures()
             .peekable();
@@ -426,7 +415,7 @@ impl BackgroundEfficiencyManager {
                     &failure.error.to_string(),
                 )
             })
-            .or_else(|| self.apply_failures.last_error.clone());
+            .or_else(|| self.non_release_failures.last_error.clone());
         for failure in pending {
             status.failed_processes += 1;
             status.unsupported |= matches!(failure.error, ProcessControlError::Unavailable(_));
@@ -517,22 +506,6 @@ impl BackgroundEfficiencyManager {
 
     fn clear_process_failure(&mut self, process_name: &str) {
         self.failure_suppression.clear_process_failure(process_name);
-    }
-}
-
-impl Default for BackgroundEfficiencySnapshot {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            unsupported: false,
-            scanned_processes: 0,
-            throttled_processes: 0,
-            skipped_processes: 0,
-            access_denied_processes: 0,
-            failed_processes: 0,
-            message: "Background Efficiency disabled.".to_owned(),
-            last_error: None,
-        }
     }
 }
 
