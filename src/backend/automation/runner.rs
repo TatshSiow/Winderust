@@ -1999,6 +1999,16 @@ impl RuntimeCore {
             || status.owner != Some(crate::control::power_plan::PowerPlanOwner::OrdinaryAutomation)
         {
             self.power_plan_rule_context = None;
+        } else if self.power_plan_rule_context.is_none() {
+            // An interrupted check after a source change has no current indexed rule.
+            return (
+                PowerPlanStatus {
+                    current_guid: status.current_guid,
+                    decision_state: Some(DecisionState::WaitingForObservation),
+                    ..Default::default()
+                },
+                None,
+            );
         }
         (status, self.power_plan_rule_context.as_ref())
     }
