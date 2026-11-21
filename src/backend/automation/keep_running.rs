@@ -124,7 +124,33 @@ struct Owner<P: Platform> {
     identity: Option<P::Identity>,
     members: BTreeMap<ProcessTargetKey, P::Member>,
     last_error: Option<String>,
+    retry_error: Option<String>,
     published: Option<(KeepRunningState, Option<String>)>,
+}
+
+impl<P: Platform> Owner<P> {
+    fn launch_failed(
+        &mut self,
+        now: Instant,
+        ticket: &LaunchTicket,
+        failure: Failure,
+        log: &mut ActionLog,
+    ) {
+        let was_starting = self.policy.state() == KeepRunningState::Starting;
+        self.policy.failed(now, ticket, failure.kind);
+        if was_starting && matches!(self.policy.state(), KeepRunningState::Retrying { .. }) {
+            log.record(
+                ActionLogFeature::KeepRunning,
+                None,
+                &self.rule.executable_path,
+                ActionLogResult::Failed,
+                failure.message.clone(),
+            );
+            self.retry_error = Some(failure.message);
+        } else {
+            self.last_error = Some(failure.message);
+        }
+    }
 }
 
 enum Phase<L> {
@@ -184,6 +210,7 @@ impl<P: Platform> Coordinator<P> {
                     identity: None,
                     members: BTreeMap::new(),
                     last_error: None,
+                    retry_error: None,
                     published: None,
                 });
                 let Some(owner) = self.owners.last_mut() else {
@@ -198,6 +225,7 @@ impl<P: Platform> Coordinator<P> {
                 owner.members.clear();
                 owner.identity = None;
                 owner.last_error = None;
+                owner.retry_error = None;
             }
             if general_enabled && settings.enabled && rule.enabled {
                 owner.policy.enable();
@@ -226,6 +254,7 @@ impl<P: Platform> Coordinator<P> {
             owner.policy.launch_settings_changed();
             owner.members.clear();
             owner.identity = None;
+            owner.retry_error = None;
         }
     }
 
@@ -263,6 +292,7 @@ impl<P: Platform> Coordinator<P> {
                 )
             {
                 owner.last_error = None;
+                owner.retry_error = None;
                 owner.policy.resume(Instant::now(), binding.as_ref());
             }
         }
@@ -290,7 +320,7 @@ impl<P: Platform> Coordinator<P> {
         })
     }
 
-    fn completion(&mut self, now: Instant) {
+    fn completion(&mut self, now: Instant, log: &mut ActionLog) {
         let Some(mut flight) = self.flight.take() else {
             return;
         };
@@ -328,8 +358,7 @@ impl<P: Platform> Coordinator<P> {
                     };
                 }
                 Completion::Prepared(Err(failure)) => {
-                    owner.last_error = Some(failure.error.message);
-                    owner.policy.failed(now, &flight.ticket, failure.error.kind);
+                    owner.launch_failed(now, &flight.ticket, failure.error, log);
                     if let Some(launch) = failure.cleanup {
                         flight.phase = Phase::CleanupRetry(launch);
                     } else {
@@ -360,8 +389,7 @@ impl<P: Platform> Coordinator<P> {
                             kind: FailureKind::Retryable,
                             message: "Keep Running launch was not accepted.".into(),
                         });
-                        owner.last_error = Some(error.message);
-                        owner.policy.failed(now, &flight.ticket, error.kind);
+                        owner.launch_failed(now, &flight.ticket, error, log);
                         flight.phase = Phase::CleanupRetry(launch);
                     }
                 }
@@ -466,7 +494,7 @@ impl<P: Platform> Coordinator<P> {
     ) -> KeepRunningSnapshot {
         let now = clock();
         self.sync_settings(settings, general_enabled);
-        self.completion(now);
+        self.completion(now, log);
         let enabled = general_enabled && settings.enabled;
         let context = P::context();
         let mut known = watcher_active && context.is_ok();
@@ -643,14 +671,17 @@ impl<P: Platform> Coordinator<P> {
                             CommitDisposition::Reserved => match self.send(Work::Commit(launch)) {
                                 Ok(()) => Phase::Committing,
                                 Err((error, work)) => {
-                                    self.owners[index].last_error = Some(error);
                                     let Work::Commit(launch) = *work else {
                                         unreachable!("commit submission returns its own command")
                                     };
-                                    self.owners[index].policy.failed(
+                                    self.owners[index].launch_failed(
                                         now,
                                         &flight.ticket,
-                                        FailureKind::Retryable,
+                                        Failure {
+                                            message: error,
+                                            kind: FailureKind::Retryable,
+                                        },
+                                        log,
                                     );
                                     Phase::CleanupRetry(launch)
                                 }
@@ -718,11 +749,14 @@ impl<P: Platform> Coordinator<P> {
                             match self.send(Work::Prepare(rule, P::binding(&context), identity)) {
                                 Ok(()) => Phase::Preparing,
                                 Err((error, _)) => {
-                                    self.owners[index].last_error = Some(error);
-                                    self.owners[index].policy.failed(
+                                    self.owners[index].launch_failed(
                                         now,
                                         &ticket,
-                                        FailureKind::Retryable,
+                                        Failure {
+                                            message: error,
+                                            kind: FailureKind::Retryable,
+                                        },
+                                        log,
                                     );
                                     self.owners[index]
                                         .policy
@@ -762,26 +796,32 @@ impl<P: Platform> Coordinator<P> {
             owner.active || flight_owner.is_some_and(|id| Arc::ptr_eq(id, &owner.id))
         }) {
             let state = owner.policy.state();
+            if !matches!(state, KeepRunningState::Retrying { .. }) {
+                owner.retry_error = None;
+            }
             let published = (state, owner.last_error.clone());
             if owner.published.as_ref() != Some(&published) {
-                log.record(
-                    ActionLogFeature::KeepRunning,
-                    None,
-                    &owner.rule.executable_path,
-                    if owner.last_error.is_some() {
-                        ActionLogResult::Failed
-                    } else {
-                        ActionLogResult::Applied
-                    },
-                    owner
-                        .last_error
-                        .clone()
-                        .unwrap_or_else(|| rust_i18n::t!(state.label_key()).to_string()),
-                );
+                if owner.last_error.is_some() || owner.retry_error.is_none() {
+                    log.record(
+                        ActionLogFeature::KeepRunning,
+                        None,
+                        &owner.rule.executable_path,
+                        if owner.last_error.is_some() {
+                            ActionLogResult::Failed
+                        } else {
+                            ActionLogResult::Applied
+                        },
+                        owner
+                            .last_error
+                            .clone()
+                            .unwrap_or_else(|| rust_i18n::t!(state.label_key()).to_string()),
+                    );
+                }
                 owner.published = Some(published);
             }
+            let last_error = owner.last_error.as_ref().or(owner.retry_error.as_ref());
             if snapshot.last_error.is_none() {
-                snapshot.last_error = owner.last_error.clone();
+                snapshot.last_error = last_error.cloned();
             }
             if !owner.active {
                 continue;
@@ -795,7 +835,7 @@ impl<P: Platform> Coordinator<P> {
                 } else {
                     None
                 },
-                last_error: owner.last_error.clone(),
+                last_error: last_error.cloned(),
             });
         }
         snapshot

@@ -40,6 +40,8 @@ Read the relevant section before changing feature policy, ownership, restoration
   5, then 30 seconds, with at most three attempts until 60 seconds of verified
   overlapping-cohort runtime or explicit Resume. Unknown intervals earn no stable
   runtime credit. Disjoint replacement cohorts do not inherit it.
+  A failed launch attempt is logged once and remains visible during its retry
+  wait. An observation error takes precedence until a complete scan recovers.
 - This is a fresh launch, not crash diagnosis, saved-session recovery, or the
   Watchdog's restart operation. Winderust never reads another app's arguments or
   copies its environment. Unsupported/elevated/service/restricted app contexts
