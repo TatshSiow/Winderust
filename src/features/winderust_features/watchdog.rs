@@ -9,7 +9,7 @@ use crate::{
         WatchdogAction, WatchdogComparison, WatchdogMetric, WatchdogResource, WatchdogResponse,
         WatchdogScope, WatchdogSelector, WatchdogSettings,
     },
-    cpu::{process_cpu_usage_percent, ProcessCpuSample},
+    cpu::{process_cpu_usage_batch, ProcessCpuSample},
     foreground::{
         process_matches_executable_path, same_executable_path, same_process_name,
         sample_process_resources, ProcessActionTarget, ProcessInfo, ProcessResourceSample,
@@ -263,6 +263,7 @@ impl WatchdogManager {
             ..Default::default()
         };
         let mut events = Vec::new();
+        let mut cpu_usage = process_cpu_usage_batch();
         let groups = settings
             .rules
             .iter()
@@ -361,10 +362,13 @@ impl WatchdogManager {
                 let value = matched.iter().try_fold(0.0, |total, (process, sample)| {
                     metric_value(
                         metric,
-                        previous_members
-                            .get(&(process.id, sample.creation_time))
-                            .copied()
-                            .flatten(),
+                        || {
+                            let previous = previous_members
+                                .get(&(process.id, sample.creation_time))
+                                .copied()
+                                .flatten()?;
+                            cpu_usage(previous, sample.cpu)
+                        },
                         sample,
                         total_memory,
                     )
@@ -460,14 +464,12 @@ impl WatchdogManager {
 
 fn metric_value(
     metric: WatchdogMetric,
-    previous: Option<ProcessCpuSample>,
+    cpu_usage: impl FnOnce() -> Option<f32>,
     current: &ProcessResourceSample,
     total_memory: Option<u64>,
 ) -> Option<f64> {
     match metric {
-        WatchdogMetric::CpuPercent => previous
-            .and_then(|previous| process_cpu_usage_percent(previous, current.cpu))
-            .map(f64::from),
+        WatchdogMetric::CpuPercent => cpu_usage().map(f64::from),
         WatchdogMetric::MemoryPercent => current
             .working_set_bytes
             .zip(total_memory.filter(|total| *total > 0))
@@ -790,33 +792,33 @@ mod tests {
         let process = process();
         let mut sample = sample(&process, now, Some(512 * 1_000_000))[&process.id];
         assert_eq!(
-            metric_value(WatchdogMetric::MemoryMb, None, &sample, None),
+            metric_value(WatchdogMetric::MemoryMb, || None, &sample, None),
             Some(512.0)
         );
         assert_eq!(
-            metric_value(WatchdogMetric::PrivateCommitMb, None, &sample, None),
+            metric_value(WatchdogMetric::PrivateCommitMb, || None, &sample, None),
             None
         );
         sample.private_commit_bytes = Some(384_500_000);
         assert_eq!(
-            metric_value(WatchdogMetric::PrivateCommitMb, None, &sample, None),
+            metric_value(WatchdogMetric::PrivateCommitMb, || None, &sample, None),
             Some(384.5)
         );
         assert_eq!(
             metric_value(
                 WatchdogMetric::MemoryPercent,
-                None,
+                || None,
                 &sample,
                 Some(1024 * 1_000_000)
             ),
             Some(50.0)
         );
         assert_eq!(
-            metric_value(WatchdogMetric::MemoryPercent, None, &sample, Some(0)),
+            metric_value(WatchdogMetric::MemoryPercent, || None, &sample, Some(0)),
             None
         );
         assert_eq!(
-            metric_value(WatchdogMetric::CpuPercent, None, &sample, None),
+            metric_value(WatchdogMetric::CpuPercent, || None, &sample, None),
             None
         );
         let previous = sample.cpu;
@@ -825,12 +827,23 @@ mod tests {
         let cpus = std::thread::available_parallelism()
             .map(usize::from)
             .unwrap_or(1);
-        let actual =
-            metric_value(WatchdogMetric::CpuPercent, Some(previous), &sample, None).unwrap();
+        let mut cpu_usage = process_cpu_usage_batch();
+        let actual = metric_value(
+            WatchdogMetric::CpuPercent,
+            || cpu_usage(previous, sample.cpu),
+            &sample,
+            None,
+        )
+        .unwrap();
         assert!((actual - 50.0 / cpus as f64).abs() < 0.001);
         sample.cpu.cpu_time_100ns = 0;
         assert_eq!(
-            metric_value(WatchdogMetric::CpuPercent, Some(previous), &sample, None),
+            metric_value(
+                WatchdogMetric::CpuPercent,
+                || cpu_usage(previous, sample.cpu),
+                &sample,
+                None,
+            ),
             None
         );
     }
