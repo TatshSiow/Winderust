@@ -734,7 +734,8 @@ Read the relevant section before changing feature policy, ownership, restoration
   owns foreground-rule policy and reporting only; every successful begin is paired with the exact
   end period on replacement, disable, or shutdown. This process-lifetime state has no crash
   journal.
-- A failed release keeps Timer Resolution scheduled while it owns the request.
+- Timer Resolution releases its owned request before refreshing capability bounds.
+  A failed release keeps Timer Resolution scheduled while it owns the request.
   Status shows the latest outcome, and the Action Log records a repeated
   identical release error once until the request is renewed or released.
 

@@ -49,33 +49,12 @@ impl TimerResolutionManager {
             return self.release_inactive(
                 controller,
                 true,
-                None,
+                false,
                 action_log,
                 "no timer resolution foreground rules are enabled",
                 "No timer resolution foreground rules configured.",
             );
         }
-
-        let info = match controller.query() {
-            Ok(info) => info,
-            Err(err) => {
-                let message = err;
-                action_log.record(
-                    ActionLogFeature::TimerResolution,
-                    None,
-                    SYSTEM_TARGET_NAME,
-                    ActionLogResult::Failed,
-                    message.clone(),
-                );
-                return TimerResolutionSnapshot {
-                    enabled: true,
-                    failed_actions: 1,
-                    message: "Timer resolution query failed.".to_owned(),
-                    last_error: Some(message),
-                    ..Default::default()
-                };
-            }
-        };
 
         let Some(foreground_executable_path) =
             foreground_executable_path.filter(|path| !path.trim().is_empty())
@@ -83,7 +62,7 @@ impl TimerResolutionManager {
             return self.release_inactive(
                 controller,
                 true,
-                Some(info),
+                true,
                 action_log,
                 "foreground app is unknown",
                 "Paused: foreground app is unknown.",
@@ -96,11 +75,27 @@ impl TimerResolutionManager {
             return self.release_inactive(
                 controller,
                 true,
-                Some(info),
+                true,
                 action_log,
                 "no foreground timer resolution rule matched",
                 "Waiting for a matching foreground app.",
             );
+        };
+
+        let info = match controller.query() {
+            Ok(info) => info,
+            Err(error) => {
+                record_query_failure(action_log, &error);
+                return TimerResolutionSnapshot {
+                    enabled: true,
+                    requested_100ns: controller.active_request_100ns(),
+                    active_rule_process: self.active_rule_process.clone(),
+                    failed_actions: 1,
+                    message: "Timer resolution query failed.".to_owned(),
+                    last_error: Some(error),
+                    ..Default::default()
+                };
+            }
         };
 
         let desired_100ns =
@@ -208,11 +203,10 @@ impl TimerResolutionManager {
         action_log: &mut ActionLog,
         reason: &str,
     ) -> TimerResolutionSnapshot {
-        let info = controller.query().ok();
         self.release_inactive(
             controller,
             false,
-            info,
+            true,
             action_log,
             reason,
             "Timer resolution control disabled.",
@@ -223,10 +217,10 @@ impl TimerResolutionManager {
         &mut self,
         controller: &mut TimerResolutionController,
         enabled: bool,
-        info: Option<TimerResolutionInfo>,
+        refresh_bounds: bool,
         action_log: &mut ActionLog,
         reason: &str,
-        message: &str,
+        mut message: &str,
     ) -> TimerResolutionSnapshot {
         let mut failures = 0;
         let mut last_error = None;
@@ -267,6 +261,22 @@ impl TimerResolutionManager {
             }
         }
 
+        // Releasing the exact owned request does not depend on current device capabilities.
+        let info = if refresh_bounds {
+            match controller.query() {
+                Ok(info) => Some(info),
+                Err(error) if enabled && last_error.is_none() => {
+                    record_query_failure(action_log, &error);
+                    failures += 1;
+                    last_error = Some(error);
+                    message = "Timer resolution query failed.";
+                    None
+                }
+                Err(_) => None,
+            }
+        } else {
+            None
+        };
         snapshot_from_query(
             enabled,
             controller.active_request_100ns(),
@@ -277,6 +287,16 @@ impl TimerResolutionManager {
             message,
         )
     }
+}
+
+fn record_query_failure(action_log: &mut ActionLog, error: &str) {
+    action_log.record(
+        ActionLogFeature::TimerResolution,
+        None,
+        SYSTEM_TARGET_NAME,
+        ActionLogResult::Failed,
+        error.to_owned(),
+    );
 }
 
 pub fn normalize_desired_resolution(
