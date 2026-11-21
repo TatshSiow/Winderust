@@ -710,9 +710,11 @@ Read the relevant section before changing feature policy, ownership, restoration
 
 ## Priority and efficiency
 
-- Process List shows a current priority or Dynamic Priority Boost value for a
-  group only when every selected process has a matching verified value.
-  Priority readback follows Allow cross-session process control.
+- Process List shows a current priority, Dynamic Priority Boost, or Efficiency
+  Mode value for a group only when every selected process has a matching
+  verified value. Readback follows Allow cross-session process control.
+  Eligible selections with unknown Efficiency Mode can still choose Enabled or
+  Disabled.
 - Background Efficiency uses the same explicit Foreground Detection and Visible Window Detection
   layers as Priority Control. Foreground Detection defaults on, Visible Window Detection defaults
   off, and each layer owns an Enabled/Disabled Efficiency Mode default.

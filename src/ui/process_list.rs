@@ -718,33 +718,33 @@ impl ProcessList {
                 let targets = selection.targets();
                 let mut threads = ThreadInventory::default();
                 let values = [
-                    shared_priority(&targets, |target| {
+                    shared_value(&targets, |target| {
                         current_process_priority(target, allow)
                             .ok()
                             .map(Value::Process)
                     }),
-                    shared_priority(&targets, |target| {
+                    shared_value(&targets, |target| {
                         current_process_thread_priority(target, allow, &mut threads)
                             .ok()
                             .flatten()
                             .map(Value::Thread)
                     }),
-                    shared_priority(&targets, |target| {
+                    shared_value(&targets, |target| {
                         current_process_io_priority(target, allow)
                             .ok()
                             .map(|value| Value::Io(value.into()))
                     }),
-                    shared_priority(&targets, |target| {
+                    shared_value(&targets, |target| {
                         current_process_gpu_priority(target, allow)
                             .ok()
                             .map(|value| Value::Gpu(value.into()))
                     }),
-                    shared_priority(&targets, |target| {
+                    shared_value(&targets, |target| {
                         current_process_memory_priority(target, allow)
                             .ok()
                             .map(|value| Value::Memory(value.into()))
                     }),
-                    shared_priority(&targets, |target| {
+                    shared_value(&targets, |target| {
                         current_dynamic_priority_boost_state(target, allow)
                             .ok()
                             .map(|value| {
@@ -762,11 +762,9 @@ impl ProcessList {
                 .into_iter()
                 .flatten()
                 .collect();
-                let efficiency = targets
-                    .iter()
-                    .filter_map(|target| target.as_ref().ok())
-                    .filter_map(|target| current_efficiency_mode(target, allow).ok())
-                    .reduce(|all_enabled, enabled| all_enabled && enabled);
+                let efficiency = shared_value(&targets, |target| {
+                    current_efficiency_mode(target, allow).ok()
+                });
                 Ok((values, efficiency))
             },
             move |result| Message::Current(query_id, result),
@@ -1965,11 +1963,30 @@ impl ProcessList {
                             enabled,
                             eligible.then_some(|value| Message::Action(Action::Efficiency(value))),
                         ),
-                        None => super::widgets::settings_card(super::widgets::setting_row(
-                            "process_list.efficiency_mode",
-                            text(t!("common.unknown").to_string()),
-                        ))
-                        .into(),
+                        None => {
+                            let unknown = t!("common.unknown").into_owned();
+                            let control: Element<'_, Message> = if eligible {
+                                use super::widgets::Choice;
+                                pick_list(
+                                    [
+                                        Choice(false, t!("common.disabled").into_owned()),
+                                        Choice(true, t!("common.enabled").into_owned()),
+                                    ],
+                                    None::<Choice<bool>>,
+                                    |choice| Message::Action(Action::Efficiency(choice.0)),
+                                )
+                                .placeholder(unknown)
+                                .width(design::SELECT_WIDTH)
+                                .into()
+                            } else {
+                                text(unknown).into()
+                            };
+                            super::widgets::settings_card(super::widgets::setting_row(
+                                "process_list.efficiency_mode",
+                                control,
+                            ))
+                            .into()
+                        }
                     };
                     pane = pane
                         .push(
@@ -2075,10 +2092,10 @@ fn popup_position(position: iced::Point, bounds: iced::Size, popup: iced::Size) 
     )
 }
 
-fn shared_priority(
+fn shared_value<T: Eq>(
     targets: &[Result<ProcessActionTarget, ProcessActionTargetError>],
-    mut read: impl FnMut(&ProcessActionTarget) -> Option<Value>,
-) -> Option<Value> {
+    mut read: impl FnMut(&ProcessActionTarget) -> Option<T>,
+) -> Option<T> {
     let (first, remaining) = targets.split_first()?;
     let first = read(first.as_ref().ok()?)?;
     for target in remaining {
@@ -3273,13 +3290,13 @@ mod tests {
         let mut second = process(11, 200, r"C:\A\app.exe");
         let same = Value::Process(ProcessPrioritySetting::Normal);
         let targets = [snapshot_target(&first), snapshot_target(&second)];
-        assert_eq!(shared_priority(&targets, |_| Some(same)), Some(same));
+        assert_eq!(shared_value(&targets, |_| Some(same)), Some(same));
         assert_eq!(
-            shared_priority(&targets, |target| (target.id == 10).then_some(same)),
+            shared_value(&targets, |target| (target.id == 10).then_some(same)),
             None
         );
         assert_eq!(
-            shared_priority(&targets, |target| Some(if target.id == 10 {
+            shared_value(&targets, |target| Some(if target.id == 10 {
                 same
             } else {
                 Value::Process(ProcessPrioritySetting::Idle)
@@ -3288,7 +3305,7 @@ mod tests {
         );
         second.creation_time = None;
         let targets = [snapshot_target(&first), snapshot_target(&second)];
-        assert_eq!(shared_priority(&targets, |_| Some(same)), None);
+        assert_eq!(shared_value(&targets, |_| Some(same)), None);
     }
 
     #[test]
