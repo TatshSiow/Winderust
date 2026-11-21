@@ -468,6 +468,7 @@ settings:
   export_settings: "匯出設定（.toml）"
   import_settings: "匯入設定（.toml）"
   imported_startup_failed: "設定已匯入，但無法更新 Winderust 的 Windows 啟動設定。 %{error}"
+  saved_startup_failed: "設定已儲存，但無法更新 Winderust 的 Windows 啟動設定。 %{error}"
   import_unsaved: "請先儲存或捨棄設定變更，再匯入設定。"
 
 processor_power:
@@ -506,6 +507,7 @@ processor_power:
   review_stale: "所選電源計畫或調校草稿已變更。請再次檢查您的變更。"
   review_refresh_required: "編輯期間，電源計畫的值已變更。請選擇「重新整理數值」，再重新輸入變更。"
   settings_saved_tuning_failed: "設定已儲存。電源計畫調校失敗。%{error}"
+  apply_failed: "電源計畫調校失敗。%{error}"
   restore_previous: "還原先前的調整值"
   restore: "還原"
   restored_previous: "已還原 %{plan} 先前的調整值。"

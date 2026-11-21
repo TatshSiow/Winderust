@@ -2399,14 +2399,19 @@ impl WinderustApp {
                 return Task::none();
             }
         };
-        let startup_error = outcome.startup_registration_error();
-        if let Some(error) = startup_error {
-            self.error_message = error.to_string();
+        let startup_error = outcome
+            .startup_registration_error()
+            .map(|error| t!("settings.saved_startup_failed", error = error).into_owned());
+        if let Some(error) = &startup_error {
+            self.error_message.clone_from(error);
         }
         self.publish_settings();
         if self.power_tuning.dirty && !self.power_tuning.confirm_apply(&self.power_plans) {
             let status = self.power_tuning.status();
-            let tuning_error = if settings_changed {
+            self.error_message = if let Some(error) = startup_error {
+                let tuning_error = t!("processor_power.apply_failed", error = status.as_ref());
+                format!("{error}\n{tuning_error}")
+            } else if settings_changed {
                 t!(
                     "processor_power.settings_saved_tuning_failed",
                     error = status.as_ref()
@@ -2414,10 +2419,6 @@ impl WinderustApp {
                 .to_string()
             } else {
                 status.into_owned()
-            };
-            self.error_message = match startup_error {
-                Some(error) => format!("{error}\n{tuning_error}"),
-                None => tuning_error,
             };
             return Task::none();
         }
