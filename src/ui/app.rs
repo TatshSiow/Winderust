@@ -1730,9 +1730,9 @@ impl WinderustApp {
             Message::CpuLimiter(cpu_limiter::Message::Browse) => {
                 return self.browse(Page::CpuLimiter);
             }
-            Message::CpuLimiter(message) => self
-                .cpu_limiter
-                .update(&mut self.settings.cpu_limiter, message),
+            Message::CpuLimiter(message) => {
+                self.cpu_limiter.update_profile(&mut self.settings, message)
+            }
             Message::PowerSource(source) => {
                 self.select_power_source(source);
             }

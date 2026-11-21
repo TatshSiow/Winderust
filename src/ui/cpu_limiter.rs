@@ -5,7 +5,9 @@ use iced::widget::{column, row, text, Row};
 use iced::{Element, Fill};
 use rust_i18n::t;
 use std::collections::HashMap;
+use std::ops::{Deref, DerefMut};
 
+use crate::application::SettingsEditor;
 use crate::config::{CpuLimiterRule, CpuLimiterSettings, ProcessRuleMode};
 use crate::ui::process_rules::{can_add_cpu_limiter_process, new_cpu_limiter_rule};
 
@@ -36,6 +38,22 @@ pub(super) struct CpuLimiter {
     numbers: HashMap<(String, Tier), String>,
 }
 
+struct SelectedLimiter<'a>(&'a mut SettingsEditor);
+
+impl Deref for SelectedLimiter<'_> {
+    type Target = CpuLimiterSettings;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0.cpu_limiter
+    }
+}
+
+impl DerefMut for SelectedLimiter<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0.cpu_limiter
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(super) enum Tier {
     Focus,
@@ -55,6 +73,28 @@ impl Tier {
     }
     fn label(self) -> String {
         t!(self.key()).to_string()
+    }
+
+    fn default_limit(self, settings: &CpuLimiterSettings) -> u8 {
+        match self {
+            Self::Focus => settings.focus_allowed_cpu_time_percent,
+            Self::VisibleWindow => settings.visible_window_allowed_cpu_time_percent,
+            Self::Background => settings.background_allowed_cpu_time_percent,
+        }
+    }
+
+    fn rule_values(self, rule: &CpuLimiterRule) -> (ProcessRuleMode, u8) {
+        match self {
+            Self::Focus => (rule.focus_mode, rule.focus_allowed_cpu_time_percent),
+            Self::VisibleWindow => (
+                rule.visible_window_mode,
+                rule.visible_window_allowed_cpu_time_percent,
+            ),
+            Self::Background => (
+                rule.background_mode,
+                rule.background_allowed_cpu_time_percent,
+            ),
+        }
     }
 
     fn rule_fields(self, rule: &mut CpuLimiterRule) -> (&mut ProcessRuleMode, &mut u8) {
@@ -98,7 +138,15 @@ impl CpuLimiter {
         self.draft.is_some()
     }
 
-    pub(super) fn update(&mut self, settings: &mut CpuLimiterSettings, message: Message) {
+    pub(super) fn update_profile(&mut self, settings: &mut SettingsEditor, message: Message) {
+        self.update(SelectedLimiter(settings), message);
+    }
+
+    pub(super) fn update(
+        &mut self,
+        mut settings: impl DerefMut<Target = CpuLimiterSettings>,
+        message: Message,
+    ) {
         match message {
             Message::Edit(index) => {
                 if settings.rules.get(index).is_some() {
@@ -121,8 +169,12 @@ impl CpuLimiter {
                 if self.has_invalid_inputs_for(Some(&edited.executable_path)) {
                     return;
                 }
-                if let Some(rule) = settings.rules.get_mut(*index) {
-                    *rule = edited.clone();
+                if settings
+                    .rules
+                    .get(*index)
+                    .is_some_and(|rule| rule != edited)
+                {
+                    settings.rules[*index] = edited.clone();
                 }
                 self.draft = None;
                 return;
@@ -136,10 +188,16 @@ impl CpuLimiter {
             self.update_fields(settings, message);
         }
     }
-    fn update_fields(&mut self, settings: &mut CpuLimiterSettings, message: Message) {
+    fn update_fields(
+        &mut self,
+        mut settings: impl DerefMut<Target = CpuLimiterSettings>,
+        message: Message,
+    ) {
         match message {
             Message::Enabled(value) => {
-                settings.enabled = value;
+                if settings.enabled != value {
+                    settings.enabled = value;
+                }
                 if !value {
                     self.numbers.clear();
                 }
@@ -161,7 +219,7 @@ impl CpuLimiter {
                     .ok()
                     .filter(|value| (1..=100).contains(value));
                 if let Some(value) = parsed {
-                    self.update(
+                    self.update_fields(
                         settings,
                         match index {
                             Some(index) => Message::RuleLimit(index, tier, value),
@@ -172,35 +230,48 @@ impl CpuLimiter {
                 self.numbers.insert((path, tier), raw);
             }
             Message::Add => {
-                if can_add_cpu_limiter_process(settings, &self.path) {
+                if can_add_cpu_limiter_process(&settings, &self.path) {
                     settings.rules.push(new_cpu_limiter_rule(&self.path));
                     self.path.clear();
                 }
             }
             Message::Default(tier, value) => {
                 self.numbers.remove(&(String::new(), tier));
+                let value = value.clamp(1, 100);
+                if tier.default_limit(&settings) == value {
+                    return;
+                }
                 let field = match tier {
                     Tier::Focus => &mut settings.focus_allowed_cpu_time_percent,
                     Tier::VisibleWindow => &mut settings.visible_window_allowed_cpu_time_percent,
                     Tier::Background => &mut settings.background_allowed_cpu_time_percent,
                 };
-                *field = value.clamp(1, 100);
+                *field = value;
             }
             Message::RuleEnabled(index, value) => {
-                if let Some(rule) = settings.rules.get_mut(index) {
-                    rule.enabled = value;
+                if settings
+                    .rules
+                    .get(index)
+                    .is_some_and(|rule| rule.enabled != value)
+                {
+                    settings.rules[index].enabled = value;
                 }
             }
             Message::RuleMode(index, tier, value) => {
-                if let Some(rule) = settings.rules.get_mut(index) {
+                if let Some(rule) = settings.rules.get(index) {
                     self.numbers.remove(&(rule.executable_path.clone(), tier));
-                    *tier.rule_fields(rule).0 = value;
+                    if tier.rule_values(rule).0 != value {
+                        *tier.rule_fields(&mut settings.rules[index]).0 = value;
+                    }
                 }
             }
             Message::RuleLimit(index, tier, value) => {
-                if let Some(rule) = settings.rules.get_mut(index) {
+                if let Some(rule) = settings.rules.get(index) {
                     self.numbers.remove(&(rule.executable_path.clone(), tier));
-                    *tier.rule_fields(rule).1 = value.clamp(1, 100);
+                    let value = value.clamp(1, 100);
+                    if tier.rule_values(rule).1 != value {
+                        *tier.rule_fields(&mut settings.rules[index]).1 = value;
+                    }
                 }
             }
             Message::Remove(index) => {
@@ -283,12 +354,8 @@ impl CpuLimiter {
             );
         }
         let mut defaults = Vec::new();
-        for (tier, value) in Tier::ALL.into_iter().zip([
-            settings.focus_allowed_cpu_time_percent,
-            settings.visible_window_allowed_cpu_time_percent,
-            settings.background_allowed_cpu_time_percent,
-        ]) {
-            defaults.push(self.limit_row(None, tier, "", value));
+        for tier in Tier::ALL {
+            defaults.push(self.limit_row(None, tier, "", tier.default_limit(settings)));
         }
         body = body.push(super::widgets::setting_group(
             "cpu_limiter.enable".to_string(),
@@ -311,17 +378,8 @@ impl CpuLimiter {
         let mut cards = Vec::new();
         for (index, rule) in settings.rules.iter().enumerate() {
             let mut cells = Vec::new();
-            for (tier, (mode, _value)) in Tier::ALL.into_iter().zip([
-                (rule.focus_mode, rule.focus_allowed_cpu_time_percent),
-                (
-                    rule.visible_window_mode,
-                    rule.visible_window_allowed_cpu_time_percent,
-                ),
-                (
-                    rule.background_mode,
-                    rule.background_allowed_cpu_time_percent,
-                ),
-            ]) {
+            for tier in Tier::ALL {
+                let (mode, _) = tier.rule_values(rule);
                 let choices: Vec<_> = ProcessRuleMode::ALL
                     .into_iter()
                     .map(|mode| Mode(mode, mode_label(mode)))
@@ -408,17 +466,8 @@ impl CpuLimiter {
             .spacing(design::space::SMALL),
         ));
         let mut limits = Vec::new();
-        for (tier, (mode, value)) in Tier::ALL.into_iter().zip([
-            (rule.focus_mode, rule.focus_allowed_cpu_time_percent),
-            (
-                rule.visible_window_mode,
-                rule.visible_window_allowed_cpu_time_percent,
-            ),
-            (
-                rule.background_mode,
-                rule.background_allowed_cpu_time_percent,
-            ),
-        ]) {
+        for tier in Tier::ALL {
+            let (mode, value) = tier.rule_values(rule);
             let mut controls = column![super::widgets::setting_row_with_unit(
                 tier.key(),
                 "%",
@@ -577,39 +626,45 @@ mod tests {
     #[test]
     fn rule_editor_cancel_and_save_are_isolated() {
         let mut editor = CpuLimiter::default();
-        let mut settings = CpuLimiterSettings::default();
+        let mut settings = crate::config::Settings::default();
         settings
+            .cpu_limiter
             .rules
             .push(new_cpu_limiter_rule(r"C:\Apps\test.exe"));
         let before = settings.clone();
-        editor.update(&mut settings, Message::Number(None, Tier::Focus, "".into()));
-        editor.update(&mut settings, Message::Edit(0));
+        let mut settings = SettingsEditor::with_settings(settings);
+        settings.select_power_source(crate::config::PowerSourceProfile::OnBattery);
+        editor.update_profile(&mut settings, Message::Number(None, Tier::Focus, "".into()));
+        editor.update_profile(&mut settings, Message::Edit(0));
+        editor.update_profile(&mut settings, Message::SaveRule);
+        assert_eq!(settings.global(), &before);
+        editor.update_profile(&mut settings, Message::Edit(0));
         assert!(editor.has_pending_editor());
-        editor.update(&mut settings, Message::RuleLimit(0, Tier::Focus, 25));
-        assert_eq!(settings, before);
-        editor.update(&mut settings, Message::CancelRule);
+        editor.update_profile(&mut settings, Message::RuleLimit(0, Tier::Focus, 25));
+        assert_eq!(settings.global(), &before);
+        editor.update_profile(&mut settings, Message::CancelRule);
         assert!(!editor.has_pending_editor());
         assert!(editor.has_invalid_inputs());
-        assert_eq!(settings, before);
-        editor.update(&mut settings, Message::Edit(0));
-        editor.update(
+        assert_eq!(settings.global(), &before);
+        editor.update_profile(&mut settings, Message::Edit(0));
+        editor.update_profile(
             &mut settings,
             Message::Number(Some(0), Tier::Focus, "101".into()),
         );
-        editor.update(&mut settings, Message::SaveRule);
+        editor.update_profile(&mut settings, Message::SaveRule);
         assert!(editor.has_pending_editor());
-        assert_eq!(settings, before);
-        editor.update(
+        assert_eq!(settings.global(), &before);
+        editor.update_profile(
             &mut settings,
             Message::Number(Some(0), Tier::Focus, "25".into()),
         );
-        editor.update(&mut settings, Message::SaveRule);
+        editor.update_profile(&mut settings, Message::SaveRule);
         assert!(!editor.has_pending_editor());
-        assert_eq!(settings.rules[0].focus_allowed_cpu_time_percent, 25);
         assert_eq!(
-            settings.focus_allowed_cpu_time_percent,
-            before.focus_allowed_cpu_time_percent
+            settings.cpu_limiter.rules[0].focus_allowed_cpu_time_percent,
+            25
         );
+        assert_eq!(settings.global().cpu_limiter, before.cpu_limiter);
         assert!(editor.has_invalid_inputs());
     }
     #[test]
