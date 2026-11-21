@@ -9,7 +9,7 @@ use crate::{
     action_log::{ActionLog, ActionLogFeature, ActionLogResult},
     config::{CpuLimiterRule, CpuLimiterSettings, PowerSourceProfile, ProcessRuleMode},
     control::{
-        cpu_limiter::{CpuLimiterController, CpuLimiterTarget},
+        cpu_limiter::{CpuLimiterActivation, CpuLimiterController, CpuLimiterTarget},
         process::ProcessTargetKey,
         suspension::{self as suspension_control, SuspensionTarget},
     },
@@ -289,7 +289,6 @@ impl CpuLimiterManager {
         let managed_keys = controller
             .managed_target_keys()
             .unwrap_or_else(|_| self.limited.keys().cloned().collect());
-        let fallback_keys = controller.fallback_target_keys().unwrap_or_default();
         let previous = std::mem::take(&mut self.limited);
         let previous_keys = previous.keys().cloned().collect::<BTreeSet<_>>();
         self.limited = retain_unreleased_limits(previous, &active_keys, &managed_keys, action_log);
@@ -304,16 +303,19 @@ impl CpuLimiterManager {
                 },
             );
             if !previous_keys.contains(key) {
-                action_log.record(
-                    ActionLogFeature::CpuLimiter,
-                    Some(target.control.suspension_target.process.id),
-                    target.process_name.clone(),
-                    ActionLogResult::Applied,
-                    limiter_activation_detail(
-                        target.control.allowed_cpu_time_percent,
-                        fallback_keys.contains(key),
+                match controller.target_activation(key) {
+                    Ok(Some(activation)) => action_log.record(
+                        ActionLogFeature::CpuLimiter,
+                        Some(target.control.suspension_target.process.id),
+                        target.process_name.clone(),
+                        ActionLogResult::Applied,
+                        limiter_activation_detail(activation),
                     ),
-                );
+                    Ok(None) => {}
+                    Err(error) => {
+                        last_error.get_or_insert(error);
+                    }
+                }
             }
         }
 
@@ -446,16 +448,18 @@ pub fn is_builtin_excluded(process_name: &str) -> bool {
     suspension_control::is_builtin_excluded(process_name)
 }
 
-fn limiter_activation_detail(allowed_cpu_time_percent: u8, used_thread_fallback: bool) -> String {
-    let mut detail = format!(
-        "Set the managed app group's Allowed CPU Time target to {allowed_cpu_time_percent}%."
-    );
-    if used_thread_fallback {
-        detail.push_str(
+fn limiter_activation_detail(activation: CpuLimiterActivation) -> String {
+    let (allowed_cpu_time_percent, detail) = match activation {
+        CpuLimiterActivation::Job(percent) => (percent, ""),
+        CpuLimiterActivation::AncestorJob => {
+            return "Managed under its ancestor app group's CPU Limiter target.".to_owned();
+        }
+        CpuLimiterActivation::ThreadFallback(percent) => (
+            percent,
             " Automatic thread fallback was used because Windows kept the app in another Job Object.",
-        );
-    }
-    detail
+        ),
+    };
+    format!("Set the managed app group's Allowed CPU Time target to {allowed_cpu_time_percent}%.{detail}")
 }
 
 fn valid_rule(rule: &CpuLimiterRule) -> bool {
@@ -885,12 +889,16 @@ mod tests {
     #[test]
     fn activation_detail_identifies_automatic_thread_fallback_once() {
         assert_eq!(
-            limiter_activation_detail(1, false),
+            limiter_activation_detail(CpuLimiterActivation::Job(1)),
             "Set the managed app group's Allowed CPU Time target to 1%."
         );
         assert_eq!(
-            limiter_activation_detail(1, true),
+            limiter_activation_detail(CpuLimiterActivation::ThreadFallback(1)),
             "Set the managed app group's Allowed CPU Time target to 1%. Automatic thread fallback was used because Windows kept the app in another Job Object."
+        );
+        assert_eq!(
+            limiter_activation_detail(CpuLimiterActivation::AncestorJob),
+            "Managed under its ancestor app group's CPU Limiter target."
         );
     }
 }

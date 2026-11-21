@@ -120,6 +120,12 @@ impl CpuLimiterBackend {
     }
 }
 
+pub(crate) enum CpuLimiterActivation {
+    Job(u8),
+    AncestorJob,
+    ThreadFallback(u8),
+}
+
 struct WorkerTarget {
     target: CpuLimiterTarget,
     backend: CpuLimiterBackend,
@@ -383,18 +389,29 @@ impl CpuLimiterController {
             .map_err(|_| "CPU Limiter worker state is unavailable.".to_owned())
     }
 
-    pub(crate) fn fallback_target_keys(&self) -> Result<BTreeSet<ProcessTargetKey>, String> {
+    pub(crate) fn target_activation(
+        &self,
+        key: &ProcessTargetKey,
+    ) -> Result<Option<CpuLimiterActivation>, String> {
         self.state
             .lock()
             .map(|state| {
+                if retained_covered_owner(&state, key).is_some() {
+                    return Some(CpuLimiterActivation::AncestorJob);
+                }
                 state
                     .targets
-                    .iter()
-                    .filter(|(_key, target)| {
-                        !target.retiring && matches!(target.backend, CpuLimiterBackend::Thread(_))
+                    .get(key)
+                    .filter(|target| !target.retiring)
+                    .map(|target| {
+                        let percent = target.target.allowed_cpu_time_percent;
+                        match target.backend {
+                            CpuLimiterBackend::Job => CpuLimiterActivation::Job(percent),
+                            CpuLimiterBackend::Thread(_) => {
+                                CpuLimiterActivation::ThreadFallback(percent)
+                            }
+                        }
                     })
-                    .map(|(key, _target)| key.clone())
-                    .collect()
             })
             .map_err(|_| "CPU Limiter worker state is unavailable.".to_owned())
     }
@@ -505,20 +522,16 @@ fn effective_managed_target_keys(state: &WorkerState) -> BTreeSet<ProcessTargetK
     keys
 }
 
-fn retained_covered_owner(
-    state: &WorkerState,
+fn retained_covered_owner<'a>(
+    state: &'a WorkerState,
     target: &ProcessTargetKey,
-) -> Option<ProcessTargetKey> {
-    state
-        .covered_targets
-        .get(target)
-        .filter(|owner| {
-            state
-                .targets
-                .get(*owner)
-                .is_some_and(|target| target.backend.is_job())
-        })
-        .cloned()
+) -> Option<&'a ProcessTargetKey> {
+    state.covered_targets.get(target).filter(|owner| {
+        state
+            .targets
+            .get(*owner)
+            .is_some_and(|target| target.backend.is_job())
+    })
 }
 
 impl Drop for CpuLimiterController {
@@ -960,7 +973,7 @@ mod tests {
             effective_managed_target_keys(&state),
             BTreeSet::from([owner_key.clone(), child_key.clone()])
         );
-        assert_eq!(retained_covered_owner(&state, &child_key), Some(owner_key));
+        assert_eq!(retained_covered_owner(&state, &child_key), Some(&owner_key));
     }
 
     #[test]
@@ -1098,9 +1111,10 @@ mod tests {
 
         let mut controller = CpuLimiterController::new(Arc::clone(&suspension))?;
         controller.replace_targets(vec![limiter_target])?;
-        assert!(controller
-            .fallback_target_keys()?
-            .contains(&suspension_target.key()));
+        assert!(matches!(
+            controller.target_activation(&suspension_target.key())?,
+            Some(CpuLimiterActivation::ThreadFallback(1))
+        ));
 
         let deadline = Instant::now() + Duration::from_secs(2);
         let mut observed_frozen = false;

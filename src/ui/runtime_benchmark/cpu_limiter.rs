@@ -28,7 +28,7 @@ use crate::{
             CpuAllocationApplyOutcome, CpuAllocationClaim, CpuAllocationCoordinator,
             CpuAllocationRequest, CpuSetInventory,
         },
-        cpu_limiter::{CpuLimiterController, CpuLimiterTarget},
+        cpu_limiter::{CpuLimiterActivation, CpuLimiterController, CpuLimiterTarget},
         process::{open_process_for_set_information, ControlOwner},
         suspension::{SuspensionController, SuspensionTarget},
     },
@@ -369,7 +369,10 @@ fn run_case(
                     ancestor_process_ids: Vec::new(),
                 }])?;
                 check_limiter(&mut limiter, &target)?;
-                if limiter.fallback_target_keys()?.contains(&target.key()) {
+                if matches!(
+                    limiter.target_activation(&target.key())?,
+                    Some(CpuLimiterActivation::ThreadFallback(_))
+                ) {
                     "exact-thread fallback"
                 } else {
                     "job freeze"
