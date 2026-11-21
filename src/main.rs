@@ -112,7 +112,7 @@ fn main() {
     }
 
     let (mut settings, outcome) = SettingsEditor::load();
-    let settings_load_error = settings.load_error().map(str::to_owned).or_else(|| {
+    let settings_warning = settings.load_error().map(str::to_owned).or_else(|| {
         outcome
             .startup_registration_error()
             .map(|error| format!("Startup registration reconciliation failed: {error}"))
@@ -124,16 +124,21 @@ fn main() {
     let recovery_client = std::sync::Arc::new(std::sync::Mutex::new(
         crash_recovery::RecoveryClient::start(),
     ));
-    let settings_load_error = settings_load_error.or(adaptive_plan_recovery_error);
-    if let Some(error) = &settings_load_error {
-        backend::diagnostics::error(error);
+    let mut startup_warnings = Vec::new();
+    for warning in [settings_warning, adaptive_plan_recovery_error]
+        .into_iter()
+        .flatten()
+    {
+        backend::diagnostics::error(&warning);
+        startup_warnings.push(warning);
     }
+    startup_warnings.extend(crash_recovery::startup_error());
     let runtime_settings = settings.runtime_settings_snapshot();
     let runtime_handle = automation::RuntimeHandle::start(&runtime_settings);
 
     if let Err(error) = app::run(
         settings,
-        settings_load_error,
+        startup_warnings,
         runtime_handle,
         restore_event,
         recovery_client.clone(),

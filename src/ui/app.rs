@@ -215,21 +215,21 @@ pub(crate) mod window_lifecycle_smoke;
 
 pub(crate) fn run(
     settings: SettingsEditor,
-    error: Option<String>,
+    startup_warnings: Vec<String>,
     runtime: RuntimeHandle,
     restore_event: Option<SingleInstanceRestoreEvent>,
     recovery_client: Arc<Mutex<crate::crash_recovery::RecoveryClient>>,
 ) -> iced::Result {
     let startup = RefCell::new(Some((
         settings,
-        error,
+        startup_warnings,
         runtime,
         restore_event,
         recovery_client,
     )));
     iced::daemon(
         move || {
-            let Some((settings, error, runtime, restore_event, recovery_client)) =
+            let Some((settings, mut startup_warnings, runtime, restore_event, recovery_client)) =
                 startup.borrow_mut().take()
             else {
                 unreachable!("Iced must initialize the application exactly once");
@@ -287,9 +287,7 @@ pub(crate) fn run(
                 settings,
                 runtime: std::sync::Arc::new(runtime),
                 status: RuntimeStatusSnapshot::default(),
-                error_message: error
-                    .or_else(crate::crash_recovery::startup_error)
-                    .unwrap_or_default(),
+                error_message: String::new(),
                 page: Page::Home,
                 navigation_history: navigation::History::default(),
                 breadcrumb: vec![Page::Home],
@@ -324,7 +322,8 @@ pub(crate) fn run(
                 running_app_plans: process_power_plans::Editor::default(),
                 activity_inputs: by_activity::Inputs::default(),
             };
-            app.sync_tray();
+            startup_warnings.extend(app.sync_tray_warning());
+            app.error_message = startup_warnings.join("\n");
             let window = if app.settings.persisted().general.start_minimized
                 && app.tray.as_ref().is_some_and(|icon| icon.is_registered())
             {

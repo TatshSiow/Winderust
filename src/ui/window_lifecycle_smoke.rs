@@ -456,9 +456,10 @@ pub(crate) fn run_check() {
     let mut editor = SettingsEditor::with_settings(settings);
     let recovery = Arc::new(Mutex::new(crate::crash_recovery::RecoveryClient::start()));
     let runtime = RuntimeHandle::start(&editor.runtime_settings_snapshot());
+    let startup_warnings = crate::crash_recovery::startup_error().into_iter().collect();
     COMPLETED.store(false, Ordering::Relaxed);
     REQUESTED.store(true, Ordering::Relaxed);
-    let result = run(editor, None, runtime, None, recovery);
+    let result = run(editor, startup_warnings, runtime, None, recovery);
     REQUESTED.store(false, Ordering::Relaxed);
     result.expect("run lifecycle smoke fixture");
     assert!(
