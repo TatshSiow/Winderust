@@ -180,7 +180,8 @@ hover/press; background shading supplies feedback.
   counts, and latest success/failure Action Log summary; unavailable snapshot metrics show an
   em dash rather than a fabricated zero. Action counts and latest outcomes are runtime telemetry,
   independent of Action Log visibility mode and its bounded visible history; clearing the Action
-  Log resets both.
+  Log resets both. The status area shows a current error when it differs from the latest failed
+  action. The Failed actions section uses Action Log history.
 - By Focus, By Running App, By CPU Load, By Activity, and By Time also use the right rail;
   every power-plan rail uses Status, Current power plan, Successful actions, and Failed actions.
   Power-plan actions are recorded only after the controller verifies the Windows plan transition.

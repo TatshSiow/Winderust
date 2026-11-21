@@ -146,6 +146,17 @@ pub(super) fn view<'a>(
             .style(text::secondary)
     ]
     .spacing(design::space::MEDIUM);
+    let actions = runtime
+        .action_log_summaries
+        .get(&summary.action_log_feature);
+    let last_failed = actions.and_then(|summary| summary.last_failed.as_ref());
+    let current_error = summary.last_error.filter(|reason| {
+        (page != Page::InstanceLimits || settings.instance_limits.notify)
+            && last_failed.is_none_or(|entry| entry.reason.as_str() != *reason)
+    });
+    if let Some(error) = current_error {
+        body = body.push(detail_row("sidebar_status.current_error", error.to_owned()));
+    }
     if power_feature.is_some() {
         let plan = runtime
             .power_plan_status
@@ -260,9 +271,6 @@ pub(super) fn view<'a>(
             .spacing(design::space::CONTROL),
         ));
     }
-    let actions = runtime
-        .action_log_summaries
-        .get(&summary.action_log_feature);
     body = body
         .push(section(
             "common.successful_actions",
@@ -273,8 +281,7 @@ pub(super) fn view<'a>(
                 ),
                 log(
                     "common.last_success",
-                    actions.and_then(|s| s.last_success.as_ref()),
-                    None
+                    actions.and_then(|s| s.last_success.as_ref())
                 )
             ]
             .spacing(design::space::CONTROL),
@@ -286,11 +293,7 @@ pub(super) fn view<'a>(
                     "common.failed_count",
                     count(available.then(|| actions.map_or(0, |s| s.failed_actions)))
                 ),
-                log(
-                    "common.last_failed",
-                    actions.and_then(|s| s.last_failed.as_ref()),
-                    summary.last_error
-                )
+                log("common.last_failed", last_failed)
             ]
             .spacing(design::space::CONTROL),
         ));
@@ -675,11 +678,7 @@ fn section<'a>(title: &str, body: iced::widget::Column<'a, Message>) -> Element<
     .into()
 }
 
-fn log(
-    label: &str,
-    entry: Option<&ActionLogEntry>,
-    fallback: Option<&str>,
-) -> Element<'static, Message> {
+fn log(label: &str, entry: Option<&ActionLogEntry>) -> Element<'static, Message> {
     let value = entry
         .map(|e| {
             format!(
@@ -689,8 +688,11 @@ fn log(
                 e.reason
             )
         })
-        .or_else(|| fallback.map(str::to_owned))
         .unwrap_or_else(|| t!("common.none").to_string());
+    detail_row(label, value)
+}
+
+fn detail_row(label: &str, value: String) -> Element<'static, Message> {
     column![
         text(t!(label).to_string()).size(design::typography::CAPTION),
         text(value).width(Fill).size(design::typography::CAPTION)
@@ -924,6 +926,68 @@ fn feature_status_summary(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sidebar_shows_a_current_error_alongside_an_older_failed_action() {
+        use crate::action_log::{ActionLog, ActionLogResult};
+        use iced::advanced::{
+            layout,
+            widget::{Id, Operation, Tree},
+            Layout,
+        };
+
+        #[derive(Default)]
+        struct Details(Vec<String>);
+
+        impl Operation for Details {
+            fn traverse(&mut self, visit: &mut dyn FnMut(&mut dyn Operation)) {
+                visit(self);
+            }
+
+            fn text(&mut self, _: Option<&Id>, _: iced::Rectangle, content: &str) {
+                self.0.push(content.to_owned());
+            }
+        }
+
+        let mut settings = Settings::default();
+        settings.general.enabled = true;
+        settings.io_priority.enabled = true;
+        let mut log = ActionLog::new(4);
+        log.record(
+            ActionLogFeature::IoPriority,
+            Some(42),
+            "app.exe",
+            ActionLogResult::Failed,
+            "older apply failure",
+        );
+        let mut runtime = RuntimeStatusSnapshot {
+            generation: 1,
+            action_log_summaries: log.summaries().into(),
+            ..Default::default()
+        };
+        let features = std::sync::Arc::make_mut(&mut runtime.feature_status);
+        features.io_priority.last_error = Some("current restore failure".to_owned());
+
+        let mut rail = view(Page::IoPriority, &settings, &runtime, &[]).unwrap();
+        let renderer = iced::Renderer::new(design::typography::FONT, iced::Pixels(14.0));
+        let mut tree = Tree::new(&rail);
+        let size = iced::Size::new(216.0, 560.0);
+        let node =
+            rail.as_widget_mut()
+                .layout(&mut tree, &renderer, &layout::Limits::new(size, size));
+        let mut details = Details::default();
+        rail.as_widget_mut()
+            .operate(&mut tree, Layout::new(&node), &renderer, &mut details);
+        assert!(details
+            .0
+            .iter()
+            .any(|text| text == "current restore failure"));
+        assert!(details
+            .0
+            .iter()
+            .any(|text| text.ends_with(" - older apply failure")));
+    }
+
     #[test]
     fn unsaved_toggle_edits_do_not_change_sidebar_settings() {
         let mut saved = Settings::default();

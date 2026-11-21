@@ -1171,6 +1171,7 @@ exit_prompt:
   without_saving: "Exit without saving"
 
 sidebar_status:
+  current_error: "Current error"
   paused: "Paused"
   blocked: "Blocked"
   running_help: "Runtime confirms active work or an applied policy."

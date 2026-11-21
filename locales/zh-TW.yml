@@ -1174,6 +1174,7 @@ exit_prompt:
   without_saving: "不儲存並結束"
 
 sidebar_status:
+  current_error: "目前錯誤"
   paused: "已暫停"
   blocked: "受阻"
   running_help: "執行狀態已確認正在作用或已套用原則。"
