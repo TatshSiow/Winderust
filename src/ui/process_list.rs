@@ -4,7 +4,6 @@ use super::widgets::{action_button, button, checkbox, pick_list, text_input};
 use crate::application::SettingsEditor;
 use crate::automation::RuntimeHandle;
 use crate::config::*;
-use crate::control::process_termination::ProcessTerminationFailure;
 use crate::foreground::{
     self, ProcessActionTarget, ProcessActionTargetError, ProcessInfo, ProcessResourceSample,
 };
@@ -833,9 +832,8 @@ impl ProcessList {
                         .recv()
                         .map_err(|e| e.to_string())?
                         .map_err(|e| e.to_string())?
-                        .into_outcome()
+                        .into_termination_result()
                         .map(|_| ())
-                        .map_err(stop_failure_message)
                 },
                 move |result| Message::Result {
                     name: name.clone(),
@@ -2253,32 +2251,6 @@ fn visible_range(count: usize, offset: f32, height: f32) -> Range<usize> {
         .map(|i| i as f32 * ROW_HEIGHT)
         .collect::<Vec<_>>();
     visible_range_offsets(&offsets, offset, height)
-}
-
-fn stop_failure_message(error: ProcessTerminationFailure) -> String {
-    let (message, detail) = match error {
-        ProcessTerminationFailure::NoTargets => (t!("process_list.stop_no_targets"), None),
-        ProcessTerminationFailure::Preflight { detail } => {
-            (t!("process_list.stop_preflight_failed"), detail)
-        }
-        ProcessTerminationFailure::RequestsRejected {
-            requested,
-            total,
-            detail,
-        } => (
-            t!(
-                "process_list.stop_requests_rejected",
-                requested = requested,
-                total = total,
-                failed = total - requested
-            ),
-            detail,
-        ),
-    };
-    match detail {
-        Some(detail) => format!("{message} {detail}"),
-        None => message.into_owned(),
-    }
 }
 
 fn background<T: Send + 'static>(

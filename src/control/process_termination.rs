@@ -1,4 +1,4 @@
-use std::fmt;
+use rust_i18n::t;
 
 use crate::{
     foreground::ProcessActionTarget, platform::windows::process_termination, win_util::WinHandle,
@@ -26,7 +26,7 @@ pub(crate) struct ProcessTerminationBatchResult {
 }
 
 #[derive(Debug)]
-pub(crate) enum ProcessTerminationFailure {
+enum ProcessTerminationFailure {
     NoTargets,
     Preflight {
         detail: Option<String>,
@@ -38,31 +38,39 @@ pub(crate) enum ProcessTerminationFailure {
     },
 }
 
-impl fmt::Display for ProcessTerminationFailure {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::NoTargets => formatter.write_str("No process targets were available."),
-            Self::Preflight { detail } => write!(
-                formatter,
-                "Process termination preflight failed. No termination requests were sent. {}",
-                detail.as_deref().unwrap_or("A process target could not be validated.")
+impl ProcessTerminationFailure {
+    fn localized(self) -> String {
+        let (summary, detail) = match self {
+            Self::NoTargets => (t!("process_list.stop_no_targets"), None),
+            Self::Preflight { detail } => (t!("process_list.stop_preflight_failed"), detail),
+            Self::RequestsRejected {
+                requested,
+                total,
+                detail,
+            } => (
+                t!(
+                    "process_list.stop_requests_rejected",
+                    requested = requested,
+                    total = total,
+                    failed = total - requested
+                ),
+                detail,
             ),
-            Self::RequestsRejected { requested, total, detail } => write!(
-                formatter,
-                "Windows accepted termination requests for {requested} of {total} processes. {} failed. {}",
-                total - requested,
-                detail.as_deref().unwrap_or("Windows did not accept a termination request.")
-            ),
+        };
+        match detail {
+            Some(detail) => format!("{summary} {detail}"),
+            None => summary.into_owned(),
         }
     }
 }
 
 impl ProcessTerminationBatchResult {
     pub(crate) fn into_termination_result(self) -> Result<usize, String> {
-        self.into_outcome().map_err(|error| error.to_string())
+        self.into_outcome()
+            .map_err(ProcessTerminationFailure::localized)
     }
 
-    pub(crate) fn into_outcome(self) -> Result<usize, ProcessTerminationFailure> {
+    fn into_outcome(self) -> Result<usize, ProcessTerminationFailure> {
         let total = self.results.len();
         if total == 0 {
             return Err(ProcessTerminationFailure::NoTargets);
