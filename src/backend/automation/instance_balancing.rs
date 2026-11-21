@@ -147,13 +147,18 @@ impl Runtime {
     ) {
         let enabled = master_enabled && settings.enabled;
         let reset_all = resets.all || enabled != self.enabled;
-        let mut previous = std::mem::take(&mut self.rules);
-        self.dirty |= reset_all
-            || !resets.paths.is_empty()
-            || previous
+        if !reset_all
+            && resets.paths.is_empty()
+            && self
+                .rules
                 .iter()
                 .map(|rule| &rule.settings)
-                .ne(settings.rules.iter());
+                .eq(settings.rules.iter())
+        {
+            return;
+        }
+        self.dirty = true;
+        let mut previous = std::mem::take(&mut self.rules);
         self.rules = settings
             .rules
             .iter()
