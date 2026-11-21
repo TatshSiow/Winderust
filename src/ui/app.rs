@@ -1313,6 +1313,12 @@ impl WinderustApp {
                 );
             }
             Message::ActionLog(action_log::Message::Export) => {
+                if !self
+                    .action_log
+                    .begin_export(&self.status.action_log_entries)
+                {
+                    return Task::none();
+                }
                 return Task::perform(
                     crate::file_dialog::choose_action_log_export_file(
                         self.hwnd.map(|h| h as windows_sys::Win32::Foundation::HWND),
@@ -1340,11 +1346,10 @@ impl WinderustApp {
                 }
             }
             Message::ExportLog(path) => {
-                if let Some(path) = path {
+                if let (Some(path), Some(entries)) = (path, self.action_log.finish_export()) {
                     if let Err(error) = crate::config::storage::export_bytes(
                         &path,
-                        action_log::action_log_entries_to_csv(&self.status.action_log_entries)
-                            .as_bytes(),
+                        action_log::action_log_entries_to_csv(&entries).as_bytes(),
                     ) {
                         self.error_message = t!(
                             "status.action_log_export_failed",

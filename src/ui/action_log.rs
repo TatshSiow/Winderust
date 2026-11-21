@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use super::popover;
 
 use super::design;
@@ -14,6 +16,7 @@ pub(super) struct Editor {
     level: Vec<ActionLogLevel>,
     feature: Vec<ActionLogFeature>,
     offset: std::cell::Cell<f32>,
+    pending_export: Option<Arc<Vec<ActionLogEntry>>>,
 }
 impl Default for Editor {
     fn default() -> Self {
@@ -21,6 +24,7 @@ impl Default for Editor {
             level: ActionLogLevel::ALL.to_vec(),
             feature: FEATURES.to_vec(),
             offset: std::cell::Cell::new(0.0),
+            pending_export: None,
         }
     }
 }
@@ -37,6 +41,18 @@ pub(super) enum Message {
     LogMode(ActionLogMode),
 }
 impl Editor {
+    pub(super) fn begin_export(&mut self, entries: &Arc<Vec<ActionLogEntry>>) -> bool {
+        if entries.is_empty() || self.pending_export.is_some() {
+            return false;
+        }
+        self.pending_export = Some(Arc::clone(entries));
+        true
+    }
+
+    pub(super) fn finish_export(&mut self) -> Option<Arc<Vec<ActionLogEntry>>> {
+        self.pending_export.take()
+    }
+
     pub(super) fn update(&mut self, message: Message) {
         match message {
             Message::Level(level, checked) => {
@@ -174,7 +190,10 @@ impl Editor {
                     button(container(text(t!("action_log.export_csv").to_string())).center_x(Fill))
                         .width(Fill)
                         .height(32)
-                        .on_press_maybe(has_entries.then_some(Message::Export)),
+                        .on_press_maybe(
+                            (has_entries && self.pending_export.is_none())
+                                .then_some(Message::Export)
+                        ),
                 ]
                 .spacing(design::space::SMALL)
             )
@@ -673,6 +692,30 @@ fn log_label(v: ActionLogMode) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn export_retains_one_snapshot_until_the_picker_closes() {
+        let mut log = crate::action_log::ActionLog::new(1);
+        let mut editor = Editor::default();
+        assert!(!editor.begin_export(&Arc::new(log.entries())));
+        for reason in ["At click", "During picker"] {
+            log.record(
+                ActionLogFeature::CpuLimiter,
+                None,
+                "app.exe",
+                ActionLogResult::Applied,
+                reason,
+            );
+            assert_eq!(
+                editor.begin_export(&Arc::new(log.entries())),
+                reason == "At click"
+            );
+        }
+        assert_eq!(editor.finish_export().unwrap()[0].reason, "At click");
+        assert!(editor.begin_export(&Arc::new(log.entries())));
+        assert_eq!(editor.finish_export().unwrap()[0].reason, "During picker");
+        assert!(editor.finish_export().is_none());
+    }
 
     #[test]
     fn level_filters_and_csv_preserve_distinct_outcomes() {
