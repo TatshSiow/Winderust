@@ -486,24 +486,29 @@ impl Editor {
                 )
             })
             .collect();
+        let mut duration = column![widgets::setting_row_with_unit(
+            "watchdog.duration",
+            "s",
+            widgets::text_input(
+                "",
+                self.duration
+                    .as_deref()
+                    .unwrap_or(&settings.sustained_seconds.to_string()),
+            )
+            .on_input(Message::Duration)
+            .width(design::STANDALONE_NUMERIC_WIDTH),
+        )]
+        .spacing(design::space::SMALL);
+        if self.has_invalid_inputs() {
+            duration = duration
+                .push(text(t!("watchdog.invalid_duration").to_string()).style(text::danger));
+        }
         super::scrolling::scrollable(
             column![
                 widgets::toggle_card("watchdog.enable", settings.enabled, Some(Message::Enabled)),
                 widgets::heading(t!("watchdog.shared").to_string(), design::typography::BODY),
                 widgets::settings_card(widgets::settings_rows([
-                    widgets::setting_row_with_unit(
-                        "watchdog.duration",
-                        "s",
-                        widgets::text_input(
-                            "",
-                            self.duration
-                                .as_deref()
-                                .unwrap_or(&settings.sustained_seconds.to_string()),
-                        )
-                        .on_input(Message::Duration)
-                        .width(design::STANDALONE_NUMERIC_WIDTH),
-                    )
-                    .into(),
+                    duration.into(),
                     widgets::setting_row(
                         "watchdog.notify",
                         widgets::switch(settings.notify, Some(Message::Notify)),
