@@ -21,6 +21,7 @@ pub(super) struct Editor {
     pub(super) download: Option<String>,
     update_failed: bool,
     pub(super) show_update: bool,
+    pub(super) replace_settings_open: bool,
 }
 
 #[derive(Debug)]
@@ -93,6 +94,8 @@ pub(super) enum Message {
     Open(String),
     Export,
     Import,
+    ReplaceSettingsPrompt(bool),
+    ConfirmReplaceSettings,
     DismissUpdate,
 }
 
@@ -124,6 +127,7 @@ impl Editor {
         self.hotkey_capture = None;
         self.color = None;
         self.failure_threshold = None;
+        self.replace_settings_open = false;
     }
 
     pub(super) fn reset_update_check(&mut self) {
@@ -347,7 +351,11 @@ impl Editor {
             Message::Checked(..) | Message::DismissUpdate | Message::ToggleAccent => {
                 self.update_ui(s.general.update_channel, m);
             }
-            Message::Open(_) | Message::Export | Message::Import => {}
+            Message::Open(_)
+            | Message::Export
+            | Message::Import
+            | Message::ReplaceSettingsPrompt(_)
+            | Message::ConfirmReplaceSettings => {}
         }
     }
     fn search_hotkey_row<'a>(
@@ -379,7 +387,41 @@ impl Editor {
         .into()
     }
 
-    pub(super) fn view<'a>(&'a self, page: Page, s: &'a Settings) -> Element<'a, Message> {
+    pub(super) fn replace_settings_modal(&self) -> Element<'_, Message> {
+        iced::widget::container(
+            column![
+                widgets::heading(
+                    t!("settings.replace_settings_title").to_string(),
+                    design::typography::DIALOG_TITLE,
+                ),
+                text(t!("settings.replace_settings_message").to_string())
+                    .wrapping(text::Wrapping::WordOrGlyph),
+                row![
+                    iced::widget::Space::new().width(Fill),
+                    action_button(t!("common.cancel").to_string())
+                        .style(widgets::tertiary_button)
+                        .on_press(Message::ReplaceSettingsPrompt(false)),
+                    action_button(t!("settings.replace_settings_confirm").to_string())
+                        .style(widgets::danger_button)
+                        .on_press(Message::ConfirmReplaceSettings),
+                ]
+                .spacing(design::space::SMALL),
+            ]
+            .spacing(design::space::LARGE),
+        )
+        .padding(design::space::LARGE as u16)
+        .width(Fill)
+        .max_width(460)
+        .style(widgets::surface)
+        .into()
+    }
+
+    pub(super) fn view<'a>(
+        &'a self,
+        page: Page,
+        s: &'a Settings,
+        can_replace_settings: bool,
+    ) -> Element<'a, Message> {
         let flag_row = |key: &str, value, flag| {
             widgets::setting_row(
                 key,
@@ -388,6 +430,23 @@ impl Editor {
         };
         let flag = |key: &str, value, flag| {
             widgets::toggle_card(key, value, Some(move |value| Message::Flag(flag, value)))
+        };
+        let file_actions = || {
+            let mut actions = row![
+                action_button(t!("settings.export_settings").to_string()).on_press(Message::Export),
+                action_button(t!("settings.import_settings").to_string()).on_press(Message::Import),
+            ];
+            if can_replace_settings {
+                actions = actions.push(
+                    action_button(t!("settings.replace_settings_open").to_string())
+                        .on_press(Message::ReplaceSettingsPrompt(true)),
+                );
+            }
+            actions
+                .spacing(design::space::SMALL)
+                .align_y(iced::Center)
+                .wrap()
+                .vertical_spacing(design::space::SMALL)
         };
         let body = match page {
             Page::WinderustBehaviour => column![
@@ -468,16 +527,7 @@ impl Editor {
                     t!("settings.settings_files").to_string(),
                     design::typography::BODY
                 ),
-                widgets::settings_card(
-                    row![
-                        action_button(t!("settings.export_settings").to_string())
-                            .on_press(Message::Export),
-                        action_button(t!("settings.import_settings").to_string())
-                            .on_press(Message::Import),
-                    ]
-                    .spacing(design::space::SMALL)
-                    .align_y(iced::Center),
-                ),
+                widgets::settings_card(file_actions()),
             ]
             .spacing(super::widgets::CARD_GAP),
             Page::LanguageAndAppearance => {
@@ -1154,7 +1204,7 @@ mod tests {
         let settings = Settings::default();
         let renderer = iced::Renderer::new(design::typography::FONT, iced::Pixels(14.0));
         for width in [780.0, 1200.0] {
-            let mut view = editor.view(Page::About, &settings);
+            let mut view = editor.view(Page::About, &settings, false);
             let mut tree = Tree::new(&view);
             let bounds = Rectangle::with_size(Size::new(width, 540.0));
             let node = view.as_widget_mut().layout(

@@ -359,6 +359,9 @@ to typed controllers and their narrow Windows adapters.
   editor reset and message handling in `src/ui/app.rs`.
 - TOML import/export uses native Windows file dialogs from `src/backend/file_dialog.rs`, invoked by the UI.
 - Exports cannot replace the active `settings.toml`. Save and Import own settings replacement.
+- After a settings load failure, Winderust Behaviour shows `Replace settings…`
+  under Settings Files while the fallback draft is clean. Confirmation saves
+  through the standard Save path. Cancel leaves the file untouched.
 - Save or discard pending settings edits before importing a settings file.
 - CPU selections store explicit `{ group, number }` members and a topology
   snapshot. Active-group masks inside that snapshot use quoted `0x` plus 16

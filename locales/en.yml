@@ -455,6 +455,10 @@ settings:
   export_failed: "Could not export settings to %{path}. %{error}"
   import_settings: "Import settings (.toml)"
   import_unsaved: "Save or discard your settings changes before importing."
+  replace_settings_open: "Replace settings…"
+  replace_settings_title: "Replace settings?"
+  replace_settings_confirm: "Replace settings"
+  replace_settings_message: "Winderust could not load settings.toml. This will overwrite it with the settings currently shown in Winderust."
 
 processor_power:
   invalid_percentage: "Enter a whole percentage from 0 to 100."

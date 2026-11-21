@@ -771,6 +771,7 @@ impl WinderustApp {
         if !review_open
             && (self.closing
                 || !self.error_message.is_empty()
+                || self.preferences.replace_settings_open
                 || self.preferences.show_update && self.process_power_plan_preview().is_none())
         {
             if tab {
@@ -788,6 +789,8 @@ impl WinderustApp {
                 Message::Stay
             } else if !self.error_message.is_empty() {
                 Message::DismissError
+            } else if self.preferences.replace_settings_open {
+                Message::Preferences(settings_pages::Message::ReplaceSettingsPrompt(false))
             } else {
                 Message::Preferences(settings_pages::Message::DismissUpdate)
             });
@@ -1201,6 +1204,19 @@ impl WinderustApp {
             }
             Message::Preferences(settings_pages::Message::Import) => {
                 return self.update(Message::SettingsFile(FileDialogMode::Open));
+            }
+            Message::Preferences(settings_pages::Message::ReplaceSettingsPrompt(open)) => {
+                self.preferences.replace_settings_open = open && self.can_replace_settings();
+                if self.preferences.replace_settings_open {
+                    self.navigation.dismiss();
+                }
+            }
+            Message::Preferences(settings_pages::Message::ConfirmReplaceSettings) => {
+                if std::mem::take(&mut self.preferences.replace_settings_open)
+                    && self.can_replace_settings()
+                {
+                    return self.update(Message::Save);
+                }
             }
             Message::Preferences(
                 message @ (settings_pages::Message::Check | settings_pages::Message::CheckStartup),
@@ -1872,6 +1888,7 @@ impl WinderustApp {
                 self.focus_plans.close_preview();
                 self.running_app_plans.close_preview();
                 self.preferences.hotkey_capture = None;
+                self.preferences.replace_settings_open = false;
                 self.navigation_history.visit(page);
                 self.side_panel_tab = SidePanelTab::for_page(page)[0];
                 let path = navigation::breadcrumb_path(page);
@@ -2309,6 +2326,13 @@ impl WinderustApp {
             || self.invalid_inputs()
     }
 
+    fn can_replace_settings(&self) -> bool {
+        self.page == Page::WinderustBehaviour
+            && !self.closing
+            && self.settings.load_error().is_some()
+            && !self.pending_changes()
+    }
+
     fn save_settings(&mut self) -> Task<Message> {
         if self.power_tuning.has_invalid_inputs() {
             self.power_tuning.cancel_apply_review();
@@ -2455,7 +2479,8 @@ impl WinderustApp {
     }
 
     fn blocking_editor_open(&self) -> bool {
-        self.adaptive.preset_open()
+        self.preferences.replace_settings_open
+            || self.adaptive.preset_open()
             || self.preset_close_message().is_some()
             || self.pending_editor()
     }
@@ -2827,6 +2852,14 @@ impl WinderustApp {
                 ]),
             ]
             .into();
+        }
+        if self.preferences.replace_settings_open {
+            return centered_modal(
+                content,
+                self.preferences
+                    .replace_settings_modal()
+                    .map(Message::Preferences),
+            );
         }
         if let Some((kind, editor)) = self.process_power_plan_preview() {
             if let Some(preview) = editor.preview_modal(&self.power_plans) {
@@ -3631,7 +3664,11 @@ impl WinderustApp {
             | Page::ExperimentalFeatures
             | Page::About => self
                 .preferences
-                .view(self.page, self.settings.global())
+                .view(
+                    self.page,
+                    self.settings.global(),
+                    self.can_replace_settings(),
+                )
                 .map(Message::Preferences),
             Page::PowerPlanControl => column![
                 power_plan_control::view(

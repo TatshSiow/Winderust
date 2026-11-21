@@ -1151,7 +1151,7 @@ mod picker_tests {
                 );
                 let messages = preview(
                     super::super::modal::picker(
-                        editor.view(Page::LanguageAndAppearance, &settings),
+                        editor.view(Page::LanguageAndAppearance, &settings, false),
                         true,
                         settings_pages::Message::CancelColorPicker,
                     ),
