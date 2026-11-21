@@ -567,7 +567,10 @@ fn compound_commit_failure_retains_both_verified_properties_and_baselines() {
         baseline_power()
     );
     assert_eq!(controller.managed_power[&process].expected, desired_power);
-    controller.shutdown().unwrap();
+    let released = controller.release_all_efficiency_policy(ControlOwner::BackgroundEfficiency);
+    assert!(released.failures.is_empty());
+    assert_eq!(released.restored_processes, 1);
+    assert!(!controller.has_managed_state());
     assert_eq!(
         controller.platform.processes[&7].priority,
         NORMAL_PRIORITY_CLASS
@@ -1050,6 +1053,9 @@ fn failed_policy_releases_retry_without_claims_or_another_policy_update() {
     assert_eq!(failed.failures.len(), 2);
     assert!(controller.priority_claims.is_empty());
     assert!(controller.power_claims.is_empty());
+    let early = controller.release_all_efficiency_policy(ControlOwner::BackgroundEfficiency);
+    assert_eq!(early.restored_processes, 0);
+    assert!(early.failures.is_empty());
     let due = controller.release_retry_at.unwrap();
     assert_eq!(
         controller

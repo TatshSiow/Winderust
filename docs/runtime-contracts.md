@@ -656,6 +656,9 @@ Read the relevant section before changing feature policy, ownership, restoration
   Process Priority and process Power Throttling raw class constants, state conversion, and live
   query/set calls are isolated in `src/platform/windows/priority_efficiency.rs`; their compound
   controller still owns arbitration, recovery transactions, compensation, and restoration.
+  When a Priority or Efficiency policy yields, restoration also checks exact
+  writes retained after an unsuccessful apply. A blocked recovery transport
+  leaves the tracked baseline available for recovery and reports the failure.
   Memory Priority's raw class constants and live query/set pair are isolated in
   `src/platform/windows/memory_priority.rs`; unknown raw baselines remain controller-owned and
   exactly restorable.

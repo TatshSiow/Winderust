@@ -1073,7 +1073,13 @@ impl<P: PriorityEfficiencyPlatform> PriorityEfficiencyController<P> {
         owner: ControlOwner,
         active_targets: &BTreeSet<ProcessTargetKey>,
     ) -> PriorityEfficiencyReleaseSummary {
-        let stale_keys = stale_claim_keys(&self.priority_claims, owner, active_targets);
+        let stale_keys = stale_policy_keys(
+            &self.priority_claims,
+            &self.managed_priorities,
+            &self.pending_priority_releases,
+            owner,
+            active_targets,
+        );
         remove_claim_keys(&mut self.priority_claims, owner, &stale_keys);
         let mut summary = PriorityEfficiencyReleaseSummary::default();
         for key in stale_keys {
@@ -1087,7 +1093,13 @@ impl<P: PriorityEfficiencyPlatform> PriorityEfficiencyController<P> {
         owner: ControlOwner,
         active_targets: &BTreeSet<ProcessTargetKey>,
     ) -> PriorityEfficiencyReleaseSummary {
-        let stale_keys = stale_claim_keys(&self.power_claims, owner, active_targets);
+        let stale_keys = stale_policy_keys(
+            &self.power_claims,
+            &self.managed_power,
+            &self.pending_power_releases,
+            owner,
+            active_targets,
+        );
         remove_claim_keys(&mut self.power_claims, owner, &stale_keys);
         let mut summary = PriorityEfficiencyReleaseSummary::default();
         for key in stale_keys {
@@ -1101,19 +1113,32 @@ impl<P: PriorityEfficiencyPlatform> PriorityEfficiencyController<P> {
         owner: ControlOwner,
         active_targets: &BTreeSet<ProcessTargetKey>,
     ) -> PriorityEfficiencyReleaseSummary {
-        let mut stale_keys = stale_claim_keys(&self.priority_claims, owner, active_targets);
-        stale_keys.extend(stale_claim_keys(&self.power_claims, owner, active_targets));
-        remove_claim_keys(&mut self.priority_claims, owner, &stale_keys);
-        remove_claim_keys(&mut self.power_claims, owner, &stale_keys);
+        let priority_keys = stale_policy_keys(
+            &self.priority_claims,
+            &self.managed_priorities,
+            &self.pending_priority_releases,
+            owner,
+            active_targets,
+        );
+        let power_keys = stale_policy_keys(
+            &self.power_claims,
+            &self.managed_power,
+            &self.pending_power_releases,
+            owner,
+            active_targets,
+        );
+        remove_claim_keys(&mut self.priority_claims, owner, &priority_keys);
+        remove_claim_keys(&mut self.power_claims, owner, &power_keys);
         let mut summary = PriorityEfficiencyReleaseSummary::default();
-        for key in stale_keys {
+        for key in priority_keys.union(&power_keys) {
             let before = summary.restored_processes;
-            self.reconcile_priority_key(owner, &key, &mut summary);
-            let priority_restored = summary.restored_processes > before;
-            self.reconcile_power_key(owner, &key, &mut summary);
-            if priority_restored && summary.restored_processes > before + 1 {
-                summary.restored_processes -= 1;
+            if priority_keys.contains(key) {
+                self.reconcile_priority_key(owner, key, &mut summary);
             }
+            if power_keys.contains(key) {
+                self.reconcile_power_key(owner, key, &mut summary);
+            }
+            summary.restored_processes = before + usize::from(summary.restored_processes > before);
         }
         summary
     }
@@ -1886,17 +1911,26 @@ fn restore_claim<C>(
     }
 }
 
-fn stale_claim_keys<C>(
+fn stale_policy_keys<C, T>(
     claims: &BTreeMap<ControlOwner, BTreeMap<ProcessTargetKey, C>>,
+    managed: &BTreeMap<ProcessIdentity, ManagedValue<T>>,
+    pending_releases: &BTreeMap<ProcessTargetKey, ControlOwner>,
     owner: ControlOwner,
     active_targets: &BTreeSet<ProcessTargetKey>,
 ) -> BTreeSet<ProcessTargetKey> {
+    // A failed apply can retain a verified write after rolling back its claim.
+    let managed_keys = managed
+        .iter()
+        .filter(|(_, value)| value.owner == owner)
+        .map(|(identity, _)| identity.key())
+        .filter(|key| !pending_releases.contains_key(key));
     claims
         .get(&owner)
         .into_iter()
         .flat_map(BTreeMap::keys)
-        .filter(|key| !active_targets.contains(*key))
         .cloned()
+        .chain(managed_keys)
+        .filter(|key| !active_targets.contains(key))
         .collect()
 }
 
