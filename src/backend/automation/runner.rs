@@ -1721,7 +1721,7 @@ impl RuntimeCore {
                 .cpu_usage
                 .percent
                 .is_some_and(|usage| usage.is_finite() && (0.0..=100.0).contains(&usage)),
-            plugged_in: power_source::is_plugged_in(),
+            plugged_in,
             by_running_app,
             by_time: by_time_decision,
             by_cpu_load: by_cpu_load_decision,
