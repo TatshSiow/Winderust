@@ -79,6 +79,10 @@ pub(crate) enum InstanceBalancingExclusion {
 }
 
 impl InstanceBalancingExclusion {
+    fn is_explicit_selection(&self) -> bool {
+        matches!(self, Self::ExplicitSelection { .. })
+    }
+
     fn message(&self) -> String {
         match self {
             Self::ExplicitSelection { process_name, pid } => format!(
@@ -525,6 +529,7 @@ impl RuntimeCore {
             runtime.dirty = false;
             return snapshot;
         }
+        let last_rule = enabled.last().copied();
         for (index, observation) in enabled.into_iter().zip(observations) {
             let rule = &mut runtime.rules[index];
             if !rule.settings.enabled {
@@ -647,7 +652,10 @@ impl RuntimeCore {
             };
             let message = detail.message(&exclusions);
             snapshot.detail = Some(detail);
-            snapshot.exclusions = exclusions;
+            if Some(index) != last_rule {
+                exclusions.retain(InstanceBalancingExclusion::is_explicit_selection);
+            }
+            snapshot.exclusions.extend(exclusions);
             if !rule
                 .last_action
                 .as_ref()
@@ -677,7 +685,9 @@ impl RuntimeCore {
             snapshot.detail = Some(InstanceBalancingDetail::Assigned(
                 snapshot.adjusted_processes,
             ));
-            snapshot.exclusions.clear();
+            snapshot
+                .exclusions
+                .retain(InstanceBalancingExclusion::is_explicit_selection);
         }
         snapshot
     }
