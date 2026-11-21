@@ -5,6 +5,7 @@ use super::super::widgets::{
 };
 use super::super::{cpu_allocation, cpu_limiter};
 use super::PlanCatalog;
+use crate::application::SettingsEditor;
 use crate::config::*;
 use crate::foreground::executable_path_key;
 use crate::ui::process_rules::{
@@ -46,7 +47,7 @@ impl std::fmt::Display for Mode {
         .fmt(f)
     }
 }
-pub(super) fn update(s: &mut Settings, path: &str, m: Message) -> Option<String> {
+pub(super) fn update(s: &mut SettingsEditor, path: &str, m: Message) -> Option<String> {
     if !std::path::Path::new(path).is_absolute() {
         return None;
     }
@@ -219,17 +220,16 @@ pub(super) fn update(s: &mut Settings, path: &str, m: Message) -> Option<String>
             }
         }
         Message::Limiter(enabled) => {
-            if !enabled {
-                s.cpu_limiter
-                    .rules
-                    .retain(|r| !process_setting_matches(&r.executable_path, &path));
-            } else if !s
+            let has_rule = s
                 .cpu_limiter
                 .rules
                 .iter()
-                .any(|r| process_setting_matches(&r.executable_path, &path))
-                && !crate::cpu_limiter::is_builtin_excluded(&path)
-            {
+                .any(|r| process_setting_matches(&r.executable_path, &path));
+            if !enabled && has_rule {
+                s.cpu_limiter
+                    .rules
+                    .retain(|r| !process_setting_matches(&r.executable_path, &path));
+            } else if enabled && !has_rule && !crate::cpu_limiter::is_builtin_excluded(&path) {
                 s.cpu_limiter.rules.push(new_cpu_limiter_rule(&path));
             }
         }
@@ -240,8 +240,8 @@ pub(super) fn update(s: &mut Settings, path: &str, m: Message) -> Option<String>
                 .iter()
                 .position(|r| process_setting_matches(&r.executable_path, &path))
             {
-                cpu_limiter::CpuLimiter::default().update(
-                    &mut s.cpu_limiter,
+                cpu_limiter::CpuLimiter::default().update_profile(
+                    s,
                     cpu_limiter::Message::RuleMode(i, limiter_tier(tier), value),
                 );
             }
@@ -253,8 +253,8 @@ pub(super) fn update(s: &mut Settings, path: &str, m: Message) -> Option<String>
                 .iter()
                 .position(|r| process_setting_matches(&r.executable_path, &path))
             {
-                cpu_limiter::CpuLimiter::default().update(
-                    &mut s.cpu_limiter,
+                cpu_limiter::CpuLimiter::default().update_profile(
+                    s,
                     cpu_limiter::Message::RuleLimit(i, limiter_tier(tier), value),
                 );
             }
@@ -583,6 +583,7 @@ mod tests {
             },
             power_plan_guid: Some("name-plan".into()),
         });
+        let mut settings = SettingsEditor::with_settings(settings);
         let _ = update(
             &mut settings,
             path,
@@ -604,7 +605,7 @@ mod tests {
 
     #[test]
     fn details_priority_edits_do_not_enable_master_or_other_tiers() {
-        let mut s = Settings::default();
+        let mut s = SettingsEditor::with_settings(Settings::default());
         let _ = update(
             &mut s,
             r"C:\App\app.exe",
@@ -635,7 +636,39 @@ mod tests {
             visible_window_selection: crate::cpu_topology::test_selection(1),
             background_selection: crate::cpu_topology::test_selection(1),
         });
+        let mut s = SettingsEditor::with_settings(s);
         let _ = update(&mut s, r"C:\App\app.exe", Message::CpuEnabled(false, true));
         assert!(s.processor_affinity_hard.rules.is_empty());
+    }
+
+    #[test]
+    fn limiter_edits_override_battery_only_when_the_rule_changes() {
+        let path = r"C:\App\app.exe";
+        let mut settings = Settings::default();
+        settings.cpu_limiter.rules.push(new_cpu_limiter_rule(path));
+        let mut settings = SettingsEditor::with_settings(settings);
+        settings.select_power_source(PowerSourceProfile::OnBattery);
+
+        let _ = update(
+            &mut settings,
+            path,
+            Message::LimiterMode(Tier::Focus, ProcessRuleMode::Default),
+        );
+        let _ = update(&mut settings, r"C:\App\other.exe", Message::Limiter(false));
+        assert!(settings.global().on_battery.is_none());
+
+        let _ = update(
+            &mut settings,
+            path,
+            Message::LimiterMode(Tier::Focus, ProcessRuleMode::Enabled),
+        );
+        assert_eq!(
+            settings.cpu_limiter.rules[0].focus_mode,
+            ProcessRuleMode::Enabled
+        );
+        assert_eq!(
+            settings.global().cpu_limiter.rules[0].focus_mode,
+            ProcessRuleMode::Default
+        );
     }
 }
