@@ -1,6 +1,7 @@
 use super::design;
 use super::priority_control::Tier;
 use super::widgets::{checkbox, pick_list};
+use crate::application::SettingsEditor;
 use crate::config::{
     BackgroundEfficiencyAggressiveness, BackgroundEfficiencyRule, BackgroundEfficiencySettings,
     ProcessRuleMode, Settings,
@@ -33,46 +34,77 @@ pub(super) enum Message {
     Collapse(Tier),
 }
 impl Editor {
-    pub(super) fn update(&mut self, settings: &mut Settings, message: Message) {
-        let settings = &mut settings.background_efficiency;
+    pub(super) fn update(&mut self, settings: &mut SettingsEditor, message: Message) {
+        let current = &settings.background_efficiency;
         match message {
-            Message::Enabled(value) => settings.enabled = value,
-            Message::Detection(tier, value) => match tier {
-                Tier::Focus => settings.foreground_detection_enabled = value,
-                Tier::VisibleWindow => settings.visible_window_detection_enabled = value,
-                Tier::Background => {}
-            },
-            Message::Default(tier, value) => {
-                *match tier {
-                    Tier::Focus => &mut settings.foreground_efficiency_mode,
-                    Tier::VisibleWindow => &mut settings.visible_window_efficiency_mode,
-                    Tier::Background => &mut settings.background_efficiency_mode,
-                } = value
+            Message::Enabled(value) if current.enabled != value => {
+                settings.background_efficiency.enabled = value;
             }
-            Message::Aggressiveness(value) => settings.aggressiveness = value,
+            Message::Detection(Tier::Focus, value)
+                if current.foreground_detection_enabled != value =>
+            {
+                settings.background_efficiency.foreground_detection_enabled = value;
+            }
+            Message::Detection(Tier::VisibleWindow, value)
+                if current.visible_window_detection_enabled != value =>
+            {
+                settings
+                    .background_efficiency
+                    .visible_window_detection_enabled = value;
+            }
+            Message::Default(Tier::Focus, value) if current.foreground_efficiency_mode != value => {
+                settings.background_efficiency.foreground_efficiency_mode = value;
+            }
+            Message::Default(Tier::VisibleWindow, value)
+                if current.visible_window_efficiency_mode != value =>
+            {
+                settings
+                    .background_efficiency
+                    .visible_window_efficiency_mode = value;
+            }
+            Message::Default(Tier::Background, value)
+                if current.background_efficiency_mode != value =>
+            {
+                settings.background_efficiency.background_efficiency_mode = value;
+            }
+            Message::Aggressiveness(value) if current.aggressiveness != value => {
+                settings.background_efficiency.aggressiveness = value;
+            }
             Message::Path(value) => self.path = value,
             Message::Browse => {} // The application owns the native executable picker.
             Message::Add => {
-                if can_add(settings, &self.path) {
-                    settings.custom_rules.push(BackgroundEfficiencyRule {
-                        enabled: true,
-                        executable_path: crate::foreground::executable_path_key(Path::new(
-                            self.path.trim(),
-                        )),
-                        focus_efficiency_mode: ProcessRuleMode::Default,
-                        visible_window_efficiency_mode: ProcessRuleMode::Default,
-                        background_efficiency_mode: ProcessRuleMode::Default,
-                    });
+                if can_add(current, &self.path) {
+                    settings
+                        .background_efficiency
+                        .custom_rules
+                        .push(BackgroundEfficiencyRule {
+                            enabled: true,
+                            executable_path: crate::foreground::executable_path_key(Path::new(
+                                self.path.trim(),
+                            )),
+                            focus_efficiency_mode: ProcessRuleMode::Default,
+                            visible_window_efficiency_mode: ProcessRuleMode::Default,
+                            background_efficiency_mode: ProcessRuleMode::Default,
+                        });
                     self.path.clear();
                 }
             }
             Message::RuleEnabled(index, value) => {
-                if let Some(rule) = settings.custom_rules.get_mut(index) {
-                    rule.enabled = value;
+                if current
+                    .custom_rules
+                    .get(index)
+                    .is_some_and(|rule| rule.enabled != value)
+                {
+                    settings.background_efficiency.custom_rules[index].enabled = value;
                 }
             }
             Message::RuleMode(index, tier, mode) => {
-                if let Some(rule) = settings.custom_rules.get_mut(index) {
+                if current
+                    .custom_rules
+                    .get(index)
+                    .is_some_and(|rule| rule_mode(rule, tier) != mode)
+                {
+                    let rule = &mut settings.background_efficiency.custom_rules[index];
                     *match tier {
                         Tier::Focus => &mut rule.focus_efficiency_mode,
                         Tier::VisibleWindow => &mut rule.visible_window_efficiency_mode,
@@ -81,14 +113,25 @@ impl Editor {
                 }
             }
             Message::Remove(path) => {
-                settings
+                if current
                     .custom_rules
-                    .retain(|rule| rule.executable_path != path);
+                    .iter()
+                    .any(|rule| rule.executable_path == path)
+                {
+                    settings
+                        .background_efficiency
+                        .custom_rules
+                        .retain(|rule| rule.executable_path != path);
+                }
             }
             Message::Collapse(tier) => {
                 let expanded = &mut self.expanded[tier as usize];
                 *expanded = !*expanded;
             }
+            Message::Enabled(_)
+            | Message::Detection(..)
+            | Message::Default(..)
+            | Message::Aggressiveness(_) => {}
         }
     }
     pub(super) fn view<'a>(
@@ -176,15 +219,11 @@ impl Editor {
         let mut rule_cards = Vec::new();
         for (index, rule) in settings.custom_rules.iter().enumerate() {
             let mut controls = Vec::new();
-            for (tier, mode) in Tier::ALL.into_iter().zip([
-                rule.focus_efficiency_mode,
-                rule.visible_window_efficiency_mode,
-                rule.background_efficiency_mode,
-            ]) {
+            for tier in Tier::ALL {
                 let control: Element<'_, Message> = {
                     pick_list(
                         ProcessRuleMode::ALL.map(Mode),
-                        Some(Mode(mode)),
+                        Some(Mode(rule_mode(rule, tier))),
                         move |mode| Message::RuleMode(index, tier, mode.0),
                     )
                     .width(Fill)
@@ -211,6 +250,13 @@ impl Editor {
             t!("background_efficiency.no_custom_rules").to_string(),
         ));
         scrollable(body).height(Fill).into()
+    }
+}
+fn rule_mode(rule: &BackgroundEfficiencyRule, tier: Tier) -> ProcessRuleMode {
+    match tier {
+        Tier::Focus => rule.focus_efficiency_mode,
+        Tier::VisibleWindow => rule.visible_window_efficiency_mode,
+        Tier::Background => rule.background_efficiency_mode,
     }
 }
 fn can_add(settings: &BackgroundEfficiencySettings, path: &str) -> bool {
@@ -253,13 +299,21 @@ mod tests {
     use super::*;
     #[test]
     fn disabled_feature_rules_remain_editable_and_validate_candidates() {
-        let mut settings = Settings::default();
+        let mut settings = SettingsEditor::with_settings(Settings::default());
+        settings.select_power_source(crate::config::PowerSourceProfile::OnBattery);
         let mut editor = Editor::default();
         editor.update(&mut settings, Message::Enabled(false));
         assert_eq!(editor.expanded, [false; 3]);
+        editor.update(&mut settings, Message::Collapse(Tier::Focus));
         editor.update(&mut settings, Message::Path(r"C:\Apps\editor.exe".into()));
+        assert!(settings.global().on_battery.is_none());
         editor.update(&mut settings, Message::Add);
         assert_eq!(settings.background_efficiency.custom_rules.len(), 1);
+        assert!(settings
+            .global()
+            .background_efficiency
+            .custom_rules
+            .is_empty());
         assert_eq!(
             settings.background_efficiency.custom_rules[0].background_efficiency_mode,
             ProcessRuleMode::Default
