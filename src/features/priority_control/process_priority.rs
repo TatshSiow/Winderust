@@ -161,11 +161,13 @@ impl ProcessPriorityManager {
                 && settings.visible_window_detection_enabled
                 && visible_processes.contains(process.id, &executable_path);
             let tier = PriorityProcessTier::from_flags(foreground, visible_window);
-            let executable_path = executable_path.to_string_lossy();
-            let policy = priority_policy(settings, &executable_path, tier);
+            let Some(executable_path) = executable_path.to_str() else {
+                continue;
+            };
+            let policy = priority_policy(settings, executable_path, tier);
             if focus_unknown
                 && policy
-                    != priority_policy(settings, &executable_path, PriorityProcessTier::Foreground)
+                    != priority_policy(settings, executable_path, PriorityProcessTier::Foreground)
             {
                 return self.pause_for_unknown_focus(controller, action_log);
             }
@@ -175,7 +177,7 @@ impl ProcessPriorityManager {
             targets.push(ProcessPriorityTarget {
                 process_id: process.id,
                 process_name: process.name.clone(),
-                executable_path: executable_path.into_owned(),
+                executable_path: executable_path.to_owned(),
                 creation_time,
                 priority,
                 preservation,
