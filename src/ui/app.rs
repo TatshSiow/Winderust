@@ -1196,8 +1196,7 @@ impl WinderustApp {
                 match result {
                     Ok(sample) => self.home.record(sample),
                     Err(error) => {
-                        self.home
-                            .set_power_source(home::PowerSourceReading::Unavailable);
+                        self.home.record_unavailable();
                         self.error_message = error;
                     }
                 }

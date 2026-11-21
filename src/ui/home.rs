@@ -248,6 +248,17 @@ impl Model {
         self.latest = sample;
         push_bounded(&mut self.history, sample);
     }
+    pub(super) fn record_unavailable(&mut self) {
+        self.record(Sample {
+            captured_at: Some(SampleTimestamp {
+                instant: Instant::now(),
+                wall: SystemTime::now(),
+            }),
+            power_source: PowerSourceReading::Unavailable,
+            ..Sample::default()
+        });
+    }
+
     pub(super) fn set_power_source(&mut self, reading: PowerSourceReading) {
         self.latest.power_source = reading;
     }
