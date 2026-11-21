@@ -501,6 +501,7 @@ fn can_suspend(
 ) -> bool {
     let path = rule.executable_path.trim();
     status.enabled
+        && !status.unsupported
         && rule.enabled
         && !unavailable
         && Path::new(path).is_absolute()
@@ -641,7 +642,7 @@ mod tests {
     }
 
     #[test]
-    fn unavailable_targets_cannot_be_added_or_frozen_but_can_thaw() {
+    fn unavailable_or_unsupported_targets_cannot_freeze_but_can_thaw() {
         let mut e = Editor::default();
         let mut settings = Settings::default();
         settings.app_suspension.enabled = true;
@@ -662,6 +663,11 @@ mod tests {
         assert!(e
             .update(&mut s, &status, &unavailable, Message::Toggle(0))
             .is_none());
+        let live = &s.app_suspension;
+        let rule = &live.suspendable_apps[0];
+        assert!(can_suspend(rule, &status, false, Some(live)));
+        status.unsupported = true;
+        assert!(!can_suspend(rule, &status, false, Some(live)));
         status.suspended_apps.push(p.clone());
         assert_eq!(
             e.update(&mut s, &status, &unavailable, Message::Toggle(0)),
