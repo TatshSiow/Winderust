@@ -779,6 +779,8 @@ app_suspension:
     off_help: "應用程式暫停已停用。"
 
 adaptive_engine_process:
+  process_policies_paused: "程序原則已暫停"
+  power_running_process_paused: "處理器電源正在作用，程序原則已暫停。"
   zone_observations: "所需處理程序觀測資料無法取得。"
   limit_waiting_zones: "區域配置作用中，等待背景限制"
   zone_background_targets: "背景處理程序"

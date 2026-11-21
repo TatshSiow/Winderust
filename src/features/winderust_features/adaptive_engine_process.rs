@@ -57,10 +57,11 @@ const ADAPTIVE_ENGINE_PROCESS_SELECTION_STICKINESS_TENTHS: u32 = 50;
 const BACKGROUND_APPLY_SUMMARY_LOG_INTERVAL: Duration = Duration::from_secs(30);
 const FOCUS_AND_LAUNCH_PROFILE_WINDOW: Duration = Duration::from_secs(8);
 const FOCUS_PROCESS_PRIORITY_STABILITY_DELAY_MS: u64 = 750;
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AdaptiveEngineProcessSnapshot {
     pub zones: DynamicResourceZoneSnapshot,
     pub enabled: bool,
+    pub observation_paused: bool,
     pub scanned_processes: usize,
     pub adjusted_processes: usize,
     pub focus_and_launch_profile_active: bool,
@@ -70,7 +71,6 @@ pub struct AdaptiveEngineProcessSnapshot {
     pub failed_processes: usize,
     pub adjusted_apps: Vec<String>,
     pub auto_excluded_processes: Vec<String>,
-    pub message: String,
     pub last_error: Option<String>,
 }
 
@@ -289,16 +289,12 @@ impl AdaptiveEngineProcessManager {
                 },
                 enabled: false,
                 failed_processes: failed.count,
-                message: "Automation disabled.".to_owned(),
                 last_error: failed.last_error,
                 ..Default::default()
             };
         }
 
-        if !settings.cpu_pressure_restraint_enabled
-            && !settings.limit_background_processors_enabled
-            && !settings.dynamic_resource_zones_enabled
-        {
+        if !settings.has_enabled_policies() {
             let failed = self.clear_all_with_memory_priority(
                 cpu_allocation_coordinator,
                 priority_efficiency_controller,
@@ -319,7 +315,6 @@ impl AdaptiveEngineProcessManager {
                 },
                 enabled: false,
                 failed_processes: failed.count,
-                message: "Adaptive Engine disabled.".to_owned(),
                 last_error: failed.last_error,
                 ..Default::default()
             };
@@ -357,7 +352,7 @@ impl AdaptiveEngineProcessManager {
                 },
                 enabled: true,
                 failed_processes: failed.count,
-                message: "Paused: current Windows session is unknown.".to_owned(),
+                observation_paused: true,
                 last_error: failed.last_error,
                 ..Default::default()
             };
@@ -393,8 +388,8 @@ impl AdaptiveEngineProcessManager {
                     },
                     enabled: true,
                     failed_processes: failed.count,
-                    message: err,
-                    last_error: failed.last_error,
+                    observation_paused: true,
+                    last_error: failed.last_error.or(Some(err)),
                     ..Default::default()
                 };
             }
@@ -421,7 +416,7 @@ impl AdaptiveEngineProcessManager {
                 },
                 enabled: true,
                 failed_processes: failed.count,
-                message: "Paused: visible windows are unavailable.".to_owned(),
+                observation_paused: true,
                 last_error: failed.last_error,
                 ..Default::default()
             };
@@ -1343,6 +1338,7 @@ impl AdaptiveEngineProcessManager {
         AdaptiveEngineProcessSnapshot {
             zones,
             enabled: true,
+            observation_paused: false,
             scanned_processes,
             adjusted_processes: priority_efficiency_controller
                 .policy_managed_process_count(ControlOwner::AdaptiveEngine)
@@ -1359,7 +1355,6 @@ impl AdaptiveEngineProcessManager {
                     .map(String::as_str),
             ),
             auto_excluded_processes: auto_excluded_processes.into_iter().collect(),
-            message: "Adaptive Engine active.".to_owned(),
             last_error: failures.last_error,
         }
     }
@@ -1394,7 +1389,7 @@ impl AdaptiveEngineProcessManager {
             },
             enabled: true,
             failed_processes: failed.count,
-            message: "Paused: foreground app is unknown.".to_owned(),
+            observation_paused: true,
             last_error: failed.last_error,
             ..Default::default()
         }
@@ -2110,26 +2105,6 @@ fn adaptive_engine_process_priority_target_key(
         target.creation_time,
         Path::new(&target.executable_path),
     )
-}
-
-impl Default for AdaptiveEngineProcessSnapshot {
-    fn default() -> Self {
-        Self {
-            zones: DynamicResourceZoneSnapshot::default(),
-            enabled: false,
-            scanned_processes: 0,
-            adjusted_processes: 0,
-            focus_and_launch_profile_active: false,
-            cpu_pressure_restraint_active: false,
-            foreground_cpu_usage_tenths: None,
-            skipped_processes: 0,
-            failed_processes: 0,
-            adjusted_apps: Vec::new(),
-            auto_excluded_processes: Vec::new(),
-            message: "Adaptive Engine disabled.".to_owned(),
-            last_error: None,
-        }
-    }
 }
 
 #[cfg(test)]

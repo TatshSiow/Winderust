@@ -631,6 +631,8 @@ Read the relevant section before changing feature policy, ownership, restoration
 - Adaptive Engine pauses its process policies and releases their claims when the
   focused process ID or creation time is unavailable. Saved settings, manual
   ownership, and Adaptive processor power retain their own state.
+  Home and the Status panel report paused process policies separately from a
+  verified Adaptive power plan. Process counts remain unavailable until observed.
 - Adaptive Engine uses the shared right-rail Status / Presets pattern. Built-in presets are read-only; custom presets capture only Adaptive Engine and Adaptive Engine tuning. Applying a preset never changes master enable switches, custom rules, exclusions, or the separate Background Efficiency feature.
 
 ## Interrupt Timing

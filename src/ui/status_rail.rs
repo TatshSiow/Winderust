@@ -125,6 +125,15 @@ pub(super) fn view<'a>(
         && runtime.worker_error.is_none()
     {
         runtime.feature_status.instance_balancing.message()
+    } else if page == Page::AdaptiveEngine
+        && state == FeatureRunState::Running
+        && settings.adaptive_engine_process.has_enabled_policies()
+        && runtime
+            .feature_status
+            .adaptive_engine_process
+            .observation_paused
+    {
+        Some(t!("adaptive_engine_process.power_running_process_paused").into_owned())
     } else {
         None
     }
@@ -277,7 +286,8 @@ pub(super) fn view<'a>(
         ));
     if page == Page::AdaptiveEngine {
         use crate::adaptive_engine_process::ZoneStatus;
-        let zones = &runtime.feature_status.adaptive_engine_process.zones;
+        let adaptive = &runtime.feature_status.adaptive_engine_process;
+        let zones = &adaptive.zones;
         let (key, color) = match zones.status {
             ZoneStatus::Disabled => ("common.inactive", "common.inactive"),
             ZoneStatus::Waiting => ("common.waiting", "common.waiting"),
@@ -326,7 +336,11 @@ pub(super) fn view<'a>(
             body = body.push(section(
                 "adaptive_engine_process.limit_background_processors",
                 column![text(
-                    t!(if zones.status == ZoneStatus::Active {
+                    t!(if adaptive.observation_paused {
+                        "sidebar_status.paused"
+                    } else if !adaptive.enabled {
+                        "common.unknown"
+                    } else if zones.status == ZoneStatus::Active {
                         "adaptive_engine_process.limit_waiting_zones"
                     } else if zones.background_limit_targets > 0 {
                         "common.applied"
@@ -578,12 +592,25 @@ fn sidebar_state(
     {
         return FeatureRunState::Paused;
     }
+    let adaptive_power_applied = page == Page::AdaptiveEngine
+        && plan.owner == Some(PowerPlanOwner::AdaptiveEngine)
+        && plan_applied;
+    if page == Page::AdaptiveEngine
+        && !adaptive_power_applied
+        && settings.adaptive_engine_process.has_enabled_policies()
+    {
+        let adaptive = &features.adaptive_engine_process;
+        if adaptive.observation_paused {
+            return FeatureRunState::Paused;
+        }
+        if !adaptive.enabled {
+            return FeatureRunState::Unknown;
+        }
+    }
     let active = (page == Page::Watchdog && summary.scanned.is_some_and(|count| count > 0))
         || summary.adjusted.is_some_and(|count| count > 0)
         || (page == Page::TimerResolution && features.timer_resolution.requested_100ns.is_some())
-        || (page == Page::AdaptiveEngine
-            && plan.owner == Some(PowerPlanOwner::AdaptiveEngine)
-            && plan_applied);
+        || adaptive_power_applied;
     if active {
         FeatureRunState::Running
     } else if summary.protected_or_denied.is_some_and(|count| count > 0) {
@@ -657,11 +684,12 @@ fn feature_status_summary(
     let summary = match page {
         Page::AdaptiveEngine => {
             let status = &runtime.feature_status.adaptive_engine_process;
+            let observed = status.enabled && !status.observation_paused;
             FeatureStatusSummary {
-                scanned: Some(status.scanned_processes),
-                adjusted: Some(status.adjusted_processes),
+                scanned: observed.then_some(status.scanned_processes),
+                adjusted: observed.then_some(status.adjusted_processes),
                 protected_or_denied: None,
-                skipped: Some(status.skipped_processes),
+                skipped: observed.then_some(status.skipped_processes),
                 last_error: status.last_error.as_deref(),
                 action_log_feature: ActionLogFeature::AdaptiveEngine,
             }

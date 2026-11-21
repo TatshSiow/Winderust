@@ -88,16 +88,7 @@ fn enabled_executable_path_rule(enabled: bool, executable_path: &str) -> bool {
 }
 
 pub(super) fn adaptive_engine_process_required(settings: &Settings) -> bool {
-    settings.adaptive_engine.enabled
-        && (settings
-            .adaptive_engine_process
-            .cpu_pressure_restraint_enabled
-            || settings
-                .adaptive_engine_process
-                .limit_background_processors_enabled
-            || settings
-                .adaptive_engine_process
-                .dynamic_resource_zones_enabled)
+    settings.adaptive_engine.enabled && settings.adaptive_engine_process.has_enabled_policies()
 }
 
 pub(super) fn app_suspension_required(settings: &Settings) -> bool {

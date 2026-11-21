@@ -1419,31 +1419,25 @@ fn enabled_features(
         )
         .to_string()
     );
+    let adaptive = &status.adaptive_engine_process;
     feature!(
         AdaptiveEngine,
         adaptive_engine,
-        if status
-            .adaptive_engine_process
-            .focus_and_launch_profile_active
-        {
-            t!("home.focus_and_launch_profile").to_string()
-        } else if !settings
-            .adaptive_engine_process
-            .cpu_pressure_restraint_enabled
-            && !settings
-                .adaptive_engine_process
-                .limit_background_processors_enabled
-            && !settings
-                .adaptive_engine_process
-                .dynamic_resource_zones_enabled
-        {
-            t!("common.enabled").to_string()
+        if !settings.adaptive_engine_process.has_enabled_policies() {
+            t!("common.enabled").into_owned()
+        } else if adaptive.observation_paused {
+            t!(if adaptive.last_error.is_some() {
+                "common.error"
+            } else {
+                "adaptive_engine_process.process_policies_paused"
+            })
+            .into_owned()
+        } else if !adaptive.enabled {
+            t!("common.unknown").into_owned()
+        } else if adaptive.focus_and_launch_profile_active {
+            t!("home.focus_and_launch_profile").into_owned()
         } else {
-            t!(
-                "home.adjusted_count",
-                count = status.adaptive_engine_process.adjusted_processes
-            )
-            .to_string()
+            t!("home.adjusted_count", count = adaptive.adjusted_processes).into_owned()
         }
     );
     let process_priority = &status.process_priority;

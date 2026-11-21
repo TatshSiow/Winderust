@@ -777,6 +777,8 @@ app_suspension:
     off_help: "App Suspension is disabled."
 
 adaptive_engine_process:
+  process_policies_paused: "Process policies paused"
+  power_running_process_paused: "Processor Power is active. Process policies are paused."
   zone_observations: "Required process observations are unavailable."
   limit_waiting_zones: "Waiting while zoning is active"
   zone_background_targets: "Background processes"

@@ -2724,6 +2724,12 @@ impl CpuAllocationSettings {
 }
 
 impl AdaptiveEngineProcessSettings {
+    pub(crate) const fn has_enabled_policies(&self) -> bool {
+        self.cpu_pressure_restraint_enabled
+            || self.limit_background_processors_enabled
+            || self.dynamic_resource_zones_enabled
+    }
+
     pub const fn background_efficiency_mode_for(&self, focus: bool, visible_window: bool) -> bool {
         if focus && self.focus_process_background_efficiency_override_enabled {
             self.focus_process_background_efficiency_mode
