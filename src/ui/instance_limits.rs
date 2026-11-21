@@ -3,7 +3,7 @@ use crate::{
     config::{InstanceLimitsRule, InstanceLimitsSettings},
     control::instance_limits::{paths_equal, validate_path, CountObservation},
     features::advanced_controls::instance_limits::{
-        InstanceLimitsSnapshot, NotificationStatus, MAX_SAMPLE_AGE,
+        InstanceLimitsRuleSnapshot, InstanceLimitsSnapshot, NotificationStatus, MAX_SAMPLE_AGE,
     },
 };
 use iced::{
@@ -112,11 +112,7 @@ impl Editor {
             .enumerate()
             .map(|(index, rule)| {
                 // An unsaved rule must never inherit counts or incidents from a different maximum.
-                let runtime = status.rules.iter().find(|entry| {
-                    entry.executable_path == rule.executable_path
-                        && entry.max_instances == rule.max_instances
-                        && entry.enabled == rule.enabled
-                });
+                let runtime = rule_status(status, rule);
                 let label = if !settings.enabled || !status.enabled || !rule.enabled {
                     t!("common.off").to_string()
                 } else {
@@ -342,6 +338,17 @@ impl Editor {
             (760, 460),
         ))
     }
+}
+
+pub(super) fn rule_status<'a>(
+    status: &'a InstanceLimitsSnapshot,
+    rule: &InstanceLimitsRule,
+) -> Option<&'a InstanceLimitsRuleSnapshot> {
+    status.rules.iter().find(|entry| {
+        entry.executable_path == rule.executable_path
+            && entry.max_instances == rule.max_instances
+            && entry.enabled == rule.enabled
+    })
 }
 
 fn count_label(count: Option<&CountObservation>, maximum: u32) -> String {

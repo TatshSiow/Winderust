@@ -113,6 +113,8 @@ Read the relevant section before changing feature policy, ownership, restoration
   qualification while preserving an unresolved incident. Each incident allows one
   notification attempt, including failures. Acceptance confirms delivery to Windows.
 - Rule edits reset only that rule, while feature/master disable clears all state.
+  Status uses the saved rule identities while the worker refreshes, preserving
+  reports for unchanged rules and the recorded Action Log history.
   Notify-only edits and power-source changes preserve incidents. With Notify off,
   live status follows count availability and retains notification failures in
   Last Failed and the rule card. Pending reset intents survive rapid edits and

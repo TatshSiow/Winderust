@@ -6,7 +6,11 @@ use crate::{
     action_log::{ActionLogEntry, ActionLogFeature},
     automation::RuntimeStatusSnapshot,
     config::Settings,
-    features::winderust_features::memory_trim::MemoryTrimStatus,
+    control::instance_limits::CountObservation,
+    features::{
+        advanced_controls::instance_limits::{InstanceLimitsSnapshot, NotificationStatus},
+        winderust_features::memory_trim::MemoryTrimStatus,
+    },
     power::PowerPlan,
     ui::Page,
 };
@@ -57,7 +61,18 @@ pub(super) fn view<'a>(
         Page::ByTime => Some(ActionLogFeature::ByTime),
         _ => None,
     };
-    let summary = if let Some(feature) = power_feature {
+    let instance_limits = (page == Page::InstanceLimits)
+        .then(|| instance_limits_status(settings, &runtime.feature_status.instance_limits));
+    let summary = if let Some(limits) = &instance_limits {
+        FeatureStatusSummary {
+            scanned: None,
+            adjusted: None,
+            protected_or_denied: None,
+            skipped: None,
+            last_error: limits.last_error,
+            action_log_feature: ActionLogFeature::InstanceLimits,
+        }
+    } else if let Some(feature) = power_feature {
         FeatureStatusSummary {
             scanned: None,
             adjusted: None,
@@ -70,7 +85,13 @@ pub(super) fn view<'a>(
         feature_status_summary(page, runtime)?
     };
     let available = runtime.generation != 0;
-    let state = sidebar_state(page, settings, runtime, &summary);
+    let state = sidebar_state(
+        page,
+        settings,
+        runtime,
+        &summary,
+        instance_limits.as_ref().map(|limits| limits.state),
+    );
     let (state_label, detail, color) = match state {
         FeatureRunState::Running if page == Page::SleepPrevention => (
             "sleep_prevention.request_accepted",
@@ -172,22 +193,17 @@ pub(super) fn view<'a>(
             })
             .unwrap_or_else(|| t!("common.unknown").to_string());
         body = body.push(section("common.current_power_plan", column![text(plan)]));
-    } else if page == Page::InstanceLimits {
-        let limits = &runtime.feature_status.instance_limits;
+    } else if let Some(limits) = &instance_limits {
         body = body.push(section(
             "instance_limits.monitoring",
             column![
                 metric(
                     "common.rules",
-                    count(
-                        available.then(|| limits.rules.iter().filter(|rule| rule.enabled).count())
-                    )
+                    count(available.then_some(limits.enabled_rules))
                 ),
                 metric(
                     "instance_limits.incidents",
-                    count(
-                        available.then(|| limits.rules.iter().filter(|rule| rule.incident).count())
-                    )
+                    count(available.then_some(limits.incidents))
                 ),
                 text(t!("instance_limits.intro_2").to_string()).size(design::typography::CAPTION),
             ]
@@ -437,11 +453,64 @@ pub(super) fn saved_runtime_settings(
     }
 }
 
+struct InstanceLimitsStatus<'a> {
+    state: FeatureRunState,
+    enabled_rules: usize,
+    incidents: usize,
+    last_error: Option<&'a str>,
+}
+
+fn instance_limits_status<'a>(
+    settings: &Settings,
+    snapshot: &'a InstanceLimitsSnapshot,
+) -> InstanceLimitsStatus<'a> {
+    let mut enabled_rules = 0;
+    let mut incidents = 0;
+    let mut last_error = None;
+    let mut observed = true;
+    let active = settings.general.enabled && settings.instance_limits.enabled && snapshot.enabled;
+    for rule in settings
+        .instance_limits
+        .rules
+        .iter()
+        .filter(|rule| rule.enabled)
+    {
+        enabled_rules += 1;
+        let Some(report) = active
+            .then(|| super::instance_limits::rule_status(snapshot, rule))
+            .flatten()
+        else {
+            observed = false;
+            continue;
+        };
+        observed &= super::instance_limits::sample_fresh(report.sampled_at)
+            && matches!(report.count, CountObservation::Complete(_));
+        incidents += usize::from(report.incident);
+        if let NotificationStatus::Failed(error) = &report.notification {
+            last_error.get_or_insert(error.as_str());
+        }
+    }
+    let state = if enabled_rules == 0 {
+        FeatureRunState::Waiting
+    } else if observed {
+        FeatureRunState::Running
+    } else {
+        FeatureRunState::Unknown
+    };
+    InstanceLimitsStatus {
+        state,
+        enabled_rules,
+        incidents,
+        last_error,
+    }
+}
+
 fn sidebar_state(
     page: Page,
     settings: &Settings,
     runtime: &RuntimeStatusSnapshot,
     summary: &FeatureStatusSummary<'_>,
+    instance_limits_state: Option<FeatureRunState>,
 ) -> FeatureRunState {
     use crate::control::power_plan::PowerPlanOwner;
     use crate::rules::DecisionState;
@@ -460,6 +529,9 @@ fn sidebar_state(
         && (page != Page::InstanceLimits || settings.instance_limits.notify)
     {
         return FeatureRunState::Error;
+    }
+    if let Some(state) = instance_limits_state {
+        return state;
     }
     let plan = &runtime.power_plan_status;
     let plan_applied = plan
@@ -514,20 +586,6 @@ fn sidebar_state(
         && (!features.instance_balancing.enabled || features.instance_balancing.detail.is_none())
     {
         return FeatureRunState::Unknown;
-    }
-    if page == Page::InstanceLimits {
-        use crate::control::instance_limits::CountObservation;
-        let limits = &features.instance_limits;
-        return if limits.rules.iter().filter(|rule| rule.enabled).any(|rule| {
-            !super::instance_limits::sample_fresh(rule.sampled_at)
-                || !matches!(rule.count, CountObservation::Complete(_))
-        }) {
-            FeatureRunState::Unknown
-        } else if limits.rules.iter().any(|rule| rule.enabled) {
-            FeatureRunState::Running
-        } else {
-            FeatureRunState::Waiting
-        };
     }
     if page == Page::KeepRunning {
         use crate::features::advanced_controls::keep_running::KeepRunningState;
@@ -756,16 +814,6 @@ fn feature_status_summary(
                 action_log_feature: ActionLogFeature::Watchdog,
             }
         }
-        Page::InstanceLimits => FeatureStatusSummary {
-            scanned: None,
-            adjusted: None,
-            protected_or_denied: None,
-            skipped: None,
-            last_error: runtime.feature_status.instance_limits.rules.iter().find_map(|rule| {
-                if let crate::features::advanced_controls::instance_limits::NotificationStatus::Failed(error) = &rule.notification { Some(error.as_str()) } else { None }
-            }),
-            action_log_feature: ActionLogFeature::InstanceLimits,
-        },
         Page::KeepRunning => FeatureStatusSummary {
             scanned: None,
             adjusted: None,
@@ -950,6 +998,41 @@ mod tests {
     use super::*;
 
     #[test]
+    fn instance_limits_status_ignores_reports_for_superseded_rules() {
+        use crate::config::InstanceLimitsRule;
+        use crate::features::advanced_controls::instance_limits::InstanceLimitsRuleSnapshot;
+
+        let mut settings = Settings::default();
+        settings.general.enabled = true;
+        settings.instance_limits.enabled = true;
+        let rule = InstanceLimitsRule::new(r"C:\Apps\app.exe".into());
+        let snapshot = InstanceLimitsSnapshot {
+            enabled: true,
+            rules: vec![InstanceLimitsRuleSnapshot {
+                executable_path: rule.executable_path.clone(),
+                max_instances: rule.max_instances,
+                enabled: true,
+                count: CountObservation::Complete(2),
+                sampled_at: Some(std::time::Instant::now()),
+                incident: true,
+                notification: NotificationStatus::Failed("notification failed".into()),
+            }],
+        };
+        settings.instance_limits.rules.push(rule);
+        let status = instance_limits_status(&settings, &snapshot);
+        assert_eq!(status.state, FeatureRunState::Running);
+        assert_eq!(status.incidents, 1);
+        assert_eq!(status.last_error, Some("notification failed"));
+
+        settings.instance_limits.rules[0].max_instances = 2;
+        let status = instance_limits_status(&settings, &snapshot);
+        assert_eq!(status.state, FeatureRunState::Unknown);
+        assert_eq!(status.enabled_rules, 1);
+        assert_eq!(status.incidents, 0);
+        assert_eq!(status.last_error, None);
+    }
+
+    #[test]
     fn watchdog_counts_require_a_completed_observation() {
         use crate::{
             config::WatchdogRule, features::winderust_features::watchdog::WatchdogManager,
@@ -966,7 +1049,7 @@ mod tests {
         let status = |runtime: &RuntimeStatusSnapshot| {
             let summary = feature_status_summary(Page::Watchdog, runtime).unwrap();
             (
-                sidebar_state(Page::Watchdog, &settings, runtime, &summary),
+                sidebar_state(Page::Watchdog, &settings, runtime, &summary, None),
                 [summary.scanned, summary.adjusted, summary.skipped],
             )
         };
@@ -1074,7 +1157,7 @@ mod tests {
         let mut runtime = RuntimeStatusSnapshot::default();
         let state = |settings: &Settings, runtime: &RuntimeStatusSnapshot| {
             let summary = feature_status_summary(Page::ProcessPriority, runtime).unwrap();
-            sidebar_state(Page::ProcessPriority, settings, runtime, &summary)
+            sidebar_state(Page::ProcessPriority, settings, runtime, &summary, None)
         };
         assert_eq!(state(&settings, &runtime), FeatureRunState::Unknown);
         runtime.generation = 1;
@@ -1116,7 +1199,7 @@ mod tests {
             .map(|page| {
                 let summary = feature_status_summary(page, runtime).unwrap();
                 (
-                    sidebar_state(page, &settings, runtime, &summary),
+                    sidebar_state(page, &settings, runtime, &summary, None),
                     [summary.scanned, summary.adjusted, summary.skipped],
                 )
             })
@@ -1157,7 +1240,7 @@ mod tests {
                 summary.action_log_feature,
                 ActionLogFeature::InstanceBalancing
             );
-            sidebar_state(Page::InstanceBalancing, settings, runtime, &summary)
+            sidebar_state(Page::InstanceBalancing, settings, runtime, &summary, None)
         };
         assert_eq!(state(&settings, &runtime), FeatureRunState::Unknown);
         let pending = feature_status_summary(Page::InstanceBalancing, &runtime).unwrap();
@@ -1219,7 +1302,7 @@ mod tests {
             action_log_feature: ActionLogFeature::ByTime,
         };
         let state = |runtime: &RuntimeStatusSnapshot| {
-            sidebar_state(Page::ByTime, &settings, runtime, &summary)
+            sidebar_state(Page::ByTime, &settings, runtime, &summary, None)
         };
         let plan = std::sync::Arc::make_mut(&mut runtime.power_plan_status);
         *plan = PowerPlanStatus {
