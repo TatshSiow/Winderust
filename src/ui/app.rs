@@ -665,6 +665,7 @@ enum Message {
     KeepRunning(keep_running::Message),
     InstanceLimits(instance_limits::Message),
     InstanceBalancing(instance_balancing::Message),
+    InstanceBalancingExecutableChosen(Arc<()>, Option<PathBuf>),
     Timer(timer_resolution::Message),
     PrioritySeparation(win32_priority_separation::Message),
     PowerTuning(advanced_power_plan_tuning::Message),
@@ -1386,7 +1387,26 @@ impl WinderustApp {
             Message::Trim(message) => self.trim.update(&mut self.settings, message),
             Message::Watchdog(watchdog::Message::Browse) => return self.browse(Page::Watchdog),
             Message::InstanceBalancing(instance_balancing::Message::Browse) => {
-                return self.browse(Page::InstanceBalancing);
+                let request = self.instance_balancing.begin_browse();
+                return Task::perform(self.choose_executable_file(), move |path| {
+                    Message::InstanceBalancingExecutableChosen(request, path)
+                });
+            }
+            Message::InstanceBalancingExecutableChosen(request, path) => {
+                if !self.instance_balancing.take_browse(&request) {
+                    return Task::none();
+                }
+                let Some(path) = path else {
+                    return Task::none();
+                };
+                let Some(path) = path.to_str() else {
+                    self.error_message =
+                        t!("instance_balancing.unsupported_unicode_path").to_string();
+                    return Task::none();
+                };
+                return self.update(Message::InstanceBalancing(
+                    instance_balancing::Message::Path(path.to_owned()),
+                ));
             }
             Message::InstanceBalancing(message) => {
                 self.settings.edit_global(|settings| {
@@ -1537,17 +1557,11 @@ impl WinderustApp {
                 }
             }
             Message::ExecutableChosen(page, profile, path) => {
-                if profile == self.power_source || page == Page::InstanceBalancing {
+                if profile == self.power_source {
                     if let Some(path) = path {
-                        if matches!(page, Page::InstanceLimits | Page::InstanceBalancing)
-                            && path.to_str().is_none()
-                        {
-                            self.error_message = t!(match page {
-                                Page::InstanceBalancing =>
-                                    "instance_balancing.unsupported_unicode_path",
-                                _ => "instance_limits.unsupported_unicode_path",
-                            })
-                            .to_string();
+                        if page == Page::InstanceLimits && path.to_str().is_none() {
+                            self.error_message =
+                                t!("instance_limits.unsupported_unicode_path").to_string();
                             return Task::none();
                         }
                         let path = path.to_string_lossy().into_owned();
@@ -1575,11 +1589,6 @@ impl WinderustApp {
                             Page::InstanceLimits => {
                                 return self.update(Message::InstanceLimits(
                                     instance_limits::Message::Path(path),
-                                ));
-                            }
-                            Page::InstanceBalancing => {
-                                return self.update(Message::InstanceBalancing(
-                                    instance_balancing::Message::Path(path),
                                 ));
                             }
                             Page::KeepRunning => {
@@ -2505,11 +2514,14 @@ impl WinderustApp {
     }
     fn browse(&self, page: Page) -> Task<Message> {
         let profile = self.power_source;
-        Task::perform(
-            crate::file_dialog::choose_executable_file(
-                self.hwnd.map(|h| h as windows_sys::Win32::Foundation::HWND),
-            ),
-            move |path| Message::ExecutableChosen(page, profile, path),
+        Task::perform(self.choose_executable_file(), move |path| {
+            Message::ExecutableChosen(page, profile, path)
+        })
+    }
+
+    fn choose_executable_file(&self) -> impl std::future::Future<Output = Option<PathBuf>> + Send {
+        crate::file_dialog::choose_executable_file(
+            self.hwnd.map(|h| h as windows_sys::Win32::Foundation::HWND),
         )
     }
 

@@ -49,11 +49,18 @@ fn path_edits_validate_against_other_rules_and_cancel_without_changing_settings(
         assert_eq!(settings, original);
         assert!(editor.has_pending_editor());
     }
+    let superseded = editor.begin_browse();
     editor.update(&mut settings, Message::Path(r"C:\Other\third.exe".into()));
+    assert!(!editor.take_browse(&superseded));
+    let dismissed = editor.begin_browse();
     editor.update(&mut settings, Message::CancelRule);
     assert!(!editor.has_pending_editor());
     assert_eq!(settings, original);
     editor.update(&mut settings, Message::Edit(0));
+    let current = editor.begin_browse();
+    assert!(!editor.take_browse(&dismissed));
+    assert!(editor.take_browse(&current));
+    assert!(!editor.take_browse(&current));
     editor.update(&mut settings, Message::Path(r"C:\Other\third.exe".into()));
     editor.update(&mut settings, Message::SaveRule);
     assert_eq!(settings.rules[0].executable_path, r"C:\Other\third.exe");

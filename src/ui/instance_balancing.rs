@@ -8,11 +8,13 @@ use iced::{
     Element, Fill,
 };
 use rust_i18n::t;
+use std::sync::Arc;
 
 #[derive(Default)]
 pub(super) struct Editor {
     path: String,
     draft: Option<(usize, String)>,
+    browse_request: Option<Arc<()>>,
 }
 
 #[derive(Debug, Clone)]
@@ -33,10 +35,23 @@ impl Editor {
         self.draft.is_some()
     }
 
+    pub(super) fn begin_browse(&mut self) -> Arc<()> {
+        let request = Arc::new(());
+        self.browse_request = Some(Arc::clone(&request));
+        request
+    }
+
+    pub(super) fn take_browse(&mut self, request: &Arc<()>) -> bool {
+        self.browse_request
+            .take_if(|active| Arc::ptr_eq(active, request))
+            .is_some()
+    }
+
     pub(super) fn update(&mut self, settings: &mut InstanceBalancingSettings, message: Message) {
         match message {
             Message::Enabled(value) => settings.enabled = value,
             Message::Path(path) => {
+                self.browse_request = None;
                 if let Some((_, draft)) = &mut self.draft {
                     *draft = path;
                 } else {
@@ -46,12 +61,14 @@ impl Editor {
             Message::Add
                 if self.draft.is_none() && path_error(settings, &self.path, None).is_none() =>
             {
+                self.browse_request = None;
                 settings.rules.push(InstanceBalancingRule {
                     enabled: true,
                     executable_path: std::mem::take(&mut self.path),
                 });
             }
             Message::Edit(index) => {
+                self.browse_request = None;
                 self.draft = settings
                     .rules
                     .get(index)
@@ -60,6 +77,7 @@ impl Editor {
             Message::Remove(index) if index < settings.rules.len() => {
                 settings.rules.remove(index);
                 self.draft = None;
+                self.browse_request = None;
             }
             Message::RuleEnabled(index, enabled) => {
                 if let Some(rule) = settings.rules.get_mut(index) {
@@ -72,11 +90,15 @@ impl Editor {
                         if let Some(rule) = settings.rules.get_mut(*index) {
                             rule.executable_path.clone_from(path);
                             self.draft = None;
+                            self.browse_request = None;
                         }
                     }
                 }
             }
-            Message::CancelRule => self.draft = None,
+            Message::CancelRule => {
+                self.draft = None;
+                self.browse_request = None;
+            }
             Message::Add | Message::Remove(_) | Message::Browse => {}
         }
     }
