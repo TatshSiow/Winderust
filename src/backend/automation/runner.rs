@@ -77,11 +77,21 @@ pub(super) fn adaptive_processor_demand(
     demand
 }
 
+struct ObservedSettings {
+    configured: Arc<Settings>,
+    plugged_in: Option<bool>,
+}
+
+impl ObservedSettings {
+    fn effective(&self) -> &Settings {
+        active_power_source_settings(&self.configured, self.plugged_in)
+    }
+}
+
 #[derive(Default)]
 pub(super) struct RuntimeCore {
     shutdown_started: bool,
-    last_settings: Option<Settings>,
-    last_power_source: Option<Option<bool>>,
+    last_settings: Option<ObservedSettings>,
     power_plan_controller: PowerPlanController,
     power_plan_rule_context: Option<PowerPlanRuleContext>,
     cpu_usage: CpuUsageSnapshot,
@@ -433,7 +443,12 @@ impl RuntimeCore {
         self.keep_running.shutdown();
 
         let mut errors = Vec::<String>::new();
-        let mut settings = self.last_settings.clone().unwrap_or_default();
+        let mut settings = self
+            .last_settings
+            .as_ref()
+            .map(ObservedSettings::effective)
+            .cloned()
+            .unwrap_or_default();
         settings.general.enabled = false;
         let mut observations = CycleObservations::default();
 
@@ -530,10 +545,11 @@ impl RuntimeCore {
 
     pub(super) fn note_settings(
         &mut self,
-        settings: &Settings,
+        configured: &Arc<Settings>,
         events: AutomationWakeEvents,
         plugged_in: Option<bool>,
     ) -> bool {
+        let settings = active_power_source_settings(configured, plugged_in);
         if !settings.general.restore_previous_power_plan {
             self.power_plan_controller.cancel_temporary_restoration();
         }
@@ -550,16 +566,18 @@ impl RuntimeCore {
             self.power_plan_rule_context = None;
         }
         let source_changed = self
-            .last_power_source
-            .replace(plugged_in)
-            .is_some_and(|previous| previous != plugged_in);
+            .last_settings
+            .as_ref()
+            .is_some_and(|previous| previous.plugged_in != plugged_in);
         if events.suspend_resume {
             self.sleep_prevention_manager
                 .suspend(&mut self.sleep_prevention_controller, &mut self.action_log);
         }
-        let changed = self.last_settings.as_ref() != Some(settings);
+        let previous_settings = self.last_settings.as_ref().map(ObservedSettings::effective);
+        let changed = previous_settings
+            .is_none_or(|previous| !std::ptr::eq(previous, settings) && previous != settings);
         let cpu_usage_resumed = changed
-            && self.last_settings.as_ref().is_some_and(|previous| {
+            && previous_settings.is_some_and(|previous| {
                 !cpu_usage_required(previous) && cpu_usage_required(settings)
             });
         if source_changed || events.suspend_resume || cpu_usage_resumed {
@@ -568,8 +586,18 @@ impl RuntimeCore {
             self.cpu_monitor = CpuUsageMonitor::default();
         }
         let explicitly_changed = events.settings_changed || events.suspend_resume || source_changed;
+        if source_changed
+            || self
+                .last_settings
+                .as_ref()
+                .is_none_or(|previous| !Arc::ptr_eq(&previous.configured, configured))
+        {
+            self.last_settings = Some(ObservedSettings {
+                configured: Arc::clone(configured),
+                plugged_in,
+            });
+        }
         if changed {
-            self.last_settings = Some(settings.clone());
             self.power_plan_controller.clear_failures();
         }
         if changed || explicitly_changed {
@@ -2026,7 +2054,7 @@ impl RuntimeCore {
             return (status, None);
         }
         let stop_state = self.last_settings.as_ref().and_then(|settings| {
-            ordinary_power_plan_stop(settings, self.last_power_source.flatten())
+            ordinary_power_plan_stop(settings.effective(), settings.plugged_in)
                 .map(|(state, _)| state)
         });
         let context = self.power_plan_rule_context.as_ref();
@@ -2172,22 +2200,43 @@ mod settings_tests {
     use super::*;
 
     #[test]
+    #[allow(clippy::field_reassign_with_default)] // RuntimeCore implements Drop.
+    fn equal_settings_replacement_updates_identity_without_invalidation() {
+        let mut runner = RuntimeCore::default();
+        runner.shutdown_started = true;
+        let settings = Arc::new(Settings::default());
+        let replacement = Arc::new(settings.as_ref().clone());
+        let events = AutomationWakeEvents::default();
+        assert!(runner.note_settings(&settings, events, Some(true)));
+        assert!(!runner.note_settings(&replacement, events, Some(true)));
+        assert!(runner
+            .last_settings
+            .as_ref()
+            .is_some_and(|observed| Arc::ptr_eq(&observed.configured, &replacement)));
+    }
+
+    #[test]
     #[allow(clippy::field_reassign_with_default)] // RuntimeCore implements Drop, preventing struct update.
     fn settings_cancel_restoration_even_while_adaptive_checks_are_paused() {
         let mut runner = RuntimeCore::default();
         // The fixture contains synthetic plan IDs and must never run native shutdown.
         runner.shutdown_started = true;
         runner.power_plan_controller = PowerPlanController::temporary_adaptive_fixture();
-        let mut settings = Settings::default();
-        settings.general.restore_previous_power_plan = true;
+        let mut settings = Arc::new(Settings::default());
+        Arc::make_mut(&mut settings)
+            .general
+            .restore_previous_power_plan = true;
         runner.note_settings(&settings, AutomationWakeEvents::default(), Some(true));
         assert!(runner.has_temporary_power_plan());
-        settings.general.restore_previous_power_plan = false;
+        Arc::make_mut(&mut settings)
+            .general
+            .restore_previous_power_plan = false;
         runner.note_settings(&settings, AutomationWakeEvents::default(), Some(true));
         assert!(!runner.has_temporary_power_plan());
-        settings.general.restore_previous_power_plan = true;
+        Arc::make_mut(&mut settings)
+            .general
+            .restore_previous_power_plan = true;
         runner.note_settings(&settings, AutomationWakeEvents::default(), Some(true));
-        let settings = Arc::new(settings);
         runner.power_plan_rule_context = Some(PowerPlanRuleContext {
             settings: Arc::clone(&settings),
             source: PowerSourceProfile::PluggedIn,
@@ -2296,6 +2345,7 @@ mod settings_tests {
             power_plan_guid: Some("target".into()),
             ..Default::default()
         }];
+        let settings = Arc::new(settings);
         let mut power_changed = AutomationWakeEvents::default();
         power_changed.insert_windows_event(WindowsAutomationEvent::PowerChanged);
         let mut suspend_resume = AutomationWakeEvents::default();
@@ -2356,6 +2406,7 @@ mod settings_tests {
                 else_power_plan_guid: Some("return".into()),
                 ..Default::default()
             }];
+            let settings = Arc::new(settings);
             let mut runner = RuntimeCore::default();
             runner.note_settings(&settings, AutomationWakeEvents::default(), Some(true));
             let start = Instant::now();
@@ -2443,6 +2494,7 @@ mod settings_tests {
                     power_plan_guid: Some("target".into()),
                     ..Default::default()
                 }];
+                let settings = Arc::new(settings);
                 let mut runner = RuntimeCore::default();
                 runner.note_settings(&settings, AutomationWakeEvents::default(), previous_source);
                 let start = Instant::now();
@@ -2524,6 +2576,7 @@ mod settings_tests {
         assert!(automation_worker_required(&settings));
         assert!(!power_plan_checks_required(settings.battery_profile()));
 
+        let settings = Arc::new(settings);
         let mut runner = RuntimeCore::default();
         let start = Instant::now();
         runner.note_settings(&settings, AutomationWakeEvents::default(), Some(true));
@@ -2531,11 +2584,7 @@ mod settings_tests {
             .by_cpu_load_scheduler
             .current_decision_at(&settings.by_cpu_load, Some(80.0), start)
             .is_none());
-        runner.note_settings(
-            settings.battery_profile(),
-            AutomationWakeEvents::default(),
-            Some(false),
-        );
+        runner.note_settings(&settings, AutomationWakeEvents::default(), Some(false));
         // The idle Battery profile keeps the worker alive without calling the scheduler.
         runner.note_settings(&settings, AutomationWakeEvents::default(), Some(true));
         assert!(runner
@@ -2569,11 +2618,7 @@ mod settings_tests {
                 start + Duration::from_secs(91),
             )
             .is_some());
-        runner.note_settings(
-            settings.battery_profile(),
-            AutomationWakeEvents::default(),
-            Some(false),
-        );
+        runner.note_settings(&settings, AutomationWakeEvents::default(), Some(false));
         runner.note_settings(&settings, AutomationWakeEvents::default(), Some(true));
         assert!(runner
             .by_cpu_load_scheduler
@@ -2597,13 +2642,14 @@ mod settings_tests {
                 ..Default::default()
             }];
             settings.by_cpu_load.enabled = false;
+            let mut settings = Arc::new(settings);
             runner.note_settings(&settings, AutomationWakeEvents::default(), Some(true));
 
             let sampled_at = Instant::now();
             runner.cpu_usage.percent = Some(90.0);
             runner.cpu_usage_sampled_at = Some(sampled_at);
 
-            settings.by_cpu_load.enabled = true;
+            Arc::make_mut(&mut settings).by_cpu_load.enabled = true;
             runner.note_settings(&settings, AutomationWakeEvents::default(), Some(true));
             assert_eq!(runner.cpu_usage.percent, adaptive_enabled.then_some(90.0));
             assert_eq!(
@@ -2620,8 +2666,10 @@ mod settings_tests {
                 let mut runner = RuntimeCore::default();
                 let mut settings = Settings::default();
                 settings.advanced.action_log_mode = crate::config::ActionLogMode::Off;
+                let mut settings = Arc::new(settings);
                 runner.note_settings(&settings, AutomationWakeEvents::default(), Some(true));
                 if changed {
+                    let settings = Arc::make_mut(&mut settings);
                     settings.advanced.action_log_mode = crate::config::ActionLogMode::Full;
                     settings.general.enabled = !settings.general.enabled;
                 }
@@ -2636,7 +2684,13 @@ mod settings_tests {
                     ),
                     changed || explicit
                 );
-                assert_eq!(runner.last_settings.as_ref(), Some(&settings));
+                assert_eq!(
+                    runner
+                        .last_settings
+                        .as_ref()
+                        .map(ObservedSettings::effective),
+                    Some(settings.as_ref())
+                );
                 runner.action_log.record(
                     crate::action_log::ActionLogFeature::ThreadPriority,
                     None,
