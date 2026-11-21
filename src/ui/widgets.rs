@@ -412,7 +412,21 @@ pub(super) fn action_button<'a, M: 'a>(
 pub(super) fn icon_button<'a, M: 'a>(
     icon: &'static str,
 ) -> super::animated_controls::Button<'a, M> {
-    button(super::navigation::glyph(icon))
+    icon_button_with_opacity(icon, 1.0)
+}
+
+pub(super) fn icon_button_maybe<'a, M: 'a>(
+    icon: &'static str,
+    action: Option<M>,
+) -> super::animated_controls::Button<'a, M> {
+    icon_button_with_opacity(icon, if action.is_some() { 1.0 } else { 0.5 }).on_press_maybe(action)
+}
+
+fn icon_button_with_opacity<'a, M: 'a>(
+    icon: &'static str,
+    opacity: f32,
+) -> super::animated_controls::Button<'a, M> {
+    button(super::navigation::glyph_with_opacity(icon, opacity))
         .padding(7)
         .width(design::BUTTON_HEIGHT)
         .height(design::BUTTON_HEIGHT)

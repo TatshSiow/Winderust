@@ -434,9 +434,17 @@ pub(super) fn icon<'a, Message: 'a>(page: Page, selected: bool) -> Element<'a, M
 }
 
 pub(super) fn glyph<'a, Message: 'a>(path: &'static str) -> Element<'a, Message> {
+    glyph_with_opacity(path, 1.0)
+}
+
+pub(super) fn glyph_with_opacity<'a, Message: 'a>(
+    path: &'static str,
+    opacity: f32,
+) -> Element<'a, Message> {
     iced::widget::svg(crate::ui::assets::iced_icon(path).expect("Every UI icon is bundled"))
         .width(design::ICON_SIZE)
         .height(design::ICON_SIZE)
+        .opacity(opacity)
         .style(|theme: &Theme, _| iced::widget::svg::Style {
             color: Some(super::widgets::muted_color(theme)),
         })

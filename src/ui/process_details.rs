@@ -1,8 +1,6 @@
 use super::super::design;
 use super::super::priority_control::{self, Kind, Tier, Value};
-use super::super::widgets::{
-    self, action_button, icon_button, pick_list, setting_row, settings_card, switch,
-};
+use super::super::widgets::{self, action_button, pick_list, setting_row, settings_card, switch};
 use super::super::{cpu_allocation, cpu_limiter};
 use super::PlanCatalog;
 use crate::application::SettingsEditor;
@@ -80,9 +78,13 @@ pub(super) fn update(s: &mut SettingsEditor, path: &str, m: Message) -> Option<S
                 priority_control::Message::RuleValue(i, tier, value),
             );
         }
-        Message::ResetPriority(kind) => kind
-            .rules_mut(s)
-            .retain(|r| !process_setting_matches(&r.executable_path, &path)),
+        Message::ResetPriority(kind) => {
+            let matches_path =
+                |rule: &ProcessExclusionRule| process_setting_matches(&rule.executable_path, &path);
+            if kind.rules(s).iter().any(matches_path) {
+                kind.rules_mut(s).retain(|rule| !matches_path(rule));
+            }
+        }
         Message::Adaptive(included) => {
             let rules = &mut s.adaptive_engine_process.custom_rules;
             if included {
@@ -401,6 +403,7 @@ pub(super) fn view<'a>(
     header = header.push(iced::widget::Space::new().width(32));
     let mut priorities =
         column![container(header).padding(widgets::CARD_PADDING as u16)].spacing(0);
+    let default_rule = ProcessExclusionRule::default();
     for kind in [
         Kind::Process,
         Kind::Thread,
@@ -413,9 +416,9 @@ pub(super) fn view<'a>(
         let rule = kind
             .rules(s)
             .iter()
-            .find(|r| process_setting_matches(&r.executable_path, path))
-            .cloned()
-            .unwrap_or_default();
+            .find(|r| process_setting_matches(&r.executable_path, path));
+        let reset = rule.is_some().then_some(Message::ResetPriority(kind));
+        let rule = rule.unwrap_or(&default_rule);
         let mut controls = row![text(t!(&key).to_string()).width(Fill)]
             .spacing(design::space::SMALL)
             .align_y(iced::Center)
@@ -424,14 +427,14 @@ pub(super) fn view<'a>(
             controls = controls.push(
                 pick_list(
                     kind.choices(s.advanced.expose_all_priority_values),
-                    Some(kind.rule_value(&rule, tier)),
+                    Some(kind.rule_value(rule, tier)),
                     move |v| Message::Priority(kind, tier, v),
                 )
                 .width(Fill),
             );
         }
         controls = controls.push(widgets::tooltip(
-            icon_button("icons/rotate-ccw.svg").on_press(Message::ResetPriority(kind)),
+            widgets::icon_button_maybe("icons/rotate-ccw.svg", reset),
             text(t!("process_list.use_page_defaults").to_string()),
             iced::widget::tooltip::Position::Top,
         ));
@@ -607,9 +610,14 @@ mod tests {
     #[test]
     fn details_priority_edits_do_not_enable_master_or_other_tiers() {
         let mut s = SettingsEditor::with_settings(Settings::default());
+        s.select_power_source(PowerSourceProfile::OnBattery);
+        let path = r"C:\App\app.exe";
+        let _ = update(&mut s, path, Message::ResetPriority(Kind::Process));
+        assert!(s.global().on_battery.is_none());
+
         let _ = update(
             &mut s,
-            r"C:\App\app.exe",
+            path,
             Message::Priority(
                 Kind::Process,
                 Tier::Focus,
@@ -626,6 +634,8 @@ mod tests {
             r.process_priority_override(false, false),
             ProcessPrioritySetting::Default
         );
+        let _ = update(&mut s, path, Message::ResetPriority(Kind::Process));
+        assert!(Kind::Process.rules(&s).is_empty());
     }
     #[test]
     fn cpu_rule_cannot_join_both_owners() {
