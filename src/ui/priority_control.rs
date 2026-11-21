@@ -1,5 +1,6 @@
 use super::design;
 use super::widgets::{checkbox, pick_list};
+use crate::application::SettingsEditor;
 use crate::config::*;
 use crate::ui::process_rules::can_add_process_candidate;
 use crate::ui::scrolling::scrollable;
@@ -310,8 +311,11 @@ impl Kind {
     }
 }
 impl Editor {
-    pub(super) fn update(&mut self, settings: &mut Settings, kind: Kind, message: Message) {
+    pub(super) fn update(&mut self, settings: &mut SettingsEditor, kind: Kind, message: Message) {
         match message {
+            Message::Enabled(value) if kind.enabled(settings) == value => {}
+            Message::Detection(tier, value) if kind.detection(settings, tier) == value => {}
+            Message::Preserve(tier, value) if kind.preserve(settings, tier) == Some(value) => {}
             Message::Path(path) => self.path = path,
             Message::Browse => {} // The application opens the native executable picker.
             Message::Add => {
@@ -326,8 +330,14 @@ impl Editor {
                 }
             }
             Message::Remove(path) => {
-                kind.rules_mut(settings)
-                    .retain(|rule| rule.executable_path != path);
+                if kind
+                    .rules(settings)
+                    .iter()
+                    .any(|rule| rule.executable_path == path)
+                {
+                    kind.rules_mut(settings)
+                        .retain(|rule| rule.executable_path != path);
+                }
             }
             Message::Collapse(tier) => {
                 let expanded = &mut self.expanded[kind as usize][tier as usize];
@@ -335,8 +345,12 @@ impl Editor {
             }
 
             Message::RuleEnabled(index, value) => {
-                if let Some(rule) = kind.rules_mut(settings).get_mut(index) {
-                    rule.enabled = value;
+                if kind
+                    .rules(settings)
+                    .get(index)
+                    .is_some_and(|rule| rule.enabled != value)
+                {
+                    kind.rules_mut(settings)[index].enabled = value;
                 }
             }
             Message::RuleValue(index, tier, value) => {
@@ -346,14 +360,19 @@ impl Editor {
                 {
                     return;
                 }
-                if let Some(rule) = kind.rules_mut(settings).get_mut(index) {
-                    value.set_rule(rule, tier);
+                if let Some(original) = kind.rules(settings).get(index) {
+                    let mut rule = original.clone();
+                    value.set_rule(&mut rule, tier);
+                    if rule != *original {
+                        kind.rules_mut(settings)[index] = rule;
+                    }
                 }
             }
             Message::Default(tier, value) => {
-                if !kind
-                    .choices(settings.advanced.expose_all_priority_values)
-                    .contains(&value)
+                if kind.value(settings, tier) == value
+                    || !kind
+                        .choices(settings.advanced.expose_all_priority_values)
+                        .contains(&value)
                 {
                     return;
                 }
@@ -812,7 +831,7 @@ mod tests {
 
     #[test]
     fn priority_edits_preserve_tiers_and_enforce_advanced_values() {
-        let mut settings = Settings::default();
+        let mut settings = SettingsEditor::with_settings(Settings::default());
         let mut editor = Editor::default();
         editor.update(&mut settings, Kind::Process, Message::Enabled(true));
         editor.update(
@@ -879,7 +898,7 @@ mod tests {
             Kind::Memory,
             Kind::DynamicBoost,
         ] {
-            let mut settings = Settings::default();
+            let mut settings = SettingsEditor::with_settings(Settings::default());
             let mut editor = Editor::default();
             editor.update(&mut settings, kind, Message::Enabled(true));
             editor.update(&mut settings, kind, Message::Path(settings_path()));
@@ -917,14 +936,14 @@ mod tests {
                     assert_eq!(kind.detection(&settings, other_tier), other_detection);
                 }
             }
-            let before_background_detection = settings.clone();
+            let before_background_detection = settings.global().clone();
             editor.update(
                 &mut settings,
                 kind,
                 Message::Detection(Tier::Background, false),
             );
             assert!(kind.detection(&settings, Tier::Background));
-            assert_eq!(settings, before_background_detection);
+            assert_eq!(settings.global(), &before_background_detection);
             if kind != Kind::DynamicBoost {
                 editor.update(
                     &mut settings,
@@ -938,7 +957,7 @@ mod tests {
     }
     #[test]
     fn confirmed_removal_changes_settings_without_waiting_for_a_visible_widget() {
-        let mut settings = Settings::default();
+        let mut settings = SettingsEditor::with_settings(Settings::default());
         let mut editor = Editor::default();
         settings
             .process_priority
@@ -954,6 +973,22 @@ mod tests {
         );
         assert!(settings.process_priority.exclusions.is_empty());
     }
+
+    #[test]
+    fn priority_editor_actions_preserve_battery_inheritance_before_add() {
+        let mut settings = SettingsEditor::with_settings(Settings::default());
+        settings.select_power_source(PowerSourceProfile::OnBattery);
+        let mut editor = Editor::default();
+        let kind = Kind::Process;
+        editor.update(&mut settings, kind, Message::Collapse(Tier::Focus));
+        editor.update(&mut settings, kind, Message::Path(settings_path()));
+        assert!(settings.global().on_battery.is_none());
+
+        editor.update(&mut settings, kind, Message::Add);
+        assert_eq!(kind.rules(&settings).len(), 1);
+        assert!(settings.global().process_priority.exclusions.is_empty());
+    }
+
     fn settings_path() -> String {
         crate::foreground::executable_path_key(Path::new(r"C:\Apps\editor.exe"))
     }
