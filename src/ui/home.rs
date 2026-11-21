@@ -1513,14 +1513,16 @@ fn enabled_features(
             t!("common.unknown").to_string()
         }
     );
+    let memory_priority = &status.memory_priority;
     feature!(
         MemoryPriority,
         memory_priority,
-        t!(
-            "home.adjusted_count",
-            count = status.memory_priority.adjusted_processes
+        priority_observation_detail(
+            memory_priority.enabled,
+            memory_priority.observation_paused,
+            memory_priority.last_error.is_some(),
+            memory_priority.adjusted_processes
         )
-        .to_string()
     );
     feature!(
         Watchdog,

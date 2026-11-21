@@ -29,6 +29,7 @@ use super::PriorityProcessTier;
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct MemoryPrioritySnapshot {
     pub enabled: bool,
+    pub observation_paused: bool,
     pub adjusted_processes: usize,
     pub skipped_processes: usize,
     pub failed_processes: usize,
@@ -431,6 +432,7 @@ impl MemoryPriorityManager {
         }
         let status = MemoryPrioritySnapshot {
             enabled: true,
+            observation_paused: true,
             ..Default::default()
         };
         self.finish_snapshot(controller, owner, status, failures, false)

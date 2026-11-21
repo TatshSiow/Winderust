@@ -562,6 +562,10 @@ fn sidebar_state(
             features.io_priority.enabled,
             features.io_priority.observation_paused,
         )),
+        Page::MemoryPriority => Some((
+            features.memory_priority.enabled,
+            features.memory_priority.observation_paused,
+        )),
         _ => None,
     };
     if let Some((enabled, paused)) = process_observation {
@@ -815,11 +819,12 @@ fn feature_status_summary(
         }
         Page::MemoryPriority => {
             let status = &runtime.feature_status.memory_priority;
+            let observed = status.enabled && !status.observation_paused;
             FeatureStatusSummary {
                 scanned: None,
-                adjusted: Some(status.adjusted_processes),
+                adjusted: observed.then_some(status.adjusted_processes),
                 protected_or_denied: None,
-                skipped: Some(status.skipped_processes),
+                skipped: observed.then_some(status.skipped_processes),
                 last_error: status.last_error.as_deref(),
                 action_log_feature: ActionLogFeature::MemoryPriority,
             }
@@ -1092,6 +1097,8 @@ mod tests {
         let runtime = RuntimeStatusSnapshot::default();
         let summary = feature_status_summary(Page::MemoryPriority, &runtime).unwrap();
         assert_eq!(summary.scanned, None);
+        assert_eq!(summary.adjusted, None);
         assert_eq!(summary.protected_or_denied, None);
+        assert_eq!(summary.skipped, None);
     }
 }
