@@ -40,6 +40,7 @@ pub struct CpuLimiterSnapshot {
 pub struct CpuLimiterManager {
     limited: BTreeMap<ProcessTargetKey, LimitedProcess>,
     failure_suppression: ExecutionFailureTracker,
+    release_pending: bool,
 }
 
 #[derive(Clone)]
@@ -76,14 +77,9 @@ impl CpuLimiterManager {
         if !settings.enabled {
             return self.clear(controller, action_log, false, "CPU Limiter disabled.");
         }
-        if !settings.rules.iter().any(valid_rule) {
+        if !has_finite_limits(settings) {
             self.failure_suppression.clear();
-            return self.clear(
-                controller,
-                action_log,
-                true,
-                "No CPU Limiter rules configured.",
-            );
+            return self.clear(controller, action_log, true, "No CPU limits configured.");
         }
 
         let needs_foreground = requires_foreground_observation(settings);
@@ -120,6 +116,7 @@ impl CpuLimiterManager {
             Ok(processes) => processes,
             Err(error) => return self.paused(controller, action_log, &error),
         };
+        self.release_pending = false;
 
         let scanned_processes = processes.len();
         let foreground_executable_path = foreground_process_id.and_then(|id| {
@@ -380,10 +377,10 @@ impl CpuLimiterManager {
         message: &str,
     ) -> CpuLimiterSnapshot {
         let mut last_error = controller.replace_targets(Vec::new()).err();
+        let mut release_error = None;
         if let Ok(failures) = controller.drain_failures() {
             for failure in failures {
                 let error = failure.error.to_string();
-                last_error = Some(error.clone());
                 action_log.record(
                     ActionLogFeature::CpuLimiter,
                     Some(failure.suspension_target.process.id),
@@ -391,11 +388,20 @@ impl CpuLimiterManager {
                     ActionLogResult::Failed,
                     format!("Release retry pending: {error}"),
                 );
+                release_error = Some(error);
             }
         }
-        let managed_keys = controller
-            .managed_target_keys()
-            .unwrap_or_else(|_| self.limited.keys().cloned().collect());
+        let managed_keys = match controller.managed_target_keys() {
+            Ok(keys) => {
+                self.release_pending = !keys.is_empty();
+                keys
+            }
+            Err(error) => {
+                last_error.get_or_insert(error);
+                self.release_pending = true;
+                self.limited.keys().cloned().collect()
+            }
+        };
         self.limited = retain_unreleased_limits(
             std::mem::take(&mut self.limited),
             &BTreeSet::new(),
@@ -405,9 +411,15 @@ impl CpuLimiterManager {
         CpuLimiterSnapshot {
             enabled,
             message: message.to_owned(),
-            last_error,
+            last_error: release_error
+                .filter(|_| self.release_pending)
+                .or(last_error),
             ..Default::default()
         }
+    }
+
+    pub(crate) fn release_pending(&self) -> bool {
+        self.release_pending
     }
 
     fn is_suppressed(
@@ -536,13 +548,16 @@ fn requires_foreground_observation(settings: &CpuLimiterSettings) -> bool {
         })
 }
 
-pub(crate) fn rule_has_finite_limit(settings: &CpuLimiterSettings, rule: &CpuLimiterRule) -> bool {
-    valid_rule(rule)
-        && [(true, false), (false, true), (false, false)]
-            .into_iter()
-            .any(|(focus, visible_window)| {
-                resolved_allowed_cpu_time_percent(settings, rule, focus, visible_window).is_some()
-            })
+pub(crate) fn has_finite_limits(settings: &CpuLimiterSettings) -> bool {
+    settings.rules.iter().any(|rule| {
+        valid_rule(rule)
+            && [(true, false), (false, true), (false, false)]
+                .into_iter()
+                .any(|(focus, visible_window)| {
+                    resolved_allowed_cpu_time_percent(settings, rule, focus, visible_window)
+                        .is_some()
+                })
+    })
 }
 
 fn requires_visible_window_observation(settings: &CpuLimiterSettings) -> bool {

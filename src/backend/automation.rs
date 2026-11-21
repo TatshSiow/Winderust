@@ -1361,8 +1361,10 @@ fn run_background_automation(
             || feature_refresh_required(settings, cpu_sets_soft_required(settings));
         let processor_affinity_hard_refresh_required = settings_changed
             || feature_refresh_required(settings, processor_affinity_hard_required(settings));
-        let cpu_limiter_refresh_required =
+        let cpu_limiter_refresh_requested =
             settings_changed || feature_refresh_required(settings, cpu_limiter_required(settings));
+        let cpu_limiter_refresh_required =
+            cpu_limiter_refresh_requested || runner.cpu_limiter_release_pending();
         let by_running_app_refresh_required = settings_changed
             || feature_refresh_required(settings, by_running_app_required(settings))
             || runner.has_temporary_power_plan();
@@ -1639,8 +1641,10 @@ fn run_background_automation(
             );
         }
         if cpu_limiter_refresh_required && scheduler.is_due(RefreshDomain::CpuLimiter, now) {
-            let cpu_limiter_status = runner.run_cpu_limiter_update(settings, &mut observations);
-            update_cpu_limiter_status(&shared, cpu_limiter_status);
+            if cpu_limiter_refresh_requested || !runner.cpu_limiter_release_in_progress() {
+                let cpu_limiter_status = runner.run_cpu_limiter_update(settings, &mut observations);
+                update_cpu_limiter_status(&shared, cpu_limiter_status);
+            }
             scheduler.schedule_after(RefreshDomain::CpuLimiter, now, cpu_limiter_refresh_interval);
         }
         let immediate_cpu_allocation_reconciliation =

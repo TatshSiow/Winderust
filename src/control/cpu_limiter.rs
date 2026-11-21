@@ -405,6 +405,14 @@ impl CpuLimiterController {
             .map_or(true, |state| !state.targets.is_empty())
     }
 
+    pub(crate) fn release_in_progress(&self) -> bool {
+        self.state.lock().is_ok_and(|state| {
+            state.fatal_error.is_none()
+                && !state.targets.is_empty()
+                && state.targets.values().all(|target| target.retiring)
+        })
+    }
+
     pub(crate) fn shutdown(&mut self) -> Result<(), String> {
         let mut errors = Vec::new();
         if let Ok(mut state) = self.state.lock() {

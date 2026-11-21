@@ -467,8 +467,10 @@ Read the relevant section before changing feature policy, ownership, restoration
   primary backend; only `NotSupported` job assignment selects CPU Limiter's exact-thread fallback.
   That fallback owns one suspend-count increment per exact thread and never applies to App
   Suspension. Active limiter target and process-appearance refresh remain at one second even while
-  hidden or under Adaptive Engine saver cadence. CPU Limiter does not own CPU allocation or Windows
-  CPU-rate state.
+  hidden or under Adaptive Engine saver cadence. When CPU Limiter is disabled or the saved rules
+  have no finite limits, automation keeps a refresh scheduled until the timing worker releases its
+  remaining targets and the cleanup status and Action Log can be published. CPU Limiter does not
+  own CPU allocation or Windows CPU-rate state.
 
 ## Runtime observations
 

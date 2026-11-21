@@ -130,12 +130,7 @@ pub(super) fn processor_affinity_hard_required(settings: &Settings) -> bool {
 
 pub(super) fn cpu_limiter_required(settings: &Settings) -> bool {
     settings.cpu_limiter.enabled
-        && settings.cpu_limiter.rules.iter().any(|rule| {
-            crate::features::cpu_control::cpu_limiter::rule_has_finite_limit(
-                &settings.cpu_limiter,
-                rule,
-            )
-        })
+        && crate::features::cpu_control::cpu_limiter::has_finite_limits(&settings.cpu_limiter)
 }
 
 pub(super) fn timer_resolution_required(settings: &Settings) -> bool {

@@ -831,7 +831,10 @@ impl RuntimeCore {
                 ..Default::default()
             };
         }
-        let foreground_process_id = observations.foreground_process_id();
+        let foreground_process_id =
+            feature_refresh_required(settings, cpu_limiter_required(settings))
+                .then(|| observations.foreground_process_id())
+                .flatten();
         let controller = match self.cpu_limiter_controller.as_mut() {
             Some(controller) => controller,
             None => match CpuLimiterController::new(Arc::clone(&self.app_suspension_controller)) {
@@ -1533,6 +1536,16 @@ impl RuntimeCore {
                 .is_some_and(CpuLimiterController::has_managed_state)
             || app_suspension_active
             || self.keep_running.has_pending()
+    }
+
+    pub(super) fn cpu_limiter_release_pending(&self) -> bool {
+        self.cpu_limiter_manager.release_pending()
+    }
+
+    pub(super) fn cpu_limiter_release_in_progress(&self) -> bool {
+        self.cpu_limiter_controller
+            .as_ref()
+            .is_some_and(CpuLimiterController::release_in_progress)
     }
 
     pub(super) fn app_suspension_active(&self) -> bool {
