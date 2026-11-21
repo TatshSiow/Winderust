@@ -1,6 +1,6 @@
 use super::action_log::{action_log_process_label, action_log_time_label};
 use super::design;
-use super::widgets::action_button;
+use super::widgets::{action_button, power_plan_label};
 use crate::ui::scrolling::scrollable;
 use crate::{
     action_log::{ActionLogEntry, ActionLogFeature},
@@ -148,7 +148,7 @@ pub(super) fn view<'a>(
                 plans
                     .iter()
                     .find(|p| p.guid.eq_ignore_ascii_case(guid))
-                    .map(|p| p.display_name())
+                    .map(power_plan_label)
                     .unwrap_or_else(|| guid.clone())
             })
             .unwrap_or_else(|| t!("common.unknown").to_string());

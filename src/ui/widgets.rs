@@ -1584,6 +1584,14 @@ impl<T> std::fmt::Display for Choice<T> {
     }
 }
 
+pub(super) fn power_plan_label(plan: &PowerPlan) -> String {
+    if plan.active {
+        rust_i18n::t!("common.active_plan_name", name = plan.name.as_str()).to_string()
+    } else {
+        plan.name.clone()
+    }
+}
+
 pub(super) fn plan<M: Clone + 'static>(
     guid: Option<&str>,
     plans: &[PowerPlan],
@@ -1593,7 +1601,7 @@ pub(super) fn plan<M: Clone + 'static>(
     choices.extend(
         plans
             .iter()
-            .map(|plan| Choice(Some(plan.guid.clone()), plan.display_name())),
+            .map(|plan| Choice(Some(plan.guid.clone()), power_plan_label(plan))),
     );
     let selected = choices
         .iter()

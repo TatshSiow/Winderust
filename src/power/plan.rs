@@ -664,16 +664,6 @@ pub fn adaptive_power_profile_transition(
     }
 }
 
-impl PowerPlan {
-    pub fn display_name(&self) -> String {
-        if self.active {
-            format!("{} (active)", self.name)
-        } else {
-            self.name.clone()
-        }
-    }
-}
-
 impl PowerPlanPersonality {
     pub const fn from_power_value(value: u32) -> Self {
         match value {

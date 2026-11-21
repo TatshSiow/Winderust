@@ -4393,15 +4393,15 @@ mod tests {
             },
         ];
         assert!(!sync_active_power_plan(&mut plans, None, None));
-        assert_eq!(plans[0].display_name(), "Balanced (active)");
+        assert!(plans[0].active);
 
         assert!(sync_active_power_plan(
             &mut plans,
             Some("balanced"),
             Some("ULTIMATE")
         ));
-        assert_eq!(plans[0].display_name(), "Balanced");
-        assert_eq!(plans[1].display_name(), "Ultimate (active)");
+        assert!(!plans[0].active);
+        assert!(plans[1].active);
 
         // A later native enumeration may be newer than the cached runtime GUID.
         plans[0].active = true;
@@ -4412,8 +4412,10 @@ mod tests {
             Some("ultimate")
         ));
         assert!(!sync_active_power_plan(&mut plans, Some("ULTIMATE"), None));
-        assert_eq!(plans[0].display_name(), "Balanced (active)");
-        assert_eq!(plans[1].display_name(), "Ultimate");
+        assert!(plans[0].active);
+        assert!(!plans[1].active);
+        assert_eq!(plans[0].name, "Balanced");
+        assert_eq!(plans[1].name, "Ultimate");
     }
 
     #[test]

@@ -187,6 +187,7 @@ common:
   custom: "自訂"
   status: "狀態"
   current_power_plan: "目前電源計畫"
+  active_plan_name: "%{name}（作用中）"
   running: "執行中"
   scanned_processes: "已掃描程序"
   adjusted_processes: "已調整程序"

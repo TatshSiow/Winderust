@@ -1,5 +1,7 @@
 use super::design;
-use super::widgets::{action_button, button, icon_button, pick_list, slider, text_input};
+use super::widgets::{
+    action_button, button, icon_button, pick_list, power_plan_label, slider, text_input,
+};
 use crate::application::{
     AdvancedPowerPlanTuningApplyError, AdvancedPowerPlanTuningError, AdvancedPowerPlanTuningService,
 };
@@ -728,7 +730,7 @@ impl Editor {
         mode: EffectivePowerMode,
     ) -> Element<'a, Message> {
         let choices = tuning_plans(plans)
-            .map(|p| PlanChoice(p.guid.clone(), p.display_name()))
+            .map(|p| PlanChoice(p.guid.clone(), power_plan_label(p)))
             .collect::<Vec<_>>();
         let selected = choices
             .iter()
@@ -760,7 +762,7 @@ impl Editor {
                         plan = plans
                             .iter()
                             .find(|p| p.active)
-                            .map(|p| p.display_name())
+                            .map(power_plan_label)
                             .unwrap_or_else(|| t!("processor_power.no_active_plan").to_string())
                     )
                     .to_string(),

@@ -187,6 +187,7 @@ common:
   custom: "Custom"
   status: "Status"
   current_power_plan: "Current power plan"
+  active_plan_name: "%{name} (active)"
   running: "Running"
   scanned_processes: "Scanned process"
   adjusted_processes: "Adjusted process"
