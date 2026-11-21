@@ -628,6 +628,9 @@ Read the relevant section before changing feature policy, ownership, restoration
   reapplication contracts. Guard failure withdraws balancing ownership through
   the existing reconciliation/restoration paths without losing pending cleanup.
 - Adaptive Engine uses the same Focus App, Visible Window, then Background ordering across Process, Thread, I/O, GPU, and Memory Priority plus Dynamic Priority Boost. Its Background Efficiency controls own separate foreground and visible-window detection and Efficiency Mode values instead of borrowing the Background Efficiency page's settings.
+- If Windows supplies no focused process ID, Adaptive Engine pauses its process
+  policies and releases their claims through the shared controllers. Saved
+  settings, manual ownership, and Adaptive processor power retain their own state.
 - Adaptive Engine uses the shared right-rail Status / Presets pattern. Built-in presets are read-only; custom presets capture only Adaptive Engine and Adaptive Engine tuning. Applying a preset never changes master enable switches, custom rules, exclusions, or the separate Background Efficiency feature.
 
 ## Interrupt Timing

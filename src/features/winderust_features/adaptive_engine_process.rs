@@ -325,6 +325,39 @@ impl AdaptiveEngineProcessManager {
             };
         }
 
+        if foreground_process_id.is_none() {
+            let failed = self.clear_all_with_memory_priority(
+                cpu_allocation_coordinator,
+                priority_efficiency_controller,
+                memory_priority_controller,
+                action_log,
+                "foreground app is unknown",
+            );
+            let zones = if !settings.dynamic_resource_zones_enabled {
+                DynamicResourceZoneSnapshot::default()
+            } else if failed.count > 0 {
+                DynamicResourceZoneSnapshot {
+                    status: ZoneStatus::Degraded,
+                    reason: "zone_retry",
+                    ..Default::default()
+                }
+            } else {
+                DynamicResourceZoneSnapshot {
+                    status: ZoneStatus::Unavailable,
+                    reason: "zone_observations",
+                    ..Default::default()
+                }
+            };
+            return AdaptiveEngineProcessSnapshot {
+                zones,
+                enabled: true,
+                failed_processes: failed.count,
+                message: "Paused: foreground app is unknown.".to_owned(),
+                last_error: failed.last_error,
+                ..Default::default()
+            };
+        }
+
         // SAFETY: GetCurrentProcessId takes no arguments and has no caller requirements.
         let current_process_id = unsafe { GetCurrentProcessId() };
         let Some(current_session_id) = process_session_id(current_process_id) else {
@@ -1319,13 +1352,6 @@ impl AdaptiveEngineProcessManager {
             ) {
                 failures.merge(error);
             }
-        } else if let Some(error) = self.clear_focus_process_priority(
-            priority_efficiency_controller,
-            true,
-            action_log,
-            "foreground app is unknown",
-        ) {
-            failures.merge(error);
         }
 
         AdaptiveEngineProcessSnapshot {
@@ -1416,7 +1442,7 @@ impl AdaptiveEngineProcessManager {
         let cpu_allocation_snapshot = self.cpu_allocation.clear_discovered_targets(
             cpu_allocation_coordinator,
             ControlOwner::AdaptiveEngine,
-            "Adaptive Engine disabled.",
+            reason,
             action_log,
         );
         failures.count += cpu_allocation_snapshot.failed_processes;
