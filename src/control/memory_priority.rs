@@ -66,6 +66,8 @@ pub(crate) struct MemoryPriorityReleaseFailure {
     pub(crate) process_name: String,
     pub(crate) executable_path: String,
     pub(crate) error: ProcessControlError,
+    pub(crate) pending_owner: Option<MemoryPriorityReleaseOwner>,
+    pub(crate) tracked_static: bool,
 }
 
 #[derive(Debug, Default)]
@@ -86,15 +88,25 @@ pub(crate) struct MemoryPriorityReleaseRetries {
     pub(crate) failures: Vec<MemoryPriorityReleaseFailure>,
 }
 
+struct PendingMemoryPriorityRelease {
+    origin: Option<MemoryPriorityReleaseOwner>,
+    static_error: Option<ProcessControlError>,
+}
+
 fn queue_pending_release(
-    pending: &mut BTreeMap<ProcessIdentity, Option<MemoryPriorityReleaseOwner>>,
+    pending: &mut BTreeMap<ProcessIdentity, PendingMemoryPriorityRelease>,
     identity: &ProcessIdentity,
     releasing_owner: Option<MemoryPriorityReleaseOwner>,
 ) {
-    let origin = pending.entry(identity.clone()).or_insert(releasing_owner);
-    if releasing_owner.is_some() && *origin != releasing_owner {
+    let entry = pending
+        .entry(identity.clone())
+        .or_insert(PendingMemoryPriorityRelease {
+            origin: releasing_owner,
+            static_error: None,
+        });
+    if releasing_owner.is_some() && entry.origin != releasing_owner {
         // More than one owner requested reconciliation before this release completed.
-        *origin = None;
+        entry.origin = None;
     }
 }
 
@@ -191,7 +203,7 @@ pub(crate) struct MemoryPriorityController<
     adaptive_claims: BTreeMap<ProcessTargetKey, MemoryPriorityClaim>,
     managed: BTreeMap<ProcessIdentity, ManagedMemoryPriority>,
     next_apply_sequence: u64,
-    pending_releases: BTreeMap<ProcessIdentity, Option<MemoryPriorityReleaseOwner>>,
+    pending_releases: BTreeMap<ProcessIdentity, PendingMemoryPriorityRelease>,
     next_release_retry: Option<Instant>,
 }
 
@@ -399,6 +411,8 @@ impl<P: MemoryPriorityPlatform> MemoryPriorityController<P> {
                         process_name: "Memory Priority".to_owned(),
                         executable_path: String::new(),
                         error,
+                        pending_owner: None,
+                        tracked_static: false,
                     }],
                     ..Default::default()
                 };
@@ -447,13 +461,13 @@ impl<P: MemoryPriorityPlatform> MemoryPriorityController<P> {
         let mut identities = self
             .pending_releases
             .iter()
-            .filter_map(|(identity, origin)| {
+            .filter_map(|(identity, pending)| {
                 self.managed.get(identity).map(|managed| {
                     (
                         managed.apply_sequence,
                         identity.clone(),
                         managed.owner,
-                        *origin,
+                        pending.origin,
                     )
                 })
             })
@@ -520,14 +534,16 @@ impl<P: MemoryPriorityPlatform> MemoryPriorityController<P> {
                     self.drop_exited_identity(managed_identity.as_ref(), summary);
                 }
                 Err(error) => {
-                    if let Some(identity) =
-                        self.managed.keys().find(|identity| identity.key() == *key)
-                    {
+                    let identity = self.managed.keys().find(|identity| identity.key() == *key);
+                    if let Some(identity) = identity {
                         queue_pending_release(&mut self.pending_releases, identity, report_owner);
                     }
-                    summary
-                        .failures
-                        .push(release_failure_for_claim(&claim, error));
+                    Self::record_release_failure(
+                        &mut self.pending_releases,
+                        identity,
+                        release_failure_for_claim(&claim, error),
+                        summary,
+                    );
                 }
             }
             return;
@@ -551,10 +567,41 @@ impl<P: MemoryPriorityPlatform> MemoryPriorityController<P> {
             Err(ProcessControlError::ProcessExited) => {
                 self.drop_exited_identity(Some(&identity), summary);
             }
-            Err(error) => summary
-                .failures
-                .push(release_failure_for_identity(&identity, error)),
+            Err(error) => Self::record_release_failure(
+                &mut self.pending_releases,
+                Some(&identity),
+                release_failure_for_identity(&identity, error),
+                summary,
+            ),
         }
+    }
+
+    fn record_release_failure(
+        pending: &mut BTreeMap<ProcessIdentity, PendingMemoryPriorityRelease>,
+        identity: Option<&ProcessIdentity>,
+        mut failure: MemoryPriorityReleaseFailure,
+        summary: &mut MemoryPriorityReleaseSummary,
+    ) {
+        if let Some(entry) = identity.and_then(|identity| pending.get_mut(identity)) {
+            failure.pending_owner = entry.origin;
+            if entry.origin == Some(MemoryPriorityReleaseOwner::MemoryPriority)
+                || entry.static_error.is_some()
+            {
+                entry.static_error = Some(failure.error.clone());
+                failure.tracked_static = true;
+            }
+        }
+        summary.failures.push(failure);
+    }
+
+    pub(crate) fn static_release_failures(
+        &self,
+    ) -> impl Iterator<Item = (&ProcessIdentity, &ProcessControlError)> {
+        self.pending_releases
+            .iter()
+            .filter_map(|(identity, pending)| {
+                pending.static_error.as_ref().map(|error| (identity, error))
+            })
     }
 
     fn drop_exited_identity(
@@ -570,9 +617,12 @@ impl<P: MemoryPriorityPlatform> MemoryPriorityController<P> {
                 self.managed.remove(identity);
                 self.pending_releases.remove(identity);
             }
-            Err(error) => summary
-                .failures
-                .push(release_failure_for_identity(identity, error)),
+            Err(error) => Self::record_release_failure(
+                &mut self.pending_releases,
+                Some(identity),
+                release_failure_for_identity(identity, error),
+                summary,
+            ),
         }
     }
 
@@ -852,6 +902,8 @@ fn release_failure_for_claim(
         process_name: claim.target.name.clone(),
         executable_path: claim.target.executable_path.to_string_lossy().into_owned(),
         error,
+        pending_owner: None,
+        tracked_static: false,
     }
 }
 
@@ -864,6 +916,8 @@ fn release_failure_for_identity(
         process_name: identity.name.clone(),
         executable_path: identity.executable_path.to_string_lossy().into_owned(),
         error,
+        pending_owner: None,
+        tracked_static: false,
     }
 }
 

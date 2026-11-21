@@ -40,6 +40,8 @@ pub struct MemoryPrioritySnapshot {
 #[derive(Default)]
 pub struct MemoryPriorityManager {
     failure_suppression: ExecutionFailureTracker,
+    static_base_failures: MemoryPriorityFailures,
+    static_observed_targets: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -354,15 +356,15 @@ impl MemoryPriorityManager {
                 .iter()
                 .map(String::as_str),
         );
-        MemoryPrioritySnapshot {
+        let status = MemoryPrioritySnapshot {
             enabled: true,
             adjusted_processes: controller.policy_managed_process_count(owner),
             skipped_processes,
-            failed_processes: failures.count,
             adjusted_apps,
             auto_excluded_processes: auto_excluded_processes.into_iter().collect(),
-            last_error: failures.last_error,
-        }
+            ..Default::default()
+        };
+        self.finish_snapshot(controller, owner, status, failures, true)
     }
 
     fn disabled_snapshot(
@@ -382,12 +384,13 @@ impl MemoryPriorityManager {
             &mut failures,
         );
         self.failure_suppression.clear();
-        MemoryPrioritySnapshot {
-            enabled: false,
-            failed_processes: failures.count,
-            last_error: failures.last_error,
-            ..Default::default()
-        }
+        self.finish_snapshot(
+            controller,
+            owner,
+            MemoryPrioritySnapshot::default(),
+            failures,
+            false,
+        )
     }
 
     fn pause_rules_for_unknown_focus(
@@ -426,12 +429,64 @@ impl MemoryPriorityManager {
             failures.count += 1;
             failures.last_error.get_or_insert(error);
         }
-        MemoryPrioritySnapshot {
+        let status = MemoryPrioritySnapshot {
             enabled: true,
-            failed_processes: failures.count,
-            last_error: failures.last_error,
             ..Default::default()
+        };
+        self.finish_snapshot(controller, owner, status, failures, false)
+    }
+
+    fn finish_snapshot(
+        &mut self,
+        controller: &MemoryPriorityController,
+        owner: ControlOwner,
+        mut status: MemoryPrioritySnapshot,
+        mut failures: MemoryPriorityFailures,
+        observed_targets: bool,
+    ) -> MemoryPrioritySnapshot {
+        if owner == ControlOwner::MemoryPriority {
+            self.static_observed_targets = observed_targets;
+            let first_release_error = failures.first_release_error.take();
+            self.static_base_failures = failures;
+            let mut status = self.with_static_release_status(controller, status);
+            if let Some(error) = first_release_error {
+                status.last_error = Some(error);
+            }
+            return status;
         }
+        status.failed_processes = failures.count;
+        status.last_error = failures.last_error;
+        status
+    }
+
+    pub(crate) fn with_static_release_status(
+        &self,
+        controller: &MemoryPriorityController,
+        mut status: MemoryPrioritySnapshot,
+    ) -> MemoryPrioritySnapshot {
+        let base = &self.static_base_failures;
+        let mut pending_error = None;
+        status.failed_processes = base.count;
+        for (identity, error) in controller.static_release_failures() {
+            if matches!(error, ProcessControlError::AccessDenied(_)) {
+                continue;
+            }
+            status.failed_processes += 1;
+            pending_error.get_or_insert_with(|| {
+                format!("Restore {} ({}): {error}", identity.name, identity.id)
+            });
+        }
+        status.last_error = if base.ordinary_release_first {
+            base.last_error.clone().or(pending_error)
+        } else {
+            pending_error.or_else(|| base.last_error.clone())
+        };
+        if self.static_observed_targets {
+            let apps = controller.policy_managed_process_names(ControlOwner::MemoryPriority);
+            status.adjusted_processes = apps.len();
+            status.adjusted_apps = unique_app_names(apps.iter().map(String::as_str));
+        }
+        status
     }
 
     pub(crate) fn record_restoration(
@@ -475,14 +530,30 @@ impl MemoryPriorityManager {
                     ActionLogResult::Skipped,
                     format!("{message} Previous Memory Priority could not be restored: {reason}."),
                 ),
-                error => failures.record(
-                    "Restore",
-                    failure.process_id,
-                    &failure.process_name,
-                    error,
-                    action_log_feature,
-                    action_log,
-                ),
+                error => {
+                    let message = error.to_string();
+                    let diagnostic = format!(
+                        "Restore {} ({}): {message}",
+                        failure.process_name, failure.process_id
+                    );
+                    let tracked = action_log_feature == ActionLogFeature::MemoryPriority
+                        && failure.tracked_static;
+                    if failures.first_release_error.is_none() {
+                        failures.first_release_error = Some(diagnostic.clone());
+                        failures.ordinary_release_first = !tracked;
+                    }
+                    if !tracked {
+                        failures.count += 1;
+                        failures.last_error.get_or_insert(diagnostic);
+                    }
+                    action_log.record(
+                        action_log_feature,
+                        Some(failure.process_id),
+                        failure.process_name,
+                        ActionLogResult::Failed,
+                        message,
+                    );
+                }
             }
         }
     }
@@ -552,6 +623,8 @@ impl MemoryPriorityManager {
 struct MemoryPriorityFailures {
     count: usize,
     last_error: Option<String>,
+    first_release_error: Option<String>,
+    ordinary_release_first: bool,
 }
 
 impl MemoryPriorityFailures {

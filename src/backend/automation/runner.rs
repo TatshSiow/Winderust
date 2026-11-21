@@ -1516,6 +1516,8 @@ impl RuntimeCore {
                 ),
             );
         }
+        let memory_retry_due =
+            self.memory_priority_controller.release_retry_delay(now) == Some(Duration::ZERO);
         let memory_retries = self.memory_priority_controller.retry_pending_releases(now);
         for (owner, count) in memory_retries.restored_by_owner {
             let feature = match owner {
@@ -1529,14 +1531,36 @@ impl RuntimeCore {
                 "restoration retry completed",
             );
         }
-        errors.extend(memory_retries.failures.into_iter().map(|failure| {
-            process_failure(
-                "Memory Priority",
-                failure.process_name,
-                failure.process_id,
-                failure.error,
-            )
-        }));
+        errors.extend(
+            memory_retries
+                .failures
+                .into_iter()
+                .filter(|failure| {
+                    failure.pending_owner != Some(MemoryPriorityReleaseOwner::MemoryPriority)
+                })
+                .map(|failure| {
+                    process_failure(
+                        "Memory Priority",
+                        failure.process_name,
+                        failure.process_id,
+                        failure.error,
+                    )
+                }),
+        );
+        if memory_retry_due {
+            let status = lock_unpoisoned(&shared.state)
+                .status
+                .feature_status
+                .memory_priority
+                .clone();
+            update_feature_status(
+                shared,
+                self.memory_priority_manager
+                    .with_static_release_status(&self.memory_priority_controller, status),
+                |features| &features.memory_priority,
+                |features| &mut features.memory_priority,
+            );
+        }
         if self
             .dynamic_priority_boost_controller
             .release_retry_delay(now)

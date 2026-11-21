@@ -169,6 +169,9 @@ Read the relevant section before changing feature policy, ownership, restoration
   initiating feature's Action Log when exactly one owner requested reconciliation
   for that process. Shared release attempts, active policy handoffs, departed
   processes and external overrides do not create restoration entries.
+- A delayed failure that belongs only to static Memory Priority updates that
+  feature's current status, preserving other diagnostics. Shared and Adaptive
+  Engine release errors retain their existing worker error reporting.
 - Failed Process Priority and Efficiency policy releases remain queued independently of active claims. The runtime retries reconciliation once per second while pending, including with feature/master toggles disabled. Each retry resolves current claims and uses existing identity and restoration checks; it must not blindly restore over a new owner.
 
 - Runtime restoration is a product safety barrier: every reversible runtime
