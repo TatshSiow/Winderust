@@ -1733,17 +1733,18 @@ impl RuntimeCore {
         settings: &Settings,
         observations: &mut CycleObservations,
     ) -> TimerResolutionSnapshot {
-        let foreground_executable_path =
+        let foreground_process =
             feature_refresh_required(settings, timer_resolution_required(settings))
                 .then(|| observations.foreground_process())
                 .flatten()
-                .filter(|process| process_is_critical(process.id) == Some(false))
-                .map(|process| process.executable_path.to_string_lossy().into_owned());
+                .filter(|process| process_is_critical(process.id) == Some(false));
         self.timer_resolution_manager.update(
             &mut self.timer_resolution_controller,
             &settings.timer_resolution,
             settings.general.enabled,
-            foreground_executable_path.as_deref(),
+            foreground_process
+                .as_ref()
+                .and_then(|process| process.executable_path.to_str()),
             &mut self.action_log,
         )
     }
