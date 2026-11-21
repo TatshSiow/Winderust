@@ -11,7 +11,7 @@ use iced::{
     keyboard, mouse, overlay, Element, Event, Length, Rectangle, Renderer, Size, Theme, Vector,
 };
 use rust_i18n::t;
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, ffi::OsString, sync::Arc};
 
 #[derive(Debug, Clone)]
 pub(super) struct Candidate {
@@ -165,16 +165,40 @@ pub(super) fn app_name<'a, M: 'a>(path: &str, candidates: &[Candidate]) -> Eleme
     .into()
 }
 
+type Choice<'a> = (&'a Candidate, bool);
+
+fn choice_identity<'a>((candidate, available): &Choice<'a>) -> (&'a std::ffi::OsStr, bool) {
+    (candidate.info.image_path.as_os_str(), *available)
+}
+
+enum Selection {
+    App(OsString),
+    Browse,
+}
+
 #[derive(Default)]
 struct State {
     focused: bool,
     open: bool,
-    selected: Option<usize>,
+    selected: Option<Selection>,
+    pressed_choices: Option<Vec<(OsString, bool)>>,
+}
+
+impl State {
+    fn selected_index(&self, choices: &[Choice<'_>]) -> Option<usize> {
+        match self.selected.as_ref()? {
+            Selection::App(path) => choices.iter().position(|choice| {
+                let (candidate, available) = choice_identity(choice);
+                available && path == candidate
+            }),
+            Selection::Browse => Some(choices.len()),
+        }
+    }
 }
 
 struct Picker<'a, M> {
     input: Element<'a, M>,
-    choices: Vec<(&'a Candidate, bool)>,
+    choices: Vec<Choice<'a>>,
     select: fn(String) -> M,
     browse: M,
     enabled: bool,
@@ -291,6 +315,22 @@ impl<M: Clone + 'static> Widget<M, Theme, Renderer> for Picker<'_, M> {
     }
     fn diff(&self, tree: &mut Tree) {
         tree.children[0].diff(&self.input);
+        let state = tree.state.downcast_mut::<State>();
+        if state.selected_index(&self.choices).is_none() {
+            state.selected = None;
+        }
+        // Button press state follows the menu row. Drop an in-flight press
+        // when a refresh changes which executable that row represents.
+        let changed_during_press = state.pressed_choices.as_ref().is_some_and(|pressed| {
+            !pressed
+                .iter()
+                .map(|(path, available)| (path.as_os_str(), *available))
+                .eq(self.choices.iter().map(choice_identity))
+        });
+        if changed_during_press || (!self.enabled && state.pressed_choices.is_some()) {
+            tree.children[1] = Tree::empty();
+            state.pressed_choices = None;
+        }
     }
     fn layout(
         &mut self,
@@ -354,6 +394,7 @@ impl<M: Clone + 'static> Widget<M, Theme, Renderer> for Picker<'_, M> {
         {
             if !state.open {
                 tree.children[1] = Tree::empty();
+                state.pressed_choices = None;
             }
             state.open = true;
             state.selected = None;
@@ -391,6 +432,7 @@ impl<M: Clone + 'static> Widget<M, Theme, Renderer> for Picker<'_, M> {
         {
             if !state.open {
                 tree.children[1] = Tree::empty();
+                state.pressed_choices = None;
             }
             state.open = true;
             state.selected = None;
@@ -428,12 +470,13 @@ impl<M: Clone + 'static> Widget<M, Theme, Renderer> for Picker<'_, M> {
             return None;
         }
         // Keep native button status between overlay update and draw calls.
+        let selected = state.selected_index(&self.choices);
         if self
             .menu
             .as_ref()
-            .is_none_or(|(selected, _)| *selected != state.selected)
+            .is_none_or(|(shown, _)| *shown != selected)
         {
-            self.menu = Some((state.selected, self.menu(state.selected)));
+            self.menu = Some((selected, self.menu(selected)));
         }
         let (_, menu) = self.menu.as_mut()?;
         tree.children[1].diff(&*menu);
@@ -454,7 +497,7 @@ struct Menu<'a, M> {
     tree: &'a mut Tree,
     state: &'a mut State,
     anchor: Rectangle,
-    choices: &'a [(&'a Candidate, bool)],
+    choices: &'a [Choice<'a>],
     select: fn(String) -> M,
     browse: M,
 }
@@ -543,7 +586,7 @@ impl<M: Clone + 'static> iced::advanced::Overlay<M, Theme, Renderer> for Menu<'_
                         .collect();
                     let position = self
                         .state
-                        .selected
+                        .selected_index(self.choices)
                         .and_then(|selected| indices.iter().position(|i| *i == selected));
                     let next = if *key == keyboard::Key::Named(Named::ArrowUp) {
                         position.map_or(indices.len() - 1, |i| {
@@ -552,13 +595,17 @@ impl<M: Clone + 'static> iced::advanced::Overlay<M, Theme, Renderer> for Menu<'_
                     } else {
                         position.map_or(0, |i| (i + 1) % indices.len())
                     };
-                    self.state.selected = Some(indices[next]);
+                    let selected = indices[next];
+                    self.state.selected = Some(match self.choices.get(selected) {
+                        Some(choice) => Selection::App(choice_identity(choice).0.to_owned()),
+                        None => Selection::Browse,
+                    });
                     let mut scroll = iced::advanced::widget::operation::scrollable::scroll_to(
                         iced::advanced::widget::Id::new("running-app-options"),
                         iced::widget::scrollable::AbsoluteOffset {
                             x: None,
                             y: Some(
-                                (indices[next] as f32 * 40.0
+                                (selected as f32 * 40.0
                                     - (layout.bounds().height - 84.0).max(0.0) / 2.0)
                                     .max(0.0),
                             ),
@@ -574,7 +621,7 @@ impl<M: Clone + 'static> iced::advanced::Overlay<M, Theme, Renderer> for Menu<'_
                     return;
                 }
                 keyboard::Key::Named(Named::Enter) => {
-                    if let Some(index) = self.state.selected {
+                    if let Some(index) = self.state.selected_index(self.choices) {
                         if index == self.choices.len() {
                             shell.publish(self.browse.clone());
                         } else if let Some((candidate, true)) = self.choices.get(index) {
@@ -606,6 +653,27 @@ impl<M: Clone + 'static> iced::advanced::Overlay<M, Theme, Renderer> for Menu<'_
             &mut local,
             &layout.bounds(),
         );
+        match event {
+            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
+            | Event::Touch(iced::touch::Event::FingerPressed { .. })
+                if local.is_event_captured() =>
+            {
+                self.state.pressed_choices = Some(
+                    self.choices
+                        .iter()
+                        .map(choice_identity)
+                        .map(|(path, available)| (path.to_owned(), available))
+                        .collect(),
+                );
+            }
+            Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left))
+            | Event::Touch(
+                iced::touch::Event::FingerLifted { .. } | iced::touch::Event::FingerLost { .. },
+            ) => {
+                self.state.pressed_choices = None;
+            }
+            _ => {}
+        }
         let chosen = !local.is_empty();
         shell.merge(local, |message| message);
         if chosen {
@@ -805,7 +873,7 @@ mod tests {
         assert!(!menu.state.open);
         assert_eq!(messages.len(), 1);
         menu.state.open = true;
-        menu.state.selected = Some(picker.choices.len());
+        menu.state.selected = Some(Selection::Browse);
         menu.update(
             &key(keyboard::key::Named::Enter),
             layout,
@@ -890,5 +958,98 @@ mod tests {
                 );
             }
         }
+    }
+    #[test]
+    fn catalog_refresh_keeps_the_highlight_and_cancels_a_stale_press() {
+        let renderer = Renderer::new(iced::Font::DEFAULT, iced::Pixels(14.0));
+        let make_candidate = |path: &str| Candidate {
+            info: crate::foreground::ProcessCandidateInfo {
+                name: "app.exe".into(),
+                image_path: path.into(),
+                has_suspendable_instance: true,
+            },
+            icon: None,
+        };
+        let first = make_candidate(r"C:\First\app.exe");
+        let selected = make_candidate(r"C:\Selected\app.exe");
+        let mut picker = Picker {
+            input: widgets::text_input("", "").into(),
+            choices: vec![(&selected, true)],
+            select: Message::Select,
+            browse: Message::Browse,
+            enabled: true,
+            menu: None,
+        };
+        let mut tree = Tree::new(&picker as &dyn Widget<Message, Theme, Renderer>);
+        tree.state.downcast_mut::<State>().open = true;
+        let viewport = Rectangle::with_size(Size::new(500.0, 300.0));
+        let send = |picker: &mut Picker<'_, Message>, tree: &mut Tree, event: Event, point| {
+            let input = picker.layout(
+                tree,
+                &renderer,
+                &layout::Limits::new(Size::ZERO, viewport.size()),
+            );
+            let mut overlay = picker
+                .overlay(
+                    tree,
+                    Layout::new(&input),
+                    &renderer,
+                    &viewport,
+                    Vector::ZERO,
+                )
+                .unwrap();
+            let overlay = overlay.as_overlay_mut();
+            let node = overlay.layout(&renderer, viewport.size());
+            let mut messages = Vec::new();
+            overlay.update(
+                &event,
+                Layout::new(&node),
+                if point {
+                    mouse::Cursor::Available(iced::Point::new(
+                        node.bounds().x + 50.0,
+                        node.bounds().y + 24.0,
+                    ))
+                } else {
+                    mouse::Cursor::Unavailable
+                },
+                &renderer,
+                &mut iced::advanced::clipboard::Null,
+                &mut Shell::new(&mut messages),
+            );
+            messages
+        };
+        assert!(send(
+            &mut picker,
+            &mut tree,
+            key(keyboard::key::Named::ArrowDown),
+            false
+        )
+        .is_empty());
+        assert!(send(
+            &mut picker,
+            &mut tree,
+            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
+            true
+        )
+        .is_empty());
+        picker.choices.insert(0, (&first, true));
+        picker.menu = None;
+        tree.diff(&picker as &dyn Widget<Message, Theme, Renderer>);
+        assert!(send(
+            &mut picker,
+            &mut tree,
+            Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)),
+            true
+        )
+        .is_empty());
+        assert_eq!(
+            send(
+                &mut picker,
+                &mut tree,
+                key(keyboard::key::Named::Enter),
+                false
+            ),
+            vec![Message::Select(r"C:\Selected\app.exe".into())]
+        );
     }
 }
