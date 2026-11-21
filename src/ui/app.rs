@@ -263,6 +263,7 @@ pub(crate) fn run(
                 suspension: app_suspension::Editor::default(),
                 sleep_prevention: sleep_prevention::Editor::default(),
                 trim: memory_trim::Editor::default(),
+                manual_trim_pending: false,
                 watchdog: watchdog::Editor::default(),
                 keep_running: keep_running::Editor::default(),
                 instance_limits: instance_limits::Editor::default(),
@@ -578,6 +579,7 @@ struct WinderustApp {
     suspension: app_suspension::Editor,
     sleep_prevention: sleep_prevention::Editor,
     trim: memory_trim::Editor,
+    manual_trim_pending: bool,
     watchdog: watchdog::Editor,
     keep_running: keep_running::Editor,
     instance_limits: instance_limits::Editor,
@@ -661,6 +663,7 @@ enum Message {
     Suspension(app_suspension::Message),
     SleepPrevention(sleep_prevention::Message),
     Trim(memory_trim::Message),
+    TrimFinished(Result<(), String>),
     Watchdog(watchdog::Message),
     KeepRunning(keep_running::Message),
     InstanceLimits(instance_limits::Message),
@@ -1395,17 +1398,37 @@ impl WinderustApp {
             }
             Message::Trim(memory_trim::Message::Browse) => return self.browse(Page::MemoryTrim),
             Message::Trim(memory_trim::Message::TrimNow) => {
-                match self.runtime.request_memory_trim_now() {
-                    Ok(receiver) => {
-                        return tasks::run(move || {
-                            receiver
-                                .recv()
-                                .map_err(|e| e.to_string())
-                                .and_then(|r| r.map(|_| ()).map_err(|e| e.to_string()))
-                        })
-                        .map(|r| Message::CommandFinished(r.and_then(|r| r)));
+                if self.manual_trim_pending {
+                    return Task::none();
+                }
+                let (reply, receiver): (_, crate::automation::MemoryTrimActionReceiver) =
+                    std::sync::mpsc::sync_channel(1);
+                // Start the waiter before the worker can accept the command.
+                let task = match tasks::try_run(move || {
+                    receiver
+                        .recv()
+                        .map_err(|error| error.to_string())?
+                        .map(|_| ())
+                        .map_err(|error| error.to_string())
+                }) {
+                    Ok(task) => task,
+                    Err(error) => {
+                        self.error_message = error.to_string();
+                        return Task::none();
                     }
-                    Err(error) => self.error_message = error.to_string(),
+                };
+                if let Err(error) = self.runtime.request_memory_trim_now(reply) {
+                    self.error_message = error.to_string();
+                } else {
+                    self.manual_trim_pending = true;
+                    return task
+                        .map(|result| Message::TrimFinished(result.and_then(|result| result)));
+                }
+            }
+            Message::TrimFinished(result) => {
+                self.manual_trim_pending = false;
+                if let Err(error) = result {
+                    self.error_message = error;
                 }
             }
             Message::Trim(message) => self.trim.update(&mut self.settings, message),
@@ -3007,9 +3030,7 @@ impl WinderustApp {
                             .height(32)
                             .style(widgets::primary_button)
                             .on_press_maybe(
-                                self.settings
-                                    .memory_trim
-                                    .enabled
+                                (self.settings.memory_trim.enabled && !self.manual_trim_pending)
                                     .then_some(Message::Trim(memory_trim::Message::TrimNow))
                             )
                         )

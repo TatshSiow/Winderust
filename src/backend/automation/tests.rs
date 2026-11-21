@@ -432,7 +432,8 @@ fn runtime_handle_rejects_commands_after_shutdown_starts() {
     let automation = RuntimeHandle::start(&baseline);
     automation.shutdown().expect("shutdown");
 
-    let memory_trim_error = automation.request_memory_trim_now().err();
+    let (memory_trim_result, _memory_trim_receiver) = sync_channel(1);
+    let memory_trim_error = automation.request_memory_trim_now(memory_trim_result).err();
     let app_suspension_error = automation
         .request_app_suspension_path_action(r"C:\Apps\worker.exe", true)
         .err();
@@ -479,8 +480,9 @@ fn manual_memory_trim_request_starts_worker_and_always_replies() {
     let automation = RuntimeHandle::start(&runtime_settings(settings));
     assert!(lock_unpoisoned(&automation.thread).is_none());
 
-    let receiver = automation
-        .request_memory_trim_now()
+    let (result, receiver) = sync_channel(1);
+    automation
+        .request_memory_trim_now(result)
         .expect("request should queue");
     let status = receiver
         .recv_timeout(Duration::from_secs(2))

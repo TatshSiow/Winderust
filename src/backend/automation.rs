@@ -911,10 +911,9 @@ impl RuntimeHandle {
 
     pub(crate) fn request_memory_trim_now(
         &self,
-    ) -> Result<MemoryTrimActionReceiver, RuntimeCommandError> {
-        let (result, receiver) = sync_channel(1);
-        self.enqueue_process_control_command(ProcessControlCommand::MemoryTrim { result })?;
-        Ok(receiver)
+        result: SyncSender<Result<MemoryTrimSnapshot, RuntimeCommandError>>,
+    ) -> Result<(), RuntimeCommandError> {
+        self.enqueue_process_control_command(ProcessControlCommand::MemoryTrim { result })
     }
 
     pub(crate) fn request_process_termination(
