@@ -51,39 +51,6 @@ pub(crate) fn next_change_delay(
         .map(|delay| delay.max(MIN_BY_TIME_DELAY))
 }
 
-pub fn next_switch_label(settings: &ByTimeSettings) -> String {
-    if !settings.enabled || settings.rules.is_empty() {
-        return "No active By Time rules".to_owned();
-    }
-
-    let now = Local::now();
-    if let Some(rule) = active_rule(settings, now) {
-        if let Some(ends_at) = next_rule_end_after(rule, now) {
-            return format!(
-                "By Time '{}' active until {}.",
-                rule_display_name(rule),
-                switch_time_label(ends_at, now)
-            );
-        }
-
-        return format!("By Time '{}' active.", rule_display_name(rule));
-    }
-
-    if let Some((rule_name, starts_at)) = next_rule_start_after(settings, now) {
-        return format!(
-            "Next By Time rule '{}' at {}.",
-            rule_name,
-            switch_time_label(starts_at, now)
-        );
-    }
-
-    "No upcoming By Time rules".to_owned()
-}
-
-fn active_rule(settings: &ByTimeSettings, now: DateTime<Local>) -> Option<&ByTimeRule> {
-    settings.rules.iter().find(|rule| rule_applies(rule, now))
-}
-
 fn rule_applies<Tz: TimeZone>(rule: &ByTimeRule, now: DateTime<Tz>) -> bool {
     if !rule.enabled || rule.power_plan_guid.is_none() {
         return false;
@@ -143,76 +110,6 @@ fn next_change_at(settings: &ByTimeSettings, now: DateTime<Local>) -> Option<Dat
     next
 }
 
-fn next_rule_start_after(
-    settings: &ByTimeSettings,
-    now: DateTime<Local>,
-) -> Option<(String, DateTime<Local>)> {
-    let mut next = None;
-    for rule in &settings.rules {
-        let Some((start, _end)) = enabled_rule_times(rule) else {
-            continue;
-        };
-
-        for day_offset in 0..=BY_TIME_LOOKAHEAD_DAYS {
-            let Some(start_date) = now
-                .date_naive()
-                .checked_add_signed(ChronoDuration::days(day_offset))
-            else {
-                continue;
-            };
-            if !rule
-                .days
-                .contains(&WeekdaySetting::from_chrono(start_date.weekday()))
-            {
-                continue;
-            }
-
-            let Some(starts_at) = local_datetime_after(start_date, start, now) else {
-                continue;
-            };
-            if starts_at <= now {
-                continue;
-            }
-            if next
-                .as_ref()
-                .is_none_or(|(_name, next_at)| starts_at < *next_at)
-            {
-                next = Some((rule_display_name(rule).to_owned(), starts_at));
-            }
-        }
-    }
-    next
-}
-
-fn next_rule_end_after(rule: &ByTimeRule, now: DateTime<Local>) -> Option<DateTime<Local>> {
-    let (start, end) = enabled_rule_times(rule)?;
-    let mut next = None;
-    for day_offset in -1..=1 {
-        let Some(start_date) = now
-            .date_naive()
-            .checked_add_signed(ChronoDuration::days(day_offset))
-        else {
-            continue;
-        };
-        if !rule
-            .days
-            .contains(&WeekdaySetting::from_chrono(start_date.weekday()))
-        {
-            continue;
-        }
-
-        let end_date = if start <= end {
-            start_date
-        } else if let Some(date) = start_date.checked_add_signed(ChronoDuration::days(1)) {
-            date
-        } else {
-            continue;
-        };
-        update_next_datetime(&mut next, local_datetime_after(end_date, end, now), now);
-    }
-    next
-}
-
 fn enabled_rule_times(rule: &ByTimeRule) -> Option<(NaiveTime, NaiveTime)> {
     (rule.enabled && rule.power_plan_guid.is_some()).then_some((
         rule.start_time.as_naive_time(),
@@ -253,31 +150,6 @@ fn resolve_local_datetime_after<Tz: TimeZone>(
             .filter(|candidate| candidate > &now)
             .min(),
         LocalResult::None => None,
-    }
-}
-
-fn rule_display_name(rule: &ByTimeRule) -> &str {
-    let name = rule.name.trim();
-    if name.is_empty() {
-        "Unnamed rule"
-    } else {
-        name
-    }
-}
-
-fn switch_time_label(at: DateTime<Local>, now: DateTime<Local>) -> String {
-    let time = at.format("%H:%M");
-    let today = now.date_naive();
-    let tomorrow = today.checked_add_signed(ChronoDuration::days(1));
-    if at.date_naive() == today {
-        time.to_string()
-    } else if Some(at.date_naive()) == tomorrow {
-        format!("tomorrow {time}")
-    } else {
-        format!(
-            "{} {time}",
-            WeekdaySetting::from_chrono(at.weekday()).short_label()
-        )
     }
 }
 
@@ -451,7 +323,7 @@ mod tests {
     }
 
     #[test]
-    fn next_rule_start_finds_next_enabled_day() {
+    fn next_change_finds_next_enabled_day() {
         let settings = ByTimeSettings {
             enabled: true,
             rules: vec![ByTimeRule {
@@ -465,11 +337,16 @@ mod tests {
         };
         let now = Local.with_ymd_and_hms(2026, 5, 31, 12, 0, 0).unwrap();
 
-        let (name, starts_at) = next_rule_start_after(&settings, now).unwrap();
+        let starts_at = next_change_at(&settings, now).unwrap();
 
-        assert_eq!(name, "Work");
-        assert_eq!(starts_at.weekday(), chrono::Weekday::Mon);
-        assert_eq!(starts_at.time(), NaiveTime::from_hms_opt(9, 0, 0).unwrap());
+        assert_eq!(
+            starts_at,
+            Local.with_ymd_and_hms(2026, 6, 1, 9, 0, 0).unwrap()
+        );
+        assert_eq!(
+            current_decision_at(&settings, starts_at).unwrap().rule_name,
+            "Work"
+        );
     }
     #[test]
     fn clock_changes_recheck_rules_without_waiting_for_monotonic_deadline() {
@@ -508,7 +385,7 @@ mod tests {
             let wall = Local
                 .with_ymd_and_hms(2026, 5, 29, hour, minute, 0)
                 .unwrap();
-            assert_eq!(active_rule(&settings, wall).is_some(), active);
+            assert_eq!(current_decision_at(&settings, wall).is_some(), active);
             let next = next_change_at(&settings, wall).unwrap();
             assert!(next > wall);
             scheduler.schedule_after(

@@ -2770,18 +2770,6 @@ impl WeekdaySetting {
         ]
     }
 
-    pub const fn short_label(self) -> &'static str {
-        match self {
-            Self::Mon => "Mon",
-            Self::Tue => "Tue",
-            Self::Wed => "Wed",
-            Self::Thu => "Thu",
-            Self::Fri => "Fri",
-            Self::Sat => "Sat",
-            Self::Sun => "Sun",
-        }
-    }
-
     pub const fn from_chrono(day: Weekday) -> Self {
         match day {
             Weekday::Mon => Self::Mon,

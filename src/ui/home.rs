@@ -1308,7 +1308,7 @@ fn enabled_features(
     feature!(
         ByTime,
         by_time,
-        crate::features::power_plan_control::by_time::next_switch_label(&settings.by_time)
+        t!("common.rule_count", count = settings.by_time.rules.len()).to_string()
     );
     feature!(
         CpuLimiter,
