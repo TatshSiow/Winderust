@@ -161,13 +161,6 @@ impl Editor {
             t!("timer_resolution.no_rules").to_string(),
         ));
 
-        if let Some(value) = status.requested_100ns {
-            body = body.push(text(format!(
-                "{}: {}",
-                t!("timer_resolution.requested"),
-                crate::timer_resolution::format_resolution_ms(value)
-            )));
-        }
         if let Some(error) = &status.last_error {
             body = body.push(text(error.clone()));
         }

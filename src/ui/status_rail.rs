@@ -217,6 +217,17 @@ pub(super) fn view<'a>(
             ]
             .spacing(design::space::CONTROL),
         ));
+    } else if page == Page::TimerResolution {
+        let request = runtime
+            .feature_status
+            .timer_resolution
+            .requested_100ns
+            .map(crate::timer_resolution::format_resolution_ms)
+            .unwrap_or_else(|| "\u{2014}".to_owned());
+        body = body.push(section(
+            "timer_resolution.requested",
+            column![text(request)],
+        ));
     } else {
         body = body.push(section(
             "common.process_activity",
