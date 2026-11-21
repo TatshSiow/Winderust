@@ -1131,7 +1131,15 @@ impl WinderustApp {
             }
             #[cfg(feature = "render-smoke")]
             Message::SmokeScreenshot(screenshot) => return smoke::captured(self, screenshot),
-            Message::DismissError => self.error_message.clear(),
+            Message::DismissError => {
+                if let Some(power_plan_control::AfterSave::Stay(startup_warning)) =
+                    &mut self.power_plan_control.pending
+                {
+                    let _ =
+                        startup_warning.take_if(|warning| warning.as_str() == self.error_message);
+                }
+                self.error_message.clear();
+            }
             Message::SearchKeyboard {
                 key,
                 modifiers,
@@ -1778,7 +1786,13 @@ impl WinderustApp {
                         ) {
                             self.power_plan_control.selected_guid = None;
                         }
-                        self.error_message = power_plan_switch_error(error);
+                        let startup_warning = match &after_save {
+                            Some(power_plan_control::AfterSave::Stay(warning)) => {
+                                warning.as_deref()
+                            }
+                            _ => None,
+                        };
+                        self.error_message = power_plan_switch_error(error, startup_warning);
                     }
                 }
                 self.power_plans_reload_pending |= self.power_plans_loading;
@@ -2217,7 +2231,7 @@ impl WinderustApp {
                 if self.power_plan_control.selected_guid.is_some()
                     && !self.pending_settings_changes() =>
             {
-                return self.finish_save(self.closing);
+                return self.finish_save(None);
             }
             Message::Save if self.pending_editor() => {
                 self.error_message = t!("unsaved.message").to_string();
@@ -2305,7 +2319,7 @@ impl WinderustApp {
             }
             Message::Stay => {
                 if let Some(after_save) = &mut self.power_plan_control.pending {
-                    *after_save = power_plan_control::AfterSave::Stay;
+                    *after_save = power_plan_control::AfterSave::Stay(None);
                 }
                 self.closing = false;
                 self.exit_export_failed = false;
@@ -2423,10 +2437,11 @@ impl WinderustApp {
             return Task::none();
         }
         self.reset_editors();
-        self.finish_save(self.closing && startup_error.is_none())
+        self.finish_save(startup_error)
     }
 
-    fn finish_save(&mut self, exit_after_save: bool) -> Task<Message> {
+    fn finish_save(&mut self, startup_warning: Option<String>) -> Task<Message> {
+        let exit_after_save = self.closing && startup_warning.is_none();
         let Some(guid) = self.power_plan_control.selected_guid.clone() else {
             return if exit_after_save {
                 self.shutdown()
@@ -2437,14 +2452,14 @@ impl WinderustApp {
         let receiver = match self.runtime.request_power_plan_switch(guid) {
             Ok(receiver) => receiver,
             Err(error) => {
-                self.error_message = power_plan_switch_error(error);
+                self.error_message = power_plan_switch_error(error, startup_warning.as_deref());
                 return Task::none();
             }
         };
         self.power_plan_control.pending = Some(if exit_after_save {
             power_plan_control::AfterSave::Exit
         } else {
-            power_plan_control::AfterSave::Stay
+            power_plan_control::AfterSave::Stay(startup_warning)
         });
         tasks::run(move || {
             receiver
@@ -3899,7 +3914,7 @@ fn page_needs_power_plans(page: Page, process_rulesets_open: bool) -> bool {
         || page.section_landing_page() == Page::PowerPlanControl
 }
 
-fn power_plan_switch_error(error: RuntimeCommandError) -> String {
+fn power_plan_switch_error(error: RuntimeCommandError, startup_warning: Option<&str>) -> String {
     let key = match error {
         RuntimeCommandError::PowerPlanUnavailable => "common.selected_plan_unavailable",
         RuntimeCommandError::PowerPlan(ManualPowerPlanError::ManagedByAdaptive) => {
@@ -3925,7 +3940,12 @@ fn power_plan_switch_error(error: RuntimeCommandError) -> String {
             "power_plan_control.switch_failed"
         }
     };
-    t!(key).to_string()
+    let error = t!(key);
+    if let Some(warning) = startup_warning {
+        format!("{warning}\n{error}")
+    } else {
+        error.into_owned()
+    }
 }
 
 fn sync_active_power_plan(

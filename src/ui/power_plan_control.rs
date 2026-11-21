@@ -45,7 +45,7 @@ pub(super) fn is_selectable(plans: &[PowerPlan], guid: &str) -> bool {
 
 #[derive(Debug)]
 pub(super) enum AfterSave {
-    Stay,
+    Stay(Option<String>),
     Exit,
 }
 
@@ -460,7 +460,7 @@ mod tests {
     fn a_fresh_catalog_clears_an_unavailable_draft_after_the_switch_finishes() {
         let mut editor = Editor {
             selected_guid: Some("Balanced".into()),
-            pending: Some(AfterSave::Stay),
+            pending: Some(AfterSave::Stay(None)),
         };
         assert!(!editor.discard_unavailable_plan(&[]));
         editor.pending = None;
