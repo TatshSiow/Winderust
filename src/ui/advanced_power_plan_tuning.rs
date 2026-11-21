@@ -17,7 +17,7 @@ use crate::ui::scrolling::scrollable;
 use iced::widget::{column, row, text};
 use iced::{Element, Fill};
 use rust_i18n::t;
-use std::collections::BTreeMap;
+use std::{borrow::Cow, collections::BTreeMap};
 
 fn tuning_plans(plans: &[PowerPlan]) -> impl Iterator<Item = &PowerPlan> {
     plans.iter().filter(|plan| !plan.managed_adaptive)
@@ -32,13 +32,29 @@ pub(super) struct Editor {
     invalid_percentages: [InvalidPercentages; 2],
     personality: Option<PowerPlanPersonality>,
     pub(super) dirty: bool,
-    pub(super) status: String,
+    status: Feedback,
     preset: Option<PresetEditor>,
     review: Option<ApplyReview>,
     restore_points: BTreeMap<String, RestorePoint>,
     expanded: [bool; 2],
     selected_presets: [Option<PresetChoice>; 2],
 }
+#[derive(Default)]
+enum Feedback {
+    #[default]
+    None,
+    Message(String),
+    Loaded(String),
+    Applied(String),
+    Restored(String),
+}
+
+impl From<String> for Feedback {
+    fn from(message: String) -> Self {
+        Self::Message(message)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Source {
     Ac,
@@ -266,6 +282,18 @@ impl Editor {
         self.invalid_percentages = Default::default();
     }
 
+    pub(super) fn status(&self) -> Cow<'_, str> {
+        match &self.status {
+            Feedback::None => Cow::Borrowed(""),
+            Feedback::Message(message) => Cow::Borrowed(message),
+            Feedback::Loaded(plan) => t!("processor_power.loaded_values", plan = plan.as_str()),
+            Feedback::Applied(plan) => t!("processor_power.applied_custom", plan = plan.as_str()),
+            Feedback::Restored(plan) => {
+                t!("processor_power.restored_previous", plan = plan.as_str())
+            }
+        }
+    }
+
     pub(super) fn has_invalid_inputs(&self) -> bool {
         self.invalid_percentages.iter().any(InvalidPercentages::any)
     }
@@ -311,26 +339,26 @@ impl Editor {
         self.cancel_apply_review();
         let Some(guid) = &self.target else {
             self.set_readback(None);
-            self.status = t!("processor_power.no_active_plan").to_string();
+            self.status = t!("processor_power.no_active_plan").to_string().into();
             return;
         };
         self.personality = match self.service.read_personality(guid) {
             Ok(v) => Some(v),
             Err(error) => {
-                self.status = error.to_string();
+                self.status = error.to_string().into();
                 None
             }
         };
         match self.service.read_values(guid) {
             Ok(v) => {
-                self.status = t!("processor_power.loaded_values", plan = guid).to_string();
+                self.status = Feedback::Loaded(guid.clone());
                 self.set_readback(Some(v));
                 self.dirty = false;
             }
             Err(error) => {
                 self.set_readback(None);
                 self.dirty = false;
-                self.status = error.to_string();
+                self.status = error.to_string().into();
             }
         }
     }
@@ -455,7 +483,7 @@ impl Editor {
     fn take_applicable_review(&mut self, plans: &[PowerPlan]) -> Option<ApplyReview> {
         if self.has_invalid_inputs() {
             self.cancel_apply_review();
-            self.status = t!("processor_power.invalid_percentage").to_string();
+            self.status = t!("processor_power.invalid_percentage").to_string().into();
             return None;
         }
         let review = self.review.take()?;
@@ -472,11 +500,11 @@ impl Editor {
             })
         };
         if self.target.as_ref() != Some(&review.guid) || !draft_matches {
-            self.status = t!("processor_power.review_stale").to_string();
+            self.status = t!("processor_power.review_stale").to_string().into();
             return None;
         }
         if self.selected_plan(plans).is_none() {
-            self.status = t!("common.selected_plan_unavailable").to_string();
+            self.status = t!("common.selected_plan_unavailable").to_string().into();
             return None;
         }
         Some(review)
@@ -495,11 +523,13 @@ impl Editor {
                 true
             }
             Err(AdvancedPowerPlanTuningError::ValuesChanged) => {
-                self.status = t!("processor_power.review_refresh_required").to_string();
+                self.status = t!("processor_power.review_refresh_required")
+                    .to_string()
+                    .into();
                 false
             }
             Err(error) => {
-                self.status = error.to_string();
+                self.status = error.to_string().into();
                 false
             }
         }
@@ -522,11 +552,12 @@ impl Editor {
                         t!("processor_power.restore_values_changed").to_string()
                     } else {
                         t!("processor_power.review_refresh_required").to_string()
-                    };
+                    }
+                    .into();
                     return false;
                 }
                 Err(error) => {
-                    self.status = error.to_string();
+                    self.status = error.to_string().into();
                     return false;
                 }
             };
@@ -562,13 +593,13 @@ impl Editor {
             if let Some((expected, actual)) = expected.zip(self.readback) {
                 append_readback_differences(&mut message, expected, actual);
             }
-            self.status = message;
+            self.status = message.into();
             return false;
         }
         self.status = if restoring {
-            t!("processor_power.restored_previous", plan = &review.name).to_string()
+            Feedback::Restored(review.name)
         } else {
-            t!("processor_power.applied_custom", plan = &review.guid).to_string()
+            Feedback::Applied(review.guid)
         };
         true
     }
@@ -591,7 +622,9 @@ impl Editor {
                     return;
                 }
                 if self.dirty || self.has_invalid_inputs() {
-                    self.status = t!("processor_power.save_before_changing_plan").to_string();
+                    self.status = t!("processor_power.save_before_changing_plan")
+                        .to_string()
+                        .into();
                 } else if let Some(plan) =
                     tuning_plans(plans).find(|plan| plan.guid.eq_ignore_ascii_case(&guid))
                 {
@@ -601,12 +634,12 @@ impl Editor {
             Message::Refresh => self.refresh(plans),
             Message::ReviewApply => {
                 if let Err(error) = self.review_apply(plans, ApplyOrigin::Page) {
-                    self.status = error;
+                    self.status = error.into();
                 }
             }
             Message::ReviewRestore => {
                 if let Err(error) = self.review_restore(plans) {
-                    self.status = error;
+                    self.status = error.into();
                 }
             }
             Message::ConfirmApply => {
@@ -952,7 +985,7 @@ impl Editor {
         }
         body = body
             .push(super::widgets::settings_card(actions))
-            .push(text(&self.status).wrapping(text::Wrapping::WordOrGlyph));
+            .push(text(self.status()).wrapping(text::Wrapping::WordOrGlyph));
         scrollable(body).height(Fill).width(Fill).into()
     }
     pub(super) fn apply_review_modal(&self) -> Option<Element<'_, Message>> {
@@ -1547,7 +1580,7 @@ mod tests {
         });
         assert!(!editor.confirm_apply(&[]));
         assert!(editor.review.is_none());
-        assert_eq!(editor.status, error);
+        assert_eq!(editor.status(), error);
         editor.update(
             &mut settings,
             &[],
@@ -1843,7 +1876,7 @@ mod tests {
         editor.review = Some(review());
         editor.target = Some("second-plan".into());
         assert!(!editor.confirm_apply(&[]));
-        assert_eq!(editor.status, t!("processor_power.review_stale"));
+        assert_eq!(editor.status(), t!("processor_power.review_stale"));
         assert_eq!(editor.values, Some(draft));
         assert!(editor.dirty);
 
@@ -1851,7 +1884,7 @@ mod tests {
         editor.target = Some("first-plan".into());
         editor.values = Some(current);
         assert!(!editor.confirm_apply(&[]));
-        assert_eq!(editor.status, t!("processor_power.review_stale"));
+        assert_eq!(editor.status(), t!("processor_power.review_stale"));
         assert_eq!(editor.values, Some(current));
     }
 
@@ -1899,7 +1932,7 @@ mod tests {
         plans[1].managed_adaptive = true;
         editor.ensure_plan(&plans);
         assert!(!editor.confirm_apply(&plans));
-        assert_eq!(editor.status, t!("common.selected_plan_unavailable"));
+        assert_eq!(editor.status(), t!("common.selected_plan_unavailable"));
         assert!(editor.review.is_none());
         assert_eq!(editor.values, Some(draft));
         assert!(editor.dirty);

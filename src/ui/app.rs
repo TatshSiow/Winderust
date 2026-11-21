@@ -2376,7 +2376,7 @@ impl WinderustApp {
         if (self.power_tuning.dirty || self.power_tuning.has_invalid_inputs())
             && !self.power_tuning.preflight_save(&self.power_plans)
         {
-            self.error_message = self.power_tuning.status.clone();
+            self.error_message = self.power_tuning.status().into_owned();
             return Task::none();
         }
         let settings_changed = self.power_tuning.dirty && self.settings.has_unsaved_changes();
@@ -2394,14 +2394,15 @@ impl WinderustApp {
         }
         self.publish_settings();
         if self.power_tuning.dirty && !self.power_tuning.confirm_apply(&self.power_plans) {
+            let status = self.power_tuning.status();
             let tuning_error = if settings_changed {
                 t!(
                     "processor_power.settings_saved_tuning_failed",
-                    error = self.power_tuning.status.as_str()
+                    error = status.as_ref()
                 )
                 .to_string()
             } else {
-                self.power_tuning.status.clone()
+                status.into_owned()
             };
             self.error_message = match startup_error {
                 Some(error) => format!("{error}\n{tuning_error}"),
