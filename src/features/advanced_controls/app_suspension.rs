@@ -1228,7 +1228,7 @@ impl AppSuspensionManager {
         process_ids: &[u32],
         action_log: &mut ActionLog,
     ) -> AppSuspensionSnapshot {
-        let failed_actions = self.thaw_processes_for_user_intent(
+        let (failed_actions, first_error) = self.thaw_processes_for_user_intent(
             controller,
             process_ids,
             Instant::now(),
@@ -1240,7 +1240,7 @@ impl AppSuspensionManager {
             0,
             failed_actions,
             AppSuspensionStatus::Active,
-            None,
+            first_error.as_ref().map(suspension_error_message),
         )
     }
 
@@ -1250,20 +1250,24 @@ impl AppSuspensionManager {
         process_ids: &[u32],
         now: Instant,
         action_log: &mut ActionLog,
-    ) -> usize {
+    ) -> (usize, Option<SuspensionError>) {
         let mut failed = 0;
+        let mut first_error = None;
         for process_id in process_ids {
             let process = self
                 .controlled_process(*process_id)
                 .map(|(name, path)| (name.to_owned(), path.to_owned()));
             if let Some((process_name, executable_path)) = process.clone() {
                 if !self.managed_process_matches_target(controller, *process_id, &executable_path) {
-                    let _ = self.release_process_state(
+                    if let Err(error) = self.release_process_state(
                         controller,
                         *process_id,
                         action_log,
                         "process instance changed",
-                    );
+                    ) {
+                        failed += 1;
+                        first_error.get_or_insert(error);
+                    }
                     continue;
                 }
                 if self.suspended.contains_key(process_id) {
@@ -1278,6 +1282,7 @@ impl AppSuspensionManager {
                             );
                         }
                         Err(err) => {
+                            failed += 1;
                             let thawed = !controller.is_frozen_process(*process_id);
                             if thawed {
                                 if let Some(process_key) = self.controlled_process_key(*process_id)
@@ -1294,7 +1299,6 @@ impl AppSuspensionManager {
                                 );
                             }
                             if err.should_report() {
-                                failed += 1;
                                 action_log.record(
                                     ActionLogFeature::AppSuspension,
                                     Some(*process_id),
@@ -1303,6 +1307,7 @@ impl AppSuspensionManager {
                                     suspension_error_message(&err),
                                 );
                             }
+                            first_error.get_or_insert(err);
                             continue;
                         }
                     }
@@ -1326,7 +1331,7 @@ impl AppSuspensionManager {
             }
         }
 
-        failed
+        (failed, first_error)
     }
 
     fn managed_process_ids(&self, controller: &SuspensionController) -> BTreeSet<u32> {
@@ -2568,6 +2573,8 @@ mod tests {
 
         assert_eq!(status.suspended_process_ids, vec![9]);
         assert_eq!(status.temporary_thawed_processes, 2);
+        assert_eq!(status.failed_actions, 0);
+        assert!(status.last_error.is_none());
     }
 
     #[test]

@@ -1358,7 +1358,11 @@ impl RuntimeCore {
                                 )
                             })
                             .unwrap_or_else(app_suspension_lock_failure);
-                        (status.clone(), Ok(status))
+                        let reply = match &status.last_error {
+                            Some(error) => Err(RuntimeCommandError::CommandFailed(error.clone())),
+                            None => Ok(status.clone()),
+                        };
+                        (status, reply)
                     };
                     let _ = result.try_send(reply);
                     statuses.app_suspension = Some(status);
