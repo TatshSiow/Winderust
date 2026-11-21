@@ -1506,12 +1506,18 @@ impl RuntimeCore {
                 ),
             );
         }
+        let refresh_background_efficiency = retries.background_efficiency.is_some()
+            || self
+                .background_efficiency_manager
+                .reported_release_is_resolved(&self.priority_efficiency_controller);
         if let Some(summary) = retries.background_efficiency {
             BackgroundEfficiencyManager::record_release_summary(
                 summary,
                 &mut self.action_log,
                 "restoration retry completed",
             );
+        }
+        if refresh_background_efficiency {
             let status = lock_unpoisoned(&shared.state)
                 .status
                 .feature_status

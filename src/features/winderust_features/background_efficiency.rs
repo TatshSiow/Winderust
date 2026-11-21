@@ -106,6 +106,7 @@ pub struct BackgroundEfficiencySnapshot {
 pub struct BackgroundEfficiencyManager {
     failure_suppression: ExecutionFailureTracker,
     non_release_failures: BackgroundEfficiencyFailures,
+    release_error_reported: bool,
 }
 
 struct BackgroundEfficiencyTarget {
@@ -393,8 +394,19 @@ impl BackgroundEfficiencyManager {
         self.with_release_status(controller, status)
     }
 
-    pub(crate) fn with_release_status(
+    pub(crate) fn reported_release_is_resolved(
         &self,
+        controller: &PriorityEfficiencyController,
+    ) -> bool {
+        self.release_error_reported
+            && controller
+                .background_efficiency_release_failures()
+                .next()
+                .is_none()
+    }
+
+    pub(crate) fn with_release_status(
+        &mut self,
         controller: &PriorityEfficiencyController,
         mut status: BackgroundEfficiencySnapshot,
     ) -> BackgroundEfficiencySnapshot {
@@ -405,6 +417,7 @@ impl BackgroundEfficiencyManager {
         let mut pending = controller
             .background_efficiency_release_failures()
             .peekable();
+        self.release_error_reported = pending.peek().is_some();
         status.last_error = pending
             .peek()
             .map(|failure| {
