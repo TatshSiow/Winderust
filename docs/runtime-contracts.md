@@ -638,7 +638,8 @@ Read the relevant section before changing feature policy, ownership, restoration
   Windows policy or Modern Standby battery expiry.
 - Suspend/resume releases requests and suppresses the observed exact instances
   until they exit or the user explicitly disables/re-enables their rules or the
-  feature. Power-profile changes preserve this suppression. User sleep, lid
+  feature. Power-profile changes preserve this suppression. Editing an inactive
+  profile cannot rearm an app in the active profile. User sleep, lid
   actions, critical-battery handling, and Windows policy remain authoritative.
   A missing or stopped Windows event watcher blocks new requests, releases owned
   requests, and suppresses the current cohort until explicitly rearmed.

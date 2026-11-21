@@ -68,7 +68,7 @@ impl SleepPreventionManager {
         if !windows_event_watcher_active && controller.requests().system {
             self.suppress_current();
         }
-        self.note_configuration(configured_settings);
+        self.note_configuration(configured_settings, plugged_in);
         if self.change_power_source(plugged_in) {
             self.reset(controller, action_log);
         }
@@ -147,7 +147,7 @@ impl SleepPreventionManager {
         changed
     }
 
-    fn note_configuration(&mut self, settings: &Settings) {
+    fn note_configuration(&mut self, settings: &Settings, plugged_in: Option<bool>) {
         let profiles = [settings, settings.battery_profile()];
         if self.configuration.as_ref().is_some_and(|previous| {
             previous.iter().zip(&profiles).all(|(previous, profile)| {
@@ -158,11 +158,22 @@ impl SleepPreventionManager {
         }
         let current =
             profiles.map(|profile| (profile.general.enabled, profile.sleep_prevention.clone()));
-        if let Some(previous) = self.configuration.take() {
-            for (previous, current) in previous.iter().zip(&current) {
-                self.rearm_withdrawn(previous, current);
+        if let (Some(previous), Some(active_source)) =
+            (self.configuration.take(), plugged_in.or(self.power_source))
+        {
+            for (index, (before, after)) in previous.iter().zip(&current).enumerate() {
+                let source = index == 0;
+                let protected = if source == active_source {
+                    None
+                } else if Some(source) == self.power_source {
+                    // An edit to the outgoing profile must preserve the incoming profile's claims.
+                    Some(&current[usize::from(!active_source)])
+                } else {
+                    continue;
+                };
+                self.rearm_withdrawn(before, after, protected);
                 // Fresh opt-ins must not inherit a pending capture from an earlier sleep.
-                self.rearm_withdrawn(current, previous);
+                self.rearm_withdrawn(after, before, protected);
             }
         }
         self.configuration = Some(current);
@@ -172,17 +183,25 @@ impl SleepPreventionManager {
         &mut self,
         previous: &(bool, SleepPreventionSettings),
         current: &(bool, SleepPreventionSettings),
+        protected: Option<&(bool, SleepPreventionSettings)>,
     ) {
         if !previous.0 || !previous.1.enabled {
             return;
         }
         for rule in previous.1.rules.iter().filter(|rule| rule.enabled) {
             let path = Path::new(rule.executable_path.trim());
-            if current.0
-                && current.1.enabled
-                && current.1.rules.iter().any(|current| {
-                    current.enabled
-                        && same_executable_path(Path::new(current.executable_path.trim()), path)
+            if std::iter::once(current)
+                .chain(protected)
+                .any(|(enabled, settings)| {
+                    *enabled
+                        && settings.enabled
+                        && settings.rules.iter().any(|rule| {
+                            rule.enabled
+                                && same_executable_path(
+                                    Path::new(rule.executable_path.trim()),
+                                    path,
+                                )
+                        })
                 })
             {
                 continue;

@@ -196,6 +196,13 @@ fn inactive_profiles_and_missing_rules_preserve_sleep_suppression_until_explicit
     let settings = settings();
     let inactive = SleepPreventionSettings::default();
     let mut manager = SleepPreventionManager::default();
+    let mut configured = Settings {
+        sleep_prevention: settings.clone(),
+        ..Default::default()
+    };
+    configured.battery_profile_mut().sleep_prevention = inactive.clone();
+    manager.note_configuration(&configured, Some(true));
+    manager.change_power_source(Some(true));
     let worker = process(7, r"C:\Apps\worker.exe");
     observe(&mut manager, &settings, std::slice::from_ref(&worker));
     manager.suppress_current();
@@ -215,7 +222,13 @@ fn inactive_profiles_and_missing_rules_preserve_sleep_suppression_until_explicit
     assert_eq!(manager.suppressed.len(), 1);
     observe(&mut manager, &settings, std::slice::from_ref(&worker));
     assert_eq!(manager.desired_mode(), SleepPreventionMode::Off);
-    manager.rearm_withdrawn(&(true, settings.clone()), &(true, inactive));
+    configured.battery_profile_mut().sleep_prevention = settings.clone();
+    manager.note_configuration(&configured, None);
+    assert_eq!(manager.desired_mode(), SleepPreventionMode::Off);
+    configured.sleep_prevention = inactive;
+    manager.note_configuration(&configured, None);
+    configured.sleep_prevention = settings.clone();
+    manager.note_configuration(&configured, None);
     observe(&mut manager, &settings, &[worker]);
     assert_eq!(manager.desired_mode(), SleepPreventionMode::System);
 }
@@ -251,7 +264,7 @@ fn suspend_before_first_observation_suppresses_running_apps_and_disabling_rearms
     assert_eq!(manager.desired_mode(), SleepPreventionMode::Off);
     let previous = settings.clone();
     settings.enabled = false;
-    manager.rearm_withdrawn(&(true, previous), &(true, settings.clone()));
+    manager.rearm_withdrawn(&(true, previous), &(true, settings.clone()), None);
     let snapshot = manager.update_profile(
         &mut controller,
         &settings,
@@ -285,23 +298,28 @@ fn unavailable_power_samples_do_not_start_new_profile_transitions() {
 #[test]
 fn simultaneous_profile_switch_and_explicit_disable_rearms_only_withdrawn_paths() {
     let rules = settings().rules;
+    let shared = SleepPreventionRule {
+        executable_path: r"C:\Apps\shared.exe".into(),
+        ..rules[0].clone()
+    };
     let mut configured = Settings {
         sleep_prevention: SleepPreventionSettings {
             enabled: true,
-            rules: vec![rules[0].clone()],
+            rules: vec![rules[0].clone(), shared.clone()],
         },
         ..Settings::default()
     };
     configured.battery_profile_mut().sleep_prevention = SleepPreventionSettings {
         enabled: true,
-        rules: vec![rules[1].clone()],
+        rules: vec![rules[1].clone(), shared],
     };
     let mut manager = SleepPreventionManager::default();
-    manager.note_configuration(&configured);
+    manager.note_configuration(&configured, Some(true));
     manager.change_power_source(Some(true));
     let apps = [
         process(7, r"C:\Apps\worker.exe"),
         process(8, r"C:\Apps\video.exe"),
+        process(9, r"C:\Apps\shared.exe"),
     ];
     observe(&mut manager, &configured.sleep_prevention, &apps);
     manager.suppress_current();
@@ -311,7 +329,7 @@ fn simultaneous_profile_switch_and_explicit_disable_rearms_only_withdrawn_paths(
         &apps,
     );
     manager.suppress_current();
-    assert_eq!(manager.suppressed.len(), 2);
+    assert_eq!(manager.suppressed.len(), 3);
 
     configured.sleep_prevention.enabled = false;
     let mut controller = SleepPreventionController::default();
@@ -327,6 +345,7 @@ fn simultaneous_profile_switch_and_explicit_disable_rearms_only_withdrawn_paths(
     assert_eq!(manager.last_known_power_source(), Some(false));
     assert!(!manager.suppressed.contains_key(&(7, 7)));
     assert!(manager.suppressed.contains_key(&(8, 8)));
+    assert!(manager.suppressed.contains_key(&(9, 9)));
 
     configured.sleep_prevention.enabled = true;
     manager.update(
@@ -340,6 +359,7 @@ fn simultaneous_profile_switch_and_explicit_disable_rearms_only_withdrawn_paths(
     observe(&mut manager, &configured.sleep_prevention, &apps);
     assert_eq!(manager.desired_mode(), SleepPreventionMode::System);
     assert!(manager.suppressed.contains_key(&(8, 8)));
+    assert!(!manager.suppressed.contains_key(&(9, 9)));
 }
 
 #[test]
@@ -362,10 +382,10 @@ fn fresh_rule_opt_ins_do_not_inherit_pending_sleep_suppression() {
             ..Settings::default()
         };
         let mut manager = SleepPreventionManager::default();
-        manager.note_configuration(&configured);
+        manager.note_configuration(&configured, Some(true));
         manager.suppress_current();
         configured.sleep_prevention = rules.clone();
-        manager.note_configuration(&configured);
+        manager.note_configuration(&configured, Some(true));
         observe(
             &mut manager,
             &configured.sleep_prevention,
