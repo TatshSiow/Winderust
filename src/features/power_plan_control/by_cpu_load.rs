@@ -143,7 +143,7 @@ impl ByCpuLoadScheduler {
         if retained_match.is_none() {
             self.clear_active_rule();
         }
-        let mut else_decision = None;
+        let mut else_rule = None;
         let mut matching_decision = None;
 
         for (index, rule) in settings.rules.iter().enumerate() {
@@ -152,8 +152,8 @@ impl ByCpuLoadScheduler {
                 continue;
             }
 
-            if else_decision.is_none() {
-                else_decision = else_decision_for_rule(rule).map(|decision| (index, decision));
+            if else_rule.is_none() {
+                else_rule = else_plan_for_rule(rule).map(|plan| (index, rule, plan));
             }
 
             if rule.is_else() {
@@ -195,15 +195,17 @@ impl ByCpuLoadScheduler {
         }
 
         matching_decision.or_else(|| {
-            else_decision.map(
-                |(rule_index, (rule_name, power_plan_guid))| ByCpuLoadDecision {
-                    rule_index,
-                    rule_name,
-                    power_plan_guid,
-                    usage_percent,
-                    selection: ByCpuLoadMatch::Else,
+            else_rule.map(|(rule_index, rule, plan)| ByCpuLoadDecision {
+                rule_index,
+                rule_name: if rule.else_enabled {
+                    format!("{} else", rule.name)
+                } else {
+                    rule.name.clone()
                 },
-            )
+                power_plan_guid: plan.to_owned(),
+                usage_percent,
+                selection: ByCpuLoadMatch::Else,
+            })
         })
     }
 }
@@ -224,19 +226,14 @@ fn matches_exit_condition(
     }
 }
 
-fn else_decision_for_rule(rule: &crate::config::ByCpuLoadRule) -> Option<(String, String)> {
+fn else_plan_for_rule(rule: &ByCpuLoadRule) -> Option<&str> {
     if rule.else_enabled {
-        return Some((
-            format!("{} else", rule.name),
-            rule.else_power_plan_guid.clone()?,
-        ));
+        rule.else_power_plan_guid.as_deref()
+    } else if rule.is_else() {
+        rule.power_plan_guid.as_deref()
+    } else {
+        None
     }
-
-    if rule.is_else() {
-        return Some((rule.name.clone(), rule.power_plan_guid.clone()?));
-    }
-
-    None
 }
 
 #[cfg(test)]
