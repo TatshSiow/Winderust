@@ -355,6 +355,34 @@ fn adaptive_priority_temporarily_overrides_static_without_losing_the_baseline() 
 }
 
 #[test]
+fn managed_process_count_deduplicates_properties_only_for_the_same_owner() {
+    let static_owner = ControlOwner::ProcessPriority;
+    let adaptive_owner = ControlOwner::AdaptiveEngine;
+    let mut controller =
+        PriorityEfficiencyController::with_platform(platform_with(7, 1, NORMAL_PRIORITY_CLASS));
+    controller
+        .apply_priority_claim(
+            priority_claim(7, 1, static_owner, PriorityClassValue::BelowNormal),
+            true,
+        )
+        .unwrap();
+    controller
+        .apply_power_claim(power_claim(7, 1, adaptive_owner, true), true)
+        .unwrap();
+    assert_eq!(controller.policy_managed_process_count(static_owner), 1);
+    assert_eq!(controller.policy_managed_process_count(adaptive_owner), 1);
+
+    controller
+        .apply_priority_claim(
+            priority_claim(7, 1, adaptive_owner, PriorityClassValue::Idle),
+            true,
+        )
+        .unwrap();
+    assert_eq!(controller.policy_managed_process_count(static_owner), 0);
+    assert_eq!(controller.policy_managed_process_count(adaptive_owner), 1);
+}
+
+#[test]
 fn background_efficiency_overrides_then_reveals_adaptive_claims() {
     let mut controller =
         PriorityEfficiencyController::with_platform(platform_with(7, 1, NORMAL_PRIORITY_CLASS));

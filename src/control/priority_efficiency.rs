@@ -1502,18 +1502,23 @@ impl<P: PriorityEfficiencyPlatform> PriorityEfficiencyController<P> {
     }
 
     pub(crate) fn policy_managed_process_count(&self, owner: ControlOwner) -> usize {
-        self.managed_priorities
+        let priorities = self
+            .managed_priorities
+            .values()
+            .filter(|managed| managed.owner == owner)
+            .count();
+        let power_only = self
+            .managed_power
             .iter()
-            .filter(|(_, managed)| managed.owner == owner)
-            .map(|(identity, _)| identity.key())
-            .chain(
-                self.managed_power
-                    .iter()
-                    .filter(|(_, managed)| managed.owner == owner)
-                    .map(|(identity, _)| identity.key()),
-            )
-            .collect::<BTreeSet<_>>()
-            .len()
+            .filter(|(identity, managed)| {
+                managed.owner == owner
+                    && self
+                        .managed_priorities
+                        .get(*identity)
+                        .is_none_or(|priority| priority.owner != owner)
+            })
+            .count();
+        priorities + power_only
     }
 
     pub(crate) fn release_retry_delay(&self, now: Instant) -> Option<Duration> {
