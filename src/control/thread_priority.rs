@@ -801,12 +801,16 @@ impl<P: ThreadPriorityPlatform> ThreadPriorityController<P> {
     }
 
     pub(crate) fn policy_managed_process_count(&self) -> usize {
-        self.managed
-            .iter()
-            .filter(|(_, managed)| managed.owner.is_automatic())
-            .map(|(identity, _)| identity.process.key())
-            .collect::<BTreeSet<_>>()
-            .len()
+        // Thread identities sort by exact process identity first.
+        let mut previous = None;
+        let mut count = 0;
+        for (identity, managed) in &self.managed {
+            if managed.owner.is_automatic() && previous != Some(&identity.process) {
+                previous = Some(&identity.process);
+                count += 1;
+            }
+        }
+        count
     }
 
     pub(crate) fn has_managed_state(&self) -> bool {
@@ -1384,6 +1388,7 @@ mod tests {
             .platform
             .fail_next(FakeFailure::IdentityUnavailable);
         assert_eq!(controller.release_all_policy().failures.len(), 2);
+        assert_eq!(controller.policy_managed_process_count(), 1);
         let due = controller.next_release_retry.unwrap();
         for failure in [FakeFailure::IdentityUnavailable, FakeFailure::Inventory] {
             controller.platform.fail_next(failure);
@@ -1424,6 +1429,7 @@ mod tests {
         let now = due - Duration::from_millis(1);
         assert_eq!(controller.retry_pending_releases(now).restored_threads, 0);
         assert_eq!(controller.retry_pending_releases(due).restored_threads, 1);
+        assert_eq!(controller.policy_managed_process_count(), 0);
         assert_eq!(controller.platform.process.threads[&100].priority, 0);
         assert_eq!(
             controller.platform.process.threads[&101].priority,
