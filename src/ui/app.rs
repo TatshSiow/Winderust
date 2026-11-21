@@ -1475,14 +1475,11 @@ impl WinderustApp {
                 ) {
                     self.side_panel_tab = SidePanelTab::Presets;
                 }
-                self.settings.edit_with_presets(|settings| match kind {
-                    cpu_allocation::Kind::Soft => {
-                        self.soft_allocation.update(settings, kind, message)
-                    }
-                    cpu_allocation::Kind::Hard => {
-                        self.hard_allocation.update(settings, kind, message)
-                    }
-                })
+                let editor = match kind {
+                    cpu_allocation::Kind::Soft => &mut self.soft_allocation,
+                    cpu_allocation::Kind::Hard => &mut self.hard_allocation,
+                };
+                editor.update(&mut self.settings, kind, message);
             }
             Message::Adaptive(adaptive_engine::Message::Browse) => {
                 return self.browse(Page::AdaptiveEngine);

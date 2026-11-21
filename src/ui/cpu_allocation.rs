@@ -1,5 +1,6 @@
 use super::design;
 use super::widgets::{action_button, button, checkbox, icon_button, text_input};
+use crate::application::SettingsEditor;
 use crate::config::{CpuAllocationPreset, CpuAllocationRule, CpuAllocationSettings, Settings};
 use crate::cpu_allocation::{self, LogicalProcessorInfo, LogicalProcessorKind};
 use crate::cpu_topology::{CacheKind, CpuSelection, CpuTopology, ProcessorId, SavedSelectionError};
@@ -104,7 +105,7 @@ pub(super) enum Message {
     ClosePreset,
 }
 impl Editor {
-    pub(super) fn update(&mut self, s: &mut Settings, k: Kind, m: Message) {
+    pub(super) fn update(&mut self, s: &mut SettingsEditor, k: Kind, m: Message) {
         match m {
             Message::Enabled(v) => settings_mut(s, k).enabled = v,
             Message::Path(v) => self.path = v,
@@ -171,7 +172,7 @@ impl Editor {
             }
             Message::EditPreset(i) => {
                 self.preset_read_only = false;
-                if let Some(p) = s.cpu_allocation_presets.get(i) {
+                if let Some(p) = s.global().cpu_allocation_presets.get(i) {
                     self.preset_open = true;
                     self.editing_preset = Some(i);
                     self.preset_name = p.name.clone();
@@ -204,28 +205,38 @@ impl Editor {
                 }
                 let name = self.preset_name.trim();
                 if !name.is_empty()
-                    && !s.cpu_allocation_presets.iter().enumerate().any(|(i, p)| {
-                        Some(i) != self.editing_preset && p.name.trim().eq_ignore_ascii_case(name)
-                    })
+                    && !s
+                        .global()
+                        .cpu_allocation_presets
+                        .iter()
+                        .enumerate()
+                        .any(|(i, p)| {
+                            Some(i) != self.editing_preset
+                                && p.name.trim().eq_ignore_ascii_case(name)
+                        })
                 {
                     let p = CpuAllocationPreset {
                         name: name.into(),
                         selection: self.preset_selection.clone(),
                     };
-                    if let Some(i) = self.editing_preset {
-                        if let Some(old) = s.cpu_allocation_presets.get_mut(i) {
-                            *old = p;
+                    s.edit_global(|settings| {
+                        if let Some(i) = self.editing_preset {
+                            if let Some(old) = settings.cpu_allocation_presets.get_mut(i) {
+                                *old = p;
+                            }
+                        } else {
+                            settings.cpu_allocation_presets.push(p);
                         }
-                    } else {
-                        s.cpu_allocation_presets.push(p);
-                    }
+                    });
                     self.preset_open = false;
                     self.error.clear();
                 }
             }
             Message::DeletePreset(i) => {
-                if i < s.cpu_allocation_presets.len() {
-                    s.cpu_allocation_presets.remove(i);
+                if i < s.global().cpu_allocation_presets.len() {
+                    s.edit_global(|settings| {
+                        settings.cpu_allocation_presets.remove(i);
+                    });
                     self.preset_open = false;
                 }
             }
@@ -607,7 +618,7 @@ impl Editor {
     }
     pub(super) fn presets_panel<'a>(
         &'a self,
-        s: &'a crate::application::SettingsEditor,
+        s: &'a SettingsEditor,
         kind: Kind,
     ) -> Element<'a, Message> {
         let catalog = SelectionCatalog::capture(kind);
@@ -1242,6 +1253,7 @@ mod tests {
             name: "saved".into(),
             selection: selection.clone(),
         });
+        let mut settings = SettingsEditor::with_settings(settings);
         let mut editor = Editor::default();
         editor.update(&mut settings, Kind::Soft, Message::EditPreset(0));
         assert_eq!(editor.preset_selection, selection);
@@ -1300,6 +1312,7 @@ mod tests {
                 super::settings(&before, kind).rules[0].focus_selection,
                 selection
             );
+            let mut settings = SettingsEditor::with_settings(settings);
             editor.update(&mut settings, kind, Message::Remove(0));
             assert!(editor.selected_presets.is_empty());
         }
@@ -1308,8 +1321,9 @@ mod tests {
     #[test]
     fn builtin_preview_is_read_only_and_cancel_discards_new_preset() {
         let mut editor = Editor::default();
-        let mut settings = Settings::default();
-        let before = settings.clone();
+        let before = Settings::default();
+        let mut settings = SettingsEditor::with_settings(before.clone());
+        settings.select_power_source(crate::config::PowerSourceProfile::OnBattery);
         let selection = crate::cpu_topology::test_selection(u64::MAX);
         editor.update(
             &mut settings,
@@ -1329,12 +1343,12 @@ mod tests {
         editor.update(&mut settings, Kind::Soft, Message::SavePreset);
         assert_eq!(editor.preset_selection, selection);
         assert_eq!(editor.preset_name, "All");
-        assert_eq!(settings, before);
+        assert_eq!(settings.global(), &before);
         editor.update(&mut settings, Kind::Hard, Message::NewPreset);
         assert!(editor.has_pending_editor());
         editor.update(&mut settings, Kind::Hard, Message::ClosePreset);
         assert!(!editor.has_pending_editor());
-        assert_eq!(settings, before);
+        assert_eq!(settings.global(), &before);
     }
 
     #[test]
@@ -1346,8 +1360,11 @@ mod tests {
             name: "Shared".into(),
             selection: selection.clone(),
         });
+        let mut settings = SettingsEditor::with_settings(settings);
+        settings.select_power_source(crate::config::PowerSourceProfile::OnBattery);
         Editor::default().update(&mut settings, Kind::Soft, Message::DeletePreset(0));
         assert_eq!(settings.cpu_sets_soft.rules[0].focus_selection, selection);
         assert!(settings.cpu_allocation_presets.is_empty());
+        assert!(settings.global().on_battery.is_none());
     }
 }
