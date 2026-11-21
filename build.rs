@@ -1,4 +1,5 @@
 fn main() {
+    println!("cargo:rerun-if-changed=locales");
     println!("cargo:rerun-if-changed=resources/winderust.ico");
 
     if std::env::var("CARGO_CFG_WINDOWS").is_ok() {
