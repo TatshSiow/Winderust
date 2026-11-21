@@ -44,17 +44,29 @@ pub(crate) struct ByRunningAppPreview {
 
 #[derive(Default)]
 pub struct ByRunningAppManager {
-    active: Option<ActiveByRunningApp>,
+    active: Option<ActiveByRunningApp<String>>,
     observation_known: bool,
 }
 
-#[derive(Debug, Clone)]
-struct ActiveByRunningApp {
+#[derive(Clone, Copy)]
+struct ActiveByRunningApp<Text> {
     rule_index: usize,
-    rule_name: String,
+    rule_name: Text,
     process_id: u32,
-    process_name: String,
-    target_guid: String,
+    process_name: Text,
+    target_guid: Text,
+}
+
+impl ActiveByRunningApp<&str> {
+    fn into_owned(self) -> ActiveByRunningApp<String> {
+        ActiveByRunningApp {
+            rule_index: self.rule_index,
+            rule_name: self.rule_name.to_owned(),
+            process_id: self.process_id,
+            process_name: self.process_name.to_owned(),
+            target_guid: self.target_guid.to_owned(),
+        }
+    }
 }
 
 impl ByRunningAppManager {
@@ -109,7 +121,7 @@ impl ByRunningAppManager {
             return self.snapshot();
         }
 
-        self.active = Some(matched);
+        self.active = Some(matched.into_owned());
         self.snapshot()
     }
 
@@ -135,15 +147,13 @@ impl ByRunningAppManager {
         })
     }
 
-    fn active_matches(&self, matched: &ActiveByRunningApp) -> bool {
+    fn active_matches(&self, matched: &ActiveByRunningApp<&str>) -> bool {
         self.active.as_ref().is_some_and(|active| {
             active.rule_index == matched.rule_index
                 && active.rule_name == matched.rule_name
                 && active.process_id == matched.process_id
-                && same_process_name(&active.process_name, &matched.process_name)
-                && active
-                    .target_guid
-                    .eq_ignore_ascii_case(&matched.target_guid)
+                && same_process_name(&active.process_name, matched.process_name)
+                && active.target_guid.eq_ignore_ascii_case(matched.target_guid)
         })
     }
 
@@ -234,14 +244,14 @@ fn preview_rule_processes(
     ByRunningAppPreview { rules, winner }
 }
 
-fn matching_rule_process(
-    settings: &ByRunningAppSettings,
-    processes: &[ProcessInfo],
+fn matching_rule_process<'a>(
+    settings: &'a ByRunningAppSettings,
+    processes: &'a [ProcessInfo],
     current_process_id: u32,
     current_session_id: u32,
     mut session_id: impl FnMut(u32) -> Option<u32>,
     mut executable_path: impl FnMut(&ProcessInfo) -> Option<PathBuf>,
-) -> (Option<ActiveByRunningApp>, bool) {
+) -> (Option<ActiveByRunningApp<&'a str>>, bool) {
     let mut known = true;
     for (rule_index, rule) in settings.rules.iter().enumerate() {
         let Some(target_guid) = rule.configured_plan() else {
@@ -267,10 +277,10 @@ fn matching_rule_process(
                     return (
                         Some(ActiveByRunningApp {
                             rule_index,
-                            rule_name: rule_name(rule).to_owned(),
+                            rule_name: rule_name(rule),
                             process_id: process.id,
-                            process_name: process.name.clone(),
-                            target_guid: target_guid.to_owned(),
+                            process_name: &process.name,
+                            target_guid,
                         }),
                         true,
                     );
@@ -377,10 +387,10 @@ mod tests {
         }
     }
 
-    fn match_processes(
-        settings: &ByRunningAppSettings,
-        processes: &[ProcessInfo],
-    ) -> (Option<ActiveByRunningApp>, bool) {
+    fn match_processes<'a>(
+        settings: &'a ByRunningAppSettings,
+        processes: &'a [ProcessInfo],
+    ) -> (Option<ActiveByRunningApp<&'a str>>, bool) {
         matching_rule_process(
             settings,
             processes,
@@ -505,23 +515,23 @@ mod tests {
     fn active_match_includes_rule_name() {
         let active = ActiveByRunningApp {
             rule_index: 0,
-            rule_name: "Old name".to_owned(),
+            rule_name: "Old name",
             process_id: 42,
-            process_name: "game.exe".to_owned(),
-            target_guid: "gaming-guid".to_owned(),
+            process_name: "game.exe",
+            target_guid: "gaming-guid",
         };
         let manager = ByRunningAppManager {
-            active: Some(active.clone()),
+            active: Some(active.into_owned()),
             observation_known: true,
         };
         let reordered = ActiveByRunningApp {
             rule_index: 1,
-            ..active.clone()
+            ..active
         };
         assert!(!manager.active_matches(&reordered));
         assert_eq!(manager.active_decision().unwrap().0, 0);
         let renamed = ActiveByRunningApp {
-            rule_name: "New name".to_owned(),
+            rule_name: "New name",
             ..active
         };
 
@@ -593,7 +603,7 @@ mod tests {
             };
             let (selected, observation_known) = matching_rule_process(
                 &settings,
-                &[process],
+                std::slice::from_ref(&process),
                 99,
                 1,
                 |_| session,
