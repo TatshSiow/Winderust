@@ -749,9 +749,12 @@ Read the relevant section before changing feature policy, ownership, restoration
   Priority observations from a completed scan with no matches. Show a real
   restoration error ahead of an inventory error. Thread inventory failure still
   leaves otherwise eligible existing ownership in place and stops the pass.
-  Quiet Thread Priority retries update current restoration status and record
-  verified baseline writes in Action Log even after the feature is disabled.
-  The original failure stays in history, and other current errors stay visible.
+  Quiet Process Priority and Thread Priority retries update current restoration
+  status and record verified baseline writes in Action Log even after the feature
+  is disabled. The original failure stays in history, and other current errors
+  stay visible. Process Priority clears its release error after another policy
+  resolves the queued change and only credits baseline writes made by its own
+  retries.
   GPU Priority pauses the policy when required focus, session, window or process
   observations are unavailable. Its Home summary and status rail distinguish
   missing observations from a completed scan. A restoration error takes

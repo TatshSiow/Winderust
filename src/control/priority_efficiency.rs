@@ -160,6 +160,7 @@ pub(crate) struct PriorityEfficiencyReleaseSummary {
 
 #[derive(Default)]
 pub(crate) struct PriorityEfficiencyReleaseRetries {
+    pub(crate) process_priority_restored: Option<usize>,
     pub(crate) other: PriorityEfficiencyReleaseSummary,
     pub(crate) background_efficiency: Option<PriorityEfficiencyReleaseSummary>,
 }
@@ -1529,6 +1530,15 @@ impl<P: PriorityEfficiencyPlatform> PriorityEfficiencyController<P> {
             .map(|due| due.saturating_duration_since(now))
     }
 
+    pub(crate) fn process_priority_release_failures(
+        &self,
+    ) -> impl Iterator<Item = &PriorityEfficiencyReleaseFailure> {
+        self.pending_priority_releases
+            .values()
+            .filter(|entry| entry.owner == ControlOwner::ProcessPriority)
+            .map(|entry| &entry.failure)
+    }
+
     pub(crate) fn background_efficiency_release_failures(
         &self,
     ) -> impl Iterator<Item = &PriorityEfficiencyReleaseFailure> {
@@ -1567,12 +1577,22 @@ impl<P: PriorityEfficiencyPlatform> PriorityEfficiencyController<P> {
             .map(|(key, pending)| (ManagedProperty::Power, key, pending));
         for (property, key, pending) in priority.chain(power) {
             let owner = pending.owner;
+            let static_priority = matches!(property, ManagedProperty::Priority)
+                && owner == ControlOwner::ProcessPriority;
+            // Reconciliation also counts handoffs, which do not restore the baseline.
+            let restores_baseline =
+                static_priority && self.effective_priority_claim(&key).is_none();
             let mut outcome = PriorityEfficiencyReleaseSummary::default();
             match property {
                 ManagedProperty::Priority => self.reconcile_priority_key(owner, &key, &mut outcome),
                 ManagedProperty::Power => self.reconcile_power_key(owner, &key, &mut outcome),
             }
-            if owner == ControlOwner::BackgroundEfficiency {
+            if static_priority {
+                let restored = retries.process_priority_restored.get_or_insert_default();
+                if restores_baseline {
+                    *restored += outcome.restored_processes;
+                }
+            } else if owner == ControlOwner::BackgroundEfficiency {
                 let background = retries.background_efficiency.get_or_insert_default();
                 if outcome.restored_processes != 0 && !self.release_pending_for(owner, &key) {
                     background.restored_processes += 1;

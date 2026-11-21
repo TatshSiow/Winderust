@@ -41,6 +41,8 @@ pub struct ProcessPrioritySnapshot {
 #[derive(Default)]
 pub struct ProcessPriorityManager {
     failure_suppression: ExecutionFailureTracker,
+    non_release_failures: ProcessPriorityFailures,
+    release_error_reported: bool,
 }
 
 struct ProcessPriorityTarget {
@@ -68,6 +70,7 @@ impl ProcessPriorityManager {
         observations: &mut CycleObservations,
         action_log: &mut ActionLog,
     ) -> ProcessPrioritySnapshot {
+        self.non_release_failures = ProcessPriorityFailures::default();
         if !automation_enabled {
             return self.disabled_snapshot(controller, action_log, "automation disabled");
         }
@@ -193,13 +196,11 @@ impl ProcessPriorityManager {
             .collect::<BTreeSet<_>>();
         self.failure_suppression.retain_keys(&active_target_names);
 
-        let mut failures = ProcessPriorityFailures::default();
-        self.merge_release_summary(
+        self.record_policy_release(
             controller
                 .release_priority_policy_except(ControlOwner::ProcessPriority, &active_targets),
             action_log,
             "process is excluded or no longer matches Process Priority defaults",
-            &mut failures,
         );
         let mut skipped_processes = 0;
         let mut applied_processes = 0;
@@ -262,8 +263,7 @@ impl ProcessPriorityManager {
                 Err(error) => {
                     self.failure_suppression
                         .record_process_failure(&target.executable_path);
-                    failures.record(
-                        "Apply",
+                    self.non_release_failures.record(
                         target.process_id,
                         &target.process_name,
                         error,
@@ -282,17 +282,67 @@ impl ProcessPriorityManager {
             );
         }
 
-        ProcessPrioritySnapshot {
-            enabled: true,
-            scanned_processes,
-            adjusted_processes: controller
-                .policy_managed_process_count(ControlOwner::ProcessPriority),
-            skipped_processes,
-            failed_processes: failures.count,
-            auto_excluded_processes: auto_excluded_processes.into_iter().collect(),
-            observation_paused: false,
-            last_error: failures.last_error,
+        self.with_release_status(
+            controller,
+            ProcessPrioritySnapshot {
+                enabled: true,
+                scanned_processes,
+                adjusted_processes: controller
+                    .policy_managed_process_count(ControlOwner::ProcessPriority),
+                skipped_processes,
+                auto_excluded_processes: auto_excluded_processes.into_iter().collect(),
+                ..Default::default()
+            },
+        )
+    }
+
+    pub(crate) fn reported_release_is_resolved(
+        &self,
+        controller: &PriorityEfficiencyController,
+    ) -> bool {
+        self.release_error_reported
+            && controller
+                .process_priority_release_failures()
+                .next()
+                .is_none()
+    }
+
+    pub(crate) fn report_release_retry(
+        &mut self,
+        controller: &PriorityEfficiencyController,
+        restored: usize,
+        mut status: ProcessPrioritySnapshot,
+        action_log: &mut ActionLog,
+    ) -> ProcessPrioritySnapshot {
+        Self::record_restoration(action_log, restored, "restoration retry completed");
+        status.auto_excluded_processes.clear();
+        if status.enabled && !status.observation_paused {
+            status.adjusted_processes =
+                controller.policy_managed_process_count(ControlOwner::ProcessPriority);
         }
+        self.with_release_status(controller, status)
+    }
+
+    fn with_release_status(
+        &mut self,
+        controller: &PriorityEfficiencyController,
+        mut status: ProcessPrioritySnapshot,
+    ) -> ProcessPrioritySnapshot {
+        let mut failures = controller.process_priority_release_failures();
+        let first = failures.next();
+        self.release_error_reported = first.is_some();
+        status.failed_processes = self.non_release_failures.count
+            + usize::from(self.release_error_reported)
+            + failures.count();
+        status.last_error = first
+            .map(|failure| {
+                format!(
+                    "Restore {} {} ({}): {}",
+                    failure.property, failure.process_name, failure.process_id, failure.error,
+                )
+            })
+            .or_else(|| self.non_release_failures.last_error.clone());
+        status
     }
 
     fn disabled_snapshot(
@@ -301,19 +351,13 @@ impl ProcessPriorityManager {
         action_log: &mut ActionLog,
         reason: &str,
     ) -> ProcessPrioritySnapshot {
-        let mut failures = ProcessPriorityFailures::default();
-        self.merge_release_summary(
+        self.record_policy_release(
             controller.release_all_priority_policy(ControlOwner::ProcessPriority),
             action_log,
             reason,
-            &mut failures,
         );
         self.failure_suppression.clear();
-        ProcessPrioritySnapshot {
-            failed_processes: failures.count,
-            last_error: failures.last_error,
-            ..Default::default()
-        }
+        self.with_release_status(controller, ProcessPrioritySnapshot::default())
     }
 
     fn pause_for_unknown_focus(
@@ -331,50 +375,50 @@ impl ProcessPriorityManager {
         reason: &str,
         observation_error: Option<String>,
     ) -> ProcessPrioritySnapshot {
-        let mut failures = ProcessPriorityFailures::default();
-        self.merge_release_summary(
+        self.record_policy_release(
             controller.release_all_priority_policy(ControlOwner::ProcessPriority),
             action_log,
             reason,
-            &mut failures,
         );
-        ProcessPrioritySnapshot {
-            enabled: true,
-            observation_paused: true,
-            failed_processes: failures.count,
-            last_error: failures.last_error.or(observation_error),
-            ..Default::default()
-        }
+        self.non_release_failures.last_error = observation_error;
+        self.with_release_status(
+            controller,
+            ProcessPrioritySnapshot {
+                enabled: true,
+                observation_paused: true,
+                ..Default::default()
+            },
+        )
     }
 
-    fn merge_release_summary(
+    fn record_policy_release(
         &mut self,
         summary: PriorityEfficiencyReleaseSummary,
         action_log: &mut ActionLog,
         reason: &str,
-        failures: &mut ProcessPriorityFailures,
     ) {
-        if summary.restored_processes > 0 {
+        Self::record_restoration(action_log, summary.restored_processes, reason);
+        for failure in summary.failures {
+            self.failure_suppression
+                .record_process_failure(&failure.executable_path);
+            action_log.record(
+                ActionLogFeature::ProcessPriority,
+                Some(failure.process_id),
+                failure.process_name,
+                ActionLogResult::Failed,
+                failure.error.to_string(),
+            );
+        }
+    }
+
+    fn record_restoration(action_log: &mut ActionLog, restored: usize, reason: &str) {
+        if restored > 0 {
             action_log.record(
                 ActionLogFeature::ProcessPriority,
                 None,
                 "",
                 ActionLogResult::Restored,
-                format!(
-                    "Restored process priority for {} process(es): {reason}.",
-                    summary.restored_processes
-                ),
-            );
-        }
-        for failure in summary.failures {
-            self.failure_suppression
-                .record_process_failure(&failure.executable_path);
-            failures.record(
-                &format!("Restore {}", failure.property),
-                failure.process_id,
-                &failure.process_name,
-                failure.error,
-                action_log,
+                format!("Restored process priority for {restored} process(es): {reason}."),
             );
         }
     }
@@ -419,7 +463,6 @@ struct ProcessPriorityFailures {
 impl ProcessPriorityFailures {
     fn record(
         &mut self,
-        action: &str,
         process_id: u32,
         process_name: &str,
         error: ProcessControlError,
@@ -427,7 +470,7 @@ impl ProcessPriorityFailures {
     ) {
         let message = error.to_string();
         if self.last_error.is_none() {
-            self.last_error = Some(format!("{action} {process_name} ({process_id}): {message}"));
+            self.last_error = Some(format!("Apply {process_name} ({process_id}): {message}"));
         }
         self.count += 1;
         action_log.record(

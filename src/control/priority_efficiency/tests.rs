@@ -1207,12 +1207,22 @@ fn pending_release_reconciles_the_current_claim_instead_of_restoring_over_it() {
     let retries = controller.retry_pending_releases(due);
     assert!(retries.other.failures.is_empty());
     assert!(retries.background_efficiency.is_none());
+    assert_eq!(retries.process_priority_restored, None);
     assert_eq!(
         controller.platform.processes[&7].priority,
         BELOW_NORMAL_PRIORITY_CLASS
     );
     assert_eq!(controller.release_retry_delay(due), None);
-    controller.release_all_priority_policy(ControlOwner::ProcessPriority);
+    controller.platform.fail_next_priority_apply = true;
+    let failed = controller.release_all_priority_policy(ControlOwner::ProcessPriority);
+    assert_eq!(failed.failures.len(), 1);
+    assert_eq!(controller.process_priority_release_failures().count(), 1);
+
+    let due = controller.release_retry_at.unwrap();
+    let retries = controller.retry_pending_releases(due);
+    assert_eq!(retries.process_priority_restored, Some(1));
+    assert!(retries.other.failures.is_empty());
+    assert_eq!(controller.process_priority_release_failures().count(), 0);
     assert_eq!(
         controller.platform.processes[&7].priority,
         NORMAL_PRIORITY_CLASS

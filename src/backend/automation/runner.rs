@@ -1443,6 +1443,26 @@ impl RuntimeCore {
         let retries = self
             .priority_efficiency_controller
             .retry_pending_releases(now);
+        if retries.process_priority_restored.is_some()
+            || self
+                .process_priority_manager
+                .reported_release_is_resolved(&self.priority_efficiency_controller)
+        {
+            let status = lock_unpoisoned(&shared.state)
+                .status
+                .feature_status
+                .process_priority
+                .clone();
+            update_process_priority_status(
+                shared,
+                self.process_priority_manager.report_release_retry(
+                    &self.priority_efficiency_controller,
+                    retries.process_priority_restored.unwrap_or_default(),
+                    status,
+                    &mut self.action_log,
+                ),
+            );
+        }
         if let Some(summary) = retries.background_efficiency {
             BackgroundEfficiencyManager::record_release_summary(
                 summary,
