@@ -180,16 +180,13 @@ pub(super) fn view<'a>(
         body = body.push(detail_row("sidebar_status.current_error", error.to_owned()));
     }
     if power_feature.is_some() {
-        let plan = runtime
-            .power_plan_status
-            .current_guid
-            .as_ref()
+        let plan = super::power_plan_control::current_plan_guid(&runtime.power_plan_status, plans)
             .map(|guid| {
                 plans
                     .iter()
                     .find(|p| p.guid.eq_ignore_ascii_case(guid))
                     .map(power_plan_label)
-                    .unwrap_or_else(|| guid.clone())
+                    .unwrap_or_else(|| guid.to_owned())
             })
             .unwrap_or_else(|| t!("common.unknown").to_string());
         body = body.push(section("common.current_power_plan", column![text(plan)]));
