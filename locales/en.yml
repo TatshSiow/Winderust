@@ -651,7 +651,7 @@ interrupt_timing:
   capturing: "Capturing interrupt timing…"
   cancelling: "Cancelling capture…"
   cancelled: "Capture cancelled."
-  access_denied: "Administrator access is required to capture interrupt timing."
+  access_denied: "Windows denied access to Interrupt Timing."
   in_use: "Interrupt Timing is busy. Try again shortly."
   failed: "Windows could not capture interrupt timing."
   timed_out: "Interrupt Timing timed out. Cleanup may still be in progress."
