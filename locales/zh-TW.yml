@@ -313,6 +313,7 @@ process_list:
   app_name: "應用程式名稱"
   title: "程序清單"
   count: "%{count} 個執行中的程序"
+  no_filter_matches: "沒有符合目前搜尋或篩選條件的處理程序。"
   process_name: "程序名稱"
   executable_path: "執行檔路徑"
   pid: "PID"

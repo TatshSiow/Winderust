@@ -26,6 +26,7 @@ pub(super) enum PlanCatalog<'a> {
     Unavailable,
     Loaded(&'a [crate::power::PowerPlan]),
 }
+const HEADER_HEIGHT: f32 = 32.0;
 const ROW_HEIGHT: f32 = 36.0;
 const PROCESS_TABLE: &str = "process-list";
 const REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
@@ -1459,14 +1460,31 @@ impl ProcessList {
                 .sum::<f32>()
                 - design::space::SMALL as f32
                 + 32.0;
-            scrolling::horizontal_scrollable(scrolling::table_surface(
-                container(column![container(header).height(32), table,].height(Fill))
+            let table = scrolling::horizontal_scrollable(scrolling::table_surface(
+                container(column![container(header).height(HEADER_HEIGHT), table].height(Fill))
                     .width(size.width.max(table_width))
                     .height(Fill),
             ))
             .width(Fill)
-            .height(Fill)
-            .into()
+            .height(Fill);
+            let mut layers = iced::widget::Stack::new().push(table);
+            if !self.processes.is_empty() && self.rows.is_empty() {
+                let inset = design::space::LARGE as f32;
+                layers = layers.push(
+                    container(
+                        text(t!("process_list.no_filter_matches").to_string())
+                            .style(text::secondary),
+                    )
+                    .padding(iced::Padding {
+                        top: HEADER_HEIGHT + inset,
+                        right: inset,
+                        bottom: 0.0,
+                        left: inset,
+                    })
+                    .width(Fill),
+                );
+            }
+            layers.into()
         })));
         let body = mouse_area(body).on_move(Message::PointerMoved);
         if let Some((stopping, tree)) = &self.stopping {

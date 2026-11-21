@@ -309,6 +309,7 @@ process_list:
   app_name: "App name"
   title: "Process List"
   count: "%{count} running processes"
+  no_filter_matches: "No processes match the current search or filters."
   process_name: "Process name"
   executable_path: "Executable path"
   pid: "PID"
