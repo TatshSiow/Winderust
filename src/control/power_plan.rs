@@ -705,6 +705,10 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
                 .as_ref()
                 .is_some_and(|plan| plan.owner.observation_unavailable(decision))
         {
+            self.last_decision = Some(DecisionOutcome::without_power_plan(
+                DecisionState::WaitingForObservation,
+                "Waiting for required observations.",
+            ));
             return Ok(false);
         }
         let Some(target_guid) = decision.power_plan_guid.clone() else {
@@ -2301,6 +2305,12 @@ mod tests {
         unknown.state = DecisionState::ByTime;
         assert!(!controller.reconcile_ordinary(unknown, now).unwrap());
         assert_eq!(controller.platform.active, "focused");
+        let status = controller.status();
+        assert_eq!(
+            status.decision_state,
+            Some(DecisionState::WaitingForObservation)
+        );
+        assert!(status.target_guid.is_none());
         assert_eq!(
             controller.temporary_release_retry_delay(),
             Some(Duration::from_secs(1))

@@ -307,7 +307,10 @@ Read the relevant section before changing feature policy, ownership, restoration
   External plan changes invalidate the baseline. Unavailable focus, plausible
   process matches, CPU samples, or activity observations do not prove a condition
   ended; they defer affected fallthrough while a known higher-priority rule can
-  still take over. Pending restoration keeps the worker alive and retries
+  still take over. During this deferral, Power Plan Control shows that it is
+  waiting for observations. Deferred candidates cannot start a By CPU Load hold,
+  even when their target matches the active plan. Pending restoration keeps the
+  worker alive and retries
   independently of feature enablement. Failed or no-op returns never log a
   successful switch.
 - When the last automation feature releases the worker, Power Plan Control

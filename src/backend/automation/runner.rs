@@ -1832,11 +1832,6 @@ impl RuntimeCore {
             by_cpu_load: by_cpu_load_decision,
         };
         let decision = decide(settings, decision_input);
-        let winning_cpu_load_rule_index = if decision.state == DecisionState::ByCpuLoad {
-            primary_cpu_load_rule_index
-        } else {
-            None
-        };
         if matches!(
             decision.state,
             DecisionState::Disabled | DecisionState::PausedWhilePluggedIn
@@ -1864,9 +1859,13 @@ impl RuntimeCore {
         let reason = status.reason.unwrap_or_default();
         match result {
             Ok(applied) => {
+                let selected_cpu_load_rule_index = primary_cpu_load_rule_index.filter(|index| {
+                    status.decision_state == Some(DecisionState::ByCpuLoad)
+                        && status.rule_index == Some(*index)
+                });
                 self.by_cpu_load_scheduler.confirm_applied_rule(
-                    winning_cpu_load_rule_index,
-                    self.power_plan_controller.status().current_guid.as_deref(),
+                    selected_cpu_load_rule_index,
+                    status.current_guid.as_deref(),
                     Instant::now(),
                 );
                 if let (true, Some(feature)) = (applied, feature) {
@@ -1961,6 +1960,7 @@ pub(super) fn power_plan_action_log_feature(state: DecisionState) -> Option<Acti
         }
         DecisionState::Disabled
         | DecisionState::PausedWhilePluggedIn
+        | DecisionState::WaitingForObservation
         | DecisionState::NoPowerPlanSelected => None,
     }
 }

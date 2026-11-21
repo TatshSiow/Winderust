@@ -1136,6 +1136,7 @@ power_plan_control:
   processor_power_settings: "處理器電源設定"
   previous_plan_restoration: "還原先前的計畫"
   paused_on_ac: "使用 AC 電源時暫停"
+  waiting_for_observation: "等待必要的觀測資料"
   no_rule_selects_plan: "目前沒有規則選擇電源計畫"
   switch_plan_help: "目前使用 %{plan}。自動化仍可切換電源計畫。"
   choose_plan: "選擇電源計畫"

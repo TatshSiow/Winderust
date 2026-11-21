@@ -463,7 +463,10 @@ fn sidebar_state(
             return FeatureRunState::Unknown;
         }
         if plan.owner == Some(PowerPlanOwner::AdaptiveEngine)
-            || plan.decision_state == Some(DecisionState::PausedWhilePluggedIn)
+            || matches!(
+                plan.decision_state,
+                Some(DecisionState::PausedWhilePluggedIn | DecisionState::WaitingForObservation)
+            )
         {
             return FeatureRunState::Paused;
         }

@@ -221,6 +221,9 @@ fn rule_description(status: &PowerPlanStatus, current_known: bool) -> String {
     }
     t!(match status.decision_state {
         Some(DecisionState::PausedWhilePluggedIn) => "power_plan_control.paused_on_ac",
+        Some(DecisionState::WaitingForObservation) => {
+            "power_plan_control.waiting_for_observation"
+        }
         Some(DecisionState::Disabled) => "common.disabled",
         Some(_) => "power_plan_control.no_rule_selects_plan",
         None if current_known => "power_plan_control.no_rule_selects_plan",

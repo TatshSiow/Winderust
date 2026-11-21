@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 pub enum DecisionState {
     Disabled,
     PausedWhilePluggedIn,
+    WaitingForObservation,
     ByFocus,
     ByRunningApp,
     ByTime,
@@ -310,7 +311,7 @@ impl DecisionOutcome {
         }
     }
 
-    fn without_power_plan(state: DecisionState, reason: impl Into<String>) -> Self {
+    pub(crate) fn without_power_plan(state: DecisionState, reason: impl Into<String>) -> Self {
         Self {
             rule_index: None,
             power_plan_guid: None,

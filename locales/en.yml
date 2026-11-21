@@ -1133,6 +1133,7 @@ power_plan_control:
   processor_power_settings: "Processor Power settings"
   previous_plan_restoration: "Restore previous plan"
   paused_on_ac: "Paused on A/C"
+  waiting_for_observation: "Waiting for required observations"
   no_rule_selects_plan: "No rule currently selects a plan"
   switch_plan_help: "Using %{plan}. Automation can still change the plan."
   choose_plan: "Choose a power plan"
