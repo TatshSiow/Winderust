@@ -1471,18 +1471,23 @@ impl RuntimeCore {
                 )
             })
             .collect::<Vec<_>>();
-        errors.extend(
-            self.thread_priority_controller
-                .retry_pending_releases(now)
-                .failures
-                .into_iter()
-                .map(|failure| {
-                    format!(
-                        "Thread Priority restoration failed for {} ({}, thread {}): {}",
-                        failure.process_name, failure.process_id, failure.thread_id, failure.error
-                    )
-                }),
-        );
+        if self.thread_priority_controller.release_retry_delay(now) == Some(Duration::ZERO) {
+            let summary = self.thread_priority_controller.retry_pending_releases(now);
+            let status = lock_unpoisoned(&shared.state)
+                .status
+                .feature_status
+                .thread_priority
+                .clone();
+            update_thread_priority_status(
+                shared,
+                self.thread_priority_manager.report_release_retry(
+                    &self.thread_priority_controller,
+                    summary,
+                    status,
+                    &mut self.action_log,
+                ),
+            );
+        }
         if self.io_priority_controller.release_retry_delay(now) == Some(Duration::ZERO) {
             let summary = self.io_priority_controller.retry_pending_releases(now);
             let status = lock_unpoisoned(&shared.state)

@@ -38,6 +38,7 @@ pub struct ThreadPrioritySnapshot {
 #[derive(Default)]
 pub struct ThreadPriorityManager {
     failure_suppression: ExecutionFailureTracker,
+    non_release_failures: ThreadPriorityFailures,
 }
 
 impl ThreadPriorityManager {
@@ -56,11 +57,13 @@ impl ThreadPriorityManager {
         observations: &mut CycleObservations,
         action_log: &mut ActionLog,
     ) -> ThreadPrioritySnapshot {
+        self.non_release_failures = ThreadPriorityFailures::default();
         if !automation_enabled {
             let failures = record_release(
                 controller.release_all_policy(),
                 action_log,
                 "automation disabled",
+                true,
             );
             self.failure_suppression.clear();
             return inactive_snapshot(failures);
@@ -70,6 +73,7 @@ impl ThreadPriorityManager {
                 controller.release_all_policy(),
                 action_log,
                 "Thread Priority disabled",
+                true,
             );
             self.failure_suppression.clear();
             return inactive_snapshot(failures);
@@ -78,7 +82,7 @@ impl ThreadPriorityManager {
         let focus_unknown =
             settings.foreground_detection_enabled && foreground_process_id.is_none();
         if focus_unknown && settings.foreground_priority != settings.background_priority {
-            return pause_for_unknown_focus(controller, action_log);
+            return self.paused_snapshot(controller, action_log, "foreground app is unknown", None);
         }
 
         // SAFETY: GetCurrentProcessId takes no arguments and has no caller requirements.
@@ -87,7 +91,7 @@ impl ThreadPriorityManager {
             None
         } else {
             let Some(session_id) = process_session_id(current_process_id) else {
-                return paused_snapshot(
+                return self.paused_snapshot(
                     controller,
                     action_log,
                     "current Windows session is unknown",
@@ -100,7 +104,7 @@ impl ThreadPriorityManager {
         let processes = match observations.processes_with_paths() {
             Ok(processes) => processes,
             Err(error) => {
-                return paused_snapshot(
+                return self.paused_snapshot(
                     controller,
                     action_log,
                     "process list unavailable",
@@ -111,7 +115,7 @@ impl ThreadPriorityManager {
         let scanned_processes = processes.len();
         let visible_processes = if settings.visible_window_detection_enabled {
             let Ok(process_ids) = observations.visible_window_process_ids() else {
-                return paused_snapshot(
+                return self.paused_snapshot(
                     controller,
                     action_log,
                     "visible windows are unavailable",
@@ -170,7 +174,12 @@ impl ThreadPriorityManager {
             if focus_unknown
                 && policy != priority_policy(settings, path, PriorityProcessTier::Foreground)
             {
-                return pause_for_unknown_focus(controller, action_log);
+                return self.paused_snapshot(
+                    controller,
+                    action_log,
+                    "foreground app is unknown",
+                    None,
+                );
             }
             let Some((priority, preservation)) = policy else {
                 continue;
@@ -202,11 +211,13 @@ impl ThreadPriorityManager {
             .map(|target| process_failure_key(&target.executable_path))
             .collect::<BTreeSet<_>>();
         self.failure_suppression.retain_keys(&active_target_names);
-        let mut failures = record_release(
+        let release = record_release(
             controller.release_policy_except(&active_targets),
             action_log,
             "process is excluded or no longer matches Thread Priority defaults",
+            true,
         );
+        let mut failures = ThreadPriorityFailures::default();
         let mut skipped_processes = 0;
         let mut applied_threads = 0;
         let mut auto_excluded_processes = BTreeSet::new();
@@ -262,7 +273,7 @@ impl ThreadPriorityManager {
                         process_id,
                         &target.process_name,
                         error.to_string(),
-                        action_log,
+                        Some(action_log),
                     );
                 }
             }
@@ -277,16 +288,64 @@ impl ThreadPriorityManager {
             );
         }
 
-        ThreadPrioritySnapshot {
-            enabled: true,
-            scanned_processes,
-            adjusted_processes: controller.policy_managed_process_count(),
-            skipped_processes,
-            failed_processes: failures.count,
-            auto_excluded_processes: auto_excluded_processes.into_iter().collect(),
-            observation_paused: inventory.failed(),
-            last_error: failures.last_error,
+        self.non_release_failures = failures;
+        self.with_release_failures(
+            ThreadPrioritySnapshot {
+                enabled: true,
+                scanned_processes,
+                adjusted_processes: controller.policy_managed_process_count(),
+                skipped_processes,
+                auto_excluded_processes: auto_excluded_processes.into_iter().collect(),
+                observation_paused: inventory.failed(),
+                ..Default::default()
+            },
+            release,
+        )
+    }
+
+    pub(crate) fn report_release_retry(
+        &self,
+        controller: &ThreadPriorityController,
+        summary: ThreadPriorityReleaseSummary,
+        mut status: ThreadPrioritySnapshot,
+        action_log: &mut ActionLog,
+    ) -> ThreadPrioritySnapshot {
+        let release = record_release(summary, action_log, "restoration retry completed", false);
+        status.auto_excluded_processes.clear();
+        if status.enabled && !status.observation_paused {
+            status.adjusted_processes = controller.policy_managed_process_count();
         }
+        self.with_release_failures(status, release)
+    }
+
+    fn with_release_failures(
+        &self,
+        mut status: ThreadPrioritySnapshot,
+        release: ThreadPriorityFailures,
+    ) -> ThreadPrioritySnapshot {
+        status.failed_processes = release.count + self.non_release_failures.count;
+        status.last_error = release
+            .last_error
+            .or_else(|| self.non_release_failures.last_error.clone());
+        status
+    }
+
+    fn paused_snapshot(
+        &mut self,
+        controller: &mut ThreadPriorityController,
+        action_log: &mut ActionLog,
+        reason: &str,
+        observation_error: Option<String>,
+    ) -> ThreadPrioritySnapshot {
+        self.non_release_failures.last_error = observation_error;
+        self.with_release_failures(
+            ThreadPrioritySnapshot {
+                enabled: true,
+                observation_paused: true,
+                ..Default::default()
+            },
+            record_release(controller.release_all_policy(), action_log, reason, true),
+        )
     }
 
     fn is_process_suppressed(
@@ -339,19 +398,21 @@ impl ThreadPriorityFailures {
         id: u32,
         process_name: &str,
         message: String,
-        action_log: &mut ActionLog,
+        action_log: Option<&mut ActionLog>,
     ) {
         if self.last_error.is_none() {
             self.last_error = Some(format!("{action} {process_name} ({id}): {message}"));
         }
         self.count += 1;
-        action_log.record(
-            ActionLogFeature::ThreadPriority,
-            Some(id),
-            process_name.to_owned(),
-            ActionLogResult::Failed,
-            message,
-        );
+        if let Some(action_log) = action_log {
+            action_log.record(
+                ActionLogFeature::ThreadPriority,
+                Some(id),
+                process_name.to_owned(),
+                ActionLogResult::Failed,
+                message,
+            );
+        }
     }
 }
 
@@ -363,33 +424,11 @@ fn inactive_snapshot(failures: ThreadPriorityFailures) -> ThreadPrioritySnapshot
     }
 }
 
-fn pause_for_unknown_focus(
-    controller: &mut ThreadPriorityController,
-    action_log: &mut ActionLog,
-) -> ThreadPrioritySnapshot {
-    paused_snapshot(controller, action_log, "foreground app is unknown", None)
-}
-
-fn paused_snapshot(
-    controller: &mut ThreadPriorityController,
-    action_log: &mut ActionLog,
-    reason: &str,
-    observation_error: Option<String>,
-) -> ThreadPrioritySnapshot {
-    let failures = record_release(controller.release_all_policy(), action_log, reason);
-    ThreadPrioritySnapshot {
-        enabled: true,
-        observation_paused: true,
-        failed_processes: failures.count,
-        last_error: failures.last_error.or(observation_error),
-        ..Default::default()
-    }
-}
-
 fn record_release(
     summary: ThreadPriorityReleaseSummary,
     action_log: &mut ActionLog,
     reason: &str,
+    report_failures: bool,
 ) -> ThreadPriorityFailures {
     let mut failures = ThreadPriorityFailures::default();
     for failure in summary.failures {
@@ -398,7 +437,7 @@ fn record_release(
             failure.process_id,
             &failure.process_name,
             format!("Thread {}: {}", failure.thread_id, failure.error),
-            action_log,
+            report_failures.then_some(&mut *action_log),
         );
     }
     if summary.restored_threads > 0 {
@@ -472,6 +511,58 @@ mod tests {
     use std::path::Path;
 
     use super::*;
+
+    #[test]
+    fn quiet_restoration_updates_current_status_and_preserves_failure_history() {
+        use crate::control::thread_priority::ThreadPriorityReleaseFailure;
+
+        let manager = ThreadPriorityManager::default();
+        let controller = ThreadPriorityController::default();
+        let mut log = ActionLog::new(4);
+        let failure = |message: &str| ThreadPriorityReleaseSummary {
+            failures: vec![ThreadPriorityReleaseFailure {
+                process_id: 42,
+                process_name: "app.exe".to_owned(),
+                thread_id: 43,
+                error: ProcessControlError::Failed(message.to_owned()),
+            }],
+            ..Default::default()
+        };
+        let initial = record_release(failure("initial failure"), &mut log, "disabled", true);
+        let status = manager.report_release_retry(
+            &controller,
+            failure("retry failure"),
+            inactive_snapshot(initial),
+            &mut log,
+        );
+        assert_eq!(status.failed_processes, 1);
+        assert_eq!(
+            status.last_error.as_deref(),
+            Some("Restore app.exe (42): Thread 43: retry failure")
+        );
+
+        let status = manager.report_release_retry(
+            &controller,
+            ThreadPriorityReleaseSummary {
+                restored_threads: 1,
+                ..Default::default()
+            },
+            status,
+            &mut log,
+        );
+        assert_eq!(status.failed_processes, 0);
+        assert_eq!(status.last_error, None);
+        let history = &log.summaries()[&ActionLogFeature::ThreadPriority];
+        assert_eq!(history.failed_actions, 1);
+        assert_eq!(
+            history.last_failed.as_ref().unwrap().reason,
+            "Thread 43: initial failure"
+        );
+        assert_eq!(
+            history.last_success.as_ref().unwrap().result,
+            ActionLogResult::Restored
+        );
+    }
 
     #[test]
     fn foreground_matching_uses_pid_or_same_executable_path() {
