@@ -1972,16 +1972,18 @@ fn run_background_automation(
                 continue;
             }
             let shutdown_result = runner.shutdown();
-            if commit_worker_exit(&shared, change_generation) {
-                return shutdown_result;
-            }
-            if let Err(error) = shutdown_result {
+            let (power_plan_status, rule_context) = runner.power_plan_status();
+            update_power_plan_status(&shared, power_plan_status, rule_context, None);
+            if let Err(error) = &shutdown_result {
                 update_worker_error(
                     &shared,
                     Some(format!(
-                        "Background automation worker handoff cleanup failed: {error}"
+                        "Background automation worker cleanup failed: {error}"
                     )),
                 );
+            }
+            if commit_worker_exit(&shared, change_generation) {
+                return shutdown_result;
             }
             drop(runner);
             runner = RuntimeCore::for_worker(&shared)?;

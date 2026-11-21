@@ -273,6 +273,8 @@ Read the relevant section before changing feature policy, ownership, restoration
   still take over. Pending restoration keeps the worker alive and retries
   independently of feature enablement. Failed or no-op returns never log a
   successful switch.
+- When the last automation feature releases the worker, Power Plan Control
+  receives the last verified plan and any cleanup error before the worker exits.
 - By Focus and By Running App rules choose one executable path or exact executable
   filename. A name rule confirms the filename against the observed absolute image
   path. The first enabled rule with a matching target and selected plan wins within
