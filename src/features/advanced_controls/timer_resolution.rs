@@ -35,11 +35,19 @@ impl TimerResolutionManager {
         action_log: &mut ActionLog,
     ) -> TimerResolutionSnapshot {
         if !automation_enabled {
-            return self.disable(controller, action_log, "automation disabled");
+            return self.disable(
+                controller,
+                action_log,
+                "timer_resolution.log_automation_disabled",
+            );
         }
 
         if !settings.enabled {
-            return self.disable(controller, action_log, "timer resolution control disabled");
+            return self.disable(
+                controller,
+                action_log,
+                "timer_resolution.log_control_disabled",
+            );
         }
 
         if !settings.rules.iter().any(|rule| {
@@ -50,7 +58,7 @@ impl TimerResolutionManager {
                 true,
                 false,
                 action_log,
-                "no timer resolution foreground rules are enabled",
+                "timer_resolution.log_no_active_rules",
                 false,
             );
         }
@@ -63,7 +71,7 @@ impl TimerResolutionManager {
                 true,
                 true,
                 action_log,
-                "foreground app is unknown",
+                "timer_resolution.log_unknown_foreground",
                 true,
             );
         };
@@ -76,7 +84,7 @@ impl TimerResolutionManager {
                 true,
                 true,
                 action_log,
-                "no foreground timer resolution rule matched",
+                "timer_resolution.log_no_match",
                 false,
             );
         };
@@ -103,30 +111,35 @@ impl TimerResolutionManager {
             .as_deref()
             .unwrap_or(SYSTEM_TARGET_NAME);
         self.last_release_error = None;
-        match controller.set_request(desired_100ns) {
+        let result = controller.set_request(desired_100ns);
+        let released = match &result {
+            Ok(transition) => transition.released_100ns,
+            Err(error) => error.released_100ns,
+        };
+        if let Some(previous_100ns) = released {
+            action_log.record(
+                ActionLogFeature::TimerResolution,
+                None,
+                previous_target,
+                ActionLogResult::Restored,
+                rust_i18n::t!(
+                    "timer_resolution.log_released_previous",
+                    resolution = format_resolution_ms(previous_100ns)
+                ),
+            );
+        }
+        match result {
             Ok(transition) => {
-                if let Some(previous_100ns) = transition.released_100ns {
-                    action_log.record(
-                        ActionLogFeature::TimerResolution,
-                        None,
-                        previous_target,
-                        ActionLogResult::Restored,
-                        format!(
-                            "Released previous timer resolution request {}.",
-                            format_resolution_ms(previous_100ns)
-                        ),
-                    );
-                }
                 if transition.changed {
                     action_log.record(
                         ActionLogFeature::TimerResolution,
                         None,
                         rule_process_name,
                         ActionLogResult::Applied,
-                        format!(
-                            "Requested timer resolution {} while {} is foreground.",
-                            format_resolution_ms(transition.active_100ns),
-                            rule_process_name
+                        rust_i18n::t!(
+                            "timer_resolution.log_requested",
+                            resolution = format_resolution_ms(transition.active_100ns),
+                            app = rule_process_name
                         ),
                     );
                 }
@@ -135,26 +148,14 @@ impl TimerResolutionManager {
                 }
             }
             Err(error) => {
-                if let Some(previous_100ns) = error.released_100ns {
-                    action_log.record(
-                        ActionLogFeature::TimerResolution,
-                        None,
-                        previous_target,
-                        ActionLogResult::Restored,
-                        format!(
-                            "Released previous timer resolution request {}.",
-                            format_resolution_ms(previous_100ns)
-                        ),
-                    );
-                }
-
                 let (failed_target, action_message) = match error.stage {
                     TimerResolutionTransitionStage::ReleasePrevious => (
                         previous_target,
-                        format!(
-                            "Failed to release previous timer resolution request: {}",
-                            error.message
-                        ),
+                        rust_i18n::t!(
+                            "timer_resolution.log_release_previous_failed",
+                            error = error.message
+                        )
+                        .into_owned(),
                     ),
                     TimerResolutionTransitionStage::RequestDesired => {
                         self.active_rule_process = None;
@@ -193,9 +194,9 @@ impl TimerResolutionManager {
         &mut self,
         controller: &mut TimerResolutionController,
         action_log: &mut ActionLog,
-        reason: &str,
+        reason_key: &str,
     ) -> TimerResolutionSnapshot {
-        self.release_inactive(controller, false, true, action_log, reason, false)
+        self.release_inactive(controller, false, true, action_log, reason_key, false)
     }
 
     fn release_inactive(
@@ -204,7 +205,7 @@ impl TimerResolutionManager {
         enabled: bool,
         refresh_bounds: bool,
         action_log: &mut ActionLog,
-        reason: &str,
+        reason_key: &str,
         observation_paused: bool,
     ) -> TimerResolutionSnapshot {
         let mut failures = 0;
@@ -223,9 +224,10 @@ impl TimerResolutionManager {
                         None,
                         previous_target,
                         ActionLogResult::Restored,
-                        format!(
-                            "Released timer resolution request {}: {reason}.",
-                            format_resolution_ms(previous_100ns)
+                        rust_i18n::t!(
+                            "timer_resolution.log_released",
+                            resolution = format_resolution_ms(previous_100ns),
+                            reason = rust_i18n::t!(reason_key)
                         ),
                     );
                 }

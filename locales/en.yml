@@ -973,6 +973,15 @@ timer_resolution:
   requested: "Winderust request"
   invalid_request: "Winderust request must be a positive number in milliseconds."
   no_rules: "No custom rules are configured."
+  log_requested: "Requested timer resolution %{resolution} while %{app} is foreground."
+  log_released_previous: "Released previous timer resolution request %{resolution}."
+  log_released: "Released timer resolution request %{resolution}: %{reason}."
+  log_release_previous_failed: "Failed to release previous timer resolution request: %{error}"
+  log_automation_disabled: "automation disabled"
+  log_control_disabled: "timer resolution control disabled"
+  log_no_active_rules: "no timer resolution foreground rules are enabled"
+  log_unknown_foreground: "foreground app is unknown"
+  log_no_match: "no foreground timer resolution rule matched"
 
 memory_trim:
   intro_1: "Memory Trim actively asks Windows to trim RAM pages from idle high-memory background processes when memory pressure is high."

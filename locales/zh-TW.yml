@@ -976,6 +976,15 @@ timer_resolution:
   requested: "Winderust 要求"
   invalid_request: "Winderust 要求必須是以毫秒為單位的正數。"
   no_rules: "尚未設定計時器解析度前景規則。"
+  log_requested: "當 %{app} 位於前景時，已要求 %{resolution} 的計時器解析度。"
+  log_released_previous: "已釋放先前 %{resolution} 的計時器解析度要求。"
+  log_released: "已釋放 %{resolution} 的計時器解析度要求：%{reason}。"
+  log_release_previous_failed: "無法釋放先前的計時器解析度要求：%{error}"
+  log_automation_disabled: "自動化已停用"
+  log_control_disabled: "計時器解析度控制已停用"
+  log_no_active_rules: "沒有啟用的前景計時器解析度規則"
+  log_unknown_foreground: "無法確認前景應用程式"
+  log_no_match: "沒有符合的前景計時器解析度規則"
 
 memory_trim:
   intro_1: "記憶體修剪會在記憶體壓力高時，要求 Windows 修剪閒置且記憶體用量高的背景程序 RAM 頁面。"
