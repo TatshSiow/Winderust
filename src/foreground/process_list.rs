@@ -845,17 +845,23 @@ pub fn same_process_name(left: &str, right: &str) -> bool {
 }
 
 pub fn executable_path_key(path: &Path) -> String {
-    path.to_string_lossy()
-        .trim()
-        .replace('/', std::path::MAIN_SEPARATOR_STR)
+    normalize_executable_path(&path.to_string_lossy())
+}
+
+fn normalize_executable_path(path: &str) -> String {
+    path.trim().replace('/', std::path::MAIN_SEPARATOR_STR)
 }
 
 pub fn same_executable_path(left: &Path, right: &Path) -> bool {
     if left.as_os_str() == right.as_os_str() {
         return true;
     }
-    let left_key = executable_path_key(left);
-    let right_key = executable_path_key(right);
+    // A lossy display string cannot establish identity between different native paths.
+    let Some((left_text, right_text)) = left.to_str().zip(right.to_str()) else {
+        return false;
+    };
+    let left_key = normalize_executable_path(left_text);
+    let right_key = normalize_executable_path(right_text);
     if left_key == right_key {
         return true;
     }
@@ -864,7 +870,15 @@ pub fn same_executable_path(left: &Path, right: &Path) -> bool {
     }
 
     match (std::fs::canonicalize(left), std::fs::canonicalize(right)) {
-        (Ok(left), Ok(right)) => executable_path_key(&left) == executable_path_key(&right),
+        (Ok(left), Ok(right)) => {
+            left.as_os_str() == right.as_os_str()
+                || left
+                    .to_str()
+                    .zip(right.to_str())
+                    .is_some_and(|(left, right)| {
+                        normalize_executable_path(left) == normalize_executable_path(right)
+                    })
+        }
         (Err(_), Err(_)) => true,
         _ => false,
     }
@@ -1625,6 +1639,24 @@ mod tests {
                 "{other}"
             );
         }
+    }
+
+    #[test]
+    fn executable_path_comparison_requires_exact_native_identity_for_non_unicode_paths() {
+        let native_path = |unit| {
+            let mut wide = r"C:\Games\directory-".encode_utf16().collect::<Vec<_>>();
+            wide.push(unit);
+            wide.extend(r"\game.exe".encode_utf16());
+            PathBuf::from(OsString::from_wide(&wide))
+        };
+        let path = native_path(0xd800);
+
+        assert!(same_executable_path(&path, &native_path(0xd800)));
+        assert!(!same_executable_path(&path, &native_path(0xd801)));
+        assert!(!same_executable_path(
+            &path,
+            Path::new("C:\\Games\\directory-\u{fffd}\\game.exe"),
+        ));
     }
 
     #[test]
