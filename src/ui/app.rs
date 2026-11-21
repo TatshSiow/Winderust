@@ -2765,6 +2765,42 @@ impl WinderustApp {
                 );
             }
         }
+        if self.preferences.show_update {
+            let dialog = container(
+                column![
+                    widgets::heading(
+                        t!("about.update_available").to_string(),
+                        design::typography::DIALOG_TITLE,
+                    ),
+                    column![
+                        text(t!("about.latest_version").to_string())
+                            .size(design::typography::SECONDARY)
+                            .style(text::secondary),
+                        text(self.preferences.latest.as_deref().unwrap_or_default())
+                            .wrapping(text::Wrapping::WordOrGlyph),
+                    ]
+                    .spacing(design::space::TIGHT),
+                    row![
+                        iced::widget::Space::new().width(Fill),
+                        action_button(t!("common.cancel").to_string())
+                            .style(widgets::tertiary_button)
+                            .on_press(Message::Preferences(settings_pages::Message::DismissUpdate)),
+                        action_button(t!("about.download_update").to_string())
+                            .style(widgets::primary_button)
+                            .on_press_maybe(self.preferences.download.clone().map(|url| {
+                                Message::Preferences(settings_pages::Message::Open(url))
+                            })),
+                    ]
+                    .spacing(design::space::SMALL),
+                ]
+                .spacing(design::space::LARGE),
+            )
+            .padding(design::space::LARGE as u16)
+            .width(Fill)
+            .max_width(460)
+            .style(widgets::surface);
+            return centered_modal(content, dialog.into());
+        }
         if self.page == Page::ProcessList && self.processes.context_open() {
             iced::widget::stack![
                 content,
@@ -2891,29 +2927,6 @@ impl WinderustApp {
             }
         };
         let (navigation_width, side_panel_width, page_padding) = shell_widths(width);
-        if self.preferences.show_update && !self.closing {
-            return (container(
-                column![
-                    text(t!("about.updates").to_string()).size(design::typography::DIALOG_TITLE),
-                    text(self.preferences.latest.as_deref().unwrap_or_default()),
-                    row![
-                        iced::widget::Space::new().width(Fill),
-                        action_button(t!("about.download_update").to_string())
-                            .style(widgets::primary_button)
-                            .on_press_maybe(self.preferences.download.clone().map(|url| {
-                                Message::Preferences(settings_pages::Message::Open(url))
-                            })),
-                        action_button(t!("common.cancel").to_string())
-                            .style(crate::ui::widgets::tertiary_button)
-                            .on_press(Message::Preferences(settings_pages::Message::DismissUpdate))
-                    ]
-                    .spacing(design::space::SMALL)
-                ]
-                .spacing(design::space::LARGE),
-            )
-            .padding(design::space::SECTION as u16))
-            .into();
-        }
         let mut primary = column![].spacing(design::space::TIGHT).width(Fill);
         let mut utilities = column![].spacing(design::space::TIGHT).width(Fill);
         for page in navigation::rail_pages(self.settings.global().advanced.show_advanced_controls) {
