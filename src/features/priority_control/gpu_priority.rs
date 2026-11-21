@@ -46,6 +46,7 @@ pub struct GpuPrioritySnapshot {
 #[derive(Default)]
 pub struct GpuPriorityManager {
     failure_suppression: ExecutionFailureTracker,
+    non_release_failures: GpuPriorityFailures,
     pending_context: BTreeSet<String>,
     pending_apply_log_count: usize,
     pending_context_log_count: usize,
@@ -70,6 +71,7 @@ impl GpuPriorityManager {
         observations: &mut CycleObservations,
         action_log: &mut ActionLog,
     ) -> GpuPrioritySnapshot {
+        self.non_release_failures = GpuPriorityFailures::default();
         if !automation_enabled || !settings.enabled {
             let reason = if automation_enabled {
                 "GPU priority defaults disabled"
@@ -246,7 +248,7 @@ impl GpuPriorityManager {
             });
         }
 
-        let mut failures = self.release_non_targets(
+        let release_failures = self.release_non_targets(
             controller,
             &active_targets,
             action_log,
@@ -305,7 +307,13 @@ impl GpuPriorityManager {
                     self.clear_process_pending_context(&executable_path);
                     self.failure_suppression
                         .record_process_failure(&executable_path);
-                    failures.record("Apply", process_id, &process_name, error, action_log);
+                    self.non_release_failures.record(
+                        "Apply",
+                        process_id,
+                        &process_name,
+                        error,
+                        Some(action_log),
+                    );
                 }
             }
         }
@@ -317,6 +325,7 @@ impl GpuPriorityManager {
             action_log,
         );
 
+        let failures = self.with_non_release_failures(release_failures);
         let adjusted_apps = controller.policy_managed_process_names();
         GpuPrioritySnapshot {
             enabled: true,
@@ -342,12 +351,44 @@ impl GpuPriorityManager {
         observation_error: Option<String>,
     ) -> GpuPrioritySnapshot {
         let failures = self.clear_all(controller, action_log, reason);
+        self.non_release_failures.last_error = observation_error;
+        let failures = self.with_non_release_failures(failures);
         GpuPrioritySnapshot {
             enabled: true,
             observation_paused: true,
             failed_processes: failures.count,
-            last_error: failures.last_error.or(observation_error),
+            last_error: failures.last_error,
             ..Default::default()
+        }
+    }
+
+    pub(crate) fn report_release_retry(
+        &mut self,
+        controller: &GpuPriorityController,
+        summary: GpuPriorityReleaseSummary,
+        mut status: GpuPrioritySnapshot,
+        action_log: &mut ActionLog,
+    ) -> GpuPrioritySnapshot {
+        let failures =
+            self.record_release_summary(summary, action_log, "restoration retry completed", false);
+        let failures = self.with_non_release_failures(failures);
+        status.auto_excluded_processes.clear();
+        status.failed_processes = failures.count;
+        status.last_error = failures.last_error;
+        if status.enabled && !status.observation_paused {
+            let adjusted_apps = controller.policy_managed_process_names();
+            status.adjusted_processes = adjusted_apps.len();
+            status.adjusted_apps = unique_app_names(adjusted_apps.iter().map(String::as_str));
+        }
+        status
+    }
+
+    fn with_non_release_failures(&self, release: GpuPriorityFailures) -> GpuPriorityFailures {
+        GpuPriorityFailures {
+            count: release.count + self.non_release_failures.count,
+            last_error: release
+                .last_error
+                .or_else(|| self.non_release_failures.last_error.clone()),
         }
     }
 
@@ -359,7 +400,7 @@ impl GpuPriorityManager {
         reason: &str,
     ) -> GpuPriorityFailures {
         let summary = controller.release_policy_except(active_targets);
-        self.record_release_summary(summary, action_log, reason)
+        self.record_release_summary(summary, action_log, reason, true)
     }
 
     fn clear_all(
@@ -369,7 +410,7 @@ impl GpuPriorityManager {
         reason: &str,
     ) -> GpuPriorityFailures {
         let summary = controller.release_all_policy();
-        let failures = self.record_release_summary(summary, action_log, reason);
+        let failures = self.record_release_summary(summary, action_log, reason, true);
         self.pending_context.clear();
         self.reset_log_summaries();
         failures
@@ -380,48 +421,42 @@ impl GpuPriorityManager {
         summary: GpuPriorityReleaseSummary,
         action_log: &mut ActionLog,
         reason: &str,
+        report_failures: bool,
     ) -> GpuPriorityFailures {
         let mut failures = GpuPriorityFailures::default();
         for failure in summary.failures {
-            match failure.error {
-                ProcessControlError::ProcessExited => {}
-                ProcessControlError::AccessDenied(_) => {
-                    self.failure_suppression
-                        .record_process_failure(&failure.executable_path);
-                    action_log.record(
-                        ActionLogFeature::GpuPriority,
-                        Some(failure.process_id),
-                        failure.process_name,
-                        ActionLogResult::Skipped,
-                        format!(
-                            "Skipped restoring previous GPU priority because Windows denied access: {reason}."
-                        ),
-                    );
-                }
+            if failure.error == ProcessControlError::ProcessExited {
+                continue;
+            }
+            if report_failures {
+                self.failure_suppression
+                    .record_process_failure(&failure.executable_path);
+            }
+            let skip_reason = match &failure.error {
+                ProcessControlError::AccessDenied(_) => Some("Windows denied access"),
                 ProcessControlError::Unavailable(_) => {
-                    self.failure_suppression
-                        .record_process_failure(&failure.executable_path);
+                    Some("GPU scheduling priority is unavailable")
+                }
+                _ => None,
+            };
+            if let Some(skip_reason) = skip_reason {
+                if report_failures {
                     action_log.record(
                         ActionLogFeature::GpuPriority,
                         Some(failure.process_id),
                         failure.process_name,
                         ActionLogResult::Skipped,
-                        format!(
-                            "Skipped restoring previous GPU priority because GPU scheduling priority is unavailable: {reason}."
-                        ),
+                        format!("Skipped restoring previous GPU priority because {skip_reason}: {reason}."),
                     );
                 }
-                error => {
-                    self.failure_suppression
-                        .record_process_failure(&failure.executable_path);
-                    failures.record(
-                        "Restore",
-                        failure.process_id,
-                        &failure.process_name,
-                        error,
-                        action_log,
-                    );
-                }
+            } else {
+                failures.record(
+                    "Restore",
+                    failure.process_id,
+                    &failure.process_name,
+                    failure.error,
+                    report_failures.then_some(&mut *action_log),
+                );
             }
         }
         if summary.restored_processes > 0 {
@@ -614,20 +649,22 @@ impl GpuPriorityFailures {
         process_id: u32,
         process_name: &str,
         error: ProcessControlError,
-        action_log: &mut ActionLog,
+        action_log: Option<&mut ActionLog>,
     ) {
         let message = error.to_string();
         if self.last_error.is_none() {
             self.last_error = Some(format!("{action} {process_name} ({process_id}): {message}"));
         }
         self.count += 1;
-        action_log.record(
-            ActionLogFeature::GpuPriority,
-            Some(process_id),
-            process_name.to_owned(),
-            ActionLogResult::Failed,
-            message,
-        );
+        if let Some(action_log) = action_log {
+            action_log.record(
+                ActionLogFeature::GpuPriority,
+                Some(process_id),
+                process_name.to_owned(),
+                ActionLogResult::Failed,
+                message,
+            );
+        }
     }
 }
 

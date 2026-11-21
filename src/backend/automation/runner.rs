@@ -1488,20 +1488,23 @@ impl RuntimeCore {
                 ),
             );
         }
-        errors.extend(
-            self.gpu_priority_controller
-                .retry_pending_releases(now)
-                .failures
-                .into_iter()
-                .map(|failure| {
-                    process_failure(
-                        "GPU Priority",
-                        failure.process_name,
-                        failure.process_id,
-                        failure.error,
-                    )
-                }),
-        );
+        if self.gpu_priority_controller.release_retry_delay(now) == Some(Duration::ZERO) {
+            let summary = self.gpu_priority_controller.retry_pending_releases(now);
+            let status = lock_unpoisoned(&shared.state)
+                .status
+                .feature_status
+                .gpu_priority
+                .clone();
+            update_gpu_priority_status(
+                shared,
+                self.gpu_priority_manager.report_release_retry(
+                    &self.gpu_priority_controller,
+                    summary,
+                    status,
+                    &mut self.action_log,
+                ),
+            );
+        }
         errors.extend(
             self.memory_priority_controller
                 .retry_pending_releases(now)

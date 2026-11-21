@@ -715,7 +715,11 @@ Read the relevant section before changing feature policy, ownership, restoration
   GPU Priority pauses the policy when required focus, session, window or process
   observations are unavailable. Its Home summary and status rail distinguish
   missing observations from a completed scan. A restoration error takes
-  precedence over a process inventory error in runtime status.
+  precedence over a process inventory error in runtime status. Quiet GPU
+  restoration retries update that feature's status and record confirmed
+  baseline writes in Action Log even when the feature is disabled. The current
+  restoration error clears after cleanup while any unrelated application or
+  observation error remains visible.
   GPU Priority treats a temporarily unavailable GPU scheduling context as
   pending and retries without auto-excluding the process. Adaptive Engine keeps
   Process Priority independent when Power Throttling is unavailable and
