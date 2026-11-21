@@ -1188,15 +1188,12 @@ impl ProcessList {
         }) {
             return t!("process_list.multiple_users").to_string();
         }
-        format!(
-            "{} / S{}",
-            p.user_name
-                .as_deref()
-                .unwrap_or(&t!("process_list.user_unavailable")),
-            p.session_id
-                .map(|s| s.to_string())
-                .unwrap_or_else(|| "?".into())
-        )
+        let unavailable: std::borrow::Cow<'static, str> = t!("process_list.user_unavailable");
+        let user = p.user_name.as_deref().unwrap_or(&unavailable);
+        match p.session_id {
+            Some(session) => format!("{user} / S{session}"),
+            None => format!("{user} / S?"),
+        }
     }
     fn immediate_priorities(&self, settings: &Settings, eligible: bool) -> Element<'_, Message> {
         let mut controls = Vec::new();
