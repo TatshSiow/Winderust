@@ -1736,6 +1736,15 @@ impl WinderustApp {
                         }
                     }
                     Err(error) => {
+                        if matches!(
+                            error,
+                            RuntimeCommandError::PowerPlanUnavailable
+                                | RuntimeCommandError::PowerPlan(
+                                    ManualPowerPlanError::ManagedTarget
+                                )
+                        ) {
+                            self.power_plan_control.selected_guid = None;
+                        }
                         self.error_message = power_plan_switch_error(error);
                     }
                 }
