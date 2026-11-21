@@ -35,6 +35,7 @@ pub(super) struct Editor {
     status: Feedback,
     preset: Option<PresetEditor>,
     review: Option<ApplyReview>,
+    unverified_apply: Option<ApplyReview>,
     restore_points: BTreeMap<String, RestorePoint>,
     expanded: [bool; 2],
     selected_presets: [Option<PresetChoice>; 2],
@@ -44,6 +45,7 @@ enum Feedback {
     #[default]
     None,
     Message(String),
+    ReadbackRequired(String),
     Loaded(String),
     Applied(String),
     Restored(String),
@@ -214,6 +216,22 @@ impl ApplyReview {
         .normalized()
     }
 
+    fn recover_draft(
+        &self,
+        observed: AdvancedPowerPlanTuningReadback,
+    ) -> AdvancedPowerPlanTuningSourceValues {
+        let original = self.current.writable();
+        let current = observed.writable();
+        AdvancedPowerPlanTuningSourceValues {
+            ac: recover_tuning_edits(original.ac, self.requested.ac, current.ac),
+            battery: recover_tuning_edits(
+                original.battery,
+                self.requested.battery,
+                current.battery,
+            ),
+        }
+    }
+
     fn changes(&self, source: Source) -> impl Iterator<Item = (&'static str, String, String)> {
         readback_changes(
             self.current,
@@ -286,6 +304,10 @@ impl Editor {
         match &self.status {
             Feedback::None => Cow::Borrowed(""),
             Feedback::Message(message) => Cow::Borrowed(message),
+            Feedback::ReadbackRequired(error) => t!(
+                "processor_power.refresh_unverified_apply",
+                error = error.as_str()
+            ),
             Feedback::Loaded(plan) => t!("processor_power.loaded_values", plan = plan.as_str()),
             Feedback::Applied(plan) => t!("processor_power.applied_custom", plan = plan.as_str()),
             Feedback::Restored(plan) => {
@@ -325,7 +347,16 @@ impl Editor {
         self.read_selected_plan();
     }
 
+    pub(super) fn discard_values(&mut self, plans: &[PowerPlan]) {
+        self.unverified_apply = None;
+        self.refresh(plans);
+    }
+
     pub(super) fn refresh(&mut self, plans: &[PowerPlan]) {
+        if self.unverified_apply.is_some() && self.selected_plan(plans).is_none() {
+            self.set_failure(t!("common.selected_plan_unavailable").into_owned());
+            return;
+        }
         self.dirty = false;
         self.invalid_percentages = Default::default();
         if self.selected_plan(plans).is_some() {
@@ -353,14 +384,24 @@ impl Editor {
             Ok(v) => {
                 self.status = Feedback::Loaded(guid.clone());
                 self.set_readback(Some(v));
-                self.dirty = false;
+                if let Some(review) = self.unverified_apply.take() {
+                    self.values = Some(review.recover_draft(v));
+                }
             }
             Err(error) => {
                 self.set_readback(None);
-                self.dirty = false;
-                self.status = error.to_string().into();
+                self.set_failure(error.to_string());
             }
         }
+        self.update_dirty();
+    }
+
+    fn set_failure(&mut self, error: String) {
+        self.status = if self.unverified_apply.is_some() {
+            Feedback::ReadbackRequired(error)
+        } else {
+            error.into()
+        };
     }
 
     fn set_readback(&mut self, readback: Option<AdvancedPowerPlanTuningReadback>) {
@@ -370,7 +411,8 @@ impl Editor {
     }
 
     fn update_dirty(&mut self) {
-        self.dirty = self.values != self.readback.map(AdvancedPowerPlanTuningReadback::writable);
+        self.dirty = self.unverified_apply.is_some()
+            || self.values != self.readback.map(AdvancedPowerPlanTuningReadback::writable);
     }
 
     pub(super) fn review_apply(
@@ -380,6 +422,9 @@ impl Editor {
     ) -> Result<(), String> {
         if self.has_invalid_inputs() {
             return Err(t!("processor_power.invalid_percentage").to_string());
+        }
+        if self.unverified_apply.is_some() {
+            return Err(self.status().into_owned());
         }
         if self.review.is_some() || !self.dirty {
             return Ok(());
@@ -593,7 +638,11 @@ impl Editor {
             if let Some((expected, actual)) = expected.zip(self.readback) {
                 append_readback_differences(&mut message, expected, actual);
             }
-            self.status = message.into();
+            if !restoring && self.readback.is_none() {
+                self.unverified_apply = Some(review);
+                self.update_dirty();
+            }
+            self.set_failure(message);
             return false;
         }
         self.status = if restoring {
@@ -622,9 +671,7 @@ impl Editor {
                     return;
                 }
                 if self.dirty || self.has_invalid_inputs() {
-                    self.status = t!("processor_power.save_before_changing_plan")
-                        .to_string()
-                        .into();
+                    self.set_failure(t!("processor_power.save_before_changing_plan").into_owned());
                 } else if let Some(plan) =
                     tuning_plans(plans).find(|plan| plan.guid.eq_ignore_ascii_case(&guid))
                 {
@@ -1281,6 +1328,46 @@ fn with_supported_settings(
         .short_scheduling_policy
         .map(|value| draft.short_scheduling_policy.unwrap_or(value));
     draft
+}
+
+fn recover_tuning_edits(
+    original: EditableTuningValues,
+    requested: EditableTuningValues,
+    current: EditableTuningValues,
+) -> EditableTuningValues {
+    fn retain_edit<T: Eq>(before: T, after: T, actual: T) -> T {
+        if before == after {
+            actual
+        } else {
+            after
+        }
+    }
+
+    let mut draft = current;
+    for ((field, _, before), (_, _, after)) in fields(original.processor)
+        .into_iter()
+        .zip(fields(requested.processor))
+    {
+        if before != after {
+            set_field(&mut draft, field, after);
+        }
+    }
+    draft.processor.boost_mode = retain_edit(
+        original.processor.boost_mode,
+        requested.processor.boost_mode,
+        current.processor.boost_mode,
+    );
+    draft.scheduling_policy = retain_edit(
+        original.scheduling_policy,
+        requested.scheduling_policy,
+        current.scheduling_policy,
+    );
+    draft.short_scheduling_policy = retain_edit(
+        original.short_scheduling_policy,
+        requested.short_scheduling_policy,
+        current.short_scheduling_policy,
+    );
+    with_supported_settings(draft, current)
 }
 
 fn scheduling_fields<B>(

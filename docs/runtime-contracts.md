@@ -425,7 +425,10 @@ Read the relevant section before changing feature policy, ownership, restoration
   source, setting, requested value, and actual value. When a write stage fails,
   the report includes the stage error and any differences from a successful readback.
   On a failed Apply with readback, the draft retains the reviewed values that are
-  still writable and differ from the plan. A retry requires a new review.
+  still writable and differ from the plan. When readback fails, the editor keeps
+  the reviewed edits pending. Refresh values reads the same plan before recovering
+  changes that are still writable. Discard drops the retained edits. A retry
+  requires a new review.
 - Restore previous tuning values keeps one in-memory restore point per plan GUID
   after a verified Apply that changed values. It captures the pre-apply values
   only when the writer can reproduce the editable values exactly and preserve

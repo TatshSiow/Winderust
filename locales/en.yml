@@ -510,6 +510,7 @@ processor_power:
   restore: "Restore"
   restored_previous: "Restored previous tuning values for %{plan}."
   restore_values_changed: "The plan’s tuning values changed since Apply. Restore is unavailable."
+  refresh_unverified_apply: "%{error} Refresh values to review any remaining tuning edits."
   apply_not_verified: "Windows readback differed from the requested tuning values."
   restore_not_verified: "Windows readback differed from the previous tuning values."
   readback_difference: "%{source} · %{setting}. Expected %{requested}, read back %{actual}."

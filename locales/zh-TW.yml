@@ -512,6 +512,7 @@ processor_power:
   restore: "還原"
   restored_previous: "已還原 %{plan} 先前的調整值。"
   restore_values_changed: "電源計畫的調整值在套用後已變更，無法還原。"
+  refresh_unverified_apply: "%{error} 請重新整理數值，再檢查仍有差異的調校項目。"
   apply_not_verified: "Windows 讀回的值與要求的調整值不符。"
   restore_not_verified: "Windows 讀回的值與先前的調整值不符。"
   readback_difference: "%{source} · %{setting}。預期值為 %{requested}，讀回值為 %{actual}。"

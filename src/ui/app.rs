@@ -2291,7 +2291,7 @@ impl WinderustApp {
                 let previous_channel = self.settings.global().general.update_channel;
                 self.settings.cancel();
                 if self.power_tuning.dirty {
-                    self.power_tuning.refresh(&self.power_plans);
+                    self.power_tuning.discard_values(&self.power_plans);
                 }
                 if let Some(error) = self.settings_replaced(previous_channel) {
                     self.error_message = error;
@@ -2322,7 +2322,7 @@ impl WinderustApp {
             Message::DiscardAndClose => {
                 self.settings.cancel();
                 if self.power_tuning.dirty {
-                    self.power_tuning.refresh(&self.power_plans);
+                    self.power_tuning.discard_values(&self.power_plans);
                 }
                 return self.shutdown();
             }
