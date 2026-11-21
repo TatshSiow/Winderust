@@ -88,14 +88,22 @@ pub(super) fn update(s: &mut SettingsEditor, path: &str, m: Message) -> Option<S
             }
         }
         Message::Adaptive(included) => {
+            let matches_path =
+                |rule: &ProcessExclusionRule| process_setting_matches(&rule.executable_path, &path);
+            if included
+                && !s
+                    .adaptive_engine_process
+                    .custom_rules
+                    .iter()
+                    .any(matches_path)
+            {
+                return None;
+            }
             let rules = &mut s.adaptive_engine_process.custom_rules;
             if included {
-                rules.retain(|r| !process_setting_matches(&r.executable_path, &path));
-            } else if let Some(r) = rules
-                .iter_mut()
-                .find(|r| process_setting_matches(&r.executable_path, &path))
-            {
-                r.enabled = true;
+                rules.retain(|rule| !matches_path(rule));
+            } else if let Some(rule) = rules.iter_mut().find(|rule| matches_path(rule)) {
+                rule.enabled = true;
             } else {
                 rules.push(ProcessExclusionRule {
                     executable_path: path,
@@ -104,19 +112,28 @@ pub(super) fn update(s: &mut SettingsEditor, path: &str, m: Message) -> Option<S
             }
         }
         Message::Efficiency(included) => {
-            s.background_efficiency
-                .custom_rules
-                .retain(|r| !process_setting_matches(&r.executable_path, &path));
-            if !included {
-                s.background_efficiency
+            let matches_path = |rule: &BackgroundEfficiencyRule| {
+                process_setting_matches(&rule.executable_path, &path)
+            };
+            if included
+                && !s
+                    .background_efficiency
                     .custom_rules
-                    .push(BackgroundEfficiencyRule {
-                        enabled: true,
-                        executable_path: path,
-                        focus_efficiency_mode: ProcessRuleMode::Disabled,
-                        visible_window_efficiency_mode: ProcessRuleMode::Disabled,
-                        background_efficiency_mode: ProcessRuleMode::Disabled,
-                    });
+                    .iter()
+                    .any(matches_path)
+            {
+                return None;
+            }
+            let rules = &mut s.background_efficiency.custom_rules;
+            rules.retain(|rule| !matches_path(rule));
+            if !included {
+                rules.push(BackgroundEfficiencyRule {
+                    enabled: true,
+                    executable_path: path,
+                    focus_efficiency_mode: ProcessRuleMode::Disabled,
+                    visible_window_efficiency_mode: ProcessRuleMode::Disabled,
+                    background_efficiency_mode: ProcessRuleMode::Disabled,
+                });
             }
         }
         Message::Power(focus, guid) => {
@@ -654,6 +671,16 @@ mod tests {
         s.select_power_source(PowerSourceProfile::OnBattery);
         let _ = update(&mut s, path, message);
         assert!(s.global().on_battery.is_none());
+    }
+
+    #[test]
+    fn including_process_without_an_exclusion_preserves_battery_inheritance() {
+        for message in [Message::Adaptive(true), Message::Efficiency(true)] {
+            let mut s = SettingsEditor::with_settings(Settings::default());
+            s.select_power_source(PowerSourceProfile::OnBattery);
+            let _ = update(&mut s, r"C:\App\app.exe", message);
+            assert!(s.global().on_battery.is_none());
+        }
     }
 
     #[test]
