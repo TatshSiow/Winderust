@@ -2068,7 +2068,10 @@ impl WinderustApp {
                         self.appearance = settings_pages::theme(&self.settings.global().general);
                     }
                     self.processes.sync_suspended_processes(
-                        &status.feature_status.app_suspension.suspended_process_ids,
+                        &status
+                            .feature_status
+                            .app_suspension
+                            .suspended_process_instances,
                     );
                     self.status = status;
                 }
@@ -3645,7 +3648,6 @@ impl WinderustApp {
                 .processes
                 .view(
                     &self.settings,
-                    &self.status,
                     if self.power_plans_loading {
                         process_list::PlanCatalog::Loading
                     } else if self.power_plans_loaded {

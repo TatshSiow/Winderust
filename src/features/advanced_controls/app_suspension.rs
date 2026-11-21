@@ -51,7 +51,8 @@ pub struct AppSuspensionSnapshot {
     pub unsupported: bool,
     pub grace_apps: usize,
     pub suspended_processes: usize,
-    pub suspended_process_ids: Vec<u32>,
+    /// PID and creation time, ordered by PID.
+    pub suspended_process_instances: Vec<(u32, u64)>,
     pub temporary_thawed_processes: usize,
     pub background_grace_apps: Vec<String>,
     pub suspended_apps: Vec<String>,
@@ -1940,7 +1941,11 @@ impl AppSuspensionManager {
             unsupported,
             grace_apps: self.tracked.len(),
             suspended_processes: self.suspended.len(),
-            suspended_process_ids: self.suspended.keys().copied().collect(),
+            suspended_process_instances: self
+                .suspended
+                .iter()
+                .map(|(&id, process)| (id, process.creation_time))
+                .collect(),
             temporary_thawed_processes: self.temporary_thawed.len(),
             background_grace_apps: self.tracked.keys().cloned().collect(),
             suspended_apps: self
@@ -2256,7 +2261,7 @@ mod tests {
             &mut log,
         );
 
-        assert_eq!(status.suspended_process_ids, vec![7]);
+        assert_eq!(status.suspended_process_instances, vec![(7, 8)]);
         assert!(manager.suspended.contains_key(&7));
         assert!(!manager.suspended.contains_key(&8));
         assert!(controller.contains_process(7));
@@ -2301,7 +2306,7 @@ mod tests {
             &mut log,
         );
 
-        assert_eq!(status.suspended_process_ids, vec![7]);
+        assert_eq!(status.suspended_process_instances, vec![(7, 8)]);
         assert!(manager.suspended.contains_key(&7));
         assert!(!manager.suspended.contains_key(&8));
     }
@@ -2582,7 +2587,7 @@ mod tests {
             &mut log,
         );
 
-        assert_eq!(status.suspended_process_ids, vec![9]);
+        assert_eq!(status.suspended_process_instances, vec![(9, 10)]);
         assert_eq!(status.temporary_thawed_processes, 2);
         assert_eq!(status.failed_actions, 0);
         assert!(status.last_error.is_none());
@@ -2990,7 +2995,7 @@ mod tests {
         assert!(status.status_unknown);
         assert_eq!(status.grace_apps, 0);
         assert_eq!(status.failed_actions, 0);
-        assert_eq!(status.suspended_process_ids, vec![7, 10]);
+        assert_eq!(status.suspended_process_instances, vec![(7, 8), (10, 11)]);
         assert!(manager.tracked.is_empty());
         assert_eq!(
             controller.managed_process_ids().collect::<Vec<_>>(),

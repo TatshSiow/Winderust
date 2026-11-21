@@ -2,7 +2,7 @@ use super::design;
 use super::priority_control::{Kind, Value};
 use super::widgets::{action_button, button, checkbox, pick_list, text_input};
 use crate::application::SettingsEditor;
-use crate::automation::{RuntimeHandle, RuntimeStatusSnapshot};
+use crate::automation::RuntimeHandle;
 use crate::config::*;
 use crate::foreground::{
     self, ProcessActionTarget, ProcessActionTargetError, ProcessInfo, ProcessResourceSample,
@@ -201,7 +201,7 @@ pub(super) struct ProcessList {
     samples: BTreeMap<u32, ProcessResourceSample>,
     total_memory_bytes: Option<u64>,
     cpu: HashMap<u32, f32>,
-    suspended_process_ids: Vec<u32>,
+    suspended_process_instances: Vec<(u32, u64)>,
     icons: Icons,
     search: String,
     offset: std::cell::Cell<f32>,
@@ -243,7 +243,7 @@ impl Default for ProcessList {
             samples: BTreeMap::new(),
             total_memory_bytes: None,
             cpu: HashMap::new(),
-            suspended_process_ids: Vec::new(),
+            suspended_process_instances: Vec::new(),
             icons: HashMap::new(),
             search: String::new(),
             offset: std::cell::Cell::new(0.0),
@@ -1013,14 +1013,23 @@ impl ProcessList {
         }
     }
 
-    pub(super) fn sync_suspended_processes(&mut self, ids: &[u32]) {
-        if self.suspended_process_ids != ids {
-            self.suspended_process_ids.clear();
-            self.suspended_process_ids.extend_from_slice(ids);
+    pub(super) fn sync_suspended_processes(&mut self, instances: &[(u32, u64)]) {
+        if self.suspended_process_instances != instances {
+            self.suspended_process_instances.clear();
+            self.suspended_process_instances
+                .extend_from_slice(instances);
             if self.sort == Sort::Status {
                 self.rebuild();
             }
         }
+    }
+
+    fn is_suspended(&self, process: &ProcessInfo) -> bool {
+        process.creation_time.is_some_and(|creation_time| {
+            self.suspended_process_instances
+                .binary_search(&(process.id, creation_time))
+                .is_ok()
+        })
     }
 
     fn status_key(&self, entry: &Entry) -> &'static str {
@@ -1041,7 +1050,7 @@ impl ProcessList {
         } else if entry
             .indices
             .iter()
-            .any(|i| self.suspended_process_ids.contains(&self.processes[*i].id))
+            .any(|i| self.is_suspended(&self.processes[*i]))
         {
             "process_list.status_suspended"
         } else if entry.indices.iter().any(|i| {
@@ -1283,7 +1292,6 @@ impl ProcessList {
     pub(super) fn view<'a>(
         &'a self,
         settings: &'a SettingsEditor,
-        status: &'a RuntimeStatusSnapshot,
         plans: PlanCatalog<'a>,
     ) -> Element<'a, Message> {
         let count = if self.population_loaded {
@@ -1626,13 +1634,7 @@ impl ProcessList {
                     && p.is_service_account == Some(false)
                     && !crate::app_suspension::is_builtin_excluded(&p.name)
             });
-            let suspended = selection.processes.iter().any(|p| {
-                status
-                    .feature_status
-                    .app_suspension
-                    .suspended_process_ids
-                    .contains(&p.id)
-            });
+            let suspended = selection.processes.iter().any(|p| self.is_suspended(p));
             let suspension_label = if suspended {
                 "process_list.resume_process"
             } else {
@@ -2436,6 +2438,7 @@ mod tests {
     }
     #[test]
     fn page_process_list_transitions_keep_repaints_bounded() {
+        use crate::automation::RuntimeStatusSnapshot;
         use iced::advanced::{layout, renderer::Renderer as _, widget::Tree, Layout};
         use iced::{mouse, Rectangle, Size};
 
@@ -2483,7 +2486,7 @@ mod tests {
                 log.view(&status.action_log_entries, &[])
                     .map(|_| Message::Refresh)
             } else {
-                list.view(&settings, &status, PlanCatalog::Loaded(&[]))
+                list.view(&settings, PlanCatalog::Loaded(&[]))
             };
             let page = super::super::motion::wrap(
                 scrolling::repaint_group(content),
@@ -2575,8 +2578,7 @@ mod tests {
         list.rebuild();
         let rebuilt = start.elapsed();
         let settings = SettingsEditor::with_settings(Settings::default());
-        let status = RuntimeStatusSnapshot::default();
-        let mut view = list.view(&settings, &status, PlanCatalog::Loaded(&[]));
+        let mut view = list.view(&settings, PlanCatalog::Loaded(&[]));
         let mut tree = Tree::new(&view);
         let renderer = iced::Renderer::new(design::typography::FONT, iced::Pixels(14.0));
         let bounds = Rectangle::with_size(Size::new(1200.0, 800.0));
@@ -2671,8 +2673,7 @@ mod tests {
         list.grouped = false;
         list.rebuild();
         let settings = SettingsEditor::with_settings(Settings::default());
-        let status = RuntimeStatusSnapshot::default();
-        let mut view = list.view(&settings, &status, PlanCatalog::Loaded(&[]));
+        let mut view = list.view(&settings, PlanCatalog::Loaded(&[]));
         let mut tree = Tree::new(&view);
         let renderer = iced::Renderer::new(design::typography::FONT, iced::Pixels(14.0));
         let bounds = Rectangle::with_size(Size::new(1000.0, 500.0));
@@ -2725,9 +2726,8 @@ mod tests {
         };
         list.rebuild();
         let settings = SettingsEditor::with_settings(Settings::default());
-        let status = RuntimeStatusSnapshot::default();
         scrolling::check_scroll_damage(
-            list.view(&settings, &status, PlanCatalog::Loaded(&[])),
+            list.view(&settings, PlanCatalog::Loaded(&[])),
             iced::Rectangle::with_size(iced::Size::new(1920.0, 1080.0)),
         );
     }
@@ -2786,8 +2786,7 @@ mod tests {
             let _ = list.update(Message::Stop(tree), &mut editor, &runtime);
             assert_eq!(list.stopping.as_ref().unwrap().1, tree);
             {
-                let status = RuntimeStatusSnapshot::default();
-                let mut view = list.view(&editor, &status, PlanCatalog::Loaded(&[]));
+                let mut view = list.view(&editor, PlanCatalog::Loaded(&[]));
                 let mut state = Tree::new(&view);
                 let renderer = iced::Renderer::new(design::typography::FONT, iced::Pixels(14.0));
                 let node = view.as_widget_mut().layout(
@@ -2871,9 +2870,8 @@ mod tests {
     #[test]
     fn selection_overlays_preserve_the_list_widget_tree() {
         let settings = SettingsEditor::with_settings(Settings::default());
-        let status = RuntimeStatusSnapshot::default();
         let mut list = ProcessList::default();
-        let view = list.view(&settings, &status, PlanCatalog::Loaded(&[]));
+        let view = list.view(&settings, PlanCatalog::Loaded(&[]));
         let mut tree = iced::advanced::widget::Tree::new(&view);
         let root_tag = tree.tag;
         let list_tag = tree.children[0].tag;
@@ -2886,13 +2884,13 @@ mod tests {
         });
         for context in [Some(iced::Point::ORIGIN), None] {
             list.context = context;
-            let view = list.view(&settings, &status, PlanCatalog::Loaded(&[]));
+            let view = list.view(&settings, PlanCatalog::Loaded(&[]));
             tree.diff(&view);
             assert_eq!(tree.tag, root_tag);
             assert_eq!(tree.children[0].tag, list_tag);
         }
         list.selected = None;
-        tree.diff(list.view(&settings, &status, PlanCatalog::Loaded(&[])));
+        tree.diff(list.view(&settings, PlanCatalog::Loaded(&[])));
         assert_eq!(tree.tag, root_tag);
         assert_eq!(tree.children[0].tag, list_tag);
     }
@@ -2938,7 +2936,7 @@ mod tests {
                 efficiency_mode: Some(true),
             },
         );
-        list.sync_suspended_processes(&[11]);
+        list.sync_suspended_processes(&[(11, 1)]);
         let ids = |list: &ProcessList| {
             list.rows
                 .iter()
@@ -2949,6 +2947,13 @@ mod tests {
         list.descending = true;
         list.rebuild();
         assert_eq!(ids(&list), vec![15, 10, 12, 13, 14]);
+        for creation_time in [Some(2), None] {
+            list.processes[1].creation_time = creation_time;
+            list.rebuild();
+            assert_eq!(ids(&list), vec![15, 12, 10, 13, 14]);
+        }
+        list.processes[1].creation_time = Some(1);
+        list.rebuild();
         list.sync_suspended_processes(&[]);
         assert_eq!(ids(&list), vec![15, 12, 10, 13, 14]);
     }
@@ -2993,10 +2998,9 @@ mod tests {
         };
         list.rebuild();
         let settings = SettingsEditor::with_settings(Settings::default());
-        let status = RuntimeStatusSnapshot::default();
         let renderer = Renderer::new(design::typography::FONT, iced::Pixels(14.0));
         let viewport = Rectangle::with_size(Size::new(900.0, 620.0));
-        let mut view = list.view(&settings, &status, PlanCatalog::Loaded(&[]));
+        let mut view = list.view(&settings, PlanCatalog::Loaded(&[]));
         let mut tree = Tree::new(&view);
         let node = view.as_widget_mut().layout(
             &mut tree,

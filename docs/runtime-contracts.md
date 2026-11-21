@@ -453,7 +453,8 @@ Read the relevant section before changing feature policy, ownership, restoration
 - App Suspension rejects Session 0, LocalSystem, LocalService, and NetworkService processes plus
   curated Windows shell/shared-host processes. Process List and the App Suspension picker keep
   unavailable targets visible, labeled, and disabled; grouped Process List actions cover every
-  captured process in the group. Other process controls are unaffected.
+  captured process in the group. Process List matches suspension status by PID and
+  creation time. Other process controls are unaffected.
 - App Suspension releases a rule-owned freeze when its stored executable path
   no longer matches an enabled rule, even if focus, session, or process
   observations are unavailable. Process List freezes have separate ownership.
