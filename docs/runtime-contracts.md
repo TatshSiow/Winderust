@@ -531,6 +531,8 @@ Read the relevant section before changing feature policy, ownership, restoration
   Visible Window, and Background masks with Focus > Visible Window > Background precedence.
   Selecting a preset copies its complete selection and topology signature into that tier;
   later preset edits or deletion do not silently rewrite configured rules.
+  Both features report Paused while an observation required for rule selection is
+  unavailable. Restoration failures remain visible as errors.
 - CPU-selection rules, custom presets, and Adaptive Engine custom selections store
   explicit `{ group, number }` members and an optional exact canonical topology
   snapshot. This signature describes scheduling layout, not permanent hardware

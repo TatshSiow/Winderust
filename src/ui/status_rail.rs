@@ -528,6 +528,12 @@ fn sidebar_state(
     if page == Page::AppSuspension && features.app_suspension.status_unknown {
         return FeatureRunState::Unknown;
     }
+    if (page == Page::CpuSetsSoft && features.cpu_sets_soft.observation_paused)
+        || (page == Page::ProcessorAffinityHard
+            && features.processor_affinity_hard.observation_paused)
+    {
+        return FeatureRunState::Paused;
+    }
     if page == Page::MemoryTrim
         && matches!(
             features.memory_trim.status,
@@ -872,6 +878,35 @@ mod tests {
         assert_eq!(state(&settings, &runtime), FeatureRunState::Error);
         settings.process_priority.enabled = false;
         assert_eq!(state(&settings, &runtime), FeatureRunState::Inactive);
+    }
+
+    #[test]
+    fn cpu_allocation_sidebar_preserves_pause_and_restore_errors() {
+        let mut settings = Settings::default();
+        settings.general.enabled = true;
+        settings.cpu_sets_soft.enabled = true;
+        settings.processor_affinity_hard.enabled = true;
+        let mut runtime = RuntimeStatusSnapshot {
+            generation: 1,
+            ..Default::default()
+        };
+        let states = |runtime: &RuntimeStatusSnapshot| {
+            [Page::CpuSetsSoft, Page::ProcessorAffinityHard].map(|page| {
+                let summary = feature_status_summary(page, runtime).unwrap();
+                sidebar_state(page, &settings, runtime, &summary)
+            })
+        };
+        assert_eq!(states(&runtime), [FeatureRunState::Waiting; 2]);
+
+        let features = std::sync::Arc::make_mut(&mut runtime.feature_status);
+        features.cpu_sets_soft.observation_paused = true;
+        features.processor_affinity_hard.observation_paused = true;
+        assert_eq!(states(&runtime), [FeatureRunState::Paused; 2]);
+
+        let features = std::sync::Arc::make_mut(&mut runtime.feature_status);
+        features.cpu_sets_soft.last_error = Some("restore failed".into());
+        features.processor_affinity_hard.last_error = Some("restore failed".into());
+        assert_eq!(states(&runtime), [FeatureRunState::Error; 2]);
     }
 
     #[test]

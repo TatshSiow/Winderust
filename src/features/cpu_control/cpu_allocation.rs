@@ -37,6 +37,7 @@ const EXTRA_BUILT_IN_EXCLUSIONS: &[&str] = &["rtkauduservice64.exe"];
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CpuAllocationSnapshot {
     pub enabled: bool,
+    pub(crate) observation_paused: bool,
     pub scanned_processes: usize,
     pub adjusted_processes: usize,
     pub skipped_processes: usize,
@@ -648,6 +649,7 @@ impl CpuAllocationManager {
         CpuAllocationGeneration {
             snapshot: CpuAllocationSnapshot {
                 enabled: true,
+                observation_paused: false,
                 scanned_processes,
                 adjusted_processes: coordinator.policy_managed_process_count(owner),
                 skipped_processes,
@@ -699,7 +701,7 @@ impl CpuAllocationManager {
     ) -> CpuAllocationSnapshot {
         let mut snapshot =
             self.disabled_snapshot(coordinator, owner, true, &message, reason, action_log);
-        snapshot.enabled = true;
+        snapshot.observation_paused = true;
         snapshot
     }
 
@@ -941,6 +943,7 @@ impl Default for CpuAllocationSnapshot {
     fn default() -> Self {
         Self {
             enabled: false,
+            observation_paused: false,
             scanned_processes: 0,
             adjusted_processes: 0,
             skipped_processes: 0,
