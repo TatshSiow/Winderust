@@ -765,7 +765,8 @@ impl WinderustApp {
         let tab = status == iced::event::Status::Ignored
             && key == Key::Named(Named::Tab)
             && (modifiers.is_empty() || modifiers == iced::keyboard::Modifiers::SHIFT);
-        let move_focus = || super::keyboard_focus::move_focus(!modifiers.shift());
+        let wrap_focus = self.picker_open();
+        let move_focus = || super::keyboard_focus::move_focus(!modifiers.shift(), wrap_focus);
         if !review_open
             && (self.closing || self.preferences.show_update || !self.error_message.is_empty())
         {
@@ -952,7 +953,7 @@ impl WinderustApp {
                     if tabbing
                         && ((forward && index + 1 == pages.len()) || (!forward && index == 0))
                     {
-                        return super::keyboard_focus::move_focus(forward);
+                        return super::keyboard_focus::move_focus(forward, false);
                     }
                     let index = if forward {
                         (index + 1) % pages.len()
@@ -2639,8 +2640,8 @@ impl WinderustApp {
         iced::exit()
     }
 
-    fn view(&self, _window: iced::window::Id) -> Element<'_, Message> {
-        let picker_open = !self.navigation_search_open
+    fn picker_open(&self) -> bool {
+        !self.navigation_search_open
             && !self.closing
             && self.power_tuning.review_origin().is_none()
             && self.error_message.is_empty()
@@ -2648,7 +2649,11 @@ impl WinderustApp {
                 Page::ByTime => self.time_rules.picker_open(),
                 Page::LanguageAndAppearance => self.preferences.picker_open(),
                 _ => false,
-            };
+            }
+    }
+
+    fn view(&self, _window: iced::window::Id) -> Element<'_, Message> {
+        let picker_open = self.picker_open();
         window_frame::view(
             super::modal::picker(self.view_workspace(), picker_open, Message::DismissPickers),
             self.maximized,

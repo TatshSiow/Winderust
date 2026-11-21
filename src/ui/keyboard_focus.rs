@@ -7,13 +7,53 @@ use iced::{
     keyboard, keyboard::key::Named, mouse, touch, Event, Rectangle, Renderer, Theme, Vector,
 };
 
-pub(super) fn move_focus<M: Send + 'static>(forward: bool) -> iced::Task<M> {
-    let focus = if forward {
+pub(super) fn move_focus<M: Send + 'static>(forward: bool, wrap: bool) -> iced::Task<M> {
+    let focus = if wrap {
+        let target = operation::map(operation::focusable::count(), move |count| {
+            FocusAt::wrapping(count, forward)
+        });
+        iced::advanced::widget::operate(operation::then(target, std::convert::identity))
+    } else if forward {
         iced::widget::operation::focus_next()
     } else {
         iced::widget::operation::focus_previous()
     };
     focus.chain(iced::advanced::widget::operate(Reveal::default()))
+}
+
+struct FocusAt {
+    target: Option<usize>,
+    ordinal: usize,
+}
+
+impl FocusAt {
+    fn wrapping(count: operation::focusable::Count, forward: bool) -> Self {
+        let target = count
+            .total
+            .checked_sub(1)
+            .map(|last| match (count.focused, forward) {
+                (Some(index), true) if index < last => index + 1,
+                (Some(index), false) if index > 0 => index - 1,
+                (_, true) => 0,
+                (_, false) => last,
+            });
+        Self { target, ordinal: 0 }
+    }
+}
+
+impl<T> Operation<T> for FocusAt {
+    fn traverse(&mut self, visit: &mut dyn FnMut(&mut dyn Operation<T>)) {
+        visit(self);
+    }
+
+    fn focusable(&mut self, _: Option<&Id>, _: Rectangle, state: &mut dyn Focusable) {
+        if self.target == Some(self.ordinal) {
+            state.focus();
+        } else {
+            state.unfocus();
+        }
+        self.ordinal += 1;
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -219,6 +259,19 @@ mod tests {
     use crate::ui::{design, widgets};
     use iced::advanced::{layout, widget::Tree, Layout};
     use iced::{Element, Size};
+
+    #[test]
+    fn wrapped_focus_handles_zero_and_one_control() {
+        use operation::focusable::Count;
+
+        for forward in [true, false] {
+            assert_eq!(FocusAt::wrapping(Count::default(), forward).target, None);
+            for focused in [None, Some(0)] {
+                let count = Count { focused, total: 1 };
+                assert_eq!(FocusAt::wrapping(count, forward).target, Some(0));
+            }
+        }
+    }
 
     #[test]
     fn tab_focus_reveals_nested_controls_without_scrolling_siblings() {
