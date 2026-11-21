@@ -469,18 +469,20 @@ impl RuntimeCore {
     ) -> InstanceBalancingSnapshot {
         let runtime = &mut self.instance_balancing;
         let controls = (
-            active.cpu_sets_soft.clone(),
-            active.processor_affinity_hard.clone(),
+            &active.cpu_sets_soft,
+            &active.processor_affinity_hard,
             active.general.allow_cross_session_process_control,
         );
-        if runtime
-            .controls
-            .as_ref()
-            .is_some_and(|previous| previous != &controls)
-        {
-            runtime.invalidate();
+        match runtime.controls.as_ref() {
+            Some((cpu_sets, affinity, cross_session))
+                if (cpu_sets, affinity, *cross_session) == controls => {}
+            previous => {
+                if previous.is_some() {
+                    runtime.invalidate();
+                }
+                runtime.controls = Some((controls.0.clone(), controls.1.clone(), controls.2));
+            }
         }
-        runtime.controls = Some(controls);
         let mut snapshot = InstanceBalancingSnapshot {
             enabled: runtime.enabled,
             detail: Some(InstanceBalancingDetail::WaitingForInstances),
