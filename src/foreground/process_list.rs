@@ -645,7 +645,7 @@ pub fn process_candidates_from_processes(processes: &[ProcessInfo]) -> Vec<Proce
             .and_modify(|candidate| {
                 candidate.has_suspendable_instance |= has_suspendable_instance;
             })
-            .or_insert(ProcessCandidateInfo {
+            .or_insert_with(|| ProcessCandidateInfo {
                 name: process.name.clone(),
                 image_path: image_path.clone(),
                 has_suspendable_instance,
