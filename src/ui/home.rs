@@ -89,7 +89,18 @@ impl Default for Sampler {
                 let mut cpu = CpuUsageMonitor::default();
                 let mut io = DiskUsageMonitor::default();
                 let mut network = NetworkUsageMonitor::default();
+                let mut last_sample = None;
                 while requests.recv().is_ok() {
+                    let now = Instant::now();
+                    if last_sample
+                        .replace(now)
+                        .is_some_and(|previous| now.duration_since(previous) > MAX_SAMPLE_GAP)
+                    {
+                        // Rates need a fresh baseline after a pause in observations.
+                        cpu = CpuUsageMonitor::default();
+                        io = DiskUsageMonitor::default();
+                        network = NetworkUsageMonitor::default();
+                    }
                     let sample = Sample {
                         captured_at: Some(std::time::SystemTime::now()),
                         power_source: match is_plugged_in() {
