@@ -314,8 +314,12 @@ impl Editor {
         };
     }
 
+    pub(super) fn preset_open(&self) -> bool {
+        self.preset_open
+    }
+
     pub(super) fn has_pending_editor(&self) -> bool {
-        self.preset_open && !self.preset_read_only
+        self.preset_open() && !self.preset_read_only
     }
     pub(super) fn view<'a>(
         &'a self,

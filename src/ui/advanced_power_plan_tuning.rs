@@ -249,6 +249,10 @@ impl Editor {
             .cloned()
     }
 
+    pub(super) fn preset_open(&self) -> bool {
+        self.preset.is_some()
+    }
+
     pub(super) fn has_pending_editor(&self) -> bool {
         self.review.is_some()
             || self

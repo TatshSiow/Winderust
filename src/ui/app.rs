@@ -880,7 +880,7 @@ impl WinderustApp {
             Page::CpuLimiter if self.cpu_limiter.has_pending_editor() && modifiers.is_empty() => {
                 Some(Message::CpuLimiter(cpu_limiter::Message::CancelRule))
             }
-            _ => None,
+            _ => self.preset_close_message(),
         };
         if let Some(cancel_dialog) = cancel_dialog {
             let close_focus_preview = matches!(
@@ -2450,7 +2450,31 @@ impl WinderustApp {
     }
 
     fn blocking_editor_open(&self) -> bool {
-        self.adaptive.preset_open() || self.pending_editor()
+        self.adaptive.preset_open()
+            || self.preset_close_message().is_some()
+            || self.pending_editor()
+    }
+
+    fn preset_close_message(&self) -> Option<Message> {
+        match self.page {
+            Page::AdaptiveEngine if self.adaptive.preset_open() => {
+                Some(Message::Adaptive(adaptive_engine::Message::Cancel))
+            }
+            Page::CpuSetsSoft if self.soft_allocation.preset_open() => Some(Message::Allocation(
+                cpu_allocation::Kind::Soft,
+                cpu_allocation::Message::ClosePreset,
+            )),
+            Page::ProcessorAffinityHard if self.hard_allocation.preset_open() => {
+                Some(Message::Allocation(
+                    cpu_allocation::Kind::Hard,
+                    cpu_allocation::Message::ClosePreset,
+                ))
+            }
+            Page::AdvancedPowerPlanTuning if self.power_tuning.preset_open() => Some(
+                Message::PowerTuning(advanced_power_plan_tuning::Message::ClosePreset),
+            ),
+            _ => None,
+        }
     }
 
     fn process_power_plan_preview(

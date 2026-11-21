@@ -477,9 +477,20 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                     )));
                 } else {
                     let _ = app.update(Message::Adaptive(AdaptiveMessage::Cancel));
-                    let _ = app.update(Message::Adaptive(AdaptiveMessage::ViewBuiltIn(
-                        adaptive_engine::BuiltInAdaptiveEnginePreset::Balanced,
-                    )));
+                    let open = || {
+                        Message::Adaptive(AdaptiveMessage::ViewBuiltIn(
+                            adaptive_engine::BuiltInAdaptiveEnginePreset::Balanced,
+                        ))
+                    };
+                    let _ = app.update(open());
+                    let _ = app.search_keyboard(
+                        iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape),
+                        iced::keyboard::Modifiers::empty(),
+                        false,
+                        iced::event::Status::Ignored,
+                    );
+                    assert!(!app.adaptive.preset_open());
+                    let _ = app.update(open());
                 }
             } else if index == 11 {
                 app.settings
