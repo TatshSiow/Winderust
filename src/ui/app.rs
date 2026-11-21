@@ -1416,9 +1416,9 @@ impl WinderustApp {
             Message::SleepPrevention(sleep_prevention::Message::Browse) => {
                 return self.browse(Page::SleepPrevention);
             }
-            Message::SleepPrevention(message) => self
-                .sleep_prevention
-                .update(&mut self.settings.sleep_prevention, message),
+            Message::SleepPrevention(message) => {
+                self.sleep_prevention.update(&mut self.settings, message)
+            }
             Message::Timer(timer_resolution::Message::Browse) => {
                 return self.browse(Page::TimerResolution);
             }

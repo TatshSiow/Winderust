@@ -1,4 +1,5 @@
 use super::{app_picker, design, widgets};
+use crate::application::SettingsEditor;
 use crate::config::{SleepPreventionRule, SleepPreventionSettings};
 use crate::control::instance_limits::validate_path;
 use crate::sleep_prevention::SleepPreventionSnapshot;
@@ -35,12 +36,15 @@ impl Editor {
             )
     }
 
-    pub(super) fn update(&mut self, settings: &mut SleepPreventionSettings, message: Message) {
+    pub(super) fn update(&mut self, settings: &mut SettingsEditor, message: Message) {
+        let current = &settings.sleep_prevention;
         match message {
-            Message::Enabled(value) => settings.enabled = value,
+            Message::Enabled(value) if current.enabled != value => {
+                settings.sleep_prevention.enabled = value;
+            }
             Message::Path(value) => self.path = value,
-            Message::Add if Self::can_add(settings, &self.path) => {
-                settings.rules.push(SleepPreventionRule {
+            Message::Add if Self::can_add(current, &self.path) => {
+                settings.sleep_prevention.rules.push(SleepPreventionRule {
                     executable_path: crate::foreground::executable_path_key(std::path::Path::new(
                         self.path.trim(),
                     )),
@@ -49,20 +53,31 @@ impl Editor {
                 });
                 self.path.clear();
             }
-            Message::RuleEnabled(index, value) => {
-                if let Some(rule) = settings.rules.get_mut(index) {
-                    rule.enabled = value;
-                }
+            Message::RuleEnabled(index, value)
+                if current
+                    .rules
+                    .get(index)
+                    .is_some_and(|rule| rule.enabled != value) =>
+            {
+                settings.sleep_prevention.rules[index].enabled = value;
             }
-            Message::KeepDisplayOn(index, value) => {
-                if let Some(rule) = settings.rules.get_mut(index) {
-                    rule.keep_display_on = value;
-                }
+            Message::KeepDisplayOn(index, value)
+                if current
+                    .rules
+                    .get(index)
+                    .is_some_and(|rule| rule.keep_display_on != value) =>
+            {
+                settings.sleep_prevention.rules[index].keep_display_on = value;
             }
-            Message::Remove(index) if index < settings.rules.len() => {
-                settings.rules.remove(index);
+            Message::Remove(index) if index < current.rules.len() => {
+                settings.sleep_prevention.rules.remove(index);
             }
-            Message::Add | Message::Browse | Message::Remove(_) => {}
+            Message::Enabled(_)
+            | Message::Add
+            | Message::Browse
+            | Message::RuleEnabled(..)
+            | Message::KeepDisplayOn(..)
+            | Message::Remove(_) => {}
         }
     }
 
@@ -173,22 +188,28 @@ fn indicator(status: &SleepPreventionSnapshot, rule: &SleepPreventionRule) -> St
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::{PowerSourceProfile, Settings};
 
     #[test]
     fn adding_a_rule_requires_a_full_drive_or_network_path() {
-        let mut settings = SleepPreventionSettings::default();
+        let mut settings = SettingsEditor::with_settings(Settings::default());
+        settings.select_power_source(PowerSourceProfile::OnBattery);
         let mut editor = Editor::default();
         for path in [
             r"C:\Apps\.\worker.exe",
             r"C:\Apps\child\..\worker.exe",
             r"\\?\C:\Apps\worker.exe",
-            r" C:\Apps\worker.exe ",
-            r" \\server\share\worker.exe ",
         ] {
             editor.update(&mut settings, Message::Path(path.into()));
             editor.update(&mut settings, Message::Add);
         }
+        assert!(!settings.has_unsaved_changes());
+        for path in [r" C:\Apps\worker.exe ", r" \\server\share\worker.exe "] {
+            editor.update(&mut settings, Message::Path(path.into()));
+            editor.update(&mut settings, Message::Add);
+        }
         let paths: Vec<_> = settings
+            .sleep_prevention
             .rules
             .iter()
             .map(|rule| rule.executable_path.as_str())
