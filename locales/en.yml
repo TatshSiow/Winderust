@@ -457,6 +457,7 @@ settings:
   export_settings: "Export settings (.toml)"
   export_failed: "Could not export settings to %{path}. %{error}"
   import_settings: "Import settings (.toml)"
+  imported_startup_failed: "Settings imported, but Winderust could not update its Windows startup setting. %{error}"
   import_unsaved: "Save or discard your settings changes before importing."
   replace_settings_open: "Replace settings…"
   replace_settings_title: "Replace settings?"

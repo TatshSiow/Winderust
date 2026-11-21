@@ -2336,10 +2336,12 @@ impl WinderustApp {
                             let previous_channel = self.settings.global().general.update_channel;
                             match self.settings.import_toml_from(&path) {
                                 Ok(outcome) => {
-                                    if let Some(error) = outcome.startup_registration_error() {
-                                        self.error_message = error.to_string();
-                                    }
                                     self.settings_replaced(previous_channel);
+                                    if let Some(error) = outcome.startup_registration_error() {
+                                        self.error_message =
+                                            t!("settings.imported_startup_failed", error = error)
+                                                .to_string();
+                                    }
                                 }
                                 Err(error) => self.error_message = error.to_string(),
                             }
