@@ -639,7 +639,7 @@ impl RuntimeCore {
             return;
         }
 
-        let entries = self.action_log.entries();
+        let entries = self.action_log.entries_snapshot();
         let summaries = self.action_log.summaries();
         update_action_log(
             shared,
@@ -2189,7 +2189,7 @@ impl Drop for RuntimeCore {
             if std::mem::take(&mut state.action_log_clear_requested) {
                 log.clear();
             } else if log.revision() != self.published_action_log_revision {
-                update_action_log(&shared, &mut state, log.entries(), log.summaries());
+                update_action_log(&shared, &mut state, log.entries_snapshot(), log.summaries());
             }
             state.idle_action_log = Some(log);
         }

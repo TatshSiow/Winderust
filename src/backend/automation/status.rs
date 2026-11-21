@@ -472,13 +472,12 @@ pub(super) fn update_status_with_auto_exclusions<T: PartialEq>(
 pub(super) fn update_action_log(
     shared: &SharedAutomationState,
     state: &mut AutomationWorkerState,
-    entries: Vec<ActionLogEntry>,
+    entries: Arc<Vec<ActionLogEntry>>,
     summaries: ActionLogSummaries,
 ) {
     if state.action_log_clear_requested {
         return;
     }
-    let entries = Arc::new(entries);
     let summaries = Arc::new(summaries);
     if state.status.action_log_entries == entries && state.status.action_log_summaries == summaries
     {

@@ -1,5 +1,6 @@
 use std::{
     collections::{BTreeMap, VecDeque},
+    sync::Arc,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -97,6 +98,7 @@ impl ActionLogResult {
 
 pub struct ActionLog {
     entries: VecDeque<(Instant, ActionLogEntry)>,
+    entries_snapshot: Option<Arc<Vec<ActionLogEntry>>>,
     next_sequence: u64,
     batch_id: Option<u64>,
     revision: u64,
@@ -110,6 +112,7 @@ impl ActionLog {
         let capacity = capacity.max(1);
         Self {
             entries: VecDeque::with_capacity(capacity),
+            entries_snapshot: None,
             next_sequence: 1,
             batch_id: None,
             revision: 0,
@@ -184,6 +187,7 @@ impl ActionLog {
                 self.entries.pop_front();
             }
             self.entries.push_back((now, entry));
+            self.entries_snapshot = None;
         }
         self.revision = self.revision.wrapping_add(1);
     }
@@ -193,6 +197,15 @@ impl ActionLog {
             .iter()
             .map(|(_, entry)| entry.clone())
             .collect()
+    }
+
+    pub(crate) fn entries_snapshot(&mut self) -> Arc<Vec<ActionLogEntry>> {
+        if let Some(entries) = &self.entries_snapshot {
+            return Arc::clone(entries);
+        }
+        let entries = Arc::new(self.entries());
+        self.entries_snapshot = Some(Arc::clone(&entries));
+        entries
     }
 
     pub fn summaries(&self) -> ActionLogSummaries {
@@ -205,6 +218,7 @@ impl ActionLog {
 
     pub fn clear(&mut self) {
         self.entries.clear();
+        self.entries_snapshot = None;
         self.summaries.clear();
         self.revision = self.revision.wrapping_add(1);
     }
@@ -344,7 +358,10 @@ mod tests {
             ActionLogResult::Applied,
             "first",
         );
+        let captured = log.entries_snapshot();
         log.clear();
+        assert!(log.entries_snapshot().is_empty());
+        assert_eq!(captured.len(), 1);
         log.record(
             ActionLogFeature::CpuLimiter,
             Some(2),
@@ -409,6 +426,7 @@ mod tests {
         assert_eq!(error_log.entries().len(), 1);
         assert_eq!(error_log.entries()[0].result, ActionLogResult::Failed);
 
+        let captured = log.entries_snapshot();
         log.set_mode(ActionLogMode::Off);
         log.record(
             ActionLogFeature::BackgroundEfficiency,
@@ -418,6 +436,7 @@ mod tests {
             "restored",
         );
 
+        assert!(Arc::ptr_eq(&captured, &log.entries_snapshot()));
         assert_eq!(log.entries().len(), 2);
         assert_eq!(
             log.summaries()[&ActionLogFeature::BackgroundEfficiency].successful_actions,
