@@ -1,5 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
+    path::PathBuf,
     time::{Duration, Instant},
 };
 
@@ -44,7 +45,7 @@ pub(crate) enum IoPriorityApplyOutcome {
 pub(crate) struct IoPriorityReleaseFailure {
     pub(crate) process_id: u32,
     pub(crate) process_name: String,
-    pub(crate) executable_path: String,
+    pub(crate) executable_path: PathBuf,
     pub(crate) error: ProcessControlError,
 }
 
@@ -422,10 +423,7 @@ impl<P: IoPriorityPlatform> IoPriorityController<P> {
                         Err(error) => summary.failures.push(IoPriorityReleaseFailure {
                             process_id: identity.id,
                             process_name: identity.name.clone(),
-                            executable_path: identity
-                                .executable_path
-                                .to_string_lossy()
-                                .into_owned(),
+                            executable_path: identity.executable_path.clone(),
                             error,
                         }),
                     }
@@ -433,7 +431,7 @@ impl<P: IoPriorityPlatform> IoPriorityController<P> {
                 Err(error) => summary.failures.push(IoPriorityReleaseFailure {
                     process_id: identity.id,
                     process_name: identity.name.clone(),
-                    executable_path: identity.executable_path.to_string_lossy().into_owned(),
+                    executable_path: identity.executable_path.clone(),
                     error,
                 }),
             }
