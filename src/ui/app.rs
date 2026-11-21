@@ -1831,6 +1831,7 @@ impl WinderustApp {
                 }
             }
             Message::Page(page) => {
+                let entering_page = self.page != page;
                 self.preferences.dismiss_picker();
                 self.time_rules.dismiss_picker();
                 self.focus_plans.close_preview();
@@ -1840,7 +1841,7 @@ impl WinderustApp {
                 self.side_panel_tab = SidePanelTab::for_page(page)[0];
                 let path = navigation::breadcrumb_path(page);
                 self.breadcrumb = path;
-                if page == Page::Home && self.page != Page::Home {
+                if entering_page && page == Page::Home {
                     self.home
                         .set_power_source(home::PowerSourceReading::Collecting);
                 }
@@ -1848,7 +1849,7 @@ impl WinderustApp {
                 self.navigation_search_open = false;
                 self.navigation_search.clear();
                 self.navigation.dismiss();
-                if page == Page::Win32PrioritySeparation {
+                if entering_page && page == Page::Win32PrioritySeparation {
                     self.priority_separation.refresh();
                 }
                 if page == Page::AdvancedPowerPlanTuning {
