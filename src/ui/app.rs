@@ -768,9 +768,28 @@ impl WinderustApp {
         let wrap_focus = self.picker_open();
         let move_focus = || super::keyboard_focus::move_focus(!modifiers.shift(), wrap_focus);
         if !review_open
-            && (self.closing || self.preferences.show_update || !self.error_message.is_empty())
+            && (self.closing
+                || !self.error_message.is_empty()
+                || self.preferences.show_update && self.process_power_plan_preview().is_none())
         {
-            return if tab { move_focus() } else { Task::none() };
+            if tab {
+                return move_focus();
+            }
+            if self.exiting
+                || repeat
+                || !modifiers.is_empty()
+                || status != iced::event::Status::Ignored
+                || key != Key::Named(Named::Escape)
+            {
+                return Task::none();
+            }
+            return self.update(if self.closing {
+                Message::Stay
+            } else if !self.error_message.is_empty() {
+                Message::DismissError
+            } else {
+                Message::Preferences(settings_pages::Message::DismissUpdate)
+            });
         }
         if !review_open && self.page == Page::WinderustBehaviour {
             if let Some(slot) = self.preferences.hotkey_capture {
