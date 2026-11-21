@@ -430,7 +430,7 @@ impl Model {
                 t!("home.by_cpu_load"),
                 t!("home.cpu_load"),
                 t!("home.cpu_frequency"),
-                cpu_usage_label(sample.cpu.percent),
+                String::new(),
                 cpu_frequency_label(sample.cpu.frequency_mhz),
             ),
             ChartKind::Memory => (
@@ -444,22 +444,22 @@ impl Model {
                 t!("home.io_usage"),
                 t!("home.io_read"),
                 t!("home.io_write"),
-                io_usage_label(sample.io.read_bytes_per_second),
-                io_usage_label(sample.io.write_bytes_per_second),
+                io_rate_label(sample.io.read_bytes_per_second),
+                io_rate_label(sample.io.write_bytes_per_second),
             ),
             ChartKind::Network => (
                 t!("home.network_usage"),
                 t!("home.network_download"),
                 t!("home.network_upload"),
-                network_usage_label(sample.network.download_bytes_per_second),
-                network_usage_label(sample.network.upload_bytes_per_second),
+                io_rate_label(sample.network.download_bytes_per_second),
+                io_rate_label(sample.network.upload_bytes_per_second),
             ),
         };
         let total = match kind {
-            ChartKind::Cpu => cpu_usage_label(sample.cpu.percent),
-            ChartKind::Memory => memory_usage_label(sample.memory.percent),
-            ChartKind::Io => io_usage_label(sample.io.bytes_per_second),
-            ChartKind::Network => network_usage_label(sample.network.bytes_per_second),
+            ChartKind::Cpu => usage_percentage_label(sample.cpu.percent),
+            ChartKind::Memory => usage_percentage_label(sample.memory.percent),
+            ChartKind::Io => io_rate_label(sample.io.bytes_per_second),
+            ChartKind::Network => io_rate_label(sample.network.bytes_per_second),
         };
         let labels = match kind {
             ChartKind::Cpu => [
@@ -504,18 +504,8 @@ impl Model {
         .delay(std::time::Duration::ZERO)
         .style(|_| container::Style::default());
         let is_io = matches!(kind, ChartKind::Io | ChartKind::Network);
-        let right_label = if is_io {
-            t!("home.io_total")
-        } else {
-            second.clone()
-        };
-        let right_value = if is_io {
-            total.clone()
-        } else {
-            second_value.clone()
-        };
-        let primary: Element<'static, Message> = if is_io {
-            column![
+        let (right_value, primary): (_, Element<'static, Message>) = if is_io {
+            let details = column![
                 text(format!("{first}: {first_value}"))
                     .size(design::typography::SECTION)
                     .style(|theme| text::Style {
@@ -527,10 +517,10 @@ impl Model {
                         color: Some(chart_text_color(theme, 1))
                     }),
             ]
-            .spacing(design::space::TIGHT)
-            .into()
+            .spacing(design::space::TIGHT);
+            (total, details.into())
         } else {
-            column![
+            let details = column![
                 super::widgets::heading(total, design::typography::TITLE),
                 text(if kind == ChartKind::Memory {
                     format!("{first}: {first_value}")
@@ -540,9 +530,10 @@ impl Model {
                 .size(design::typography::CAPTION)
                 .style(text::secondary),
             ]
-            .spacing(design::space::TIGHT)
-            .into()
+            .spacing(design::space::TIGHT);
+            (second_value, details.into())
         };
+        let right_label = if is_io { t!("home.io_total") } else { second };
         container(
             column![
                 row![
@@ -771,17 +762,17 @@ impl ChartKind {
     fn tooltip_labels(self, sample: &Sample) -> [String; 2] {
         match self {
             Self::Cpu => [
-                cpu_usage_label(sample.cpu.percent),
+                usage_percentage_label(sample.cpu.percent),
                 cpu_frequency_label(sample.cpu.frequency_mhz),
             ],
-            Self::Memory => [memory_usage_label(sample.memory.percent), String::new()],
+            Self::Memory => [usage_percentage_label(sample.memory.percent), String::new()],
             Self::Io => [
-                io_usage_label(sample.io.read_bytes_per_second),
-                io_usage_label(sample.io.write_bytes_per_second),
+                io_rate_label(sample.io.read_bytes_per_second),
+                io_rate_label(sample.io.write_bytes_per_second),
             ],
             Self::Network => [
-                network_usage_label(sample.network.download_bytes_per_second),
-                network_usage_label(sample.network.upload_bytes_per_second),
+                io_rate_label(sample.network.download_bytes_per_second),
+                io_rate_label(sample.network.upload_bytes_per_second),
             ],
         }
     }
@@ -1149,7 +1140,7 @@ impl Chart {
         }
     }
 }
-fn cpu_usage_label(percent: Option<f32>) -> String {
+fn usage_percentage_label(percent: Option<f32>) -> String {
     percent
         .map(|percent| format!("{percent:.1}%"))
         .unwrap_or_else(|| t!("home.collecting").to_string())
@@ -1164,12 +1155,6 @@ fn cpu_frequency_label(frequency_mhz: Option<u32>) -> String {
                 format!("{frequency_mhz} MHz")
             }
         })
-        .unwrap_or_else(|| t!("home.collecting").to_string())
-}
-
-fn memory_usage_label(percent: Option<f32>) -> String {
-    percent
-        .map(|percent| format!("{percent:.1}%"))
         .unwrap_or_else(|| t!("home.collecting").to_string())
 }
 
@@ -1204,12 +1189,7 @@ fn memory_available_value_label(snapshot: MemoryUsageSnapshot) -> String {
     }
 }
 
-fn network_usage_label(bytes_per_second: Option<f64>) -> String {
-    bytes_per_second
-        .map(format_bytes_per_second)
-        .unwrap_or_else(|| t!("home.collecting").to_string())
-}
-fn io_usage_label(bytes_per_second: Option<f64>) -> String {
+fn io_rate_label(bytes_per_second: Option<f64>) -> String {
     bytes_per_second
         .map(format_bytes_per_second)
         .unwrap_or_else(|| t!("home.collecting").to_string())
@@ -1360,7 +1340,11 @@ fn enabled_features(
                 .to_string()
             })
     );
-    feature!(ByCpuLoad, by_cpu_load, cpu_usage_label(sample.cpu.percent));
+    feature!(
+        ByCpuLoad,
+        by_cpu_load,
+        usage_percentage_label(sample.cpu.percent)
+    );
     feature!(
         ByActivity,
         by_activity,
@@ -2357,7 +2341,7 @@ mod tests {
     }
     #[test]
     fn dashboard_uses_available_memory_and_decimal_network_bytes() {
-        assert_eq!(network_usage_label(Some(1_000_000.0)), "1.0 MB/s");
+        assert_eq!(io_rate_label(Some(1_000_000.0)), "1.0 MB/s");
         assert_eq!(
             memory_available_value_label(MemoryUsageSnapshot {
                 total_physical_bytes: Some(16 * 1024 * 1024 * 1024),
@@ -2366,7 +2350,7 @@ mod tests {
             }),
             "9.7 GB"
         );
-        assert_eq!(network_usage_label(None), t!("home.collecting").to_string());
+        assert_eq!(io_rate_label(None), t!("home.collecting").to_string());
     }
     #[test]
     fn disk_chart_preserves_available_directions_without_a_total() {
@@ -2409,7 +2393,7 @@ mod tests {
             ["1.0 MB/s", "500.0 KB/s"]
         );
         assert_eq!(
-            network_usage_label(model.latest.network.bytes_per_second),
+            io_rate_label(model.latest.network.bytes_per_second),
             "1.5 MB/s"
         );
     }
