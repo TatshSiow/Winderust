@@ -1204,17 +1204,17 @@ impl ProcessList {
             Kind::DynamicBoost,
         ] {
             let key = format!("nav.{}", kind.key());
-            let choices = kind
-                .choices(settings.advanced.expose_all_priority_values)
-                .into_iter()
-                .filter(|v| !is_default(*v))
-                .collect::<Vec<_>>();
             let current = self
                 .current
                 .iter()
                 .copied()
                 .find(|v| value_kind(*v) == kind);
             let control: Element<'_, Message> = if eligible {
+                let choices = kind
+                    .choices(settings.advanced.expose_all_priority_values)
+                    .into_iter()
+                    .filter(|v| !is_default(*v))
+                    .collect::<Vec<_>>();
                 pick_list(choices, current, move |v| {
                     Message::Action(Action::Priority(v))
                 })
