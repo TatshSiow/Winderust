@@ -1460,10 +1460,10 @@ impl ProcessList {
                     if !self.columns[col as usize] {
                         continue;
                     }
-                    let value = self.cell_value(entry, col);
                     let cell = if col == Sort::Status {
-                        status_cell(&value)
+                        status_cell(self.status_key(entry))
                     } else {
+                        let value = self.cell_value(entry, col);
                         text(super::widgets::fitted_text(
                             &value,
                             widths[col as usize] - 2.0,
@@ -2136,7 +2136,7 @@ fn process_target_identity(p: &ProcessInfo) -> Result<(&Path, u64), ProcessActio
         .zip(p.creation_time)
         .ok_or(ProcessActionTargetError::IdentityUnavailable)
 }
-fn status_cell(key: &str) -> Element<'static, Message> {
+fn status_cell(key: &'static str) -> Element<'static, Message> {
     let icon = match key {
         "process_list.status_suspended" => "icons/pause.svg",
         "process_list.status_efficiency_mode" => "icons/leaf.svg",
@@ -2156,7 +2156,7 @@ fn status_cell(key: &str) -> Element<'static, Message> {
         },
         _ => super::widgets::muted_color,
     };
-    let label = t!(key);
+    let label: std::borrow::Cow<'static, str> = t!(key);
     let cell = row![
         iced::widget::svg(crate::ui::assets::iced_icon(icon).expect("Status icon is bundled"))
             .width(design::ICON_SIZE)
@@ -2164,7 +2164,7 @@ fn status_cell(key: &str) -> Element<'static, Message> {
             .style(move |theme, _| iced::widget::svg::Style {
                 color: Some(color(theme))
             }),
-        text(label.to_string())
+        text(label)
             .wrapping(iced::widget::text::Wrapping::None)
             .style(move |theme| text::Style {
                 color: Some(color(theme))
