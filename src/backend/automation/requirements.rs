@@ -550,6 +550,11 @@ pub(super) fn by_time_rules_required(settings: &Settings) -> bool {
             .any(|rule| rule.enabled && rule.power_plan_guid.is_some())
 }
 
+pub(super) fn cpu_usage_required(settings: &Settings) -> bool {
+    bottleneck_classifier_required(settings)
+        || feature_refresh_required(settings, by_cpu_load_rules_required(settings))
+}
+
 pub(super) fn by_cpu_load_rules_required(settings: &Settings) -> bool {
     settings.by_cpu_load.enabled
         && settings.by_cpu_load.rules.iter().any(|rule| {

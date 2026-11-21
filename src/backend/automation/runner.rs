@@ -552,13 +552,17 @@ impl RuntimeCore {
             self.sleep_prevention_manager
                 .suspend(&mut self.sleep_prevention_controller, &mut self.action_log);
         }
-        if source_changed || events.suspend_resume {
+        let changed = self.last_settings.as_ref() != Some(settings);
+        let cpu_usage_resumed = changed
+            && self.last_settings.as_ref().is_some_and(|previous| {
+                !cpu_usage_required(previous) && cpu_usage_required(settings)
+            });
+        if source_changed || events.suspend_resume || cpu_usage_resumed {
             self.cpu_usage = CpuUsageSnapshot::default();
             self.cpu_usage_sampled_at = None;
             self.cpu_monitor = CpuUsageMonitor::default();
         }
         let explicitly_changed = events.settings_changed || events.suspend_resume || source_changed;
-        let changed = self.last_settings.as_ref() != Some(settings);
         if changed {
             self.last_settings = Some(settings.clone());
             self.power_plan_controller.clear_failures();
@@ -1759,7 +1763,15 @@ impl RuntimeCore {
         self.by_cpu_load_scheduler
             .observe_active_plan(self.power_plan_controller.status().current_guid.as_deref());
 
-        self.refresh_cpu_usage();
+        let cpu_sample = if by_cpu_load_rules_required(settings) {
+            self.refresh_cpu_usage();
+            self.cpu_usage
+                .percent
+                .zip(self.cpu_usage_sampled_at)
+                .filter(|(usage, _)| usage.is_finite() && (0.0..=100.0).contains(usage))
+        } else {
+            None
+        };
         let observe_foreground =
             foreground_lookup_required(settings) || self.power_plan_controller.has_focus_plan();
         let foreground_process_id = observe_foreground
@@ -1774,7 +1786,7 @@ impl RuntimeCore {
         let by_time_decision = current_by_time_decision(&settings.by_time, wall_time);
         let by_cpu_load_decision = self.by_cpu_load_scheduler.current_decision_for_sample_at(
             &settings.by_cpu_load,
-            self.cpu_usage.percent.zip(self.cpu_usage_sampled_at),
+            cpu_sample,
             Instant::now(),
         );
         let primary_cpu_load_rule_index = by_cpu_load_decision
@@ -1797,10 +1809,7 @@ impl RuntimeCore {
             foreground_executable_path,
             foreground_process_id,
             by_running_app_known: self.by_running_app_manager.observation_known(),
-            cpu_load_known: self
-                .cpu_usage
-                .percent
-                .is_some_and(|usage| usage.is_finite() && (0.0..=100.0).contains(&usage)),
+            cpu_load_known: cpu_sample.is_some(),
             plugged_in,
             by_running_app,
             by_time: by_time_decision,
@@ -2353,6 +2362,34 @@ mod settings_tests {
                 start + Duration::from_secs(92),
             )
             .is_none());
+    }
+
+    #[test]
+    fn cpu_load_resumes_with_a_fresh_sample_only_after_all_consumers_yield() {
+        for adaptive_enabled in [false, true] {
+            let mut runner = RuntimeCore::default();
+            let mut settings = Settings::default();
+            settings.general.enabled = true;
+            settings.adaptive_engine.enabled = adaptive_enabled;
+            settings.by_cpu_load.rules = vec![crate::config::ByCpuLoadRule {
+                power_plan_guid: Some("target".into()),
+                ..Default::default()
+            }];
+            settings.by_cpu_load.enabled = false;
+            runner.note_settings(&settings, AutomationWakeEvents::default(), Some(true));
+
+            let sampled_at = Instant::now();
+            runner.cpu_usage.percent = Some(90.0);
+            runner.cpu_usage_sampled_at = Some(sampled_at);
+
+            settings.by_cpu_load.enabled = true;
+            runner.note_settings(&settings, AutomationWakeEvents::default(), Some(true));
+            assert_eq!(runner.cpu_usage.percent, adaptive_enabled.then_some(90.0));
+            assert_eq!(
+                runner.cpu_usage_sampled_at,
+                adaptive_enabled.then_some(sampled_at)
+            );
+        }
     }
 
     #[test]

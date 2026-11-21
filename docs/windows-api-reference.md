@@ -123,6 +123,9 @@ User-facing behavior:
   allowing a scheme to be selected.
 - By Activity maps its visible `Idle plan` and `Active plan` settings to Windows power scheme GUIDs.
 - By Focus, By Running App, By CPU Load, and By Time store a selected GUID on each rule; missing selections do not fall back to a global plan.
+- Ordinary power-plan checks sample total CPU usage only when By CPU Load
+  has a configured plan. When CPU usage is needed again after neither that
+  scheduler nor Adaptive Engine used it, sampling starts with a fresh baseline.
 - By Focus resolves the app with input focus through `src/foreground/active_window.rs`
   and [GetForegroundWindow](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getforegroundwindow).
   A temporarily null window is an unavailable observation.
