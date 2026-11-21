@@ -347,17 +347,21 @@ pub(super) fn view<'a>(
             options.extend(
                 plans
                     .iter()
+                    .filter(|plan| !plan.managed_adaptive)
                     .map(|p| Plan(Some(p.guid.clone()), p.name.clone())),
             );
-            if let Some(guid) = &selected {
-                if !options.iter().any(|p| p.0.as_ref() == Some(guid)) {
-                    options.push(Plan(
-                        selected.clone(),
-                        t!("common.selected_plan_unavailable").to_string(),
-                    ));
-                }
-            }
-            let selected = options.iter().find(|p| p.0 == selected).cloned();
+            let selected = options
+                .iter()
+                .find(|p| p.0 == selected)
+                .cloned()
+                .or_else(|| {
+                    selected.map(|guid| {
+                        Plan(
+                            Some(guid),
+                            t!("common.selected_plan_unavailable").to_string(),
+                        )
+                    })
+                });
             power.push(
                 setting_row(
                     if focus {

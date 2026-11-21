@@ -80,7 +80,7 @@ impl Editor {
         let active_plan = || {
             plans
                 .iter()
-                .find(|plan| plan.active)
+                .find(|plan| plan.active && !plan.managed_adaptive)
                 .map(|plan| plan.guid.clone())
         };
         // Both pages have the same rule editor, but keep their distinct typed settings and policies.

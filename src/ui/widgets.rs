@@ -1601,13 +1601,19 @@ pub(super) fn plan<M: Clone + 'static>(
     choices.extend(
         plans
             .iter()
+            .filter(|plan| !plan.managed_adaptive)
             .map(|plan| Choice(Some(plan.guid.clone()), power_plan_label(plan))),
     );
     let selected = choices
         .iter()
         .find(|choice| choice.0.as_deref() == guid)
         .cloned()
-        .unwrap_or_else(|| Choice(guid.map(str::to_owned), guid.unwrap_or_default().to_owned()));
+        .unwrap_or_else(|| {
+            Choice(
+                guid.map(str::to_owned),
+                rust_i18n::t!("common.selected_plan_unavailable").to_string(),
+            )
+        });
     pick_list(choices, Some(selected), move |choice| action(choice.0))
         .width(Fill)
         .into()

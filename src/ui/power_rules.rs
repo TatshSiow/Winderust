@@ -275,7 +275,12 @@ impl Editor {
                 return;
             }
         }
-        let active = || plans.iter().find(|p| p.active).map(|p| p.guid.clone());
+        let active = || {
+            plans
+                .iter()
+                .find(|plan| plan.active && !plan.managed_adaptive)
+                .map(|plan| plan.guid.clone())
+        };
         match message {
             Message::Enabled(v) => match kind {
                 Kind::Time => s.by_time.enabled = v,
