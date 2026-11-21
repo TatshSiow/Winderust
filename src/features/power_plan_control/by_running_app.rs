@@ -45,7 +45,7 @@ pub(crate) struct ByRunningAppPreview {
 #[derive(Default)]
 pub struct ByRunningAppManager {
     active: Option<ActiveByRunningApp<String>>,
-    observation_known: bool,
+    observation_known: Option<bool>,
 }
 
 #[derive(Clone, Copy)]
@@ -75,8 +75,7 @@ impl ByRunningAppManager {
         settings: &ByRunningAppSettings,
         automation_enabled: bool,
         observations: &mut CycleObservations,
-    ) -> ByRunningAppSnapshot {
-        self.observation_known = true;
+    ) -> Option<ByRunningAppSnapshot> {
         if !automation_enabled
             || !settings.enabled
             || !settings
@@ -84,23 +83,16 @@ impl ByRunningAppManager {
                 .iter()
                 .any(|rule| rule.configured_plan().is_some())
         {
-            self.release();
-            return self.snapshot();
+            return self.release(true);
         }
 
-        self.observation_known = false;
         let current_process_id = std::process::id();
         let Some(current_session_id) = process_session_id(current_process_id) else {
-            self.release();
-            return self.snapshot();
+            return self.release(false);
         };
 
-        let processes = match observations.processes() {
-            Ok(processes) => processes,
-            Err(_) => {
-                self.release();
-                return self.snapshot();
-            }
+        let Ok(processes) = observations.processes() else {
+            return self.release(false);
         };
         let (matched, known) = matching_rule_process(
             settings,
@@ -110,23 +102,37 @@ impl ByRunningAppManager {
             process_session_id,
             process_executable_path,
         );
-        self.observation_known = known;
-
         let Some(matched) = matched else {
-            self.release();
-            return self.snapshot();
+            return self.release(known);
         };
 
         if self.active_matches(&matched) {
-            return self.snapshot();
+            return None;
+        }
+        if let Some(active) = self.active.as_mut().filter(|active| {
+            active.rule_name == matched.rule_name
+                && active.process_name == matched.process_name
+                && active.target_guid == matched.target_guid
+        }) {
+            active.rule_index = matched.rule_index;
+            active.process_id = matched.process_id;
+            return None;
         }
 
-        self.active = Some(matched.into_owned());
-        self.snapshot()
+        let active = matched.into_owned();
+        let status = ByRunningAppSnapshot {
+            observation_known: true,
+            active_rule: Some(active.rule_name.clone()),
+            active_process: Some(active.process_name.clone()),
+            target_guid: Some(active.target_guid.clone()),
+        };
+        self.observation_known = Some(true);
+        self.active = Some(active);
+        Some(status)
     }
 
     pub(crate) fn observation_known(&self) -> bool {
-        self.observation_known
+        self.observation_known.unwrap_or(false)
     }
 
     pub fn active_process_ids(&self) -> BTreeSet<u32> {
@@ -157,23 +163,14 @@ impl ByRunningAppManager {
         })
     }
 
-    fn release(&mut self) {
-        self.active = None;
-    }
-
-    fn snapshot(&self) -> ByRunningAppSnapshot {
-        self.active.as_ref().map_or_else(
-            || ByRunningAppSnapshot {
-                observation_known: self.observation_known,
-                ..ByRunningAppSnapshot::default()
-            },
-            |active| ByRunningAppSnapshot {
-                observation_known: self.observation_known,
-                active_rule: Some(active.rule_name.clone()),
-                active_process: Some(active.process_name.clone()),
-                target_guid: Some(active.target_guid.clone()),
-            },
-        )
+    fn release(&mut self, observation_known: bool) -> Option<ByRunningAppSnapshot> {
+        let had_active = self.active.take().is_some();
+        // A fresh worker can share status that still reflects its predecessor.
+        let changed = self.observation_known.replace(observation_known) != Some(observation_known);
+        (had_active || changed).then_some(ByRunningAppSnapshot {
+            observation_known,
+            ..ByRunningAppSnapshot::default()
+        })
     }
 }
 
@@ -522,7 +519,7 @@ mod tests {
         };
         let manager = ByRunningAppManager {
             active: Some(active.into_owned()),
-            observation_known: true,
+            observation_known: Some(true),
         };
         let reordered = ActiveByRunningApp {
             rule_index: 1,
@@ -788,15 +785,22 @@ mod tests {
     fn disabled_or_unconfigured_matching_is_known_without_windows_observations() {
         let mut manager = ByRunningAppManager::default();
         let mut observations = CycleObservations::default();
-        for enabled in [false, true] {
+        for (enabled, expected) in [
+            (
+                false,
+                Some(ByRunningAppSnapshot {
+                    observation_known: true,
+                    ..ByRunningAppSnapshot::default()
+                }),
+            ),
+            (true, None),
+        ] {
             let settings = ByRunningAppSettings {
                 enabled,
                 ..ByRunningAppSettings::default()
             };
-            let snapshot = manager.update(&settings, true, &mut observations);
-            assert!(snapshot.observation_known);
+            assert_eq!(manager.update(&settings, true, &mut observations), expected);
             assert!(manager.observation_known());
-            assert!(snapshot.target_guid.is_none());
         }
     }
 

@@ -1701,9 +1701,11 @@ fn run_background_automation(
             scheduler.schedule_now(RefreshDomain::CpuAllocationReconciliation, now);
         }
         if by_running_app_refresh_required && scheduler.is_due(RefreshDomain::ByRunningApp, now) {
-            let by_running_app_status =
-                runner.run_by_running_app_update(settings, &mut observations);
-            update_by_running_app_status(&shared, by_running_app_status);
+            if let Some(by_running_app_status) =
+                runner.run_by_running_app_update(settings, &mut observations)
+            {
+                update_by_running_app_status(&shared, by_running_app_status);
+            }
             scheduler.schedule_after(
                 RefreshDomain::ByRunningApp,
                 now,

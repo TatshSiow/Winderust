@@ -453,7 +453,7 @@ impl RuntimeCore {
         if let Err(error) = self.timer_resolution_controller.shutdown() {
             errors.push(format!("Timer Resolution restoration failed: {error}"));
         }
-        self.run_by_running_app_update(&settings, &mut observations);
+        let _ = self.run_by_running_app_update(&settings, &mut observations);
         self.run_cpu_limiter_update(&settings, &mut observations);
         if let Some(mut controller) = self.cpu_limiter_controller.take() {
             if let Err(error) = controller.shutdown() {
@@ -904,7 +904,7 @@ impl RuntimeCore {
         &mut self,
         settings: &Settings,
         observations: &mut CycleObservations,
-    ) -> ByRunningAppSnapshot {
+    ) -> Option<ByRunningAppSnapshot> {
         self.by_running_app_manager.update(
             &settings.by_running_app,
             settings.general.enabled,
