@@ -638,13 +638,8 @@ pub fn process_candidates_from_processes(processes: &[ProcessInfo]) -> Vec<Proce
         };
         let has_suspendable_instance = process.session_id.is_some_and(|session_id| session_id != 0)
             && process.is_service_account == Some(false);
-        let path_key = if image_path.to_str().is_some() {
-            executable_path_key(image_path).into()
-        } else {
-            image_path.as_os_str().to_owned()
-        };
         candidates
-            .entry(path_key)
+            .entry(executable_grouping_key(image_path))
             .and_modify(|candidate| {
                 candidate.has_suspendable_instance |= has_suspendable_instance;
             })
@@ -851,6 +846,13 @@ pub fn same_process_name(left: &str, right: &str) -> bool {
 
 pub fn executable_path_key(path: &Path) -> String {
     normalize_executable_path(&path.to_string_lossy())
+}
+
+pub(crate) fn executable_grouping_key(path: &Path) -> OsString {
+    match path.to_str() {
+        Some(path) => normalize_executable_path(path).into(),
+        None => path.as_os_str().to_owned(),
+    }
 }
 
 fn normalize_executable_path(path: &str) -> String {

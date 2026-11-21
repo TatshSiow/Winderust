@@ -17,8 +17,9 @@ pub use process_list::{
     EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS,
 };
 pub(crate) use process_list::{
-    ensure_process_action_target_access_on_handle, process_handle_matches_executable_path,
-    process_runs_as_service_account_from_handle, query_process_image_path, ProcessActionAccess,
+    ensure_process_action_target_access_on_handle, executable_grouping_key,
+    process_handle_matches_executable_path, process_runs_as_service_account_from_handle,
+    query_process_image_path, ProcessActionAccess,
 };
 
 #[cfg(test)]

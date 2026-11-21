@@ -13,6 +13,7 @@ use iced::{keyboard::key::Named, Element, Fill, Task};
 use rust_i18n::t;
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
+    ffi::OsString,
     ops::Range,
     path::{Path, PathBuf},
     sync::Arc,
@@ -40,12 +41,12 @@ pub(super) struct Population {
 #[derive(Debug, Clone)]
 struct Entry {
     indices: Vec<usize>,
-    key: String,
+    key: OsString,
     nested: bool,
 }
 
 struct FocusedRow {
-    key: String,
+    key: OsString,
     nested: bool,
     pid: u32,
     creation_time: Option<u64>,
@@ -166,7 +167,7 @@ pub(super) enum Message {
     HideInaccessible(bool),
     Group(bool),
     MemoryPercentage(bool),
-    Expand(String),
+    Expand(OsString),
     Sort(Sort),
     Column(Sort, bool),
     Select(usize, u64),
@@ -220,7 +221,7 @@ pub(super) struct ProcessList {
     hide_inaccessible: bool,
     grouped: bool,
     memory_percentage: bool,
-    expanded: HashSet<String>,
+    expanded: HashSet<OsString>,
     sort: Sort,
     descending: bool,
     columns: [bool; 6],
@@ -1075,7 +1076,7 @@ impl ProcessList {
     fn rebuild(&mut self) {
         self.rows_revision = self.rows_revision.wrapping_add(1);
         let search = self.search.to_lowercase();
-        let mut groups = BTreeMap::<String, Vec<usize>>::new();
+        let mut groups = BTreeMap::<OsString, Vec<usize>>::new();
         for (i, p) in self.processes.iter().enumerate() {
             if self.hide_inaccessible && inaccessible(p) {
                 continue;
@@ -1096,14 +1097,11 @@ impl ProcessList {
             {
                 continue;
             }
-            let key = if self.grouped {
-                p.image_path
-                    .as_ref()
-                    .map(|p| foreground::executable_path_key(p))
-                    .unwrap_or_else(|| format!("pid:{}", p.id))
-            } else {
-                format!("pid:{}", p.id)
-            };
+            let path = p.image_path.as_deref().filter(|_| self.grouped);
+            let key = path.map_or_else(
+                || format!("pid:{}", p.id).into(),
+                foreground::executable_grouping_key,
+            );
             groups.entry(key).or_default().push(i);
         }
         let mut groups = groups
@@ -2384,7 +2382,7 @@ mod tests {
                                     assert_eq!(
                                         list.rows
                                             .iter()
-                                            .map(|row| row.key.as_str())
+                                            .map(|row| row.key.to_str().unwrap())
                                             .collect::<Vec<_>>(),
                                         expected
                                             .iter()
@@ -3297,6 +3295,24 @@ mod tests {
         list.processes.clear();
         list.rebuild();
         assert_eq!(list.offsets, vec![0.0]);
+    }
+    #[test]
+    fn grouping_keeps_distinct_native_paths_with_the_same_display_text() {
+        use std::os::windows::ffi::OsStringExt;
+
+        let path = "C:\\A\\\u{fffd}\\app.exe";
+        let mut raw = process(11, 2, path);
+        let units = path
+            .encode_utf16()
+            .map(|unit| if unit == 0xfffd { 0xd800 } else { unit })
+            .collect::<Vec<_>>();
+        raw.image_path = Some(OsString::from_wide(&units).into());
+        let mut list = ProcessList {
+            processes: vec![raw, process(10, 1, path)],
+            ..ProcessList::default()
+        };
+        list.rebuild();
+        assert_eq!(list.rows.len(), 2);
     }
     #[test]
     fn expanded_groups_keep_virtual_rows_bounded_and_collapse_immediately() {
