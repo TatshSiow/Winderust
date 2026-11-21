@@ -19,7 +19,7 @@ use windows_sys::{
                 PDH_HQUERY,
             },
             Power::{CallNtPowerInformation, ProcessorInformation, PROCESSOR_POWER_INFORMATION},
-            Threading::GetSystemTimes,
+            Threading::{GetActiveProcessorGroupCount, GetSystemTimes},
             WindowsProgramming::SYSTEM_PROCESSOR_PERFORMANCE_INFORMATION,
         },
     },
@@ -36,7 +36,9 @@ pub struct CpuUsageSnapshot {
 
 #[derive(Debug, Default)]
 pub struct CpuUsageMonitor {
+    group_count: u16,
     previous_times: Option<CpuTimeCounters>,
+    grouped_usage_counter: Option<CpuUsageCounter>,
     frequency_counter: Option<CpuFrequencyCounter>,
     frequency_counter_unavailable: bool,
 }
@@ -60,8 +62,18 @@ struct CpuTimeCounters {
 }
 
 #[derive(Debug)]
+struct ProcessorCounterQuery(PDH_HQUERY);
+
+#[derive(Debug)]
+struct CpuUsageCounter {
+    query: ProcessorCounterQuery,
+    usage: PDH_HCOUNTER,
+    primed: bool,
+}
+
+#[derive(Debug)]
 struct CpuFrequencyCounter {
-    query: PDH_HQUERY,
+    query: ProcessorCounterQuery,
     frequency: PDH_HCOUNTER,
     performance: Option<PDH_HCOUNTER>,
 }
@@ -88,23 +100,33 @@ impl CpuUsageMonitor {
             (None, None)
         };
 
-        let Some(current) = read_system_cpu_times() else {
-            return CpuUsageSnapshot {
-                percent: None,
-                frequency_mhz,
-                base_frequency_mhz,
-            };
-        };
-
-        let percent = self
-            .previous_times
-            .and_then(|previous| cpu_usage_percent(previous, current));
-
-        self.previous_times = Some(current);
         CpuUsageSnapshot {
-            percent,
+            percent: self.sample_total_usage(),
             frequency_mhz,
             base_frequency_mhz,
+        }
+    }
+
+    fn sample_total_usage(&mut self) -> Option<f32> {
+        let group_count = active_processor_group_count();
+        if self.group_count != group_count {
+            self.group_count = group_count;
+            self.previous_times = None;
+            self.grouped_usage_counter = None;
+        }
+
+        match group_count {
+            0 => None,
+            1 => {
+                let current = read_system_cpu_times()?;
+                cpu_usage_percent(self.previous_times.replace(current)?, current)
+            }
+            _ => {
+                if self.grouped_usage_counter.is_none() {
+                    self.grouped_usage_counter = CpuUsageCounter::open();
+                }
+                self.grouped_usage_counter.as_mut()?.sample()
+            }
         }
     }
 
@@ -137,7 +159,7 @@ impl CpuUsageMonitor {
     }
 }
 
-impl CpuFrequencyCounter {
+impl ProcessorCounterQuery {
     fn open() -> Option<Self> {
         let mut query = null_mut();
         // SAFETY: No data source is specified and query is a writable out-pointer.
@@ -145,36 +167,68 @@ impl CpuFrequencyCounter {
         if status != 0 || query.is_null() {
             return None;
         }
+        Some(Self(query))
+    }
 
-        let frequency_path = wide_null(r"\Processor Information(_Total)\Processor Frequency");
-        let mut frequency = null_mut();
-        // SAFETY: query is live, frequency_path is terminated UTF-16, and frequency is a
-        // writable out-pointer.
-        let status =
-            unsafe { PdhAddEnglishCounterW(query, frequency_path.as_ptr(), 0, &mut frequency) };
-        if status != 0 || frequency.is_null() {
-            // SAFETY: query was opened successfully and is closed exactly once on this path.
-            unsafe {
-                PdhCloseQuery(query);
-            }
+    fn add_english_counter(&self, path: &str) -> Option<PDH_HCOUNTER> {
+        let path = wide_null(path);
+        let mut counter = null_mut();
+        // SAFETY: The query is live, path is terminated UTF-16, and counter is writable.
+        let status = unsafe { PdhAddEnglishCounterW(self.0, path.as_ptr(), 0, &mut counter) };
+        (status == 0 && !counter.is_null()).then_some(counter)
+    }
+
+    fn collect(&self) -> bool {
+        // SAFETY: This wrapper owns the live query for the duration of the call.
+        unsafe { PdhCollectQueryData(self.0) == 0 }
+    }
+}
+
+impl Drop for ProcessorCounterQuery {
+    fn drop(&mut self) {
+        // SAFETY: The wrapper owns this live query and closes it exactly once.
+        unsafe { PdhCloseQuery(self.0) };
+    }
+}
+
+impl CpuUsageCounter {
+    fn open() -> Option<Self> {
+        let query = ProcessorCounterQuery::open()?;
+        let usage =
+            query.add_english_counter(r"\Processor Information(_Total)\% Processor Time")?;
+        Some(Self {
+            query,
+            usage,
+            primed: false,
+        })
+    }
+
+    fn sample(&mut self) -> Option<f32> {
+        if !self.query.collect() {
+            self.primed = false;
             return None;
         }
 
-        let performance_path = wide_null(r"\Processor Information(_Total)\% Processor Performance");
-        let mut performance = null_mut();
-        // SAFETY: query is live, performance_path is terminated UTF-16, and performance
-        // is a writable out-pointer.
-        let performance = match unsafe {
-            PdhAddEnglishCounterW(query, performance_path.as_ptr(), 0, &mut performance)
-        } {
-            0 if !performance.is_null() => Some(performance),
-            _ => None,
-        };
-
-        // SAFETY: query is live; collection does not retain borrowed pointers.
-        unsafe {
-            PdhCollectQueryData(query);
+        if !self.primed {
+            self.primed = true;
+            return None;
         }
+
+        let percent =
+            read_pdh_counter_double(self.usage).filter(|percent| (0.0..=100.0).contains(percent));
+        self.primed = percent.is_some();
+        percent.map(|percent| percent as f32)
+    }
+}
+
+impl CpuFrequencyCounter {
+    fn open() -> Option<Self> {
+        let query = ProcessorCounterQuery::open()?;
+        let frequency =
+            query.add_english_counter(r"\Processor Information(_Total)\Processor Frequency")?;
+        let performance =
+            query.add_english_counter(r"\Processor Information(_Total)\% Processor Performance");
+        query.collect();
 
         Some(Self {
             query,
@@ -184,9 +238,7 @@ impl CpuFrequencyCounter {
     }
 
     fn sample(&self) -> Option<CpuFrequencySample> {
-        // SAFETY: self.query remains live for the lifetime of this counter wrapper.
-        let status = unsafe { PdhCollectQueryData(self.query) };
-        if status != 0 {
+        if !self.query.collect() {
             return None;
         }
 
@@ -205,15 +257,6 @@ impl CpuFrequencyCounter {
             frequency_mhz,
             base_frequency_mhz: base_frequency_mhz_u32,
         })
-    }
-}
-
-impl Drop for CpuFrequencyCounter {
-    fn drop(&mut self) {
-        // SAFETY: query is a non-null handle owned by this wrapper and closed exactly once.
-        unsafe {
-            PdhCloseQuery(self.query);
-        }
     }
 }
 
@@ -250,6 +293,11 @@ fn logical_processor_count() -> usize {
     std::thread::available_parallelism()
         .map(usize::from)
         .unwrap_or(1)
+}
+
+pub(crate) fn active_processor_group_count() -> u16 {
+    // SAFETY: GetActiveProcessorGroupCount takes no arguments and has no caller requirements.
+    unsafe { GetActiveProcessorGroupCount() }
 }
 
 pub fn process_cpu_usage_percent(

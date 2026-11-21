@@ -4,7 +4,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use windows_sys::Win32::System::Threading::{GetActiveProcessorGroupCount, GetCurrentProcessId};
+use windows_sys::Win32::System::Threading::GetCurrentProcessId;
 
 use crate::{
     action_log::{ActionLog, ActionLogFeature, ActionLogResult},
@@ -17,6 +17,7 @@ use crate::{
         },
         process::{ControlOwner, ProcessControlError, ProcessControlTarget, ProcessTargetKey},
     },
+    cpu::active_processor_group_count,
     cpu_topology::{CpuSelection, CpuTopology, ProcessorId},
     features::priority_control::PriorityProcessTier,
     foreground::{
@@ -1035,11 +1036,6 @@ fn processor_affinity_hard_message_for_group_count(group_count: u16) -> String {
     } else {
         "Processor Affinity (Hard) active.".to_owned()
     }
-}
-
-fn active_processor_group_count() -> u16 {
-    // SAFETY: GetActiveProcessorGroupCount takes no arguments and has no caller requirements.
-    unsafe { GetActiveProcessorGroupCount() }
 }
 
 pub(crate) fn processor_topology() -> Result<crate::cpu_topology::CpuTopology, String> {
