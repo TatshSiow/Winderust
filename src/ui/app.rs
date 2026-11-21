@@ -3015,9 +3015,16 @@ impl WinderustApp {
                     .map(|m| Message::Allocation(cpu_allocation::Kind::Hard, m)),
             )
         } else {
-            status_rail::view(page, &self.settings, &self.status, &self.power_plans).map(|panel| {
+            let settings = status_rail::saved_runtime_settings(
+                &self.settings,
+                crate::backend::power_source::is_plugged_in(),
+            );
+            status_rail::view(page, settings, &self.status, &self.power_plans).map(|panel| {
                 let panel = panel.map(Message::Status);
                 if page == Page::MemoryTrim {
+                    let can_trim = settings.general.enabled
+                        && settings.memory_trim.enabled
+                        && !self.manual_trim_pending;
                     column![
                         panel,
                         iced::widget::rule::horizontal(1),
@@ -3030,8 +3037,7 @@ impl WinderustApp {
                             .height(32)
                             .style(widgets::primary_button)
                             .on_press_maybe(
-                                (self.settings.memory_trim.enabled && !self.manual_trim_pending)
-                                    .then_some(Message::Trim(memory_trim::Message::TrimNow))
+                                can_trim.then_some(Message::Trim(memory_trim::Message::TrimNow))
                             )
                         )
                         .padding([design::space::MEDIUM as u16, 0])

@@ -38,7 +38,7 @@ pub(super) enum Message {
 
 pub(super) fn view<'a>(
     page: Page,
-    settings: &crate::application::SettingsEditor,
+    settings: &Settings,
     runtime: &'a RuntimeStatusSnapshot,
     plans: &[PowerPlan],
 ) -> Option<Element<'a, Message>> {
@@ -48,7 +48,6 @@ pub(super) fn view<'a>(
             plans,
         ));
     }
-    let settings = saved_runtime_settings(settings, crate::backend::power_source::is_plugged_in());
     let power_feature = match page {
         Page::ByActivity => Some(ActionLogFeature::ByActivity),
         Page::ByFocus => Some(ActionLogFeature::ByFocus),
@@ -405,7 +404,7 @@ pub(super) fn view<'a>(
     .into();
     Some(content)
 }
-fn saved_runtime_settings(
+pub(super) fn saved_runtime_settings(
     editor: &crate::application::SettingsEditor,
     plugged_in: Option<bool>,
 ) -> &Settings {
