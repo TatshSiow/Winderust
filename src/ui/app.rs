@@ -1364,7 +1364,7 @@ impl WinderustApp {
                     Err(error) => self.error_message = error.to_string(),
                 }
             }
-            Message::Trim(message) => self.trim.update(&mut self.settings.memory_trim, message),
+            Message::Trim(message) => self.trim.update(&mut self.settings, message),
             Message::Watchdog(watchdog::Message::Browse) => return self.browse(Page::Watchdog),
             Message::InstanceBalancing(instance_balancing::Message::Browse) => {
                 return self.browse(Page::InstanceBalancing);
