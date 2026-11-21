@@ -1255,6 +1255,7 @@ watchdog:
   restart: "重新啟動程式"
   restarted: "已終止 %{count} 個相符處理程序，並重新啟動程式一次。"
   already_restarted: "已略過終止：先前的 Watchdog 動作已重新啟動此程式。"
+  restart_already_restarted: "已略過重新啟動。Watchdog 已重新啟動此程式。"
   termination_already_handled: "已略過終止。先前的 Watchdog 動作已要求終止這些處理程序實例，或已確認它們結束。"
   restart_cooldown: "仍在 %{seconds} 秒的冷卻期間，已略過重新啟動。"
   restart_failed: "重新啟動失敗：%{error}"

@@ -6,7 +6,7 @@ use crate::{
     control::memory_priority::MemoryPriorityReleaseOwner,
     rules::decision_engine::ordinary_power_plan_stop,
 };
-use std::path::PathBuf;
+use std::{collections::btree_map::Entry, path::PathBuf};
 
 fn app_suspension_lock_failure(error: String) -> AppSuspensionSnapshot {
     AppSuspensionSnapshot {
@@ -165,6 +165,7 @@ const WATCHDOG_RESTART_COOLDOWN: Duration = Duration::from_secs(60);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum WatchdogRestartOutcome {
     Applied,
+    AlreadyRestarted,
     CoolingDown,
 }
 
@@ -211,24 +212,33 @@ impl WatchdogActionCycle {
             .map(|target| (target.id, target.creation_time))
             .collect();
         key.sort_unstable();
-        self.restarts
-            .entry(key)
-            .or_insert_with(|| {
-                cooldowns.retain(|(_, deadline)| now < *deadline);
-                if let Some(path) = targets.first().map(|target| &target.executable_path) {
-                    if cooldowns
-                        .iter()
-                        .any(|(active_path, _)| same_executable_path(active_path, path))
-                    {
-                        return Ok(WatchdogRestartOutcome::CoolingDown);
+        let entry = match self.restarts.entry(key) {
+            Entry::Occupied(entry) => {
+                return match entry.get() {
+                    Ok(WatchdogRestartOutcome::Applied) => {
+                        Ok(WatchdogRestartOutcome::AlreadyRestarted)
                     }
-                    cooldowns.push((path.clone(), now + WATCHDOG_RESTART_COOLDOWN));
+                    outcome => outcome.clone(),
+                };
+            }
+            Entry::Vacant(entry) => entry,
+        };
+        let outcome = (|| {
+            cooldowns.retain(|(_, deadline)| now < *deadline);
+            if let Some(path) = targets.first().map(|target| &target.executable_path) {
+                if cooldowns
+                    .iter()
+                    .any(|(active_path, _)| same_executable_path(active_path, path))
+                {
+                    return Ok(WatchdogRestartOutcome::CoolingDown);
                 }
-                let outcome = restart();
-                self.termination_handled.extend(outcome.termination_handled);
-                outcome.result.map(|()| WatchdogRestartOutcome::Applied)
-            })
-            .clone()
+                cooldowns.push((path.clone(), now + WATCHDOG_RESTART_COOLDOWN));
+            }
+            let outcome = restart();
+            self.termination_handled.extend(outcome.termination_handled);
+            outcome.result.map(|()| WatchdogRestartOutcome::Applied)
+        })();
+        entry.insert(outcome).clone()
     }
 }
 
@@ -320,6 +330,10 @@ impl RuntimeCore {
                             WatchdogRestartOutcome::Applied => (
                                 ActionLogResult::Applied,
                                 t!("watchdog.restarted", count = event.targets.len()),
+                            ),
+                            WatchdogRestartOutcome::AlreadyRestarted => (
+                                ActionLogResult::Skipped,
+                                t!("watchdog.restart_already_restarted"),
                             ),
                             WatchdogRestartOutcome::CoolingDown => (
                                 ActionLogResult::Skipped,
@@ -2866,7 +2880,13 @@ mod watchdog_action_tests {
             let start = Instant::now();
             let mut cooldowns = Vec::new();
             let mut launches = 0;
-            for batch in [targets.to_vec(), targets.into_iter().rev().collect()] {
+            for (batch, success) in [
+                (targets.to_vec(), WatchdogRestartOutcome::Applied),
+                (
+                    targets.into_iter().rev().collect(),
+                    WatchdogRestartOutcome::AlreadyRestarted,
+                ),
+            ] {
                 assert_eq!(
                     cycle.restart_once(&batch, &mut cooldowns, start, || {
                         launches += 1;
@@ -2875,7 +2895,7 @@ mod watchdog_action_tests {
                             result: result.clone(),
                         }
                     }),
-                    result.clone().map(|()| WatchdogRestartOutcome::Applied)
+                    result.clone().map(|()| success)
                 );
             }
             assert_eq!(launches, 1);
