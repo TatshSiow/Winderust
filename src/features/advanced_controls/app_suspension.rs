@@ -32,9 +32,12 @@ use crate::foreground::{
 };
 use crate::{
     action_log::{ActionLog, ActionLogFeature, ActionLogResult},
-    control::suspension::{
-        self as suspension_control, suspension_error_message, SuspensionController,
-        SuspensionError, SuspensionFreezeOutcome, SuspensionTarget,
+    control::{
+        process::ProcessTargetKey,
+        suspension::{
+            self as suspension_control, suspension_error_message, SuspensionController,
+            SuspensionError, SuspensionFreezeOutcome, SuspensionTarget,
+        },
     },
     rules::{execution_failure_suppression_threshold, ExecutionFailureTracker},
     runtime::observations::CycleObservations,
@@ -145,18 +148,6 @@ struct SuspendedProcess {
     creation_time: u64,
     suspended_since: Instant,
     manual: bool,
-}
-
-impl SuspendedProcess {
-    fn suspension_target(&self, process_id: u32) -> SuspensionTarget {
-        SuspensionTarget::automatic(
-            process_id,
-            self.process_name.clone(),
-            self.executable_path.clone(),
-            self.creation_time,
-            None,
-        )
-    }
 }
 
 struct TemporaryThaw {
@@ -428,8 +419,12 @@ impl AppSuspensionManager {
         }
         let now = Instant::now();
         controller.reconcile_pending(false);
-        self.suspended.retain(|process_id, process| {
-            controller.is_frozen_target(&process.suspension_target(*process_id))
+        self.suspended.retain(|&process_id, process| {
+            controller.is_frozen_target(&ProcessTargetKey::new(
+                process_id,
+                process.creation_time,
+                &process.executable_path,
+            ))
         });
 
         if !automation_enabled {

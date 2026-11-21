@@ -587,8 +587,8 @@ where
         })
     }
 
-    pub(crate) fn is_frozen_target(&self, target: &SuspensionTarget) -> bool {
-        self.managed.get(&target.key()).is_some_and(|managed| {
+    pub(crate) fn is_frozen_target(&self, key: &ProcessTargetKey) -> bool {
+        self.managed.get(key).is_some_and(|managed| {
             matches!(
                 managed.state,
                 SuspensionState::Frozen | SuspensionState::FrozenCompensationPending
@@ -1436,7 +1436,7 @@ mod tests {
 
         controller.thaw_keep_target(&target, true).unwrap();
 
-        assert!(controller.is_frozen_target(&target));
+        assert!(controller.is_frozen_target(&target.key()));
         assert_eq!(state.borrow().freeze_calls, vec![true]);
     }
 
@@ -1476,7 +1476,7 @@ mod tests {
         assert!(controller.managed_process_ids().next().is_none());
         assert!(!controller.matches_target(&target));
         assert!(!controller.is_frozen_process(42));
-        assert!(controller.is_frozen_target(&target));
+        assert!(controller.is_frozen_target(&target.key()));
     }
 
     #[test]

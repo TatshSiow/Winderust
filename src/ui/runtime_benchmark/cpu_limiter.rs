@@ -579,7 +579,7 @@ fn cleanup_case(
             if let Err(error) = suspension.shutdown() {
                 errors.push(error);
             }
-            if suspension.is_frozen_target(target) {
+            if suspension.is_frozen_target(&target.key()) {
                 errors.push("Worker remains frozen after CPU Limiter shutdown".to_owned());
             }
         }
