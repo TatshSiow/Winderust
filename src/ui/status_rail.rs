@@ -871,11 +871,12 @@ fn feature_status_summary(
                     ActionLogFeature::ProcessorAffinityHard,
                 ),
             };
+            let observed = !status.observation_paused;
             FeatureStatusSummary {
-                scanned: Some(status.scanned_processes),
-                adjusted: Some(status.adjusted_processes),
+                scanned: observed.then_some(status.scanned_processes),
+                adjusted: observed.then_some(status.adjusted_processes),
                 protected_or_denied: None,
-                skipped: Some(status.skipped_processes),
+                skipped: observed.then_some(status.skipped_processes),
                 last_error: status.last_error.as_deref(),
                 action_log_feature: feature,
             }
@@ -1091,23 +1092,32 @@ mod tests {
             generation: 1,
             ..Default::default()
         };
-        let states = |runtime: &RuntimeStatusSnapshot| {
+        let activity = |runtime: &RuntimeStatusSnapshot| {
             [Page::CpuSetsSoft, Page::ProcessorAffinityHard].map(|page| {
                 let summary = feature_status_summary(page, runtime).unwrap();
-                sidebar_state(page, &settings, runtime, &summary)
+                (
+                    sidebar_state(page, &settings, runtime, &summary),
+                    [summary.scanned, summary.adjusted, summary.skipped],
+                )
             })
         };
-        assert_eq!(states(&runtime), [FeatureRunState::Waiting; 2]);
+        assert_eq!(
+            activity(&runtime),
+            [(FeatureRunState::Waiting, [Some(0); 3]); 2]
+        );
 
         let features = std::sync::Arc::make_mut(&mut runtime.feature_status);
         features.cpu_sets_soft.observation_paused = true;
         features.processor_affinity_hard.observation_paused = true;
-        assert_eq!(states(&runtime), [FeatureRunState::Paused; 2]);
+        assert_eq!(
+            activity(&runtime),
+            [(FeatureRunState::Paused, [None; 3]); 2]
+        );
 
         let features = std::sync::Arc::make_mut(&mut runtime.feature_status);
         features.cpu_sets_soft.last_error = Some("restore failed".into());
         features.processor_affinity_hard.last_error = Some("restore failed".into());
-        assert_eq!(states(&runtime), [FeatureRunState::Error; 2]);
+        assert_eq!(activity(&runtime), [(FeatureRunState::Error, [None; 3]); 2]);
     }
 
     #[test]

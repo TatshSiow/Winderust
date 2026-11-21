@@ -9,6 +9,7 @@ use crate::backend::dashboard_metrics::{
 use crate::backend::power_source::is_plugged_in;
 use crate::config::{PowerSourceProfile, Settings};
 use crate::cpu::{CpuUsageMonitor, CpuUsageSnapshot};
+use crate::cpu_allocation::CpuAllocationSnapshot;
 use crate::ui::scrolling::scrollable;
 use crate::ui::Page;
 use iced::widget::{canvas, column, container, responsive, row, text};
@@ -1286,6 +1287,23 @@ fn normalize_cpu_frequency_percent(
         .clamp(0.0, 100.0)
 }
 
+fn observation_pause_detail(failed: bool) -> String {
+    t!(if failed {
+        "common.error"
+    } else {
+        "sidebar_status.paused"
+    })
+    .into_owned()
+}
+
+fn cpu_allocation_detail(status: &CpuAllocationSnapshot) -> String {
+    if status.observation_paused {
+        observation_pause_detail(status.last_error.is_some())
+    } else {
+        t!("home.adjusted_count", count = status.adjusted_processes).into_owned()
+    }
+}
+
 fn priority_observation_detail(
     enabled: bool,
     paused: bool,
@@ -1293,12 +1311,7 @@ fn priority_observation_detail(
     adjusted: usize,
 ) -> String {
     if paused {
-        t!(if failed {
-            "common.error"
-        } else {
-            "sidebar_status.paused"
-        })
-        .to_string()
+        observation_pause_detail(failed)
     } else if enabled {
         t!("home.adjusted_count", count = adjusted).to_string()
     } else {
@@ -1372,20 +1385,12 @@ fn enabled_features(
     feature!(
         CpuSetsSoft,
         cpu_sets_soft,
-        t!(
-            "home.adjusted_count",
-            count = status.cpu_sets_soft.adjusted_processes
-        )
-        .to_string()
+        cpu_allocation_detail(&status.cpu_sets_soft)
     );
     feature!(
         ProcessorAffinityHard,
         processor_affinity_hard,
-        t!(
-            "home.adjusted_count",
-            count = status.processor_affinity_hard.adjusted_processes
-        )
-        .to_string()
+        cpu_allocation_detail(&status.processor_affinity_hard)
     );
     feature!(
         InstanceBalancing,
