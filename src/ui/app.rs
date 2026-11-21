@@ -56,6 +56,7 @@ impl SidePanelTab {
                 &[Self::Info, Self::Status, Self::Presets]
             }
             Page::AdvancedPowerPlanTuning => &[Self::Info, Self::Presets],
+            Page::Win32PrioritySeparation => &[Self::Info],
             _ => &[Self::Info, Self::Status],
         }
     }
@@ -152,41 +153,42 @@ fn side_panel_dock<'a>(
 }
 
 fn feature_info_sidebar<'a>(
-    panel: Option<Element<'a, Message>>,
     feature_page: Page,
     selected: SidePanelTab,
+    build_panel: impl FnOnce() -> Option<Element<'a, Message>>,
 ) -> Option<Element<'a, Message>> {
-    let description = navigation::page_feature_info(feature_page);
-    if description.is_empty() {
-        return panel;
+    if navigation::page_feature_info_intro(feature_page).is_none() {
+        return build_panel();
     }
-    let info: Element<'a, Message> = scrollable(
-        container(
-            text(description)
-                .size(design::typography::SECONDARY)
-                .width(Fill),
+    let info = || -> Element<'a, Message> {
+        scrollable(
+            container(
+                text(navigation::page_feature_info(feature_page))
+                    .size(design::typography::SECONDARY)
+                    .width(Fill),
+            )
+            .width(Fill)
+            .padding([0, design::space::MEDIUM as u16]),
         )
         .width(Fill)
-        .padding([0, design::space::MEDIUM as u16]),
-    )
-    .width(Fill)
-    .height(Fill)
-    .into();
-    Some(if let Some(panel) = panel {
-        let tabs = row(SidePanelTab::for_page(feature_page).iter().map(|&tab| {
+        .height(Fill)
+        .into()
+    };
+    let tabs = SidePanelTab::for_page(feature_page);
+    let body = if tabs.len() == 1 {
+        None
+    } else if selected == SidePanelTab::Info {
+        Some(info())
+    } else {
+        build_panel()
+    };
+    Some(if let Some(body) = body {
+        let tabs = row(tabs.iter().map(|&tab| {
             widgets::panel_tab(tab.label(), tab == selected, Message::SidePanelTab(tab)).into()
         }));
         column![
             container(tabs).style(widgets::tab_bar),
-            super::motion::wrap(
-                if selected == SidePanelTab::Info {
-                    info
-                } else {
-                    panel
-                },
-                true,
-                super::motion::Effect::Content(selected as u64),
-            ),
+            super::motion::wrap(body, true, super::motion::Effect::Content(selected as u64)),
         ]
         .spacing(design::space::MEDIUM)
         .height(Fill)
@@ -194,7 +196,7 @@ fn feature_info_sidebar<'a>(
     } else {
         column![
             widgets::panel_heading(t!("common.feature_info").to_string()),
-            info,
+            info(),
         ]
         .spacing(design::space::MEDIUM)
         .height(Fill)
@@ -2785,7 +2787,11 @@ impl WinderustApp {
     }
 
     fn side_panel(&self, page: Page) -> Option<Element<'_, Message>> {
-        let panel = if page == Page::ProcessList {
+        feature_info_sidebar(page, self.side_panel_tab, || self.side_panel_body(page))
+    }
+
+    fn side_panel_body(&self, page: Page) -> Option<Element<'_, Message>> {
+        if page == Page::ProcessList {
             Some(self.processes.side_panel().map(Message::Processes))
         } else if page == Page::ActionLog {
             Some(
@@ -2873,8 +2879,7 @@ impl WinderustApp {
                     panel
                 }
             })
-        };
-        feature_info_sidebar(panel, page, self.side_panel_tab)
+        }
     }
 
     fn view_content(&self) -> Element<'_, Message> {
@@ -3970,11 +3975,11 @@ mod tests {
         use iced::advanced::{layout, widget::Tree};
 
         let renderer = iced::Renderer::new(iced::Font::DEFAULT, iced::Pixels(14.0));
-        assert!(feature_info_sidebar(None, Page::Home, SidePanelTab::Info).is_none());
+        assert!(feature_info_sidebar(Page::Home, SidePanelTab::Info, || None).is_none());
         for page in
             std::iter::once(Page::SettingsHome).chain(navigation::children(Page::SettingsHome))
         {
-            assert!(feature_info_sidebar(None, page, SidePanelTab::Info).is_none());
+            assert!(feature_info_sidebar(page, SidePanelTab::Info, || None).is_none());
         }
         for width in [216.0, 296.0] {
             for height in [500.0, 1000.0] {
@@ -3986,8 +3991,13 @@ mod tests {
                 ] {
                     for &selected in SidePanelTab::for_page(feature_page) {
                         let panel = iced::widget::Space::new().width(Fill).height(Fill).into();
-                        let mut view = feature_info_sidebar(Some(panel), feature_page, selected)
-                            .expect("feature page has information");
+                        let mut built_panel = false;
+                        let mut view = feature_info_sidebar(feature_page, selected, || {
+                            built_panel = true;
+                            Some(panel)
+                        })
+                        .expect("feature page has information");
+                        assert_eq!(built_panel, selected != SidePanelTab::Info);
                         let mut tree = Tree::new(&view);
                         let node = view.as_widget_mut().layout(
                             &mut tree,
@@ -4002,7 +4012,7 @@ mod tests {
                     }
                 }
                 let mut view =
-                    feature_info_sidebar(None, Page::TimerResolution, SidePanelTab::Status)
+                    feature_info_sidebar(Page::TimerResolution, SidePanelTab::Status, || None)
                         .expect("feature information is available without a runtime panel");
                 let mut tree = Tree::new(&view);
                 let node = view.as_widget_mut().layout(
