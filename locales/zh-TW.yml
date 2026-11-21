@@ -654,7 +654,7 @@ interrupt_timing:
   cancelling: "正在取消擷取…"
   cancelled: "已取消擷取。"
   access_denied: "擷取中斷計時需要系統管理員權限。"
-  in_use: "已有中斷計時工作階段正在執行。"
+  in_use: "中斷計時目前忙碌，請稍後再試。"
   failed: "Windows 無法擷取中斷計時。"
   timed_out: "中斷計時逾時，清理工作可能仍在進行。"
   no_samples: "未擷取到已完成的中斷樣本。"
