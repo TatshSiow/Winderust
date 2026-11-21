@@ -1,5 +1,6 @@
 use super::design;
 use super::widgets::{checkbox, text_input};
+use crate::application::SettingsEditor;
 use crate::config::TimerResolutionSettings;
 use crate::timer_resolution::TimerResolutionSnapshot;
 use crate::ui::process_rules::{can_add_timer_resolution_process, new_timer_resolution_rule};
@@ -34,7 +35,7 @@ impl Editor {
 
     pub(super) fn update(
         &mut self,
-        s: &mut TimerResolutionSettings,
+        s: &mut SettingsEditor,
         status: &TimerResolutionSnapshot,
         m: Message,
     ) {
@@ -46,46 +47,58 @@ impl Editor {
             )
         };
         match m {
-            Message::Enabled(v) => s.enabled = v,
+            Message::Enabled(v) if s.timer_resolution.enabled != v => {
+                s.timer_resolution.enabled = v;
+            }
             Message::Path(v) => self.path = v,
-            Message::Add if can_add_timer_resolution_process(s, &self.path) => {
-                s.rules
-                    .push(new_timer_resolution_rule(&self.path, s.desired_100ns));
+            Message::Add if can_add_timer_resolution_process(&s.timer_resolution, &self.path) => {
+                let timer = &mut s.timer_resolution;
+                timer
+                    .rules
+                    .push(new_timer_resolution_rule(&self.path, timer.desired_100ns));
                 self.path.clear();
             }
-            Message::RuleEnabled(i, v) => {
-                if let Some(r) = s.rules.get_mut(i) {
-                    r.enabled = v;
-                }
+            Message::RuleEnabled(i, v)
+                if s.timer_resolution
+                    .rules
+                    .get(i)
+                    .is_some_and(|r| r.enabled != v) =>
+            {
+                s.timer_resolution.rules[i].enabled = v;
             }
             Message::Resolution(i, value) => {
-                let rule_count = s.rules.len();
-                if let Some(rule) = s.rules.get_mut(i) {
-                    if let Some(resolution) = parse(&value) {
-                        rule.desired_100ns = resolution;
+                let rule_count = s.timer_resolution.rules.len();
+                if let Some(rule) = s.timer_resolution.rules.get(i) {
+                    if let Some(resolution) = parse(&value).filter(|&v| v != rule.desired_100ns) {
+                        s.timer_resolution.rules[i].desired_100ns = resolution;
                     }
                     self.drafts.resize(rule_count, None);
                     self.drafts[i] = Some(value);
                 }
             }
             Message::Commit(i) => {
-                if let (Some(rule), Some(draft)) = (s.rules.get_mut(i), self.drafts.get_mut(i)) {
+                if let (Some(rule), Some(draft)) =
+                    (s.timer_resolution.rules.get(i), self.drafts.get_mut(i))
+                {
                     if let Some(resolution) = draft.as_deref().and_then(parse) {
-                        rule.desired_100ns = resolution;
+                        if rule.desired_100ns != resolution {
+                            s.timer_resolution.rules[i].desired_100ns = resolution;
+                        }
                         *draft = None;
                     }
                 }
             }
-            Message::Remove(i) => {
-                if i < s.rules.len() {
-                    s.rules.remove(i);
-                    if i < self.drafts.len() {
-                        self.drafts.remove(i);
-                    }
+            Message::Remove(i) if i < s.timer_resolution.rules.len() => {
+                s.timer_resolution.rules.remove(i);
+                if i < self.drafts.len() {
+                    self.drafts.remove(i);
                 }
             }
-
-            Message::Add | Message::Browse => {}
+            Message::Enabled(_)
+            | Message::Add
+            | Message::RuleEnabled(..)
+            | Message::Remove(_)
+            | Message::Browse => {}
         }
     }
     pub(super) fn view<'a>(
@@ -184,50 +197,66 @@ fn parse_resolution(value: &str, min: u32, max: u32) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::{PowerSourceProfile, Settings};
+
     #[test]
     fn valid_edits_update_the_draft_without_an_apply_button() {
         let mut editor = Editor::default();
-        let mut settings = TimerResolutionSettings::default();
+        let mut settings = Settings::default();
         settings
+            .timer_resolution
             .rules
             .push(new_timer_resolution_rule(r"C:\Apps\test.exe", 10_000));
+        let mut settings = SettingsEditor::with_settings(settings);
+        settings.select_power_source(PowerSourceProfile::OnBattery);
         let status = TimerResolutionSnapshot::default();
+        editor.update(&mut settings, &status, Message::Commit(0));
+        editor.update(
+            &mut settings,
+            &status,
+            Message::Resolution(0, "01.00 ms".into()),
+        );
+        assert_eq!(editor.drafts[0].as_deref(), Some("01.00 ms"));
+        editor.update(&mut settings, &status, Message::Commit(0));
+        assert_eq!(editor.drafts[0], None);
+        assert!(!settings.has_unsaved_changes());
         editor.update(
             &mut settings,
             &status,
             Message::Resolution(0, "2.00".into()),
         );
-        assert_eq!(settings.rules[0].desired_100ns, 20_000);
+        assert_eq!(settings.timer_resolution.rules[0].desired_100ns, 20_000);
         assert!(!editor.has_invalid_inputs());
         editor.update(&mut settings, &status, Message::Resolution(0, "".into()));
         assert!(editor.has_invalid_inputs());
-        assert_eq!(settings.rules[0].desired_100ns, 20_000);
+        assert_eq!(settings.timer_resolution.rules[0].desired_100ns, 20_000);
     }
     #[test]
     fn invalid_input_survives_other_rule_edits_and_removal() {
         let mut editor = Editor::default();
-        let mut settings = TimerResolutionSettings::default();
-        settings.rules.extend([
+        let mut settings = Settings::default();
+        settings.timer_resolution.rules.extend([
             new_timer_resolution_rule(r"C:\Apps\first.exe", 20_000),
             new_timer_resolution_rule(r"C:\Apps\middle.exe", 30_000),
             new_timer_resolution_rule(r"C:\Apps\last.exe", 40_000),
         ]);
+        let mut settings = SettingsEditor::with_settings(settings);
         let status = TimerResolutionSnapshot::default();
         editor.update(&mut settings, &status, Message::Resolution(1, "".into()));
         editor.update(&mut settings, &status, Message::Resolution(2, "5.5".into()));
         assert!(editor.has_invalid_inputs());
-        assert_eq!(settings.rules[1].desired_100ns, 30_000);
-        assert_eq!(settings.rules[2].desired_100ns, 60_000);
+        assert_eq!(settings.timer_resolution.rules[1].desired_100ns, 30_000);
+        assert_eq!(settings.timer_resolution.rules[2].desired_100ns, 60_000);
 
         editor.update(&mut settings, &status, Message::Remove(2));
         editor.update(&mut settings, &status, Message::Remove(0));
         assert!(editor.has_invalid_inputs());
         assert_eq!(editor.drafts[0].as_deref(), Some(""));
-        assert_eq!(settings.rules[0].desired_100ns, 30_000);
+        assert_eq!(settings.timer_resolution.rules[0].desired_100ns, 30_000);
 
         editor.update(&mut settings, &status, Message::Resolution(0, "7.5".into()));
         assert!(!editor.has_invalid_inputs());
-        assert_eq!(settings.rules[0].desired_100ns, 80_000);
+        assert_eq!(settings.timer_resolution.rules[0].desired_100ns, 80_000);
     }
     #[test]
     fn timer_input_is_bounded_and_rejects_nonfinite() {

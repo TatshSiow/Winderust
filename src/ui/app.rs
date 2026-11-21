@@ -1423,7 +1423,7 @@ impl WinderustApp {
                 return self.browse(Page::TimerResolution);
             }
             Message::Timer(message) => self.timer.update(
-                &mut self.settings.timer_resolution,
+                &mut self.settings,
                 &self.status.feature_status.timer_resolution,
                 message,
             ),
