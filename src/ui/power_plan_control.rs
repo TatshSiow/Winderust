@@ -62,11 +62,7 @@ pub(super) fn view(
     if managed {
         return widgets::settings_card(selector).into();
     }
-    let (detail, failed) = if editor.pending.is_some() {
-        (t!("power_plan_control.switching").to_string(), false)
-    } else {
-        automation_detail(status, plans, current)
-    };
+    let (detail, failed) = automation_detail(status, plans, current);
     let status = text(detail)
         .width(Fill)
         .size(design::typography::SECONDARY)

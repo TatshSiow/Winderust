@@ -2819,8 +2819,12 @@ impl WinderustApp {
             )]
             .spacing(design::space::LARGE);
             if !self.exiting && self.closing {
+                let pending_changes = self.pending_changes();
+                let switching = self.power_plan_control.pending.is_some();
                 body = body.push(text(
-                    t!(if self.pending_changes() {
+                    t!(if switching {
+                        "power_plan_control.switching"
+                    } else if pending_changes {
                         "exit_prompt.unsaved"
                     } else {
                         "exit_prompt.message"
@@ -2832,27 +2836,17 @@ impl WinderustApp {
                         .style(widgets::tertiary_button)
                         .on_press(Message::Stay),
                 );
-                if self.pending_changes() {
+                if pending_changes {
                     actions = actions
                         .push(
                             action_button(t!("exit_prompt.save_and_exit").to_string())
                                 .style(widgets::primary_button)
-                                .on_press_maybe(
-                                    self.power_plan_control
-                                        .pending
-                                        .is_none()
-                                        .then_some(Message::Save),
-                                ),
+                                .on_press_maybe((!switching).then_some(Message::Save)),
                         )
                         .push(
                             action_button(t!("exit_prompt.without_saving").to_string())
                                 .style(widgets::danger_button)
-                                .on_press_maybe(
-                                    self.power_plan_control
-                                        .pending
-                                        .is_none()
-                                        .then_some(Message::DiscardAndClose),
-                                ),
+                                .on_press_maybe((!switching).then_some(Message::DiscardAndClose)),
                         );
                 } else {
                     actions = actions.push(
@@ -3470,13 +3464,15 @@ impl WinderustApp {
             t!(title).to_string(),
             design::typography::BODY
         )];
-        if let Some(guid) = plan {
+        let ready = self.power_plan_control.pending.is_none();
+        if !ready {
+            notice = notice.push(text(t!("power_plan_control.switching").to_string()));
+        } else if let Some(guid) = plan {
             let plan = power_plan_control::plan_name(&self.power_plans, guid);
             notice = notice.push(text(
                 t!("power_plan_control.save_message", plan = plan).to_string(),
             ));
         }
-        let ready = self.power_plan_control.pending.is_none();
         notice
             .push(
                 row![
