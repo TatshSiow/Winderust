@@ -28,6 +28,8 @@ pub(crate) enum ManualPowerPlanError {
     ManagedByAdaptive,
     #[error("The managed Adaptive plan cannot be selected manually.")]
     ManagedTarget,
+    #[error("Windows verified the selected power plan, but recovery is unconfirmed: {0}")]
+    ActiveRecoveryPending(String),
     #[error("{0}")]
     SwitchFailed(String),
 }
@@ -493,8 +495,15 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
         let previous_guid = self
             .read_active_guid()
             .map_err(ManualPowerPlanError::SwitchFailed)?;
-        self.observe_active_plan(&previous_guid)
-            .map_err(ManualPowerPlanError::SwitchFailed)?;
+        if let Err(error) = self.observe_active_plan(&previous_guid) {
+            let target_is_active = same_guid(&previous_guid, target_guid);
+            self.current_guid = Some(previous_guid);
+            return Err(if target_is_active {
+                ManualPowerPlanError::ActiveRecoveryPending(error)
+            } else {
+                ManualPowerPlanError::SwitchFailed(error)
+            });
+        }
         if self.is_managed_adaptive_plan(&previous_guid) {
             return Err(ManualPowerPlanError::ManagedByAdaptive);
         }
@@ -504,9 +513,16 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
 
         let transition = self
             .switch_from_current(previous_guid, target_guid, SwitchEffect::Manual)
-            .map_err(ManualPowerPlanError::SwitchFailed)?;
+            .map_err(|failure| {
+                if failure.verified_target {
+                    self.current_guid = Some(target_guid.to_owned());
+                    ManualPowerPlanError::ActiveRecoveryPending(failure.detail)
+                } else {
+                    ManualPowerPlanError::SwitchFailed(failure.detail)
+                }
+            })?;
         self.finish_manual_switch(&transition.target_guid)
-            .map_err(ManualPowerPlanError::SwitchFailed)?;
+            .map_err(ManualPowerPlanError::ActiveRecoveryPending)?;
         self.clear_ordinary_decision();
         self.next_active_plan_refresh = Some(now);
         Ok(true)
@@ -540,6 +556,7 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
             target_guid,
             SwitchEffect::Automatic(temporary_effect),
         )
+        .map_err(|failure| failure.detail)
     }
 
     fn switch_from_current(
@@ -547,11 +564,18 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
         previous_guid: String,
         target_guid: &str,
         effect: SwitchEffect,
-    ) -> Result<SwitchTransition, String> {
+    ) -> Result<SwitchTransition, SwitchAttemptFailure> {
         match switch_from_verified(&mut self.platform, previous_guid.clone(), target_guid) {
             Ok(transition) => Ok(transition),
             Err(failure) => {
                 let mut error = failure.message;
+                let verified_target = matches!(
+                    failure.state,
+                    FailedSwitchState::Pending {
+                        allow_previous: false,
+                        ..
+                    }
+                );
                 match failure.state {
                     FailedSwitchState::Previous => self.current_guid = Some(previous_guid),
                     FailedSwitchState::External(actual_guid) => {
@@ -582,7 +606,10 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
                         });
                     }
                 }
-                Err(error)
+                Err(SwitchAttemptFailure {
+                    detail: error,
+                    verified_target,
+                })
             }
         }
     }
@@ -599,11 +626,13 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
             self.current_guid = Some(actual_guid);
             return Ok(false);
         }
-        let transition = self.switch_from_current(
-            actual_guid,
-            original_guid,
-            SwitchEffect::Automatic(temporary_effect),
-        )?;
+        let transition = self
+            .switch_from_current(
+                actual_guid,
+                original_guid,
+                SwitchEffect::Automatic(temporary_effect),
+            )
+            .map_err(|failure| failure.detail)?;
         if !matches!(temporary_effect, TemporaryEffect::Preserve) {
             self.record_ordinary_switch(&transition, temporary_effect);
         }
@@ -1155,6 +1184,11 @@ enum CompensationState {
     Previous,
     External(String),
     Uncertain,
+}
+
+struct SwitchAttemptFailure {
+    detail: String,
+    verified_target: bool,
 }
 
 struct SwitchFailure<D> {
@@ -3167,9 +3201,10 @@ mod tests {
 
             assert!(matches!(
                 controller.switch_manual("manual", now),
-                Err(ManualPowerPlanError::SwitchFailed(_))
+                Err(ManualPowerPlanError::ActiveRecoveryPending(_))
             ));
             assert_eq!(controller.platform.active, "manual");
+            assert_eq!(controller.status().current_guid.as_deref(), Some("manual"));
             assert_eq!(controller.platform.pending.borrow().len(), 1);
 
             controller.platform.failure = None;
@@ -3194,11 +3229,17 @@ mod tests {
         let mut controller = PowerPlanController::with_platform(FakePlatform::new("original"));
         controller.platform.failure = Some(FailurePoint::Forget);
 
-        assert!(controller.switch_manual("manual", now).is_err());
+        assert!(matches!(
+            controller.switch_manual("manual", now),
+            Err(ManualPowerPlanError::ActiveRecoveryPending(_))
+        ));
         assert!(controller.ownership_release_pending);
         assert_eq!(controller.status().current_guid.as_deref(), Some("manual"));
         assert_eq!(controller.platform.journal.borrow().len(), 1);
-        assert!(controller.switch_manual("other", now).is_err());
+        assert!(matches!(
+            controller.switch_manual("other", now),
+            Err(ManualPowerPlanError::SwitchFailed(_))
+        ));
         assert_eq!(controller.platform.active, "manual");
 
         controller.platform.failure = None;

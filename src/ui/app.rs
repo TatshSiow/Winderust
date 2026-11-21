@@ -3841,6 +3841,12 @@ fn power_plan_switch_error(error: RuntimeCommandError) -> String {
         RuntimeCommandError::PowerPlan(ManualPowerPlanError::ManagedTarget) => {
             "power_plan_control.switch_managed_target"
         }
+        RuntimeCommandError::PowerPlan(ManualPowerPlanError::ActiveRecoveryPending(detail)) => {
+            crate::backend::diagnostics::error(&format!(
+                "Manual power plan recovery update is unconfirmed: {detail}"
+            ));
+            "power_plan_control.switch_active_recovery_pending"
+        }
         RuntimeCommandError::RuntimeStopped | RuntimeCommandError::WorkerExited => {
             "power_plan_control.switch_runtime_unavailable"
         }

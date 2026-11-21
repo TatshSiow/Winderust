@@ -1141,6 +1141,7 @@ power_plan_control:
   save_title: "電源計畫變更"
   save_message: "將 Windows 電源計畫切換為 %{plan}。"
   switch_failed: "無法切換電源計畫。"
+  switch_active_recovery_pending: "Windows 回報選取的電源計畫為使用中。Winderust 無法確認復原記錄已更新。"
   switch_managed_active: "目前的電源計畫由自適應引擎管理。"
   switch_managed_target: "無法手動選取 Winderust Adaptive。"
   switch_runtime_unavailable: "自動化功能目前無法使用，無法完成電源計畫切換。"

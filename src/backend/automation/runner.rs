@@ -1875,14 +1875,17 @@ impl RuntimeCore {
         if plan.managed_adaptive {
             return Err(ManualPowerPlanError::ManagedTarget.into());
         }
-        let switched = self
+        let result = self
             .power_plan_controller
-            .switch_manual(&plan.guid, Instant::now())?;
-        if switched {
+            .switch_manual(&plan.guid, Instant::now());
+        if matches!(
+            result,
+            Ok(true) | Err(ManualPowerPlanError::ActiveRecoveryPending(_))
+        ) {
             self.by_cpu_load_scheduler
                 .observe_active_plan(Some(&plan.guid));
         }
-        Ok(())
+        result.map(|_| ()).map_err(Into::into)
     }
 
     pub(super) fn refresh_active_plan(&mut self) -> Result<(), String> {

@@ -1138,6 +1138,7 @@ power_plan_control:
   save_title: "Power plan change"
   save_message: "Switch Windows to %{plan}."
   switch_failed: "Could not switch the power plan."
+  switch_active_recovery_pending: "Windows reported the selected power plan as active. Winderust could not confirm the recovery update."
   switch_managed_active: "Adaptive Engine is managing the current power plan."
   switch_managed_target: "Winderust Adaptive cannot be selected manually."
   switch_runtime_unavailable: "Automation is unavailable. The power plan change could not be completed."

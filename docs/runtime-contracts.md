@@ -363,7 +363,9 @@ Read the relevant section before changing feature policy, ownership, restoration
   runtime power-plan controller after Save. Manual switching is unavailable
   while Windows is using the plan owned by Adaptive Engine. A successful manual
   change ends the current restoration episode and becomes the baseline for later
-  automatic changes.
+  automatic changes. If Windows reports the selected plan as active and the
+  recovery update remains unconfirmed, Save and Exit keeps the app open. Save
+  retries recovery against the current Windows plan before allowing a new switch.
   Enabled rules can switch plans again. The temporary Winderust Adaptive plan
   is reserved for Adaptive Engine.
 - Managed adaptive-plan recovery recognizes only the current `Winderust Adaptive` name and description.
