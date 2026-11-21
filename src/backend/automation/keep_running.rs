@@ -375,9 +375,18 @@ impl<P: Platform> Coordinator<P> {
                 Completion::Committed(launch, result) => {
                     if P::accepted(&launch) {
                         if let Some(key) = P::launch_key(&launch) {
+                            let process_id = key.id;
                             owner.policy.accepted(&flight.ticket, key);
                             if let Err(error) = result {
                                 owner.last_error = Some(error.message);
+                            } else {
+                                log.record(
+                                    ActionLogFeature::KeepRunning,
+                                    Some(process_id),
+                                    &owner.rule.executable_path,
+                                    ActionLogResult::Applied,
+                                    rust_i18n::t!("keep_running.relaunched").to_string(),
+                                );
                             }
                             flight.phase = Phase::Accepted(launch);
                         } else {
@@ -810,20 +819,13 @@ impl<P: Platform> Coordinator<P> {
             }
             let published = (state, owner.last_error.clone());
             if owner.published.as_ref() != Some(&published) {
-                if owner.last_error.is_some() || owner.retry_error.is_none() {
+                if let Some(error) = &owner.last_error {
                     log.record(
                         ActionLogFeature::KeepRunning,
                         None,
                         &owner.rule.executable_path,
-                        if owner.last_error.is_some() {
-                            ActionLogResult::Failed
-                        } else {
-                            ActionLogResult::Applied
-                        },
-                        owner
-                            .last_error
-                            .clone()
-                            .unwrap_or_else(|| rust_i18n::t!(state.label_key()).to_string()),
+                        ActionLogResult::Failed,
+                        error,
                     );
                 }
                 owner.published = Some(published);

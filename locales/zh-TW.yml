@@ -71,6 +71,7 @@ instance_limits:
   discarded_sample: "收集期間設定或 Windows 工作階段已變更，等待新取樣。"
 
 keep_running:
+  relaunched: "已重新啟動應用程式。"
   enable: "啟用持續執行"
   enable_help: "所有已確認的執行個體結束後，重新啟動應用程式。請先自行啟動一次，讓規則開始監控。插電與電池模式共用此設定。"
   intro_1: "請先自行啟動應用程式一次，讓規則進入監控狀態。所有已確認的執行個體結束後，Winderust 會重新啟動一個執行個體。"

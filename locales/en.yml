@@ -71,6 +71,7 @@ instance_limits:
   discarded_sample: "Settings or the Windows session changed during collection; waiting for a fresh sample."
 
 keep_running:
+  relaunched: "Relaunched app."
   enable: "Enable Keep Running"
   enable_help: "Relaunch an app after all verified instances exit. Start it yourself once to arm its rule. Shared across Plugged In and On Battery."
   intro_1: "Start the app yourself once to arm its rule. Winderust then relaunches one instance after every verified instance exits."
