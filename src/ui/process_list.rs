@@ -876,32 +876,14 @@ impl ProcessList {
                     p.id.to_string()
                 }
             }
-            Sort::Cpu => {
-                if entry
-                    .indices
-                    .iter()
-                    .any(|i| self.cpu.contains_key(&self.processes[*i].id))
-                {
-                    format!("{:.1}%", self.cpu_total(entry))
-                } else {
-                    t!("common.unknown").to_string()
-                }
-            }
-            Sort::Memory => {
-                if entry.indices.iter().any(|i| {
-                    self.samples
-                        .get(&self.processes[*i].id)
-                        .is_some_and(|sample| sample.working_set_bytes.is_some())
-                }) {
-                    format_memory_usage(
-                        self.memory_total(entry),
-                        self.total_memory_bytes,
-                        self.memory_percentage,
-                    )
-                } else {
-                    t!("common.unknown").to_string()
-                }
-            }
+            Sort::Cpu => self.cpu_total(entry).map_or_else(
+                || t!("common.unknown").into_owned(),
+                |usage| format!("{usage:.1}%"),
+            ),
+            Sort::Memory => self.memory_total(entry).map_or_else(
+                || t!("common.unknown").into_owned(),
+                |bytes| format_memory_usage(bytes, self.total_memory_bytes, self.memory_percentage),
+            ),
             Sort::User => self.user(entry),
             Sort::Status => self.status_key(entry).to_string(),
         }
@@ -1135,7 +1117,10 @@ impl ProcessList {
                 Sort::Pid => self.processes[a.indices[0]]
                     .id
                     .cmp(&self.processes[b.indices[0]].id),
-                Sort::Cpu => self.cpu_total(a).total_cmp(&self.cpu_total(b)),
+                Sort::Cpu => match (self.cpu_total(a), self.cpu_total(b)) {
+                    (Some(left), Some(right)) => left.total_cmp(&right),
+                    (left, right) => left.is_some().cmp(&right.is_some()),
+                },
                 Sort::Memory => self.memory_total(a).cmp(&self.memory_total(b)),
                 Sort::User => self.user(a).cmp(&self.user(b)),
                 Sort::Status => self.status_key(a).cmp(self.status_key(b)),
@@ -1174,16 +1159,16 @@ impl ProcessList {
             }
         }
     }
-    fn cpu_total(&self, e: &Entry) -> f32 {
+    fn cpu_total(&self, e: &Entry) -> Option<f32> {
         e.indices
             .iter()
-            .filter_map(|i| self.cpu.get(&self.processes[*i].id))
+            .map(|i| self.cpu.get(&self.processes[*i].id).copied())
             .sum()
     }
-    fn memory_total(&self, e: &Entry) -> u64 {
+    fn memory_total(&self, e: &Entry) -> Option<u64> {
         e.indices
             .iter()
-            .filter_map(|i| {
+            .map(|i| {
                 self.samples
                     .get(&self.processes[*i].id)
                     .and_then(|s| s.working_set_bytes)
@@ -2303,6 +2288,39 @@ fn load_population() -> Result<Population, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn grouped_resources_require_every_member_sample() {
+        let mut list = ProcessList {
+            processes: vec![process(10, 1, "app.exe"), process(11, 2, "app.exe")],
+            cpu: HashMap::from([(10, 0.0)]),
+            ..ProcessList::default()
+        };
+        let group = Entry {
+            key: "app.exe".into(),
+            indices: vec![0, 1],
+            nested: false,
+        };
+        let sample = |creation_time, working_set_bytes| ProcessResourceSample {
+            cpu: crate::cpu::ProcessCpuSample {
+                cpu_time_100ns: 0,
+                sampled_at: std::time::Instant::now(),
+            },
+            creation_time,
+            working_set_bytes,
+            private_commit_bytes: None,
+            efficiency_mode: None,
+        };
+        list.samples.insert(10, sample(1, Some(0)));
+        list.samples.insert(11, sample(2, None));
+        assert_eq!(list.cpu_total(&group), None);
+        assert_eq!(list.memory_total(&group), None);
+
+        list.cpu.insert(11, 0.0);
+        list.samples.insert(11, sample(2, Some(0)));
+        assert_eq!(list.cpu_total(&group), Some(0.0));
+        assert_eq!(list.memory_total(&group), Some(0));
+    }
 
     #[test]
     fn process_name_order_preserves_unicode_lowercase_and_key_ties() {

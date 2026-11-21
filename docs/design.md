@@ -137,6 +137,7 @@ hover/press; background shading supplies feedback.
 - Page visits and periodic ticks share the same refresh deadline; quick returns reuse the current rows. Load the power-plan catalog when the selected process's Rulesets panel opens, including when returning to that open panel.
 - Rulesets shows the power profile that receives its edits.
 - Keep process icon, grouped process row, PID/count, and policy columns visible and stable.
+- A grouped CPU or memory total is available only when every displayed member has that measurement.
 - Keep the User column at the right edge. Show the exact process token account when available. When Windows denies token access, show `Unavailable · S#` with an explanatory tooltip; identify kernel pseudo-processes as `Windows kernel`.
 - Keep Windows-critical processes visible as read-only `Protected system process` rows in Process List, omit them from every Add process picker, and fail closed when criticality cannot be verified.
 - For other inaccessible rows, show `Administrator required` before elevation and `Access denied` when Winderust is already elevated.
