@@ -546,7 +546,6 @@ impl Model {
             let frequencies = || {
                 self.history
                     .iter()
-                    .filter(|sample| sample.cpu.percent.is_some())
                     .filter_map(|sample| sample.cpu.frequency_mhz)
             };
             let base = self
@@ -568,24 +567,24 @@ impl Model {
                 _ => (HISTORY_LEN - index - 1) as f64,
             };
             let reading = match kind {
-                ChartKind::Cpu => sample.cpu.percent.map(|percent| {
+                ChartKind::Cpu => [
+                    sample.cpu.percent.map(f64::from),
+                    sample
+                        .cpu
+                        .frequency_mhz
+                        .map(|mhz| f64::from(normalize_cpu_frequency_percent(mhz, base, peak))),
+                ],
+                ChartKind::Memory => [sample.memory.percent.map(f64::from), None],
+                ChartKind::Io => sample.io.bytes_per_second.map_or([None; 2], |_| {
                     [
-                        percent as f64,
-                        normalize_cpu_frequency_percent(sample.cpu.frequency_mhz, base, peak)
-                            as f64,
+                        Some(sample.io.read_bytes_per_second.unwrap_or(0.0)),
+                        Some(sample.io.write_bytes_per_second.unwrap_or(0.0)),
                     ]
                 }),
-                ChartKind::Memory => sample.memory.percent.map(|percent| [percent as f64, 0.0]),
-                ChartKind::Io => sample.io.bytes_per_second.map(|_| {
+                ChartKind::Network => sample.network.bytes_per_second.map_or([None; 2], |_| {
                     [
-                        sample.io.read_bytes_per_second.unwrap_or(0.0),
-                        sample.io.write_bytes_per_second.unwrap_or(0.0),
-                    ]
-                }),
-                ChartKind::Network => sample.network.bytes_per_second.map(|_| {
-                    [
-                        sample.network.download_bytes_per_second.unwrap_or(0.0),
-                        sample.network.upload_bytes_per_second.unwrap_or(0.0),
+                        Some(sample.network.download_bytes_per_second.unwrap_or(0.0)),
+                        Some(sample.network.upload_bytes_per_second.unwrap_or(0.0)),
                     ]
                 }),
             };
@@ -600,7 +599,7 @@ impl Model {
             _ => samples
                 .iter()
                 .flatten()
-                .filter_map(|sample| sample.reading)
+                .flat_map(|sample| sample.reading)
                 .flatten()
                 .fold(1.0, f64::max),
         };
@@ -751,12 +750,16 @@ impl ChartKind {
 struct ChartSample {
     captured_at: Option<std::time::SystemTime>,
     seconds_ago: f64,
-    reading: Option<[f64; 2]>,
+    reading: [Option<f64>; 2],
 }
 impl ChartSample {
-    fn connects_to(&self, next: &Self) -> bool {
-        self.reading.is_some()
-            && next.reading.is_some()
+    fn has_reading(&self) -> bool {
+        self.reading.iter().any(Option::is_some)
+    }
+
+    fn connects_to(&self, next: &Self, series: usize) -> bool {
+        self.reading[series].is_some()
+            && next.reading[series].is_some()
             && match (self.captured_at, next.captured_at) {
                 (Some(previous), Some(next)) => next
                     .duration_since(previous)
@@ -771,10 +774,10 @@ impl ChartSample {
     }
 
     fn point(&self, series: usize, width: f32, height: f32, maximum: f64) -> Option<Point> {
-        self.reading.map(|reading| {
+        self.reading[series].map(|value| {
             Point::new(
                 self.x(width),
-                height * (1.0 - (reading[series] / maximum).clamp(0.0, 1.0) as f32),
+                height * (1.0 - (value / maximum).clamp(0.0, 1.0) as f32),
             )
         })
     }
@@ -830,7 +833,7 @@ impl Chart {
         self.samples
             .get(slot)
             .and_then(Option::as_ref)
-            .filter(|sample| sample.reading.is_some())
+            .filter(|sample| sample.has_reading())
     }
 
     fn sample_near(&self, seconds_ago: f64) -> Option<usize> {
@@ -843,7 +846,7 @@ impl Chart {
             })
             .min_by(|left, right| left.2.total_cmp(&right.2))
             .filter(|(_, sample, distance)| {
-                sample.reading.is_some() && *distance <= MAX_SAMPLE_GAP.as_secs_f64() / 2.0
+                sample.has_reading() && *distance <= MAX_SAMPLE_GAP.as_secs_f64() / 2.0
             })
             .map(|(slot, _, _)| slot)
     }
@@ -1036,7 +1039,7 @@ impl Chart {
             for run in self
                 .samples
                 .chunk_by(|previous, next| match (previous, next) {
-                    (Some(previous), Some(next)) => previous.connects_to(next),
+                    (Some(previous), Some(next)) => previous.connects_to(next, series),
                     _ => false,
                 })
             {
@@ -1245,13 +1248,10 @@ struct MemoryCapacityParts {
     unit: &'static str,
 }
 fn normalize_cpu_frequency_percent(
-    frequency_mhz: Option<u32>,
+    frequency_mhz: u32,
     base_frequency_mhz: u32,
     peak_frequency_mhz: Option<u32>,
 ) -> f32 {
-    let Some(frequency_mhz) = frequency_mhz else {
-        return 0.0;
-    };
     let Some(peak_frequency_mhz) = peak_frequency_mhz else {
         return 0.0;
     };
@@ -1935,9 +1935,8 @@ mod tests {
                 .chart(ChartKind::Cpu)
                 .sample_at(HISTORY_LEN - 1)
                 .unwrap()
-                .reading
-                .unwrap()[1],
-            100.0
+                .reading[1],
+            Some(100.0)
         );
         assert_eq!(model.chart(ChartKind::Io).maximum, 20.0);
         assert_eq!(model.chart(ChartKind::Network).maximum, 100.0);
@@ -1971,7 +1970,7 @@ mod tests {
             .samples
             .iter()
             .flatten()
-            .all(|sample| sample.reading.is_none()));
+            .all(|sample| !sample.has_reading()));
 
         model.record(Sample {
             captured_at: at(663),
@@ -1999,7 +1998,7 @@ mod tests {
                 .samples
                 .iter()
                 .flatten()
-                .filter(|sample| sample.reading.is_some())
+                .filter(|sample| sample.has_reading())
                 .count(),
             3
         );
@@ -2030,9 +2029,8 @@ mod tests {
                 .chart(ChartKind::Cpu)
                 .sample_at(HISTORY_LEN - 2)
                 .unwrap()
-                .reading
-                .unwrap()[1],
-            100.0,
+                .reading[1],
+            Some(100.0),
             "an overwritten exact-timestamp frequency must not set the visible chart scale"
         );
         model.record(Sample {
@@ -2268,7 +2266,7 @@ mod tests {
         assert_eq!(chart.maximum, 1_000_000.0);
         assert_eq!(
             chart.sample_at(HISTORY_LEN - 1).unwrap().reading,
-            Some([1_000_000.0, 500_000.0])
+            [Some(1_000_000.0), Some(500_000.0)]
         );
         assert_eq!(
             ChartKind::Network.tooltip_labels(model.history_sample(HISTORY_LEN - 1).unwrap()),
@@ -2310,7 +2308,7 @@ mod tests {
             Some(ChartSample {
                 captured_at: None,
                 seconds_ago: (HISTORY_LEN - slot - 1) as f64,
-                reading: Some([value, 0.0]),
+                reading: [Some(value), None],
             })
         };
         let empty = std::array::from_fn(|_| None);
@@ -2452,7 +2450,7 @@ mod tests {
                     Some(ChartSample {
                         captured_at: None,
                         seconds_ago: (HISTORY_LEN - slot - 1) as f64,
-                        reading: Some([value, 18.0]),
+                        reading: [Some(value), Some(18.0)],
                     })
                 }),
                 maximum,
@@ -2520,7 +2518,7 @@ mod tests {
                 (slot != 35).then(|| ChartSample {
                     captured_at: None,
                     seconds_ago: (HISTORY_LEN - slot - 1) as f64,
-                    reading: Some([1.0, 2.0]),
+                    reading: [Some(1.0), Some(2.0)],
                 })
             }),
             maximum: 100.0,
@@ -2616,7 +2614,7 @@ mod tests {
             .samples
             .iter()
             .flatten()
-            .all(|sample| sample.reading.is_none()));
+            .all(|sample| !sample.has_reading()));
         for n in 0..HISTORY_LEN + 3 {
             model.record(Sample {
                 cpu: CpuUsageSnapshot {
@@ -2633,9 +2631,31 @@ mod tests {
             .samples
             .iter()
             .flatten()
-            .all(|sample| sample.reading.is_none()));
+            .all(|sample| !sample.has_reading()));
+        assert!(model
+            .chart(ChartKind::Cpu)
+            .samples
+            .iter()
+            .flatten()
+            .all(|sample| sample.reading[1].is_none()));
+        model.record(Sample {
+            cpu: CpuUsageSnapshot {
+                base_frequency_mhz: Some(3_000),
+                frequency_mhz: Some(3_000),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
         assert_eq!(
-            normalize_cpu_frequency_percent(Some(4000), 2000, Some(4000)),
+            model
+                .chart(ChartKind::Cpu)
+                .sample_at(HISTORY_LEN - 1)
+                .unwrap()
+                .reading,
+            [None, Some(0.0)]
+        );
+        assert_eq!(
+            normalize_cpu_frequency_percent(4_000, 2_000, Some(4_000)),
             100.0
         );
     }
