@@ -455,7 +455,10 @@ fn sidebar_state(
         if selected && plan.apply_failed {
             return FeatureRunState::Error;
         }
-        return if selected && plan_applied && plan.owner == Some(PowerPlanOwner::OrdinaryAutomation)
+        return if selected
+            && plan_applied
+            && !plan.restoring_previous
+            && plan.owner == Some(PowerPlanOwner::OrdinaryAutomation)
         {
             FeatureRunState::Running
         } else {
@@ -958,8 +961,14 @@ mod tests {
         plan.apply_failed = false;
         plan.current_guid = Some("NEW".into());
         assert_eq!(state(&runtime), FeatureRunState::Running);
-        std::sync::Arc::make_mut(&mut runtime.power_plan_status).owner =
-            Some(PowerPlanOwner::AdaptiveEngine);
+        std::sync::Arc::make_mut(&mut runtime.power_plan_status).restoring_previous = true;
+        assert_eq!(state(&runtime), FeatureRunState::Waiting);
+        std::sync::Arc::make_mut(&mut runtime.power_plan_status).apply_failed = true;
+        assert_eq!(state(&runtime), FeatureRunState::Error);
+        let plan = std::sync::Arc::make_mut(&mut runtime.power_plan_status);
+        plan.apply_failed = false;
+        plan.restoring_previous = false;
+        plan.owner = Some(PowerPlanOwner::AdaptiveEngine);
         assert_eq!(state(&runtime), FeatureRunState::Paused);
     }
 
