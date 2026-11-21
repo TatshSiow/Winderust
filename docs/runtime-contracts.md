@@ -323,6 +323,9 @@ Read the relevant section before changing feature policy, ownership, restoration
 - If a plan read fails after automation is disabled or paused on A/C, Power Plan
   Control shows the effective stop state beside the last verified plan. A pending
   restoration keeps its own status.
+- A failed active-plan observation appears on Power Plan Control and its rule
+  Status views. A fresh successful read clears the error even if the plan GUID
+  stays the same.
 - By Focus and By Running App rules choose one executable path or exact executable
   filename. A name rule confirms the filename against the observed absolute image
   path. The first enabled rule with a matching target and selected plan wins within

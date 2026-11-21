@@ -237,6 +237,7 @@ fn automation_worker_error_is_delivered_once() {
 fn power_plan_status_is_published_as_an_independent_runtime_segment() {
     let automation = RuntimeHandle::start(&runtime_settings(Settings::default()));
     let status = PowerPlanStatus {
+        active_plan_read_error: None,
         apply_failed: false,
         restoring_previous: false,
         rule_index: Some(0),

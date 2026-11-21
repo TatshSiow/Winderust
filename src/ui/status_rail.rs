@@ -63,7 +63,7 @@ pub(super) fn view<'a>(
             adjusted: None,
             protected_or_denied: None,
             skipped: None,
-            last_error: None,
+            last_error: runtime.power_plan_status.active_plan_read_error.as_deref(),
             action_log_feature: feature,
         }
     } else {

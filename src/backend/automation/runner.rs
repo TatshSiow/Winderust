@@ -1835,7 +1835,7 @@ impl RuntimeCore {
         wall_time: DateTime<Local>,
         activity_state: ActivityState,
         observations: &mut CycleObservations,
-    ) -> Result<(), String> {
+    ) -> Result<(), ActivePlanCheckError> {
         let settings = active_power_source_settings(configured_settings, plugged_in);
         if self.power_plan_controller.adaptive_active() {
             self.power_plan_rule_context = None;
@@ -1845,7 +1845,7 @@ impl RuntimeCore {
 
         if let Err(error) = self
             .power_plan_controller
-            .refresh_active_plan_if_due(Instant::now())
+            .refresh_active_plan_for_status(Instant::now(), false)
         {
             self.by_cpu_load_scheduler.reset();
             let status = self.power_plan_controller.status();
@@ -2002,7 +2002,7 @@ impl RuntimeCore {
                         format!("{reason} Power plan switch failed: {error}"),
                     );
                 }
-                Err(error)
+                Err(ActivePlanCheckError::Operation(error))
             }
         }
     }
@@ -2031,9 +2031,9 @@ impl RuntimeCore {
         result.map(|_| ()).map_err(Into::into)
     }
 
-    pub(super) fn refresh_active_plan(&mut self) -> Result<(), String> {
+    pub(super) fn refresh_active_plan(&mut self) -> Result<(), ActivePlanCheckError> {
         self.power_plan_controller
-            .refresh_active_plan(Instant::now())
+            .refresh_active_plan_for_status(Instant::now(), true)
     }
 
     pub(super) fn refresh_cpu_usage(&mut self) {
@@ -2066,6 +2066,7 @@ impl RuntimeCore {
             // This is a display projection. The controller still owns any pending restoration.
             return (
                 PowerPlanStatus {
+                    active_plan_read_error: status.active_plan_read_error,
                     current_guid: status.current_guid,
                     decision_state: Some(decision_state),
                     ..Default::default()

@@ -34,8 +34,25 @@ pub(crate) enum ManualPowerPlanError {
     SwitchFailed(String),
 }
 
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum ActivePlanCheckError {
+    #[error("{0}")]
+    Read(String),
+    #[error("{0}")]
+    Operation(String),
+}
+
+impl From<ActivePlanCheckError> for String {
+    fn from(error: ActivePlanCheckError) -> Self {
+        match error {
+            ActivePlanCheckError::Read(error) | ActivePlanCheckError::Operation(error) => error,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct PowerPlanStatus {
+    pub(crate) active_plan_read_error: Option<String>,
     pub(crate) apply_failed: bool,
     pub(crate) restoring_previous: bool,
     pub(crate) rule_index: Option<usize>,
@@ -165,6 +182,7 @@ impl PowerPlanPlatform for WindowsPowerPlanPlatform {
 
 pub(crate) struct PowerPlanController<P: PowerPlanPlatform = WindowsPowerPlanPlatform> {
     platform: P,
+    active_plan_read_error: Option<String>,
     current_guid: Option<String>,
     last_verified_application: Option<String>,
     ownership_release_pending: bool,
@@ -214,6 +232,7 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
     fn with_platform(platform: P) -> Self {
         Self {
             platform,
+            active_plan_read_error: None,
             current_guid: None,
             last_verified_application: None,
             ownership_release_pending: false,
@@ -353,6 +372,7 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
             .as_ref()
             .filter(|_| owner != Some(PowerPlanOwner::AdaptiveEngine));
         PowerPlanStatus {
+            active_plan_read_error: self.active_plan_read_error.clone(),
             apply_failed: decision_target.as_deref().is_some_and(|guid| {
                 self.switch_failures
                     .has_key_failure(&switch_failure_key(guid))
@@ -390,6 +410,9 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
 
     fn read_active_guid(&mut self) -> Result<String, String> {
         let result = self.platform.active_guid();
+        if result.is_ok() {
+            self.active_plan_read_error = None;
+        }
         let explanations_still_current = result.as_ref().is_ok_and(|actual_guid| {
             !self.is_managed_adaptive_plan(actual_guid)
                 && self
@@ -403,12 +426,38 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
         result
     }
 
-    pub(crate) fn refresh_active_plan(&mut self, now: Instant) -> Result<(), String> {
+    pub(crate) fn refresh_active_plan_for_status(
+        &mut self,
+        now: Instant,
+        force: bool,
+    ) -> Result<(), ActivePlanCheckError> {
+        let result = if force {
+            self.refresh_active_plan(now)
+        } else {
+            self.refresh_active_plan_if_due(now)
+        };
+        match &result {
+            Err(ActivePlanCheckError::Read(error))
+                if self.active_plan_read_error.as_ref() != Some(error) =>
+            {
+                crate::backend::diagnostics::error(error);
+                self.active_plan_read_error = Some(error.clone());
+            }
+            _ => {}
+        }
+        result
+    }
+
+    fn refresh_active_plan(&mut self, now: Instant) -> Result<(), ActivePlanCheckError> {
         self.next_active_plan_refresh = None;
-        let actual_guid = self.read_active_guid()?;
-        self.observe_active_plan(&actual_guid)?;
+        let actual_guid = self
+            .read_active_guid()
+            .map_err(ActivePlanCheckError::Read)?;
+        self.observe_active_plan(&actual_guid)
+            .map_err(ActivePlanCheckError::Operation)?;
         self.next_active_plan_refresh = Some(now + ACTIVE_PLAN_REFRESH_INTERVAL);
         self.cleanup_inactive_adaptive_plan()
+            .map_err(ActivePlanCheckError::Operation)
     }
 
     fn observe_active_plan(&mut self, actual_guid: &str) -> Result<(), String> {
@@ -1028,7 +1077,7 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
         }
     }
 
-    pub(crate) fn refresh_active_plan_if_due(&mut self, now: Instant) -> Result<(), String> {
+    fn refresh_active_plan_if_due(&mut self, now: Instant) -> Result<(), ActivePlanCheckError> {
         if self.ownership_release_pending
             || self.uncertain_switch.is_some()
             || self
@@ -3321,19 +3370,25 @@ mod tests {
             .insert(controller.platform.query_count + 1);
         let failed_at = start + ACTIVE_PLAN_REFRESH_INTERVAL;
 
-        assert!(controller.refresh_active_plan_if_due(failed_at).is_err());
+        assert!(matches!(
+            controller.refresh_active_plan_for_status(failed_at, false),
+            Err(ActivePlanCheckError::Read(_))
+        ));
         let status = controller.status();
+        assert_eq!(
+            status.active_plan_read_error.as_deref(),
+            Some("injected active query failure")
+        );
         assert_eq!(status.target_guid.as_deref(), Some("original"));
         assert!(status.competing_modes.is_empty());
         assert_eq!(status.cpu_load_match, None);
         controller
-            .refresh_active_plan_if_due(failed_at + Duration::from_secs(1))
+            .refresh_active_plan_for_status(failed_at + Duration::from_secs(1), false)
             .unwrap();
 
-        assert_eq!(
-            controller.status().current_guid.as_deref(),
-            Some("external")
-        );
+        let status = controller.status();
+        assert_eq!(status.current_guid.as_deref(), Some("external"));
+        assert!(status.active_plan_read_error.is_none());
         assert_eq!(controller.platform.query_count, 3);
     }
 

@@ -41,7 +41,8 @@ use crate::{
         memory_priority::MemoryPriorityController,
         memory_trim::MemoryTrimController,
         power_plan::{
-            AdaptivePowerPlanRequest, ManualPowerPlanError, PowerPlanController, PowerPlanStatus,
+            ActivePlanCheckError, AdaptivePowerPlanRequest, ManualPowerPlanError,
+            PowerPlanController, PowerPlanStatus,
         },
         priority_efficiency::PriorityEfficiencyController,
         process::ControlOwner,
@@ -1306,7 +1307,7 @@ fn run_background_automation(
             scheduler.schedule_now(RefreshDomain::KeepRunning, event_now);
         }
         if wake_events.power_changed || wake_events.session_changed {
-            if let Err(error) = runner.refresh_active_plan() {
+            if let Err(ActivePlanCheckError::Operation(error)) = runner.refresh_active_plan() {
                 update_worker_error(&shared, Some(error));
             }
         }
@@ -1821,7 +1822,7 @@ fn run_background_automation(
             run_scheduled_power_plan_check(&mut scheduler, wait_now, || {
                 let activity = runner.activity_snapshot(settings, wait_now);
                 let wall_time = Local::now();
-                if let Err(error) = runner.run_check(
+                if let Err(ActivePlanCheckError::Operation(error)) = runner.run_check(
                     &configured_settings,
                     plugged_in,
                     wall_time,

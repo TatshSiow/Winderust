@@ -84,18 +84,21 @@ pub(super) fn status_view<M: 'static>(
         |guid| plan_name(plans, guid),
     );
     let (automation, failed) = status_automation_detail(status, plans, current);
-    let mut body = column![widgets::settings_card(
-        column![
-            widgets::setting_title("common.current_power_plan"),
-            text(active).wrapping(text::Wrapping::WordOrGlyph),
-            widgets::setting_title("power_plan_control.automation"),
-            text(automation)
-                .style(if failed { text::danger } else { text::default })
-                .wrapping(text::Wrapping::WordOrGlyph),
-        ]
-        .spacing(design::space::SMALL)
-    )]
-    .spacing(widgets::CARD_GAP);
+    let mut summary = column![
+        widgets::setting_title("common.current_power_plan"),
+        text(active).wrapping(text::Wrapping::WordOrGlyph),
+        widgets::setting_title("power_plan_control.automation"),
+        text(automation)
+            .style(if failed { text::danger } else { text::default })
+            .wrapping(text::Wrapping::WordOrGlyph),
+    ]
+    .spacing(design::space::SMALL);
+    if let Some(error) = &status.active_plan_read_error {
+        summary = summary
+            .push(widgets::setting_title("sidebar_status.current_error"))
+            .push(text(error.clone()).wrapping(text::Wrapping::WordOrGlyph));
+    }
+    let mut body = column![widgets::settings_card(summary)].spacing(widgets::CARD_GAP);
     if !status.competing_modes.is_empty() {
         let mut matches = column![widgets::setting_title("power_plan_control.other_matches")]
             .spacing(design::space::MEDIUM);
