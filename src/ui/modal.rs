@@ -277,7 +277,15 @@ impl<M: Clone> iced::advanced::Overlay<M, Theme, Renderer> for Picker<'_, M> {
                 .as_overlay_mut()
                 .update(event, popup, cursor, renderer, clipboard, shell);
         }
-        if input(event) {
+        let tab = matches!(
+            event,
+            Event::Keyboard(keyboard::Event::KeyPressed {
+                key: keyboard::Key::Named(keyboard::key::Named::Tab),
+                modifiers,
+                ..
+            }) if modifiers.is_empty() || *modifiers == keyboard::Modifiers::SHIFT
+        );
+        if input(event) && !tab {
             shell.capture_event();
         }
     }

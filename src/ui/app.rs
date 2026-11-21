@@ -2643,6 +2643,7 @@ impl WinderustApp {
         window_frame::view(
             super::modal::picker(self.view_workspace(), picker_open, Message::DismissPickers),
             self.maximized,
+            !picker_open,
             Message::WindowAction,
         )
     }

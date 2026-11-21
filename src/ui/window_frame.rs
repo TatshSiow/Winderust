@@ -21,6 +21,7 @@ pub(super) enum Event {
 pub(super) fn view<'a, M: Clone + 'a>(
     content: Element<'a, M>,
     maximized: bool,
+    caption_focusable: bool,
     message: impl Fn(Event) -> M + Copy + 'a,
 ) -> Element<'a, M> {
     let caption = mouse_area(
@@ -43,10 +44,12 @@ pub(super) fn view<'a, M: Clone + 'a>(
     )
     .on_press(message(Event::Drag))
     .on_double_click(message(Event::ToggleMaximize));
+    let caption_button =
+        |icon, label, event| control(icon, label, event, caption_focusable).map(message);
     let title = container(row![
         caption,
-        control("icons/minus.svg", "window.minimize", Event::Minimize).map(message),
-        control(
+        caption_button("icons/minus.svg", "window.minimize", Event::Minimize),
+        caption_button(
             if maximized {
                 "icons/copy.svg"
             } else {
@@ -58,9 +61,8 @@ pub(super) fn view<'a, M: Clone + 'a>(
                 "window.maximize"
             },
             Event::ToggleMaximize,
-        )
-        .map(message),
-        control("icons/x.svg", "common.close", Event::Close).map(message),
+        ),
+        caption_button("icons/x.svg", "common.close", Event::Close),
     ])
     .width(Fill)
     .style(widgets::navigation_surface);
@@ -106,18 +108,28 @@ pub(super) fn view<'a, M: Clone + 'a>(
     layers.into()
 }
 
-fn control(icon: &'static str, label: &str, event: Event) -> Element<'static, Event> {
+fn control(
+    icon: &'static str,
+    label: &str,
+    event: Event,
+    focusable: bool,
+) -> Element<'static, Event> {
+    let button = widgets::button(
+        container(navigation::glyph(icon))
+            .center_x(Fill)
+            .center_y(Fill),
+    )
+    .width(BUTTON_WIDTH)
+    .height(HEIGHT)
+    .padding(0)
+    .style(move |theme, status| control_style(theme, status, matches!(event, Event::Close)))
+    .on_press(event);
     widgets::tooltip(
-        widgets::button(
-            container(navigation::glyph(icon))
-                .center_x(Fill)
-                .center_y(Fill),
-        )
-        .width(BUTTON_WIDTH)
-        .height(HEIGHT)
-        .padding(0)
-        .style(move |theme, status| control_style(theme, status, matches!(event, Event::Close)))
-        .on_press(event),
+        if focusable {
+            button
+        } else {
+            button.pointer_only()
+        },
         text(t!(label).to_string()),
         tooltip::Position::Bottom,
     )
@@ -166,6 +178,7 @@ mod tests {
                 .on_press(Message::Body)
                 .into(),
             maximized,
+            true,
             Message::Chrome,
         );
         let mut tree = Tree::new(&view);
@@ -312,6 +325,7 @@ mod tests {
             let mut view = view(
                 Space::new().width(Fill).height(Fill).into(),
                 false,
+                true,
                 std::convert::identity,
             );
             let mut tree = Tree::new(&view);
