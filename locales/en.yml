@@ -327,6 +327,8 @@ process_list:
   protected_system_process_help: "Windows marks this process as critical, or Winderust protects it for system safety. Elevation will not unlock it."
   access_denied_help: "Winderust is already running as administrator, but Windows or security software still denies access to this process."
   action_completed: "Action completed for %{name}."
+  actions_failed: "%{failed} of %{total} process actions failed. %{error}"
+  no_action_targets: "No process targets were available."
   properties: "Properties"
   open_rule_details: "Open process rule details"
   stop_process: "Stop process"

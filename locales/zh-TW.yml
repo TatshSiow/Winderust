@@ -331,6 +331,8 @@ process_list:
   protected_system_process_help: "Windows 將此程序標示為關鍵程序，或 Winderust 基於系統安全保護此程序。提升為系統管理員也無法解除保護。"
   access_denied_help: "Winderust 已以系統管理員身分執行，但 Windows 或安全性軟體仍拒絕存取此程序。"
   action_completed: "已完成對 %{name} 的操作。"
+  actions_failed: "在 %{total} 項處理程序操作中，有 %{failed} 項失敗。%{error}"
+  no_action_targets: "沒有可操作的處理程序。"
   properties: "內容"
   open_rule_details: "開啟處理程序規則詳細資料"
   stop_process: "停止處理程序"

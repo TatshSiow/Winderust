@@ -11,6 +11,7 @@ use std::{
 };
 
 use chrono::{DateTime, Local};
+use rust_i18n::t;
 
 use crate::{
     action_log::{ActionLog, ActionLogEntry, ActionLogSummaries},
@@ -198,20 +199,21 @@ pub(crate) type AppSuspensionPathActionReceiver =
 
 impl ProcessControlBatchResult {
     pub(crate) fn into_process_list_result(self) -> Result<(), String> {
-        let target_count = self.results.len();
-        let mut failures = self.results.into_iter().filter_map(Result::err);
-        let first_failure = failures.next();
-        let failure_count = usize::from(first_failure.is_some()) + failures.count();
-        if failure_count == 0 && target_count > 0 {
-            Ok(())
-        } else {
-            Err(format!(
-                "{failure_count} of {target_count} process actions failed: {}",
-                first_failure
-                    .as_deref()
-                    .unwrap_or("No process targets were available.")
-            ))
+        let total = self.results.len();
+        if total == 0 {
+            return Err(t!("process_list.no_action_targets").into_owned());
         }
+        let mut failures = self.results.into_iter().filter_map(Result::err);
+        let Some(error) = failures.next() else {
+            return Ok(());
+        };
+        Err(t!(
+            "process_list.actions_failed",
+            failed = 1 + failures.count(),
+            total = total,
+            error = error
+        )
+        .into_owned())
     }
 }
 

@@ -657,7 +657,7 @@ fn process_control_batch_summary_preserves_first_failure() {
     .into_process_list_result()
     .expect_err("partial failure should be reported");
 
-    assert_eq!(result, "2 of 3 process actions failed: first failure");
+    assert_eq!(result, "2 of 3 process actions failed. first failure");
     assert!(ProcessControlBatchResult {
         results: vec![Ok(()), Ok(())],
     }
@@ -668,7 +668,7 @@ fn process_control_batch_summary_preserves_first_failure() {
             results: Vec::new()
         }
         .into_process_list_result(),
-        Err("0 of 0 process actions failed: No process targets were available.".to_owned())
+        Err("No process targets were available.".to_owned())
     );
 }
 
