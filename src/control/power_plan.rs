@@ -327,6 +327,10 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
         }
     }
 
+    pub(crate) fn current_guid(&self) -> Option<&str> {
+        self.current_guid.as_deref()
+    }
+
     pub(crate) fn status(&self) -> PowerPlanStatus {
         let adaptive_target = self
             .current_guid

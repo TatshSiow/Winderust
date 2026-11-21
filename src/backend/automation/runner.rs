@@ -1811,7 +1811,7 @@ impl RuntimeCore {
             return Err(error);
         }
         self.by_cpu_load_scheduler
-            .observe_active_plan(self.power_plan_controller.status().current_guid.as_deref());
+            .observe_active_plan(self.power_plan_controller.current_guid());
 
         let cpu_sample = if by_cpu_load_rules_required(settings) {
             self.refresh_cpu_usage();
