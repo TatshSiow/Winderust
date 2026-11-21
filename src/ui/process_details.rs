@@ -9,7 +9,8 @@ use crate::application::SettingsEditor;
 use crate::config::*;
 use crate::foreground::executable_path_key;
 use crate::ui::process_rules::{
-    new_cpu_limiter_rule, process_setting_matches, selector_path_matches,
+    new_by_focus_rule, new_by_running_app_rule, new_cpu_limiter_rule, process_setting_matches,
+    selector_path_matches,
 };
 use iced::widget::{column, container, row, text};
 use iced::{Element, Fill};
@@ -115,42 +116,37 @@ pub(super) fn update(s: &mut SettingsEditor, path: &str, m: Message) -> Option<S
             }
         }
         Message::Power(focus, guid) => {
+            macro_rules! update_path_plan {
+                ($field:ident, $new_rule:ident) => {{
+                    let index = s
+                        .$field
+                        .rules
+                        .iter()
+                        .position(|rule| selector_path_matches(&rule.selector, &path));
+                    match (index, guid) {
+                        (None, None) => {}
+                        (Some(_), None) => s
+                            .$field
+                            .rules
+                            .retain(|rule| !selector_path_matches(&rule.selector, &path)),
+                        (None, Some(guid)) => {
+                            s.$field.rules.push($new_rule(&path, Some(guid)));
+                        }
+                        (Some(index), Some(guid)) => {
+                            let rule = &s.$field.rules[index];
+                            if !rule.enabled || rule.power_plan_guid.as_ref() != Some(&guid) {
+                                let rule = &mut s.$field.rules[index];
+                                rule.enabled = true;
+                                rule.power_plan_guid = Some(guid);
+                            }
+                        }
+                    }
+                }};
+            }
             if focus {
-                let rules = &mut s.by_focus.rules;
-                if let Some(guid) = guid {
-                    if let Some(r) = rules
-                        .iter_mut()
-                        .find(|r| selector_path_matches(&r.selector, &path))
-                    {
-                        r.enabled = true;
-                        r.power_plan_guid = Some(guid);
-                    } else {
-                        rules.push(crate::ui::process_rules::new_by_focus_rule(
-                            &path,
-                            Some(guid),
-                        ));
-                    }
-                } else {
-                    rules.retain(|r| !selector_path_matches(&r.selector, &path));
-                }
+                update_path_plan!(by_focus, new_by_focus_rule);
             } else {
-                let rules = &mut s.by_running_app.rules;
-                if let Some(guid) = guid {
-                    if let Some(r) = rules
-                        .iter_mut()
-                        .find(|r| selector_path_matches(&r.selector, &path))
-                    {
-                        r.enabled = true;
-                        r.power_plan_guid = Some(guid);
-                    } else {
-                        rules.push(crate::ui::process_rules::new_by_running_app_rule(
-                            &path,
-                            Some(guid),
-                        ));
-                    }
-                } else {
-                    rules.retain(|r| !selector_path_matches(&r.selector, &path));
-                }
+                update_path_plan!(by_running_app, new_by_running_app_rule);
             }
         }
         Message::CpuEnabled(soft, enabled) => {
@@ -584,12 +580,17 @@ mod tests {
             power_plan_guid: Some("name-plan".into()),
         });
         let mut settings = SettingsEditor::with_settings(settings);
+        settings.select_power_source(PowerSourceProfile::OnBattery);
+        let _ = update(&mut settings, path, Message::Power(true, None));
+        assert!(settings.global().on_battery.is_none());
+
         let _ = update(
             &mut settings,
             path,
             Message::Power(true, Some("path-plan".into())),
         );
         assert_eq!(settings.by_focus.rules.len(), 2);
+        assert_eq!(settings.global().by_focus.rules.len(), 1);
         assert!(selector_path_matches(
             &settings.by_focus.rules[1].selector,
             path
