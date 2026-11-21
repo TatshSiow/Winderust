@@ -2149,7 +2149,7 @@ impl WinderustApp {
                 if self.power_plan_control.selected_guid.is_some()
                     && !self.pending_settings_changes() =>
             {
-                return self.finish_save();
+                return self.finish_save(self.closing);
             }
             Message::Save if self.pending_editor() => {
                 self.error_message = t!("unsaved.message").to_string();
@@ -2324,7 +2324,8 @@ impl WinderustApp {
                 return Task::none();
             }
         };
-        if let Some(error) = outcome.startup_registration_error() {
+        let startup_error = outcome.startup_registration_error();
+        if let Some(error) = startup_error {
             self.error_message = error.to_string();
         }
         self.publish_settings();
@@ -2333,12 +2334,12 @@ impl WinderustApp {
             return Task::none();
         }
         self.reset_editors();
-        self.finish_save()
+        self.finish_save(self.closing && startup_error.is_none())
     }
 
-    fn finish_save(&mut self) -> Task<Message> {
+    fn finish_save(&mut self, exit_after_save: bool) -> Task<Message> {
         let Some(guid) = self.power_plan_control.selected_guid.clone() else {
-            return if self.closing {
+            return if exit_after_save {
                 self.shutdown()
             } else {
                 Task::none()
@@ -2351,7 +2352,7 @@ impl WinderustApp {
                 return Task::none();
             }
         };
-        self.power_plan_control.pending = Some(if self.closing {
+        self.power_plan_control.pending = Some(if exit_after_save {
             power_plan_control::AfterSave::Exit
         } else {
             power_plan_control::AfterSave::Stay
