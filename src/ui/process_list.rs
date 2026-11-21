@@ -185,6 +185,7 @@ pub(super) enum Message {
 
 pub(super) struct ProcessList {
     processes: Vec<ProcessInfo>,
+    population_loaded: bool,
     rows: Vec<Entry>,
     offsets: Vec<f32>,
     rows_revision: u64,
@@ -225,6 +226,7 @@ impl Default for ProcessList {
     fn default() -> Self {
         Self {
             processes: Vec::new(),
+            population_loaded: false,
             rows: Vec::new(),
             offsets: vec![0.0],
             rows_revision: 0,
@@ -301,6 +303,7 @@ impl ProcessList {
                 self.refreshing = false;
                 match result {
                     Ok(data) => {
+                        self.population_loaded = true;
                         self.cpu = data
                             .samples
                             .iter()
@@ -1246,6 +1249,13 @@ impl ProcessList {
         status: &'a RuntimeStatusSnapshot,
         plans: PlanCatalog<'a>,
     ) -> Element<'a, Message> {
+        let count = if self.population_loaded {
+            t!("process_list.count", count = self.processes.len())
+        } else if self.refreshing || self.error.is_none() {
+            t!("common.loading")
+        } else {
+            t!("common.unavailable")
+        };
         let controls = row![
             super::widgets::search_field(
                 text_input(&t!("process_list.search_placeholder"), &self.search)
@@ -1255,7 +1265,7 @@ impl ProcessList {
                 (!self.search.is_empty()).then(|| Message::Search(String::new())),
             ),
             Space::new().width(Fill),
-            text(t!("process_list.count", count = self.processes.len()).to_string()),
+            text(count.to_string()),
         ]
         .spacing(design::space::SMALL)
         .align_y(iced::Center);
@@ -2487,6 +2497,7 @@ mod tests {
         let sampled = start.elapsed();
         let mut list = ProcessList {
             processes: population.processes,
+            population_loaded: true,
             samples: population.samples,
             total_memory_bytes: population.total_memory_bytes,
             ..ProcessList::default()
@@ -2525,6 +2536,7 @@ mod tests {
         editor.select_power_source(PowerSourceProfile::OnBattery);
         let runtime = RuntimeHandle::start(&editor.runtime_settings_snapshot());
         let mut list = ProcessList::default();
+        assert!(!list.population_loaded);
         let path = PathBuf::from("missing-process-list-test.exe");
         list.icons.insert(PathBuf::from("exited.exe"), None);
         let population = || Population {
@@ -2534,6 +2546,7 @@ mod tests {
         };
         let icons = list.update(Message::Loaded(Ok(population())), &mut editor, &runtime);
         assert_eq!(list.rows.len(), 1);
+        assert!(list.population_loaded);
         assert!(list.refreshing);
         assert!(list.icons.is_empty());
         assert!(icons.units() > 0);
@@ -2563,6 +2576,7 @@ mod tests {
             &runtime,
         );
         assert!(!list.refreshing);
+        assert!(list.population_loaded);
         assert_eq!(list.error.as_deref(), Some("worker unavailable"));
         assert!(editor.global().on_battery.is_none());
     }
