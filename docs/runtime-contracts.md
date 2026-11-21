@@ -332,6 +332,8 @@ Read the relevant section before changing feature policy, ownership, restoration
   and the winning rule for the current draft.
 - By Activity uses the same activity sample to select a plan and schedule the idle
   deadline. Time spent verifying a plan switch counts toward that deadline.
+  If an active-plan read fails, the earlier By Activity selection remains visible
+  while it still matches the saved profile and no known activity contradicts it.
 - By Time rule clocks use parsed minute-precision local times and serialize as `HH:MM`.
   Rule selection and the next deadline use the same local time reading. Time
   spent verifying a plan switch counts toward the wait for that deadline.

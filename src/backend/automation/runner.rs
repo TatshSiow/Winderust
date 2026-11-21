@@ -1820,16 +1820,22 @@ impl RuntimeCore {
         {
             self.by_cpu_load_scheduler.reset();
             let status = self.power_plan_controller.status();
+            let activity_conflicts_with_choice = matches!(
+                (status.decision_state, activity_state),
+                (Some(DecisionState::ByActivityIdle), ActivityState::Active)
+                    | (Some(DecisionState::ByActivityActive), ActivityState::Idle)
+            );
             if self
                 .power_plan_rule_context
                 .as_ref()
                 .is_some_and(|context| {
-                    !Arc::ptr_eq(&context.settings, configured_settings)
-                        && !indexed_power_plan_rule_matches(
-                            &status,
-                            active_power_source_settings(&context.settings, plugged_in),
-                            settings,
-                        )
+                    activity_conflicts_with_choice
+                        || (!Arc::ptr_eq(&context.settings, configured_settings)
+                            && !ordinary_power_plan_choice_matches(
+                                &status,
+                                active_power_source_settings(&context.settings, plugged_in),
+                                settings,
+                            ))
                 })
             {
                 self.power_plan_rule_context = None;
@@ -1910,10 +1916,14 @@ impl RuntimeCore {
         ) {
             self.by_cpu_load_scheduler.reset();
         }
-        self.power_plan_rule_context = decision.rule_index.map(|_| PowerPlanRuleContext {
-            settings: Arc::clone(configured_settings),
-            source: active_power_source(plugged_in),
-        });
+        self.power_plan_rule_context =
+            decision
+                .power_plan_guid
+                .as_ref()
+                .map(|_| PowerPlanRuleContext {
+                    settings: Arc::clone(configured_settings),
+                    source: active_power_source(plugged_in),
+                });
         let result = self
             .power_plan_controller
             .reconcile_ordinary(decision, Instant::now());
@@ -2008,12 +2018,12 @@ impl RuntimeCore {
 
     pub(super) fn power_plan_status(&mut self) -> (PowerPlanStatus, Option<&PowerPlanRuleContext>) {
         let status = self.power_plan_controller.status();
-        if status.rule_index.is_none()
+        if status.restoring_previous
             || status.owner != Some(crate::control::power_plan::PowerPlanOwner::OrdinaryAutomation)
         {
             self.power_plan_rule_context = None;
         } else if self.power_plan_rule_context.is_none() {
-            // An interrupted check left no rule from the current policy.
+            // An interrupted check left no choice from the current policy.
             return (
                 PowerPlanStatus {
                     current_guid: status.current_guid,
@@ -2023,12 +2033,40 @@ impl RuntimeCore {
                 None,
             );
         }
-        (status, self.power_plan_rule_context.as_ref())
+        let rule_context = self
+            .power_plan_rule_context
+            .as_ref()
+            .filter(|_| status.rule_index.is_some());
+        (status, rule_context)
     }
 
     pub(super) fn clear_ordinary_power_plan_decision(&mut self) {
         self.power_plan_controller.clear_ordinary_decision();
     }
+}
+
+fn ordinary_power_plan_choice_matches(
+    status: &PowerPlanStatus,
+    previous: &Settings,
+    current: &Settings,
+) -> bool {
+    let previous_activity = &previous.by_activity;
+    let activity = &current.by_activity;
+    let same_target = match status.decision_state {
+        Some(DecisionState::ByActivityIdle) => {
+            activity.power_plans.power_save_guid == previous_activity.power_plans.power_save_guid
+        }
+        Some(DecisionState::ByActivityActive) => {
+            activity.switch_to_performance_on_resume
+                && activity.power_plans.performance_guid
+                    == previous_activity.power_plans.performance_guid
+        }
+        _ => return indexed_power_plan_rule_matches(status, previous, current),
+    };
+    same_target
+        && activity.enabled
+        && activity.idle_timeout_seconds == previous_activity.idle_timeout_seconds
+        && activity.input_detection == previous_activity.input_detection
 }
 
 fn indexed_power_plan_rule_matches(
@@ -2212,6 +2250,26 @@ mod settings_tests {
         current.by_time.rules = previous.by_time.rules.clone();
         current.by_time.rules.swap(0, 1);
         assert!(!indexed_power_plan_rule_matches(
+            &status, &previous, &current
+        ));
+    }
+
+    #[test]
+    fn saved_activity_plan_depends_on_the_selected_slot_and_input_policy() {
+        let mut previous = Settings::default();
+        previous.by_activity.enabled = true;
+        previous.by_activity.power_plans.performance_guid = Some("active".to_owned());
+        let status = PowerPlanStatus {
+            decision_state: Some(DecisionState::ByActivityActive),
+            ..Default::default()
+        };
+        let mut current = previous.clone();
+        current.by_activity.power_plans.power_save_guid = Some("idle".to_owned());
+        assert!(ordinary_power_plan_choice_matches(
+            &status, &previous, &current
+        ));
+        current.by_activity.idle_timeout_seconds += 1;
+        assert!(!ordinary_power_plan_choice_matches(
             &status, &previous, &current
         ));
     }
