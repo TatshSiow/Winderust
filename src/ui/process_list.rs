@@ -14,7 +14,7 @@ use rust_i18n::t;
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     ops::Range,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::Arc,
 };
 #[path = "process_details.rs"]
@@ -59,6 +59,14 @@ pub(super) struct Selection {
     name: String,
 }
 impl Selection {
+    fn can_stop(&self) -> bool {
+        self.processes.iter().any(|p| !inaccessible(p))
+            && self
+                .processes
+                .iter()
+                .all(|p| process_target_identity(p).is_ok())
+    }
+
     fn stop_options(&self, population: &[ProcessInfo]) -> (bool, bool) {
         (
             self.processes.len() == 1,
@@ -481,7 +489,7 @@ impl ProcessList {
                     return Task::none();
                 };
                 let selection = self.selection(&self.rows[index]);
-                if selection.processes.iter().any(|p| !inaccessible(p)) {
+                if selection.can_stop() {
                     if let Some(task) = self.reveal_row(index, height) {
                         return task;
                     }
@@ -574,9 +582,9 @@ impl ProcessList {
                 }
             }
             Message::Stop(tree) => {
-                self.context = None;
-                if let Some(selection) = self.selected.take() {
-                    self.stopping = Some((selection, tree));
+                if self.selected.as_ref().is_some_and(Selection::can_stop) {
+                    self.context = None;
+                    self.stopping = self.selected.take().map(|selection| (selection, tree));
                 }
             }
             Message::CancelStop => self.stopping = None,
@@ -1044,7 +1052,7 @@ impl ProcessList {
         } else if entry
             .indices
             .iter()
-            .all(|i| inaccessible(&self.processes[*i]))
+            .all(|i| !live_action_available(&self.processes[*i]))
         {
             "process_list.status_unavailable"
         } else if entry
@@ -1620,7 +1628,8 @@ impl ProcessList {
             .into();
         }
         if let Some(selection) = &self.selected {
-            let eligible = selection.processes.iter().any(|p| !inaccessible(p));
+            let eligible = selection.processes.iter().any(live_action_available);
+            let can_stop = selection.can_stop();
             let tree = selection.processes.len() > 1;
             let (stop_process, stop_tree) = selection.stop_options(&self.processes);
             let stop_label = if tree {
@@ -1629,7 +1638,7 @@ impl ProcessList {
                 "process_list.stop_process"
             };
             let suspendable = selection.processes.iter().any(|p| {
-                !inaccessible(p)
+                live_action_available(p)
                     && p.session_id.is_some_and(|s| s != 0)
                     && p.is_service_account == Some(false)
                     && !crate::app_suspension::is_builtin_excluded(&p.name)
@@ -1644,6 +1653,9 @@ impl ProcessList {
                 return iced::widget::stack![
                     super::modal::background(body),
                     responsive(move |_size| {
+                        let menu_branch = |branch| {
+                            Message::MenuBranch(if eligible { branch } else { MenuBranch::Closed })
+                        };
                         let efficiency = button(
                             row![
                                 text(t!("process_list.efficiency_mode").to_string()).width(Fill),
@@ -1657,10 +1669,9 @@ impl ProcessList {
                         .height(design::BUTTON_HEIGHT)
                         .padding([0, design::space::MEDIUM as u16])
                         .style(super::widgets::quiet)
-                        .on_press(Message::MenuBranch(MenuBranch::Efficiency));
+                        .on_press_maybe(eligible.then_some(menu_branch(MenuBranch::Efficiency)));
                         let mut menu = column![
-                            mouse_area(efficiency)
-                                .on_enter(Message::MenuBranch(MenuBranch::Efficiency)),
+                            mouse_area(efficiency).on_enter(menu_branch(MenuBranch::Efficiency)),
                             mouse_area(
                                 button(
                                     row![
@@ -1675,9 +1686,9 @@ impl ProcessList {
                                 .height(design::BUTTON_HEIGHT)
                                 .padding([0, design::space::MEDIUM as u16])
                                 .style(super::widgets::quiet)
-                                .on_press(Message::MenuBranch(MenuBranch::Types))
+                                .on_press_maybe(eligible.then_some(menu_branch(MenuBranch::Types)))
                             )
-                            .on_enter(Message::MenuBranch(MenuBranch::Types))
+                            .on_enter(menu_branch(MenuBranch::Types))
                         ]
                         .spacing(design::space::TINY);
                         for (key, message, enabled) in [
@@ -1688,11 +1699,11 @@ impl ProcessList {
                                 )))),
                                 suspendable,
                             ),
-                            ("process_list.stop_process", Message::Stop(false), eligible),
+                            ("process_list.stop_process", Message::Stop(false), can_stop),
                             (
                                 "process_list.stop_process_tree",
                                 Message::Stop(true),
-                                eligible,
+                                can_stop,
                             ),
                             ("process_list.open_rule_details", Message::OpenDetails, true),
                             (
@@ -1926,7 +1937,9 @@ impl ProcessList {
             let mut pane = column![].spacing(super::widgets::CARD_GAP);
             match self.process_tab {
                 ProcessTab::Rulesets => {
-                    if eligible && !selection.path.is_empty() {
+                    if !selection.path.is_empty()
+                        && selection.processes.iter().any(|p| !inaccessible(p))
+                    {
                         let profile = t!(match settings.selected_power_source() {
                             PowerSourceProfile::PluggedIn => "power_source.plugged_in",
                             PowerSourceProfile::OnBattery => "power_source.on_battery",
@@ -1981,7 +1994,7 @@ impl ProcessList {
                                 Space::new().width(Fill),
                                 action_button(t!(stop_label).to_string())
                                     .style(super::widgets::danger_button)
-                                    .on_press_maybe(eligible.then_some(Message::Stop(tree))),
+                                    .on_press_maybe(can_stop.then_some(Message::Stop(tree))),
                             ]
                             .spacing(design::space::SMALL)
                             .align_y(iced::Center),
@@ -2086,24 +2099,25 @@ fn is_default(v: Value) -> bool {
     )
 }
 fn snapshot_target(p: &ProcessInfo) -> Result<ProcessActionTarget, ProcessActionTargetError> {
-    if protected(p) || p.id == std::process::id() {
-        return Err(ProcessActionTargetError::ProtectedProcess);
-    }
-    let path = p
-        .image_path
-        .clone()
-        .filter(|p| p.is_absolute())
-        .ok_or(ProcessActionTargetError::IdentityUnavailable)?;
+    let (path, creation_time) = process_target_identity(p)?;
     Ok(ProcessActionTarget {
         id: p.id,
         name: p.name.clone(),
-        executable_path: path,
-        creation_time: p
-            .creation_time
-            .ok_or(ProcessActionTargetError::IdentityUnavailable)?,
+        executable_path: path.to_owned(),
+        creation_time,
         session_id: p.session_id,
         is_service_account: p.is_service_account,
     })
+}
+fn process_target_identity(p: &ProcessInfo) -> Result<(&Path, u64), ProcessActionTargetError> {
+    if protected(p) || p.id == std::process::id() {
+        return Err(ProcessActionTargetError::ProtectedProcess);
+    }
+    p.image_path
+        .as_deref()
+        .filter(|p| p.is_absolute())
+        .zip(p.creation_time)
+        .ok_or(ProcessActionTargetError::IdentityUnavailable)
 }
 fn status_cell(key: &str) -> Element<'static, Message> {
     let icon = match key {
@@ -2174,6 +2188,9 @@ fn inaccessible(p: &ProcessInfo) -> bool {
         || !p.can_set_information
         || p.is_critical.is_none()
         || protected(p)
+}
+fn live_action_available(p: &ProcessInfo) -> bool {
+    !inaccessible(p) && process_target_identity(p).is_ok()
 }
 fn format_memory_usage(bytes: u64, total: Option<u64>, percentage: bool) -> String {
     if percentage {
@@ -2756,7 +2773,10 @@ mod tests {
         let runtime = RuntimeHandle::start(&editor.runtime_settings_snapshot());
         let selection = Selection {
             nested: false,
-            processes: vec![process(10, 100, "app.exe"), process(11, 200, "app.exe")],
+            processes: vec![
+                process(10, 100, r"C:\Apps\app.exe"),
+                process(11, 200, r"C:\Apps\app.exe"),
+            ],
             path: String::new(),
             name: "app.exe".into(),
         };
@@ -2767,7 +2787,7 @@ mod tests {
         list.rebuild();
         assert!(list.focus_row(0, list.rows_revision));
         assert!(!list.modal_open());
-        list.processes.push(process(12, 300, "app.exe"));
+        list.processes.push(process(12, 300, r"C:\Apps\app.exe"));
         list.rebuild();
         let _ = list.update(Message::DeleteFocused(200.0), &mut editor, &runtime);
         assert!(list.modal_open());
@@ -2899,12 +2919,12 @@ mod tests {
     fn status_sort_matches_group_labels_and_updates_when_suspension_changes() {
         let mut list = ProcessList {
             processes: vec![
-                process(10, 1, "a.exe"),
-                process(11, 1, "a.exe"),
-                process(12, 1, "b.exe"),
-                process(13, 1, "c.exe"),
-                process(14, 1, "d.exe"),
-                process(15, 1, "e.exe"),
+                process(10, 1, r"C:\Apps\a.exe"),
+                process(11, 1, r"C:\Apps\a.exe"),
+                process(12, 1, r"C:\Apps\b.exe"),
+                process(13, 1, r"C:\Apps\c.exe"),
+                process(14, 1, r"C:\Apps\d.exe"),
+                process(15, 1, r"C:\Apps\e.exe"),
             ],
             sort: Sort::Status,
             hide_inaccessible: false,
@@ -3320,6 +3340,7 @@ mod tests {
     fn unknown_identity_never_becomes_an_action_target() {
         let mut p = process(10, 100, r"C:\A\app.exe");
         p.creation_time = None;
+        assert!(!live_action_available(&p));
         assert_eq!(
             snapshot_target(&p),
             Err(ProcessActionTargetError::IdentityUnavailable)
