@@ -364,6 +364,15 @@ fn report_view<'a>(
                 ));
             }
         }
+    } else if report.per_cpu.is_none() && !report.modules.is_empty() {
+        body = body
+            .push(widgets::settings_divider())
+            .push(widgets::setting_row(
+                "interrupt_timing.per_cpu",
+                text(t!("common.unavailable"))
+                    .size(design::typography::SECONDARY)
+                    .style(text::secondary),
+            ));
     }
     body
 }
