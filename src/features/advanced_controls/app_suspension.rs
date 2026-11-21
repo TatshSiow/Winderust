@@ -2,7 +2,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     ffi::c_void,
     fmt, mem,
-    path::Path,
+    path::{Path, PathBuf},
     ptr,
     ptr::null_mut,
     time::{Duration, Instant},
@@ -138,7 +138,7 @@ struct TrackedApp {
 
 struct SuspendedProcess {
     process_name: String,
-    executable_path: String,
+    executable_path: PathBuf,
     creation_time: u64,
     suspended_since: Instant,
     manual: bool,
@@ -149,7 +149,7 @@ impl SuspendedProcess {
         SuspensionTarget::automatic(
             process_id,
             self.process_name.clone(),
-            Path::new(&self.executable_path).to_path_buf(),
+            self.executable_path.clone(),
             self.creation_time,
             None,
         )
@@ -158,7 +158,7 @@ impl SuspendedProcess {
 
 struct TemporaryThaw {
     process_name: String,
-    executable_path: String,
+    executable_path: PathBuf,
     thaw_until: Instant,
     reason: TemporaryThawReason,
 }
@@ -254,7 +254,7 @@ impl AppSuspensionManager {
                     &suspension_target,
                     SuspendedProcess {
                         process_name: target.name.clone(),
-                        executable_path: target.executable_path.to_string_lossy().into_owned(),
+                        executable_path: target.executable_path.clone(),
                         creation_time: target.creation_time,
                         suspended_since: Instant::now(),
                         manual: true,
@@ -292,7 +292,7 @@ impl AppSuspensionManager {
                     self.set_temporary_thaw(
                         target.id,
                         target.name.clone(),
-                        target.executable_path.to_string_lossy().into_owned(),
+                        target.executable_path.clone(),
                         now + Duration::from_secs(USER_INTENT_THAW_SECONDS),
                         TemporaryThawReason::UserIntent,
                     );
@@ -823,7 +823,7 @@ impl AppSuspensionManager {
                 &process.suspension_target(process_id),
                 SuspendedProcess {
                     process_name: process_name.clone(),
-                    executable_path: process.executable_path.clone(),
+                    executable_path: process.executable_path.clone().into(),
                     creation_time: process.creation_time,
                     suspended_since: now,
                     manual: false,
@@ -1035,8 +1035,12 @@ impl AppSuspensionManager {
             .suspended
             .iter()
             .filter_map(|(&process_id, process)| {
-                (!process.manual && !settings.suspendable_app_enabled_for(&process.executable_path))
-                    .then_some(process_id)
+                (!process.manual
+                    && !process
+                        .executable_path
+                        .to_str()
+                        .is_some_and(|path| settings.suspendable_app_enabled_for(path)))
+                .then_some(process_id)
             })
             .collect::<Vec<_>>();
         failed_actions += self.release_processes(
@@ -1388,20 +1392,20 @@ impl AppSuspensionManager {
         process_ids
     }
 
-    fn controlled_process(&self, process_id: u32) -> Option<(&str, &str)> {
+    fn controlled_process(&self, process_id: u32) -> Option<(&str, &Path)> {
         self.suspended
             .get(&process_id)
             .map(|process| {
                 (
                     process.process_name.as_str(),
-                    process.executable_path.as_str(),
+                    process.executable_path.as_path(),
                 )
             })
             .or_else(|| {
                 self.temporary_thawed.get(&process_id).map(|process| {
                     (
                         process.process_name.as_str(),
-                        process.executable_path.as_str(),
+                        process.executable_path.as_path(),
                     )
                 })
             })
@@ -1411,16 +1415,13 @@ impl AppSuspensionManager {
         &self,
         controller: &SuspensionController,
         process_id: u32,
-        executable_path: &str,
+        executable_path: &Path,
     ) -> bool {
         self.controlled_process(process_id).is_some_and(
             |(_process_name, managed_executable_path)| {
-                same_executable_path(
-                    Path::new(managed_executable_path),
-                    Path::new(executable_path),
-                )
+                same_executable_path(managed_executable_path, executable_path)
             },
-        ) && controller.matches_process_path(process_id, Path::new(executable_path))
+        ) && controller.matches_process_path(process_id, executable_path)
     }
 
     fn controlled_process_name(&self, process_id: u32) -> Option<&str> {
@@ -1429,8 +1430,8 @@ impl AppSuspensionManager {
     }
 
     fn controlled_process_key(&self, process_id: u32) -> Option<String> {
-        self.controlled_process(process_id)
-            .map(|(_process_name, executable_path)| executable_path_key(Path::new(executable_path)))
+        let (_process_name, path) = self.controlled_process(process_id)?;
+        path.to_str().map(|_| executable_path_key(path))
     }
 
     fn window_owner_suspended_process_ids(
@@ -1598,7 +1599,7 @@ impl AppSuspensionManager {
             self.set_temporary_thaw(
                 process_id,
                 process_name,
-                process.executable_path,
+                process.executable_path.into(),
                 thaw_until,
                 TemporaryThawReason::NetworkWake,
             );
@@ -1679,7 +1680,7 @@ impl AppSuspensionManager {
             self.set_temporary_thaw(
                 process_id,
                 process_name,
-                process.executable_path,
+                process.executable_path.into(),
                 thaw_until,
                 TemporaryThawReason::AudioWake,
             );
@@ -1692,15 +1693,12 @@ impl AppSuspensionManager {
         &mut self,
         process_id: u32,
         process_name: String,
-        executable_path: String,
+        executable_path: PathBuf,
         thaw_until: Instant,
         reason: TemporaryThawReason,
     ) {
         if let Some(existing) = self.temporary_thawed.get_mut(&process_id) {
-            if same_executable_path(
-                Path::new(&existing.executable_path),
-                Path::new(&executable_path),
-            ) {
+            if same_executable_path(&existing.executable_path, &executable_path) {
                 existing.process_name = process_name;
                 existing.executable_path = executable_path;
                 if existing.thaw_until < thaw_until {
@@ -1825,7 +1823,11 @@ impl AppSuspensionManager {
         now: Instant,
     ) -> TemporaryThawState {
         if self.temporary_thawed.contains_key(&process_id)
-            && !self.managed_process_matches_target(controller, process_id, executable_path)
+            && !self.managed_process_matches_target(
+                controller,
+                process_id,
+                Path::new(executable_path),
+            )
         {
             self.temporary_thawed.remove(&process_id);
             return TemporaryThawState::None;
@@ -1835,7 +1837,7 @@ impl AppSuspensionManager {
         };
 
         thaw.process_name = process_name.to_owned();
-        thaw.executable_path = executable_path.to_owned();
+        thaw.executable_path = executable_path.into();
         if now < thaw.thaw_until {
             TemporaryThawState::Active
         } else {
@@ -1938,32 +1940,36 @@ impl AppSuspensionManager {
             suspended_apps: self
                 .suspended
                 .values()
-                .map(|process| process.executable_path.clone())
+                .filter_map(|process| process.executable_path.to_str())
                 .collect::<BTreeSet<_>>()
                 .into_iter()
+                .map(str::to_owned)
                 .collect(),
             temporary_thawed_apps: self
                 .temporary_thawed
                 .values()
-                .map(|process| process.executable_path.clone())
+                .filter_map(|process| process.executable_path.to_str())
                 .collect::<BTreeSet<_>>()
                 .into_iter()
+                .map(str::to_owned)
                 .collect(),
             network_wake_apps: self
                 .temporary_thawed
                 .values()
                 .filter(|process| process.reason == TemporaryThawReason::NetworkWake)
-                .map(|process| process.executable_path.clone())
+                .filter_map(|process| process.executable_path.to_str())
                 .collect::<BTreeSet<_>>()
                 .into_iter()
+                .map(str::to_owned)
                 .collect(),
             audio_wake_apps: self
                 .temporary_thawed
                 .values()
                 .filter(|process| process.reason == TemporaryThawReason::AudioWake)
-                .map(|process| process.executable_path.clone())
+                .filter_map(|process| process.executable_path.to_str())
                 .collect::<BTreeSet<_>>()
                 .into_iter()
+                .map(str::to_owned)
                 .collect(),
             running_apps: self.running_apps.iter().cloned().collect(),
             status_unknown: false,
@@ -2158,7 +2164,7 @@ mod tests {
             7,
             SuspendedProcess {
                 process_name: "chat.exe".to_owned(),
-                executable_path: path.to_owned(),
+                executable_path: path.into(),
                 creation_time: 8,
                 suspended_since: now,
                 manual: true,
@@ -2228,7 +2234,7 @@ mod tests {
                 process_id,
                 SuspendedProcess {
                     process_name: format!("{process_id}.exe"),
-                    executable_path: format!("C:/Apps/{process_id}.exe"),
+                    executable_path: format!("C:/Apps/{process_id}.exe").into(),
                     creation_time: u64::from(process_id) + 1,
                     suspended_since: now,
                     manual,
@@ -2269,7 +2275,7 @@ mod tests {
                 process_id,
                 SuspendedProcess {
                     process_name: format!("{process_id}.exe"),
-                    executable_path: format!("C:/Apps/{process_id}.exe"),
+                    executable_path: format!("C:/Apps/{process_id}.exe").into(),
                     creation_time: u64::from(process_id) + 1,
                     suspended_since: now,
                     manual,
@@ -2312,7 +2318,7 @@ mod tests {
                 process_id,
                 SuspendedProcess {
                     process_name: format!("{process_id}.exe"),
-                    executable_path: format!("C:/Apps/{process_id}.exe"),
+                    executable_path: format!("C:/Apps/{process_id}.exe").into(),
                     creation_time: u64::from(process_id) + 1,
                     suspended_since: now,
                     manual,
@@ -2505,7 +2511,7 @@ mod tests {
             7,
             SuspendedProcess {
                 process_name: "chat.exe".to_owned(),
-                executable_path: r"C:\Apps\chat.exe".to_owned(),
+                executable_path: r"C:\Apps\chat.exe".into(),
                 creation_time: 8,
                 suspended_since: now,
                 manual: false,
@@ -2515,7 +2521,7 @@ mod tests {
             8,
             SuspendedProcess {
                 process_name: "mail.exe".to_owned(),
-                executable_path: r"C:\Mail\mail.exe".to_owned(),
+                executable_path: r"C:\Mail\mail.exe".into(),
                 creation_time: 9,
                 suspended_since: now,
                 manual: false,
@@ -2560,7 +2566,7 @@ mod tests {
                 process_id,
                 SuspendedProcess {
                     process_name: name.to_owned(),
-                    executable_path: path.to_owned(),
+                    executable_path: path.into(),
                     creation_time: u64::from(process_id) + 1,
                     suspended_since: now,
                     manual: true,
@@ -2590,7 +2596,7 @@ mod tests {
             7,
             TemporaryThaw {
                 process_name: "chat.exe".to_owned(),
-                executable_path: r"C:\Apps\chat.exe".to_owned(),
+                executable_path: r"C:\Apps\chat.exe".into(),
                 thaw_until: now + Duration::from_secs(5),
                 reason: TemporaryThawReason::UserIntent,
             },
@@ -2634,7 +2640,7 @@ mod tests {
             7,
             TemporaryThaw {
                 process_name: "chat.exe".to_owned(),
-                executable_path: r"C:\Apps\chat.exe".to_owned(),
+                executable_path: r"C:\Apps\chat.exe".into(),
                 thaw_until: now + Duration::from_secs(5),
                 reason: TemporaryThawReason::Fallback,
             },
@@ -2660,7 +2666,7 @@ mod tests {
         );
         assert_eq!(
             manager.temporary_thawed.get(&7).unwrap().executable_path,
-            r"C:\Apps\chat.exe"
+            Path::new(r"C:\Apps\chat.exe")
         );
     }
 
@@ -2691,7 +2697,7 @@ mod tests {
             7,
             TemporaryThaw {
                 process_name: "chat.exe".to_owned(),
-                executable_path: r"C:\Apps\chat.exe".to_owned(),
+                executable_path: r"C:\Apps\chat.exe".into(),
                 thaw_until: now + Duration::from_secs(5),
                 reason: TemporaryThawReason::NetworkWake,
             },
@@ -2839,7 +2845,7 @@ mod tests {
             7,
             SuspendedProcess {
                 process_name: "chat.exe".to_owned(),
-                executable_path: r"C:\Apps\chat.exe".to_owned(),
+                executable_path: r"C:\Apps\chat.exe".into(),
                 creation_time: 8,
                 suspended_since: now,
                 manual: false,
@@ -2849,7 +2855,7 @@ mod tests {
             8,
             TemporaryThaw {
                 process_name: "chat.exe".to_owned(),
-                executable_path: r"C:\Other\chat.exe".to_owned(),
+                executable_path: r"C:\Other\chat.exe".into(),
                 thaw_until: now + Duration::from_secs(5),
                 reason: TemporaryThawReason::NetworkWake,
             },
@@ -2880,7 +2886,7 @@ mod tests {
             7,
             TemporaryThaw {
                 process_name: "chat.exe".to_owned(),
-                executable_path: r"C:\Apps\chat.exe".to_owned(),
+                executable_path: r"C:\Apps\chat.exe".into(),
                 thaw_until: now + Duration::from_secs(5),
                 reason: TemporaryThawReason::Fallback,
             },
@@ -2905,7 +2911,7 @@ mod tests {
             7,
             TemporaryThaw {
                 process_name: "chat.exe".to_owned(),
-                executable_path: r"C:\Apps\chat.exe".to_owned(),
+                executable_path: r"C:\Apps\chat.exe".into(),
                 thaw_until: now + Duration::from_secs(5),
                 reason: TemporaryThawReason::Fallback,
             },
@@ -2954,7 +2960,7 @@ mod tests {
                 process_id,
                 SuspendedProcess {
                     process_name: name.to_owned(),
-                    executable_path: path,
+                    executable_path: path.into(),
                     creation_time: u64::from(process_id) + 1,
                     suspended_since: now,
                     manual,
@@ -3013,7 +3019,7 @@ mod tests {
             7,
             SuspendedProcess {
                 process_name: "chat.exe".to_owned(),
-                executable_path: r"C:\Apps\chat.exe".to_owned(),
+                executable_path: r"C:\Apps\chat.exe".into(),
                 creation_time: 8,
                 suspended_since: now,
                 manual: false,
@@ -3023,7 +3029,7 @@ mod tests {
             8,
             SuspendedProcess {
                 process_name: "CHAT.EXE".to_owned(),
-                executable_path: r"C:\Apps\chat.exe".to_owned(),
+                executable_path: r"C:\Apps\chat.exe".into(),
                 creation_time: 9,
                 suspended_since: now,
                 manual: false,
@@ -3033,7 +3039,7 @@ mod tests {
             9,
             SuspendedProcess {
                 process_name: "mail.exe".to_owned(),
-                executable_path: r"C:\Mail\mail.exe".to_owned(),
+                executable_path: r"C:\Mail\mail.exe".into(),
                 creation_time: 10,
                 suspended_since: now,
                 manual: false,
@@ -3071,7 +3077,7 @@ mod tests {
             7,
             SuspendedProcess {
                 process_name: "browser.exe".to_owned(),
-                executable_path: r"C:\Apps\browser.exe".to_owned(),
+                executable_path: r"C:\Apps\browser.exe".into(),
                 creation_time: 8,
                 suspended_since: now,
                 manual: false,
@@ -3081,7 +3087,7 @@ mod tests {
             8,
             SuspendedProcess {
                 process_name: "BROWSER.EXE".to_owned(),
-                executable_path: r"C:\Apps\browser.exe".to_owned(),
+                executable_path: r"C:\Apps\browser.exe".into(),
                 creation_time: 9,
                 suspended_since: now,
                 manual: false,
@@ -3123,7 +3129,7 @@ mod tests {
             7,
             TemporaryThaw {
                 process_name: "chat.exe".to_owned(),
-                executable_path: r"C:\Apps\chat.exe".to_owned(),
+                executable_path: r"C:\Apps\chat.exe".into(),
                 thaw_until: now + Duration::from_secs(5),
                 reason: TemporaryThawReason::Fallback,
             },
@@ -3132,7 +3138,7 @@ mod tests {
             8,
             TemporaryThaw {
                 process_name: "CHAT.EXE".to_owned(),
-                executable_path: r"C:\Apps\chat.exe".to_owned(),
+                executable_path: r"C:\Apps\chat.exe".into(),
                 thaw_until: now + Duration::from_secs(5),
                 reason: TemporaryThawReason::Fallback,
             },

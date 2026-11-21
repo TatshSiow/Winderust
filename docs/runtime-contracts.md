@@ -489,7 +489,9 @@ Read the relevant section before changing feature policy, ownership, restoration
   App-page Freeze, and Process List Suspend/Resume share the RuntimeCore controller; feature code
   owns grace/wake/reporting policy only. Automatic rules require executable paths representable
   in settings. Foreground release and saved-rule Resume compare native paths held by the
-  controller. The controller retains failed thaw/finalization state for
+  controller. Process List freezes keep their exact process status. Only paths representable
+  in settings contribute to saved-rule indicators and grace intervals. The controller retains
+  failed thaw/finalization state for
   bounded retry and explicit shutdown. The crash helper opens the exact named job before freeze and
   thaws that retained job even if the recorded root exits while inherited children remain. Raw Job
   Object creation, assignment, and membership live in `src/platform/windows/job.rs`; freeze/thaw
