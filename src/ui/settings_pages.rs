@@ -487,7 +487,7 @@ impl Editor {
                         .iter()
                         .enumerate()
                         .map(|(i, color)| {
-                            super::popover::context_menu(
+                            let swatch = super::popover::context_menu(
                                 u64::from(*color),
                                 color_button(
                                     *color,
@@ -514,11 +514,24 @@ impl Editor {
                                     .style(widgets::tooltip_surface)
                                     .into()
                                 },
-                            )
+                            );
+                            row![
+                                swatch,
+                                widgets::tooltip(
+                                    widgets::icon_button("icons/pencil.svg")
+                                        .on_press(Message::EditColor(*color)),
+                                    text(t!("common.edit").to_string()),
+                                    iced::widget::tooltip::Position::Top,
+                                ),
+                                widgets::rule_delete_button(Some(Message::RemoveColor(i))),
+                            ]
+                            .spacing(design::space::TINY)
+                            .align_y(iced::Center)
+                            .into()
                         })
                         .collect(),
                 )
-                .spacing(design::space::CONTROL)
+                .spacing(design::space::MEDIUM)
                 .line_spacing(design::space::CONTROL);
                 let picker = color_button(s.general.accent.custom_color, false)
                     .on_press(Message::OpenColorPicker(s.general.accent.custom_color));
