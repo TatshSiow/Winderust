@@ -18,7 +18,7 @@ use crate::{
     },
     foreground::{
         is_foreground_process, process_executable_path, process_failure_key, process_session_id,
-        unique_app_names, ProtectedProcesses, CORE_BUILT_IN_PROCESS_EXCLUSIONS,
+        ProtectedProcesses, CORE_BUILT_IN_PROCESS_EXCLUSIONS,
     },
     rules::{execution_failure_suppression_threshold, ExecutionFailureTracker},
     runtime::observations::CycleObservations,
@@ -33,7 +33,6 @@ pub struct ProcessPrioritySnapshot {
     pub adjusted_processes: usize,
     pub skipped_processes: usize,
     pub failed_processes: usize,
-    pub adjusted_apps: Vec<String>,
     pub auto_excluded_processes: Vec<String>,
     pub(crate) observation_paused: bool,
     pub last_error: Option<String>,
@@ -290,12 +289,6 @@ impl ProcessPriorityManager {
                 .policy_managed_process_count(ControlOwner::ProcessPriority),
             skipped_processes,
             failed_processes: failures.count,
-            adjusted_apps: unique_app_names(
-                controller
-                    .policy_managed_process_names(ControlOwner::ProcessPriority)
-                    .iter()
-                    .map(String::as_str),
-            ),
             auto_excluded_processes: auto_excluded_processes.into_iter().collect(),
             observation_paused: false,
             last_error: failures.last_error,
