@@ -337,6 +337,10 @@ impl Editor {
         self.values = readback.map(AdvancedPowerPlanTuningReadback::writable);
     }
 
+    fn update_dirty(&mut self) {
+        self.dirty = self.values != self.readback.map(AdvancedPowerPlanTuningReadback::writable);
+    }
+
     pub(super) fn review_apply(
         &mut self,
         plans: &[PowerPlan],
@@ -575,7 +579,7 @@ impl Editor {
                 if let Some(values) = self.values.as_mut() {
                     self.invalid_percentages[source as usize].0[field as usize] = None;
                     set_field(source_values(values, source), field, value);
-                    self.dirty = true;
+                    self.update_dirty();
                 }
             }
             Message::ValueText(source, field, value) => {
@@ -593,7 +597,7 @@ impl Editor {
                         source_values(values, source).processor.boost_mode.as_mut()
                     {
                         *current = value;
-                        self.dirty = true;
+                        self.update_dirty();
                     }
                 }
             }
@@ -607,7 +611,7 @@ impl Editor {
                         *current,
                     );
                     self.selected_presets[source as usize] = Some(choice);
-                    self.dirty = true;
+                    self.update_dirty();
                 }
             }
             Message::Scheduling(source, field, value) => {
@@ -616,7 +620,7 @@ impl Editor {
                         scheduling_field(source_values(values, source), field).as_mut()
                     {
                         *current = value;
-                        self.dirty = true;
+                        self.update_dirty();
                     }
                 }
             }
@@ -1694,6 +1698,27 @@ mod tests {
                 "processor_power.short_scheduling_policy"
             ]
         );
+    }
+
+    #[test]
+    fn reverted_tuning_inputs_clear_the_draft_without_review() {
+        let balanced = AdvancedPowerPlanTuningValues::for_preset(ProcessorPowerPreset::Balanced);
+        let mut editor = Editor::default();
+        let current = AdvancedPowerPlanTuningSourceValues::same(balanced);
+        editor.set_readback(Some(current.into()));
+        let mut settings = test_settings();
+
+        for (value, dirty) in [(99, true), (100, false)] {
+            editor.update(
+                &mut settings,
+                &[],
+                Message::Value(Source::Ac, Field::Maximum, value),
+            );
+            assert_eq!(editor.dirty, dirty);
+        }
+        assert_eq!(editor.values, Some(current));
+        assert!(editor.review_apply(&[], ApplyOrigin::Save).is_ok());
+        assert!(editor.review.is_none());
     }
 
     #[test]
