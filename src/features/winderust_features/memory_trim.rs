@@ -260,7 +260,8 @@ impl MemoryTrimManager {
                 return MemoryTrimSnapshot {
                     enabled: true,
                     memory_load_percent: Some(memory_load_percent),
-                    status: MemoryTrimStatus::Error(err),
+                    status: MemoryTrimStatus::Error(err.clone()),
+                    last_error: Some(err),
                     ..Default::default()
                 };
             }

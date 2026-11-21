@@ -1,5 +1,6 @@
 use super::*;
 use crate::action_log::{ActionLogFeature, ActionLogResult};
+use crate::features::winderust_features::memory_trim::MemoryTrimStatus;
 use crate::runtime::observations::CycleObservations;
 use std::path::PathBuf;
 
@@ -1369,7 +1370,13 @@ impl RuntimeCore {
                 }
                 ProcessControlCommand::MemoryTrim { result } => {
                     let status = self.run_memory_trim_now(settings, observations);
-                    let _ = result.try_send(Ok(status.clone()));
+                    let reply = match &status.status {
+                        MemoryTrimStatus::Error(error) => {
+                            Err(RuntimeCommandError::CommandFailed(error.clone()))
+                        }
+                        _ => Ok(status.clone()),
+                    };
+                    let _ = result.try_send(reply);
                     statuses.memory_trim = Some(status);
                 }
                 ProcessControlCommand::StopProcesses { targets, result } => {
