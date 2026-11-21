@@ -387,6 +387,8 @@ Read the relevant section before changing feature policy, ownership, restoration
   review. Readback verifies the outcome. Each mismatch identifies the power
   source, setting, requested value, and actual value. When a write stage fails,
   the report includes the stage error and any differences from a successful readback.
+  On a failed Apply with readback, the draft retains the reviewed values that are
+  still writable and differ from the plan. A retry requires a new review.
 - Restore previous tuning values keeps one in-memory restore point per plan GUID
   after a verified Apply that changed values. It captures the pre-apply values
   only when the writer can reproduce the editable values exactly and preserve

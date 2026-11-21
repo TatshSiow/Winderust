@@ -502,7 +502,12 @@ impl Editor {
                 }
             };
         self.set_readback(outcome.actual_values);
-        self.dirty = !restoring && self.values.is_some() && !outcome.applied;
+        if !restoring && !outcome.applied {
+            self.values = self
+                .readback
+                .map(|actual| ApplyReview::request(actual, review.requested));
+        }
+        self.update_dirty();
         let mismatch_summary = if restoring {
             "processor_power.restore_not_verified"
         } else {
