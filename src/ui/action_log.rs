@@ -259,7 +259,7 @@ impl Editor {
             .take(range.len())
             .enumerate()
         {
-            let entry = group[0];
+            let entry = group.first;
             let level = entry.result.level();
             entries_table = entries_table.push(
                 iced::widget::button(
@@ -362,18 +362,34 @@ impl Editor {
         table.into()
     }
 }
+
+struct ActionLogGroup<'a> {
+    first: &'a ActionLogEntry,
+    rest: Vec<&'a ActionLogEntry>,
+}
+
+impl<'a> ActionLogGroup<'a> {
+    fn iter(&self) -> impl Iterator<Item = &'a ActionLogEntry> + '_ {
+        std::iter::once(self.first).chain(self.rest.iter().copied())
+    }
+
+    fn len(&self) -> usize {
+        1 + self.rest.len()
+    }
+}
+
 // Group matching actions throughout each automation pass, newest groups first.
 fn group_entries<'a>(
     entries: impl IntoIterator<Item = &'a ActionLogEntry>,
-) -> Vec<Vec<&'a ActionLogEntry>> {
-    let mut groups: Vec<Vec<&ActionLogEntry>> = Vec::new();
+) -> Vec<ActionLogGroup<'a>> {
+    let mut groups: Vec<ActionLogGroup<'_>> = Vec::new();
     for entry in entries {
         if let Some(group) = groups
             .iter_mut()
             .rev()
-            .take_while(|group| group[0].batch_id == entry.batch_id)
+            .take_while(|group| group.first.batch_id == entry.batch_id)
             .find(|group| {
-                let first = group[0];
+                let first = group.first;
                 entry.process_id.is_some()
                     && first.process_id.is_some()
                     && entry.feature == first.feature
@@ -382,10 +398,13 @@ fn group_entries<'a>(
                     && !group.iter().any(|old| old.process_id == entry.process_id)
             })
         {
-            group.push(entry);
+            group.rest.push(entry);
             continue;
         }
-        groups.push(vec![entry]);
+        groups.push(ActionLogGroup {
+            first: entry,
+            rest: Vec::new(),
+        });
     }
     groups
 }
@@ -405,10 +424,12 @@ fn process_icon<'a>(
 }
 
 fn process_group<'a>(
-    entries: Vec<&'a ActionLogEntry>,
+    entries: ActionLogGroup<'a>,
     candidates: &'a [super::app_picker::Candidate],
 ) -> Element<'a, Message> {
-    if entries.len() == 1 && entries[0].process_id.is_none() && entries[0].process_name.is_empty() {
+    let first = entries.first;
+    let count = entries.len();
+    if count == 1 && first.process_id.is_none() && first.process_name.is_empty() {
         return container(text("\u{2014}").style(text::secondary))
             .width(160)
             .into();
@@ -417,9 +438,9 @@ fn process_group<'a>(
     for entry in entries.iter().take(5) {
         strip = strip.push(process_icon(&entry.process_name, candidates));
     }
-    let mut names_hidden = entries.len() > 1;
-    if entries.len() == 1 {
-        let label = action_log_process_label(entries[0]);
+    let mut names_hidden = count > 1;
+    if count == 1 {
+        let label = action_log_process_label(first);
         let fitted = super::widgets::fitted_text(&label, 134.0, design::typography::CAPTION);
         names_hidden = fitted != label;
         strip = strip.push(
@@ -427,9 +448,8 @@ fn process_group<'a>(
                 .size(design::typography::CAPTION)
                 .wrapping(text::Wrapping::None),
         );
-    } else if entries.len() > 5 {
-        strip =
-            strip.push(text(format!("+{}", entries.len() - 5)).size(design::typography::CAPTION));
+    } else if count > 5 {
+        strip = strip.push(text(format!("+{}", count - 5)).size(design::typography::CAPTION));
     }
     let anchor = container(strip)
         .width(160)
@@ -439,12 +459,12 @@ fn process_group<'a>(
     if !names_hidden {
         return anchor;
     }
-    popover::view(entries[0].sequence, anchor, move || {
+    popover::view(first.sequence, anchor, move || {
         let mut details = column![text(
-            t!("action_log.affected_processes", count = entries.len()).to_string()
+            t!("action_log.affected_processes", count = count).to_string()
         )]
         .spacing(8);
-        for entry in &entries {
+        for entry in entries.iter() {
             details = details.push(
                 row![
                     process_icon(&entry.process_name, candidates),
@@ -779,6 +799,7 @@ mod tests {
             ("a-very-long-process-name.exe", 1, true),
         ] {
             let mut log = crate::action_log::ActionLog::new(40);
+            log.begin_batch();
             for pid in 0..count {
                 log.record(
                     ActionLogFeature::AdaptiveEngine,
@@ -789,8 +810,8 @@ mod tests {
                 );
             }
             let entries = log.entries();
-            let refs: Vec<_> = entries.iter().collect();
-            let mut element = process_group(refs, &[]);
+            let group = group_entries(&entries).pop().unwrap();
+            let mut element = process_group(group, &[]);
             let mut tree = Tree::new(&element);
             let size = iced::Size::new(500.0, 500.0);
             let node = element.as_widget_mut().layout(
@@ -845,7 +866,7 @@ mod tests {
         assert_eq!(
             group_entries(filtered)
                 .iter()
-                .map(Vec::len)
+                .map(ActionLogGroup::len)
                 .collect::<Vec<_>>(),
             vec![40]
         );
@@ -872,7 +893,7 @@ mod tests {
         assert_eq!(
             group_entries(filtered)
                 .iter()
-                .map(Vec::len)
+                .map(ActionLogGroup::len)
                 .collect::<Vec<_>>(),
             vec![2, 1, 40]
         );
@@ -919,7 +940,7 @@ mod tests {
                 assert_eq!(groups.len(), 2, "{feature:?} {result:?}");
                 assert_eq!(groups[0].len(), 3);
                 assert_eq!(groups[1].len(), 3);
-                assert_eq!(groups[0][0].reason, "Different action.");
+                assert_eq!(groups[0].first.reason, "Different action.");
                 assert_eq!(action_log_entries_to_csv(&entries).lines().count(), 7);
             }
         }
