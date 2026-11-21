@@ -628,7 +628,7 @@ pub fn list_process_candidates() -> Result<Vec<ProcessCandidateInfo>, String> {
 }
 
 pub fn process_candidates_from_processes(processes: &[ProcessInfo]) -> Vec<ProcessCandidateInfo> {
-    let mut candidates: BTreeMap<String, ProcessCandidateInfo> = BTreeMap::new();
+    let mut candidates: BTreeMap<OsString, ProcessCandidateInfo> = BTreeMap::new();
     for process in processes {
         if process.is_critical != Some(false) || !process.can_set_information {
             continue;
@@ -638,8 +638,13 @@ pub fn process_candidates_from_processes(processes: &[ProcessInfo]) -> Vec<Proce
         };
         let has_suspendable_instance = process.session_id.is_some_and(|session_id| session_id != 0)
             && process.is_service_account == Some(false);
+        let path_key = if image_path.to_str().is_some() {
+            executable_path_key(image_path).into()
+        } else {
+            image_path.as_os_str().to_owned()
+        };
         candidates
-            .entry(executable_path_key(image_path))
+            .entry(path_key)
             .and_modify(|candidate| {
                 candidate.has_suspendable_instance |= has_suspendable_instance;
             })
@@ -1613,6 +1618,39 @@ mod tests {
         let candidates = process_candidates_from_processes(&[service_account]);
         assert_eq!(candidates.len(), 1);
         assert!(!candidates[0].has_suspendable_instance);
+    }
+
+    #[test]
+    fn catalog_keeps_suspendability_separate_for_lookalike_paths() {
+        let path = "C:\\Apps\\\u{fffd}\\editor.exe";
+        let valid = ProcessInfo {
+            id: 42,
+            creation_time: Some(1),
+            parent_id: None,
+            session_id: Some(0),
+            user_name: None,
+            is_service_account: Some(false),
+            is_critical: Some(false),
+            can_set_information: true,
+            name: "editor.exe".to_owned(),
+            image_path: Some(path.into()),
+        };
+        let malformed = path
+            .encode_utf16()
+            .map(|unit| if unit == 0xfffd { 0xd800 } else { unit })
+            .collect::<Vec<_>>();
+        let raw = ProcessInfo {
+            id: 43,
+            session_id: Some(1),
+            image_path: Some(OsString::from_wide(&malformed).into()),
+            ..valid.clone()
+        };
+
+        let candidates = process_candidates_from_processes(&[raw, valid]);
+        assert_eq!(candidates.len(), 2);
+        assert!(candidates.iter().any(|candidate| {
+            candidate.image_path == Path::new(path) && !candidate.has_suspendable_instance
+        }));
     }
 
     #[test]

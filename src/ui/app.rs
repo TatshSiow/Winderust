@@ -1594,8 +1594,8 @@ impl WinderustApp {
                         self.unavailable_candidates = candidates
                             .iter()
                             .filter(|candidate| !candidate.info.has_suspendable_instance)
-                            .map(|candidate| {
-                                candidate.info.image_path.to_string_lossy().into_owned()
+                            .filter_map(|candidate| {
+                                candidate.info.image_path.to_str().map(str::to_owned)
                             })
                             .collect();
                         self.candidates = candidates;
