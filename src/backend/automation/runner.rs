@@ -1,7 +1,10 @@
 use super::*;
-use crate::action_log::{ActionLogFeature, ActionLogResult};
 use crate::features::winderust_features::memory_trim::MemoryTrimStatus;
 use crate::runtime::observations::CycleObservations;
+use crate::{
+    action_log::{ActionLogFeature, ActionLogResult},
+    control::memory_priority::MemoryPriorityReleaseOwner,
+};
 use std::path::PathBuf;
 
 fn app_suspension_lock_failure(error: String) -> AppSuspensionSnapshot {
@@ -1505,20 +1508,27 @@ impl RuntimeCore {
                 ),
             );
         }
-        errors.extend(
-            self.memory_priority_controller
-                .retry_pending_releases(now)
-                .failures
-                .into_iter()
-                .map(|failure| {
-                    process_failure(
-                        "Memory Priority",
-                        failure.process_name,
-                        failure.process_id,
-                        failure.error,
-                    )
-                }),
-        );
+        let memory_retries = self.memory_priority_controller.retry_pending_releases(now);
+        for (owner, count) in memory_retries.restored_by_owner {
+            let feature = match owner {
+                MemoryPriorityReleaseOwner::MemoryPriority => ActionLogFeature::MemoryPriority,
+                MemoryPriorityReleaseOwner::AdaptiveEngine => ActionLogFeature::AdaptiveEngine,
+            };
+            MemoryPriorityManager::record_restoration(
+                &mut self.action_log,
+                feature,
+                count,
+                "restoration retry completed",
+            );
+        }
+        errors.extend(memory_retries.failures.into_iter().map(|failure| {
+            process_failure(
+                "Memory Priority",
+                failure.process_name,
+                failure.process_id,
+                failure.error,
+            )
+        }));
         if self
             .dynamic_priority_boost_controller
             .release_retry_delay(now)

@@ -434,6 +434,23 @@ impl MemoryPriorityManager {
         }
     }
 
+    pub(crate) fn record_restoration(
+        action_log: &mut ActionLog,
+        feature: ActionLogFeature,
+        count: usize,
+        reason: &str,
+    ) {
+        if count > 0 {
+            action_log.record(
+                feature,
+                None,
+                "",
+                ActionLogResult::Restored,
+                memory_priority_restore_summary_message(count, reason),
+            );
+        }
+    }
+
     fn merge_release_summary(
         &mut self,
         summary: MemoryPriorityReleaseSummary,
@@ -442,15 +459,12 @@ impl MemoryPriorityManager {
         reason: &str,
         failures: &mut MemoryPriorityFailures,
     ) {
-        if summary.restored_processes > 0 {
-            action_log.record(
-                action_log_feature,
-                None,
-                "",
-                ActionLogResult::Restored,
-                memory_priority_restore_summary_message(summary.restored_processes, reason),
-            );
-        }
+        Self::record_restoration(
+            action_log,
+            action_log_feature,
+            summary.restored_processes,
+            reason,
+        );
         for failure in summary.failures {
             self.record_process_failure(&failure.executable_path);
             match failure.error {

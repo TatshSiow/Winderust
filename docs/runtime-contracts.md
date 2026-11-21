@@ -165,6 +165,10 @@ Read the relevant section before changing feature policy, ownership, restoration
   further journal commands until helper recovery; it must not become a committed
   edge while its actual outcome is unknown.
 
+- Quiet Memory Priority retries record verified baseline restorations in the
+  initiating feature's Action Log when exactly one owner requested reconciliation
+  for that process. Shared release attempts, active policy handoffs, departed
+  processes and external overrides do not create restoration entries.
 - Failed Process Priority and Efficiency policy releases remain queued independently of active claims. The runtime retries reconciliation once per second while pending, including with feature/master toggles disabled. Each retry resolves current claims and uses existing identity and restoration checks; it must not blindly restore over a new owner.
 
 - Runtime restoration is a product safety barrier: every reversible runtime

@@ -74,6 +74,30 @@ pub(crate) struct MemoryPriorityReleaseSummary {
     pub(crate) failures: Vec<MemoryPriorityReleaseFailure>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum MemoryPriorityReleaseOwner {
+    MemoryPriority,
+    AdaptiveEngine,
+}
+
+#[derive(Default)]
+pub(crate) struct MemoryPriorityReleaseRetries {
+    pub(crate) restored_by_owner: BTreeMap<MemoryPriorityReleaseOwner, usize>,
+    pub(crate) failures: Vec<MemoryPriorityReleaseFailure>,
+}
+
+fn queue_pending_release(
+    pending: &mut BTreeMap<ProcessIdentity, Option<MemoryPriorityReleaseOwner>>,
+    identity: &ProcessIdentity,
+    releasing_owner: Option<MemoryPriorityReleaseOwner>,
+) {
+    let origin = pending.entry(identity.clone()).or_insert(releasing_owner);
+    if releasing_owner.is_some() && *origin != releasing_owner {
+        // More than one owner requested reconciliation before this release completed.
+        *origin = None;
+    }
+}
+
 struct ManagedMemoryPriority {
     baseline: u32,
     expected: u32,
@@ -167,7 +191,7 @@ pub(crate) struct MemoryPriorityController<
     adaptive_claims: BTreeMap<ProcessTargetKey, MemoryPriorityClaim>,
     managed: BTreeMap<ProcessIdentity, ManagedMemoryPriority>,
     next_apply_sequence: u64,
-    pending_releases: BTreeSet<ProcessIdentity>,
+    pending_releases: BTreeMap<ProcessIdentity, Option<MemoryPriorityReleaseOwner>>,
     next_release_retry: Option<Instant>,
 }
 
@@ -185,7 +209,7 @@ impl<P: MemoryPriorityPlatform> MemoryPriorityController<P> {
             adaptive_claims: BTreeMap::new(),
             managed: BTreeMap::new(),
             next_apply_sequence: 1,
-            pending_releases: BTreeSet::new(),
+            pending_releases: BTreeMap::new(),
             next_release_retry: None,
         }
     }
@@ -197,7 +221,8 @@ impl<P: MemoryPriorityPlatform> MemoryPriorityController<P> {
     ) -> Result<MemoryPriorityApplyOutcome, ProcessControlError> {
         let owner = claim.owner;
         let key = claim.target.key();
-        let previous = self.policy_claims_mut(owner)?.insert(key.clone(), claim);
+        let (claims, _) = self.policy_claims_mut(owner)?;
+        let previous = claims.insert(key.clone(), claim);
         let effective = self.effective_claim(&key).cloned().ok_or_else(|| {
             ProcessControlError::Failed("Memory Priority claim arbitration failed.".to_owned())
         })?;
@@ -206,7 +231,7 @@ impl<P: MemoryPriorityPlatform> MemoryPriorityController<P> {
         }
         let result = self.apply_effective_claim(effective, allow_cross_session_process_control);
         if result.is_err() {
-            let claims = self.policy_claims_mut(owner)?;
+            let (claims, _) = self.policy_claims_mut(owner)?;
             if let Some(previous) = previous {
                 claims.insert(key, previous);
             } else {
@@ -365,12 +390,8 @@ impl<P: MemoryPriorityPlatform> MemoryPriorityController<P> {
         if self.pending_releases.is_empty() {
             self.next_release_retry = None;
         }
-        let stale_keys = match self.policy_claims(owner) {
-            Ok(claims) => claims
-                .keys()
-                .filter(|key| !active_targets.contains(*key))
-                .cloned()
-                .collect::<BTreeSet<_>>(),
+        let (claims, release_owner) = match self.policy_claims_mut(owner) {
+            Ok(policy) => policy,
             Err(error) => {
                 return MemoryPriorityReleaseSummary {
                     failures: vec![MemoryPriorityReleaseFailure {
@@ -383,9 +404,12 @@ impl<P: MemoryPriorityPlatform> MemoryPriorityController<P> {
                 };
             }
         };
-        if let Ok(claims) = self.policy_claims_mut(owner) {
-            claims.retain(|key, _| !stale_keys.contains(key));
-        }
+        let stale_keys = claims
+            .keys()
+            .filter(|key| !active_targets.contains(*key))
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        claims.retain(|key, _| !stale_keys.contains(key));
 
         let mut reconcile_keys = stale_keys;
         reconcile_keys.extend(self.managed.iter().filter_map(|(identity, managed)| {
@@ -397,7 +421,7 @@ impl<P: MemoryPriorityPlatform> MemoryPriorityController<P> {
 
         let mut summary = MemoryPriorityReleaseSummary::default();
         for key in reconcile_keys {
-            self.reconcile_policy_key(owner, &key, &mut summary);
+            self.reconcile_policy_key(owner, Some(release_owner), &key, &mut summary);
         }
         if self.pending_releases.is_empty() {
             self.next_release_retry = None;
@@ -415,29 +439,41 @@ impl<P: MemoryPriorityPlatform> MemoryPriorityController<P> {
         })
     }
 
-    pub(crate) fn retry_pending_releases(&mut self, now: Instant) -> MemoryPriorityReleaseSummary {
+    pub(crate) fn retry_pending_releases(&mut self, now: Instant) -> MemoryPriorityReleaseRetries {
+        let mut retries = MemoryPriorityReleaseRetries::default();
         if self.release_retry_delay(now) != Some(Duration::ZERO) {
-            return MemoryPriorityReleaseSummary::default();
+            return retries;
         }
         let mut identities = self
             .pending_releases
             .iter()
-            .filter_map(|identity| {
-                self.managed
-                    .get(identity)
-                    .map(|managed| (managed.apply_sequence, identity.clone(), managed.owner))
+            .filter_map(|(identity, origin)| {
+                self.managed.get(identity).map(|managed| {
+                    (
+                        managed.apply_sequence,
+                        identity.clone(),
+                        managed.owner,
+                        *origin,
+                    )
+                })
             })
             .collect::<Vec<_>>();
-        identities.sort_by_key(|(sequence, _, _)| std::cmp::Reverse(*sequence));
+        identities.sort_by_key(|(sequence, ..)| std::cmp::Reverse(*sequence));
         let mut summary = MemoryPriorityReleaseSummary::default();
-        for (_, identity, owner) in identities {
-            self.reconcile_policy_key(owner, &identity.key(), &mut summary);
+        for (_, identity, owner, origin) in identities {
+            let restored_before = summary.restored_processes;
+            self.reconcile_policy_key(owner, None, &identity.key(), &mut summary);
+            let restored = summary.restored_processes - restored_before;
+            if let (Some(origin), count @ 1..) = (origin, restored) {
+                *retries.restored_by_owner.entry(origin).or_default() += count;
+            }
         }
+        retries.failures = summary.failures;
         self.pending_releases
-            .retain(|identity| self.managed.contains_key(identity));
+            .retain(|identity, _| self.managed.contains_key(identity));
         self.next_release_retry =
             (!self.pending_releases.is_empty()).then(|| now + Duration::from_secs(1));
-        summary
+        retries
     }
 
     pub(crate) fn release_all_policy(
@@ -450,6 +486,7 @@ impl<P: MemoryPriorityPlatform> MemoryPriorityController<P> {
     fn reconcile_policy_key(
         &mut self,
         releasing_owner: ControlOwner,
+        report_owner: Option<MemoryPriorityReleaseOwner>,
         key: &ProcessTargetKey,
         summary: &mut MemoryPriorityReleaseSummary,
     ) {
@@ -468,7 +505,7 @@ impl<P: MemoryPriorityPlatform> MemoryPriorityController<P> {
                 .get(*identity)
                 .is_some_and(|managed| managed.owner.is_automatic())
         }) {
-            self.pending_releases.insert(identity.clone());
+            queue_pending_release(&mut self.pending_releases, identity, report_owner);
         }
 
         if let Some(claim) = self.effective_claim(key).cloned() {
@@ -486,7 +523,7 @@ impl<P: MemoryPriorityPlatform> MemoryPriorityController<P> {
                     if let Some(identity) =
                         self.managed.keys().find(|identity| identity.key() == *key)
                     {
-                        self.pending_releases.insert(identity.clone());
+                        queue_pending_release(&mut self.pending_releases, identity, report_owner);
                     }
                     summary
                         .failures
@@ -502,7 +539,7 @@ impl<P: MemoryPriorityPlatform> MemoryPriorityController<P> {
         let Some(managed) = self.managed.get(&identity) else {
             return;
         };
-        if !managed.owner.is_automatic() && !self.pending_releases.contains(&identity) {
+        if !managed.owner.is_automatic() && !self.pending_releases.contains_key(&identity) {
             return;
         }
         match self.release_identity(&identity) {
@@ -651,26 +688,25 @@ impl<P: MemoryPriorityPlatform> MemoryPriorityController<P> {
         !self.managed.is_empty()
     }
 
-    fn policy_claims(
-        &self,
-        owner: ControlOwner,
-    ) -> Result<&BTreeMap<ProcessTargetKey, MemoryPriorityClaim>, ProcessControlError> {
-        match owner {
-            ControlOwner::MemoryPriority => Ok(&self.static_claims),
-            ControlOwner::AdaptiveEngine => Ok(&self.adaptive_claims),
-            _ => Err(ProcessControlError::Failed(
-                "This owner cannot control Memory Priority policy.".to_owned(),
-            )),
-        }
-    }
-
     fn policy_claims_mut(
         &mut self,
         owner: ControlOwner,
-    ) -> Result<&mut BTreeMap<ProcessTargetKey, MemoryPriorityClaim>, ProcessControlError> {
+    ) -> Result<
+        (
+            &mut BTreeMap<ProcessTargetKey, MemoryPriorityClaim>,
+            MemoryPriorityReleaseOwner,
+        ),
+        ProcessControlError,
+    > {
         match owner {
-            ControlOwner::MemoryPriority => Ok(&mut self.static_claims),
-            ControlOwner::AdaptiveEngine => Ok(&mut self.adaptive_claims),
+            ControlOwner::MemoryPriority => Ok((
+                &mut self.static_claims,
+                MemoryPriorityReleaseOwner::MemoryPriority,
+            )),
+            ControlOwner::AdaptiveEngine => Ok((
+                &mut self.adaptive_claims,
+                MemoryPriorityReleaseOwner::AdaptiveEngine,
+            )),
             _ => Err(ProcessControlError::Failed(
                 "This owner cannot control Memory Priority policy.".to_owned(),
             )),
