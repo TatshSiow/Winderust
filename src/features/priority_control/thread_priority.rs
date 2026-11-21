@@ -147,27 +147,29 @@ impl ThreadPriorityManager {
                 continue;
             }
             let (Some(executable_path), Some(creation_time)) =
-                (process.image_path.clone(), process.creation_time)
+                (process.image_path.as_deref(), process.creation_time)
             else {
+                continue;
+            };
+            let Some(path) = executable_path.to_str() else {
                 continue;
             };
             let foreground = settings.foreground_detection_enabled
                 && super::foreground_for_owner(
                     owner,
                     process,
-                    &executable_path,
+                    executable_path,
                     foreground_process_id,
                     foreground_executable_path.as_deref(),
                     adaptive_workload.as_deref(),
                 );
             let visible_window = !foreground
                 && settings.visible_window_detection_enabled
-                && visible_processes.contains(process.id, &executable_path);
+                && visible_processes.contains(process.id, executable_path);
             let tier = PriorityProcessTier::from_flags(foreground, visible_window);
-            let path = executable_path.to_string_lossy();
-            let policy = priority_policy(settings, &path, tier);
+            let policy = priority_policy(settings, path, tier);
             if focus_unknown
-                && policy != priority_policy(settings, &path, PriorityProcessTier::Foreground)
+                && policy != priority_policy(settings, path, PriorityProcessTier::Foreground)
             {
                 return pause_for_unknown_focus(controller, action_log);
             }
@@ -177,7 +179,7 @@ impl ThreadPriorityManager {
             let target = ProcessControlTarget::automatic(
                 process.id,
                 process.name.clone(),
-                executable_path.clone(),
+                executable_path.to_path_buf(),
                 creation_time,
             );
             targets.insert(
@@ -190,7 +192,7 @@ impl ThreadPriorityManager {
                         preservation,
                     },
                     process_name: process.name.clone(),
-                    executable_path: path.into_owned(),
+                    executable_path: path.to_owned(),
                 },
             );
         }
