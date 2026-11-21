@@ -1,6 +1,7 @@
 use super::design;
 use super::widgets::{action_button, checkbox, pick_list, text_input};
 use crate::app_suspension::{self, AppSuspensionSnapshot};
+use crate::application::SettingsEditor;
 use crate::config::{AppSuspensionSettings, NetworkThresholdUnit};
 use crate::ui::process_rules::{
     can_add_app_suspension_process, new_app_suspension_rule, process_setting_matches,
@@ -41,6 +42,16 @@ impl Delay {
         match self {
             Self::Background | Self::ThawInterval => AppSuspensionSettings::MAX_DELAY_SECONDS,
             _ => AppSuspensionSettings::MAX_WAKE_DURATION_SECONDS,
+        }
+    }
+
+    fn seconds(self, settings: &AppSuspensionSettings) -> u64 {
+        match self {
+            Self::Background => settings.background_delay_seconds,
+            Self::ThawInterval => settings.temporary_thaw_interval_seconds,
+            Self::ThawDuration => settings.temporary_thaw_duration_seconds,
+            Self::Audio => settings.audio_wake_duration_seconds,
+            Self::Network => settings.network_wake_duration_seconds,
         }
     }
 
@@ -96,13 +107,14 @@ impl Editor {
 
     pub(super) fn update(
         &mut self,
-        s: &mut AppSuspensionSettings,
+        settings: &mut SettingsEditor,
         status: &AppSuspensionSnapshot,
         unavailable: &[String],
         m: Message,
     ) -> Option<(String, bool)> {
+        let s = &settings.app_suspension;
         match m {
-            Message::Enabled(v) => s.enabled = v,
+            Message::Enabled(v) if s.enabled != v => settings.app_suspension.enabled = v,
             Message::Group(i) => {
                 if let Some(v) = self.expanded.get_mut(i) {
                     *v = !*v;
@@ -110,11 +122,18 @@ impl Editor {
             }
             Message::Path(v) => self.path = v,
             Message::Add if self.can_add(s, unavailable) => {
-                s.suspendable_apps.push(new_app_suspension_rule(&self.path));
+                settings
+                    .app_suspension
+                    .suspendable_apps
+                    .push(new_app_suspension_rule(&self.path));
                 self.path.clear();
             }
             Message::Delay(field, value) => {
-                if let Some(seconds) = field.parse(&value) {
+                if let Some(seconds) = field
+                    .parse(&value)
+                    .filter(|&value| field.seconds(s) != value)
+                {
+                    let s = &mut settings.app_suspension;
                     *match field {
                         Delay::Background => &mut s.background_delay_seconds,
                         Delay::ThawInterval => &mut s.temporary_thaw_interval_seconds,
@@ -125,36 +144,62 @@ impl Editor {
                 }
                 self.delay_drafts.insert(field, value);
             }
-            Message::Thaw(v) => s.temporary_thaw_enabled = v,
-            Message::Audio(v) => s.audio_wake_enabled = v,
-            Message::Network(v) => s.network_wake_enabled = v,
+            Message::Thaw(v) if s.temporary_thaw_enabled != v => {
+                settings.app_suspension.temporary_thaw_enabled = v;
+            }
+            Message::Audio(v) if s.audio_wake_enabled != v => {
+                settings.app_suspension.audio_wake_enabled = v
+            }
+            Message::Network(v) if s.network_wake_enabled != v => {
+                settings.app_suspension.network_wake_enabled = v
+            }
             Message::RuleEnabled(i, v) => {
-                if let Some(r) = s.suspendable_apps.get_mut(i) {
-                    r.enabled = v;
+                if s.suspendable_apps
+                    .get(i)
+                    .is_some_and(|rule| rule.enabled != v)
+                {
+                    settings.app_suspension.suspendable_apps[i].enabled = v;
                 }
             }
             Message::RuleAudio(i, v) => {
-                if let Some(r) = s.suspendable_apps.get_mut(i) {
-                    r.audio_wake_enabled = v;
+                if s.suspendable_apps
+                    .get(i)
+                    .is_some_and(|rule| rule.audio_wake_enabled != v)
+                {
+                    settings.app_suspension.suspendable_apps[i].audio_wake_enabled = v;
                 }
             }
             Message::RuleNetwork(i, v) => {
-                if let Some(r) = s.suspendable_apps.get_mut(i) {
-                    r.network_wake_enabled = v;
+                if s.suspendable_apps
+                    .get(i)
+                    .is_some_and(|rule| rule.network_wake_enabled != v)
+                {
+                    settings.app_suspension.suspendable_apps[i].network_wake_enabled = v;
                 }
             }
             Message::Threshold(i, upload, value) => {
                 let rule_count = s.suspendable_apps.len();
-                if let Some(r) = s.suspendable_apps.get_mut(i) {
-                    if let Some(threshold) = parse_threshold(&value) {
+                if let Some(r) = s.suspendable_apps.get(i) {
+                    let (unit, current) = if upload {
+                        (
+                            r.network_upload_threshold_unit,
+                            r.network_upload_threshold_bytes,
+                        )
+                    } else {
+                        (
+                            r.network_download_threshold_unit,
+                            r.network_download_threshold_bytes,
+                        )
+                    };
+                    if let Some(bytes) = parse_threshold(&value)
+                        .map(|threshold| unit.threshold_bytes_from_value(threshold))
+                        .filter(|&bytes| bytes != current)
+                    {
+                        let rule = &mut settings.app_suspension.suspendable_apps[i];
                         if upload {
-                            r.network_upload_threshold_bytes = r
-                                .network_upload_threshold_unit
-                                .threshold_bytes_from_value(threshold);
+                            rule.network_upload_threshold_bytes = bytes;
                         } else {
-                            r.network_download_threshold_bytes = r
-                                .network_download_threshold_unit
-                                .threshold_bytes_from_value(threshold);
+                            rule.network_download_threshold_bytes = bytes;
                         }
                     }
                     self.threshold_drafts.resize(rule_count, [None, None]);
@@ -162,14 +207,19 @@ impl Editor {
                 }
             }
             Message::Unit(i, upload, v) => {
-                if let Some(r) = s.suspendable_apps.get_mut(i) {
-                    let unit = if upload {
-                        &mut r.network_upload_threshold_unit
+                if let Some(rule) = s.suspendable_apps.get(i) {
+                    let current = if upload {
+                        rule.network_upload_threshold_unit
                     } else {
-                        &mut r.network_download_threshold_unit
+                        rule.network_download_threshold_unit
                     };
-                    if *unit != v {
-                        *unit = v;
+                    if current != v {
+                        let rule = &mut settings.app_suspension.suspendable_apps[i];
+                        if upload {
+                            rule.network_upload_threshold_unit = v;
+                        } else {
+                            rule.network_download_threshold_unit = v;
+                        }
                         if let Some(row) = self.threshold_drafts.get_mut(i) {
                             let draft = &mut row[usize::from(upload)];
                             if draft.as_deref().and_then(parse_threshold).is_some() {
@@ -198,14 +248,19 @@ impl Editor {
             }
             Message::Remove(i) => {
                 if i < s.suspendable_apps.len() {
-                    s.suspendable_apps.remove(i);
+                    settings.app_suspension.suspendable_apps.remove(i);
                     if i < self.threshold_drafts.len() {
                         self.threshold_drafts.remove(i);
                     }
                 }
             }
 
-            Message::Add | Message::Browse => {}
+            Message::Enabled(_)
+            | Message::Thaw(_)
+            | Message::Audio(_)
+            | Message::Network(_)
+            | Message::Add
+            | Message::Browse => {}
         }
         None
     }
@@ -233,7 +288,7 @@ impl Editor {
                     super::widgets::switch(s.enabled, Some(Message::Enabled))
                 )
                 .into(),
-                self.delay_row(Delay::Background, s.background_delay_seconds),
+                self.delay_row(Delay::Background, s),
             ])),
         ]
         .spacing(super::widgets::CARD_GAP);
@@ -243,30 +298,25 @@ impl Editor {
                 "app_suspension.temporary_resume",
                 s.temporary_thaw_enabled,
                 Message::Thaw as fn(bool) -> Message,
-                vec![
-                    (Delay::ThawInterval, s.temporary_thaw_interval_seconds),
-                    (Delay::ThawDuration, s.temporary_thaw_duration_seconds),
-                ],
+                &[Delay::ThawInterval, Delay::ThawDuration][..],
             ),
             (
                 1,
                 "app_suspension.audio_detection",
                 s.audio_wake_enabled,
                 Message::Audio,
-                vec![(Delay::Audio, s.audio_wake_duration_seconds)],
+                &[Delay::Audio],
             ),
             (
                 2,
                 "app_suspension.network_detection",
                 s.network_wake_enabled,
                 Message::Network,
-                vec![(Delay::Network, s.network_wake_duration_seconds)],
+                &[Delay::Network],
             ),
         ] {
-            let controls = super::widgets::settings_rows(
-                rows.into_iter()
-                    .map(|(field, value)| self.delay_row(field, value)),
-            );
+            let controls =
+                super::widgets::settings_rows(rows.iter().map(|&field| self.delay_row(field, s)));
             body = body.push(super::widgets::setting_group(
                 key.to_string(),
                 self.expanded[i],
@@ -405,12 +455,16 @@ impl Editor {
         scrollable(body).height(Fill).into()
     }
 
-    fn delay_row(&self, field: Delay, seconds: u64) -> Element<'static, Message> {
+    fn delay_row(
+        &self,
+        field: Delay,
+        settings: &AppSuspensionSettings,
+    ) -> Element<'static, Message> {
         let formatted;
         let value = if let Some(draft) = self.delay_drafts.get(&field) {
             draft
         } else {
-            formatted = seconds.to_string();
+            formatted = field.seconds(settings).to_string();
             &formatted
         };
         super::widgets::setting_row_with_unit(
@@ -472,11 +526,13 @@ impl std::fmt::Display for Unit {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::{PowerSourceProfile, Settings};
 
     #[test]
     fn pending_delays_keep_independent_text_and_bounds() {
         let mut editor = Editor::default();
-        let mut settings = AppSuspensionSettings::default();
+        let mut settings = SettingsEditor::with_settings(Settings::default());
+        settings.select_power_source(PowerSourceProfile::OnBattery);
         let status = AppSuspensionSnapshot::default();
         for (field, input) in [(Delay::Background, ""), (Delay::ThawDuration, "3601")] {
             editor.update(
@@ -488,7 +544,8 @@ mod tests {
         }
         assert_eq!(editor.invalid_delay(), Some(Delay::Background));
         assert_eq!(editor.delay_drafts[&Delay::Background], "");
-        assert!(settings.validate().is_ok());
+        assert!(settings.app_suspension.validate().is_ok());
+        assert!(settings.global().on_battery.is_none());
 
         editor.update(
             &mut settings,
@@ -497,7 +554,7 @@ mod tests {
             Message::Delay(Delay::Background, "86400".into()),
         );
         assert_eq!(editor.invalid_delay(), Some(Delay::ThawDuration));
-        assert_eq!(settings.background_delay_seconds, 86_400);
+        assert_eq!(settings.app_suspension.background_delay_seconds, 86_400);
 
         editor.update(
             &mut settings,
@@ -506,18 +563,22 @@ mod tests {
             Message::Delay(Delay::ThawDuration, "3600".into()),
         );
         assert_eq!(editor.invalid_delay(), None);
-        assert_eq!(settings.temporary_thaw_duration_seconds, 3600);
+        assert_eq!(
+            settings.app_suspension.temporary_thaw_duration_seconds,
+            3600
+        );
     }
 
     #[test]
     fn threshold_edits_follow_their_rule_and_keep_canonical_bytes() {
         let mut editor = Editor::default();
-        let mut settings = AppSuspensionSettings::default();
+        let mut settings = Settings::default();
         let status = AppSuspensionSnapshot::default();
-        settings.suspendable_apps.extend([
+        settings.app_suspension.suspendable_apps.extend([
             new_app_suspension_rule(r"C:\Apps\first.exe"),
             new_app_suspension_rule(r"C:\Apps\second.exe"),
         ]);
+        let mut settings = SettingsEditor::with_settings(settings);
         for message in [
             Message::Unit(1, true, NetworkThresholdUnit::Kilobytes),
             Message::Threshold(1, true, "1.5".into()),
@@ -531,11 +592,11 @@ mod tests {
         assert!(editor.has_invalid_thresholds());
         assert_eq!(editor.threshold_drafts[0], [Some(String::new()), None]);
         assert_eq!(
-            settings.suspendable_apps[0].network_upload_threshold_bytes,
+            settings.app_suspension.suspendable_apps[0].network_upload_threshold_bytes,
             1500
         );
         assert_eq!(
-            settings.suspendable_apps[0].network_download_threshold_bytes,
+            settings.app_suspension.suspendable_apps[0].network_download_threshold_bytes,
             1
         );
 
@@ -547,7 +608,7 @@ mod tests {
         );
         assert!(!editor.has_invalid_thresholds());
         assert_eq!(
-            settings.suspendable_apps[0].network_download_threshold_bytes,
+            settings.app_suspension.suspendable_apps[0].network_download_threshold_bytes,
             0
         );
     }
@@ -555,8 +616,9 @@ mod tests {
     #[test]
     fn unavailable_targets_cannot_be_added_or_frozen_but_can_thaw() {
         let mut e = Editor::default();
-        let mut s = crate::config::Settings::default().app_suspension;
-        s.enabled = true;
+        let mut settings = Settings::default();
+        settings.app_suspension.enabled = true;
+        let mut s = SettingsEditor::with_settings(settings);
         let p = r"C:\Apps\test.exe".to_owned();
         let unavailable = vec![p.clone()];
         let mut status = AppSuspensionSnapshot {
@@ -565,8 +627,11 @@ mod tests {
         };
         e.update(&mut s, &status, &unavailable, Message::Path(p.clone()));
         e.update(&mut s, &status, &unavailable, Message::Add);
-        assert!(s.suspendable_apps.is_empty());
-        s.suspendable_apps.push(new_app_suspension_rule(&p));
+        assert!(s.app_suspension.suspendable_apps.is_empty());
+        s.app_suspension
+            .suspendable_apps
+            .push(new_app_suspension_rule(&p));
+        s.select_power_source(PowerSourceProfile::OnBattery);
         assert!(e
             .update(&mut s, &status, &unavailable, Message::Toggle(0))
             .is_none());
@@ -575,5 +640,6 @@ mod tests {
             e.update(&mut s, &status, &unavailable, Message::Toggle(0)),
             Some((p, false))
         );
+        assert!(s.global().on_battery.is_none());
     }
 }

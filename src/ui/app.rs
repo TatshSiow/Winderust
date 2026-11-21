@@ -1327,7 +1327,7 @@ impl WinderustApp {
             }
             Message::Suspension(message) => {
                 if let Some((path, freeze)) = self.suspension.update(
-                    &mut self.settings.app_suspension,
+                    &mut self.settings,
                     &self.status.feature_status.app_suspension,
                     &self.unavailable_candidates,
                     message,
