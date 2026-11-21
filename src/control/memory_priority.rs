@@ -719,14 +719,6 @@ impl<P: MemoryPriorityPlatform> MemoryPriorityController<P> {
         }
     }
 
-    pub(crate) fn policy_managed_process_names(&self, owner: ControlOwner) -> Vec<String> {
-        self.managed
-            .iter()
-            .filter(|(_, managed)| managed.owner == owner)
-            .map(|(identity, _)| identity.name.clone())
-            .collect()
-    }
-
     pub(crate) fn policy_managed_process_count(&self, owner: ControlOwner) -> usize {
         self.managed
             .values()

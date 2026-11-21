@@ -17,7 +17,7 @@ use crate::{
     },
     foreground::{
         contains_process_name, is_foreground_process, process_count_label, process_executable_path,
-        process_failure_key, process_session_id, unique_app_names, ProtectedProcesses,
+        process_failure_key, process_session_id, ProtectedProcesses,
         CORE_BUILT_IN_PROCESS_EXCLUSIONS,
     },
     rules::{execution_failure_suppression_threshold, ExecutionFailureTracker},
@@ -33,7 +33,6 @@ pub struct MemoryPrioritySnapshot {
     pub adjusted_processes: usize,
     pub skipped_processes: usize,
     pub failed_processes: usize,
-    pub adjusted_apps: Vec<String>,
     pub auto_excluded_processes: Vec<String>,
     pub last_error: Option<String>,
 }
@@ -351,17 +350,10 @@ impl MemoryPriorityManager {
             );
         }
 
-        let adjusted_apps = unique_app_names(
-            controller
-                .policy_managed_process_names(owner)
-                .iter()
-                .map(String::as_str),
-        );
         let status = MemoryPrioritySnapshot {
             enabled: true,
             adjusted_processes: controller.policy_managed_process_count(owner),
             skipped_processes,
-            adjusted_apps,
             auto_excluded_processes: auto_excluded_processes.into_iter().collect(),
             ..Default::default()
         };
@@ -484,9 +476,8 @@ impl MemoryPriorityManager {
             pending_error.or_else(|| base.last_error.clone())
         };
         if self.static_observed_targets {
-            let apps = controller.policy_managed_process_names(ControlOwner::MemoryPriority);
-            status.adjusted_processes = apps.len();
-            status.adjusted_apps = unique_app_names(apps.iter().map(String::as_str));
+            status.adjusted_processes =
+                controller.policy_managed_process_count(ControlOwner::MemoryPriority);
         }
         status
     }
