@@ -8,6 +8,7 @@ use super::{
 };
 use crate::ui::scrolling::scrollable;
 use crate::{
+    application::SettingsEditor,
     config::{ByFocusRule, ByRunningAppRule, ExecutableSelector, Settings},
     control::instance_limits::validate_path,
     power::PowerPlan,
@@ -72,7 +73,7 @@ impl Editor {
     pub(super) fn update(
         &mut self,
         kind: Kind,
-        settings: &mut Settings,
+        settings: &mut SettingsEditor,
         plans: &[PowerPlan],
         message: Message,
     ) {
@@ -86,25 +87,29 @@ impl Editor {
         // Both pages have the same rule editor, but keep their distinct typed settings and policies.
         macro_rules! update_rules {
             ($field:ident, $can_add_path:ident, $can_add_name:ident, $new_rule:ident, $rule:ident) => {{
-                let feature = &mut settings.$field;
                 match message {
-                    Message::Enabled(value) => feature.enabled = value,
+                    Message::Enabled(value) => {
+                        if settings.$field.enabled != value {
+                            settings.$field.enabled = value;
+                        }
+                    }
                     Message::Path(path) => self.path = path,
                     Message::MatchBy(match_by) => self.match_by = match_by,
                     Message::Name(name) => self.name = name,
                     Message::Browse => {}
                     Message::Preview(_) => unreachable!("preview messages do not edit rules"),
                     Message::Add => {
-                        if $can_add_path(feature, &self.path) {
-                            feature
+                        if $can_add_path(&settings.$field, &self.path) {
+                            settings
+                                .$field
                                 .rules
                                 .push($new_rule(self.path.trim(), active_plan()));
                             self.path.clear();
                         }
                     }
                     Message::AddName => {
-                        if $can_add_name(feature, &self.name) {
-                            feature.rules.push($rule {
+                        if $can_add_name(&settings.$field, &self.name) {
+                            settings.$field.rules.push($rule {
                                 enabled: true,
                                 name: self.name.clone(),
                                 selector: ExecutableSelector::ExactName {
@@ -115,18 +120,28 @@ impl Editor {
                         }
                     }
                     Message::RuleEnabled(index, value) => {
-                        if let Some(rule) = feature.rules.get_mut(index) {
-                            rule.enabled = value;
+                        if settings
+                            .$field
+                            .rules
+                            .get(index)
+                            .is_some_and(|rule| rule.enabled != value)
+                        {
+                            settings.$field.rules[index].enabled = value;
                         }
                     }
                     Message::Plan(index, value) => {
-                        if let Some(rule) = feature.rules.get_mut(index) {
-                            rule.power_plan_guid = value;
+                        if settings
+                            .$field
+                            .rules
+                            .get(index)
+                            .is_some_and(|rule| rule.power_plan_guid != value)
+                        {
+                            settings.$field.rules[index].power_plan_guid = value;
                         }
                     }
                     Message::Remove(index) => {
-                        if index < feature.rules.len() {
-                            feature.rules.remove(index);
+                        if index < settings.$field.rules.len() {
+                            settings.$field.rules.remove(index);
                         }
                     }
                 }
@@ -328,7 +343,8 @@ mod tests {
     #[test]
     fn new_path_rules_require_full_drive_or_network_paths() {
         for kind in [Kind::Focus, Kind::RunningApp] {
-            let mut settings = Settings::default();
+            let mut settings = SettingsEditor::with_settings(Settings::default());
+            settings.select_power_source(crate::config::PowerSourceProfile::OnBattery);
             let mut editor = Editor::default();
             for path in [
                 r"C:\Apps\.\worker.exe",
@@ -337,9 +353,12 @@ mod tests {
                 r"C:\Apps\worker.exe.",
                 r"C:\Apps \worker.exe",
                 r"C:\Apps\",
-                r" C:\Apps\worker.exe ",
-                r" \\server\share\worker.exe ",
             ] {
+                editor.update(kind, &mut settings, &[], Message::Path(path.into()));
+                editor.update(kind, &mut settings, &[], Message::Add);
+                assert!(settings.global().on_battery.is_none());
+            }
+            for path in [r" C:\Apps\worker.exe ", r" \\server\share\worker.exe "] {
                 editor.update(kind, &mut settings, &[], Message::Path(path.into()));
                 editor.update(kind, &mut settings, &[], Message::Add);
             }
@@ -358,6 +377,8 @@ mod tests {
                     .collect(),
             };
             assert_eq!(paths, [r"C:\Apps\worker.exe", r"\\server\share\worker.exe"]);
+            assert!(settings.global().by_focus.rules.is_empty());
+            assert!(settings.global().by_running_app.rules.is_empty());
         }
     }
 
@@ -365,7 +386,7 @@ mod tests {
     fn name_rules_allow_overlapping_paths_and_reject_duplicate_names() {
         let path = r"C:\Apps\worker.exe";
         for kind in [Kind::Focus, Kind::RunningApp] {
-            let mut settings = Settings::default();
+            let mut settings = SettingsEditor::with_settings(Settings::default());
             let mut editor = Editor::default();
             for message in [
                 Message::Path(path.into()),
@@ -441,7 +462,7 @@ mod tests {
 
     #[test]
     fn rules_stay_with_their_feature_and_duplicates_are_rejected() {
-        let mut settings = Settings::default();
+        let mut settings = SettingsEditor::with_settings(Settings::default());
         let mut editor = Editor::default();
         editor.update(Kind::Focus, &mut settings, &[], Message::Enabled(true));
         for _ in 0..2 {
