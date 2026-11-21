@@ -374,16 +374,24 @@ fn action_log_survives_worker_replacement_and_clear_prevents_stale_publication()
             ActionLogResult::Applied,
             "applied",
         );
-        runner.publish_action_log_if_changed(&automation.shared);
     };
     let mut first = RuntimeCore::for_worker(&automation.shared).unwrap();
     record(&mut first);
     drop(first);
+    let retired = automation
+        .status_snapshot_since(1)
+        .expect("retiring worker publishes its final action summary");
+    assert_eq!(retired.action_log_entries.len(), 1);
+    assert_eq!(
+        retired.action_log_summaries[&ActionLogFeature::ByTime].successful_actions,
+        1
+    );
 
     let mut second = RuntimeCore::for_worker(&automation.shared).unwrap();
     record(&mut second);
+    second.publish_action_log_if_changed(&automation.shared);
     let published = automation
-        .status_snapshot_since(1)
+        .status_snapshot_since(retired.generation)
         .expect("published action summary advances status generation");
     assert_eq!(published.action_log_entries.len(), 2);
     assert_eq!(published.action_log_entries[1].sequence, 2);
@@ -401,6 +409,7 @@ fn action_log_survives_worker_replacement_and_clear_prevents_stale_publication()
     assert!(cleared.action_log_summaries.is_empty());
 
     record(&mut second);
+    second.publish_action_log_if_changed(&automation.shared);
     assert!(automation
         .status_snapshot_since(cleared.generation)
         .is_none());

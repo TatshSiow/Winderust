@@ -589,10 +589,13 @@ impl RuntimeCore {
             return;
         }
 
+        let entries = self.action_log.entries();
+        let summaries = self.action_log.summaries();
         update_action_log(
             shared,
-            self.action_log.entries(),
-            self.action_log.summaries(),
+            &mut lock_unpoisoned(&shared.state),
+            entries,
+            summaries,
         );
         self.published_action_log_revision = revision;
     }
@@ -1905,6 +1908,8 @@ impl Drop for RuntimeCore {
             let mut log = std::mem::take(&mut self.action_log);
             if std::mem::take(&mut state.action_log_clear_requested) {
                 log.clear();
+            } else if log.revision() != self.published_action_log_revision {
+                update_action_log(&shared, &mut state, log.entries(), log.summaries());
             }
             state.idle_action_log = Some(log);
         }

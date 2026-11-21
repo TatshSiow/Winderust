@@ -471,10 +471,10 @@ pub(super) fn update_status_with_auto_exclusions<T: PartialEq>(
 
 pub(super) fn update_action_log(
     shared: &SharedAutomationState,
+    state: &mut AutomationWorkerState,
     entries: Vec<ActionLogEntry>,
     summaries: ActionLogSummaries,
 ) {
-    let mut state = lock_unpoisoned(&shared.state);
     if state.action_log_clear_requested {
         return;
     }
@@ -486,7 +486,7 @@ pub(super) fn update_action_log(
     }
     state.status.action_log_entries = entries;
     state.status.action_log_summaries = summaries;
-    bump_status_generation(shared, &mut state);
+    bump_status_generation(shared, state);
 }
 
 pub(super) fn bump_status_generation(
