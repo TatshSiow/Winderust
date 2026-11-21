@@ -119,14 +119,23 @@ pub(super) fn update(s: &mut SettingsEditor, path: &str, m: Message) -> Option<S
             let matches_path = |rule: &BackgroundEfficiencyRule| {
                 process_setting_matches(&rule.executable_path, &path)
             };
-            if included
-                && !s
-                    .background_efficiency
-                    .custom_rules
-                    .iter()
-                    .any(matches_path)
-            {
-                return None;
+            let mut matching = s
+                .background_efficiency
+                .custom_rules
+                .iter()
+                .filter(|rule| matches_path(rule));
+            match (included, matching.next()) {
+                (true, None) => return None,
+                (false, Some(rule))
+                    if rule.enabled
+                        && rule.focus_efficiency_mode == ProcessRuleMode::Disabled
+                        && rule.visible_window_efficiency_mode == ProcessRuleMode::Disabled
+                        && rule.background_efficiency_mode == ProcessRuleMode::Disabled
+                        && matching.next().is_none() =>
+                {
+                    return None;
+                }
+                _ => {}
             }
             let rules = &mut s.background_efficiency.custom_rules;
             rules.retain(|rule| !matches_path(rule));
@@ -675,11 +684,13 @@ mod tests {
         let excluded = r"C:\App\excluded.exe";
         let mut s = SettingsEditor::with_settings(Settings::default());
         let _ = update(&mut s, excluded, Message::Adaptive(false));
+        let _ = update(&mut s, excluded, Message::Efficiency(false));
         s.select_power_source(PowerSourceProfile::OnBattery);
         for (path, message) in [
             (included, Message::Adaptive(true)),
             (included, Message::Efficiency(true)),
             (excluded, Message::Adaptive(false)),
+            (excluded, Message::Efficiency(false)),
         ] {
             let _ = update(&mut s, path, message);
             assert!(s.global().on_battery.is_none());
