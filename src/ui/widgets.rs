@@ -883,7 +883,13 @@ pub(super) fn toggle_style(
 ) -> iced::widget::toggler::Style {
     use iced::widget::toggler::Status;
     let mut style = iced::widget::toggler::default(theme, status);
-    if matches!(status, Status::Hovered { is_toggled: true }) {
+    if matches!(status, Status::Disabled { .. }) {
+        let fill = theme.extended_palette().background.neutral.color;
+        style.background = fill.into();
+        style.background_border_width = 1.0;
+        style.background_border_color = control_border(theme);
+        style.foreground = super::animated_controls::color(fill, muted_color(theme), 0.8).into();
+    } else if matches!(status, Status::Hovered { is_toggled: true }) {
         style.foreground = theme.extended_palette().primary.base.text.into();
     } else if matches!(
         status,
@@ -1920,6 +1926,16 @@ mod tests {
                     };
                     assert!(checkbox.icon_color.relative_contrast(fill) >= 3.0);
                 }
+                let disabled = toggle_style(
+                    &theme,
+                    iced::widget::toggler::Status::Disabled { is_toggled: false },
+                );
+                let (Background::Color(track), Background::Color(knob)) =
+                    (disabled.background, disabled.foreground)
+                else {
+                    panic!("disabled switches use solid colors");
+                };
+                assert!(knob.relative_contrast(track) >= 3.0);
                 for key in [
                     "common.applied",
                     "common.waiting",
