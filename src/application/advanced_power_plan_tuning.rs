@@ -120,6 +120,16 @@ impl AdvancedPowerPlanTuningService {
         reviewed_current: AdvancedPowerPlanTuningReadback,
         values: AdvancedPowerPlanTuningSourceValues,
     ) -> Result<AdvancedPowerPlanTuningApplyOutcome, AdvancedPowerPlanTuningError> {
+        self.validate_reviewed_values(guid, reviewed_current, values)?;
+        Ok(self.apply_values(guid, values))
+    }
+
+    pub(crate) fn validate_reviewed_values(
+        &self,
+        guid: &str,
+        reviewed_current: AdvancedPowerPlanTuningReadback,
+        values: AdvancedPowerPlanTuningSourceValues,
+    ) -> Result<(), AdvancedPowerPlanTuningError> {
         if self.read_values(guid)? != reviewed_current {
             return Err(AdvancedPowerPlanTuningError::ValuesChanged);
         }
@@ -137,7 +147,7 @@ impl AdvancedPowerPlanTuningService {
         }) {
             return Err(AdvancedPowerPlanTuningError::SettingUnavailable);
         }
-        Ok(self.apply_values(guid, values))
+        Ok(())
     }
 
     fn apply_values(

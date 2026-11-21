@@ -2337,16 +2337,13 @@ impl WinderustApp {
     }
 
     fn save_settings(&mut self) -> Task<Message> {
-        if self.power_tuning.has_invalid_inputs() {
-            self.power_tuning.cancel_apply_review();
-            self.error_message = t!("processor_power.invalid_percentage").to_string();
+        if (self.power_tuning.dirty || self.power_tuning.has_invalid_inputs())
+            && !self.power_tuning.preflight_save(&self.power_plans)
+        {
+            self.error_message = self.power_tuning.status.clone();
             return Task::none();
         }
-        if self.power_tuning.dirty && self.power_tuning.selected_plan(&self.power_plans).is_none() {
-            self.power_tuning.cancel_apply_review();
-            self.error_message = t!("common.selected_plan_unavailable").to_string();
-            return Task::none();
-        }
+        let settings_changed = self.power_tuning.dirty && self.settings.has_unsaved_changes();
         let outcome = match self.settings.save() {
             Ok(outcome) => outcome,
             Err(error) => {
@@ -2361,7 +2358,19 @@ impl WinderustApp {
         }
         self.publish_settings();
         if self.power_tuning.dirty && !self.power_tuning.confirm_apply(&self.power_plans) {
-            self.error_message = self.power_tuning.status.clone();
+            let tuning_error = if settings_changed {
+                t!(
+                    "processor_power.settings_saved_tuning_failed",
+                    error = self.power_tuning.status.as_str()
+                )
+                .to_string()
+            } else {
+                self.power_tuning.status.clone()
+            };
+            self.error_message = match startup_error {
+                Some(error) => format!("{error}\n{tuning_error}"),
+                None => tuning_error,
+            };
             return Task::none();
         }
         self.reset_editors();

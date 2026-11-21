@@ -452,15 +452,13 @@ impl Editor {
         true
     }
 
-    pub(super) fn confirm_apply(&mut self, plans: &[PowerPlan]) -> bool {
+    fn take_applicable_review(&mut self, plans: &[PowerPlan]) -> Option<ApplyReview> {
         if self.has_invalid_inputs() {
             self.cancel_apply_review();
             self.status = t!("processor_power.invalid_percentage").to_string();
-            return false;
+            return None;
         }
-        let Some(review) = self.review.take() else {
-            return false;
-        };
+        let review = self.review.take()?;
         let restoring = review.origin == ApplyOrigin::Restore;
         let draft_matches = if restoring {
             !self.dirty
@@ -475,12 +473,43 @@ impl Editor {
         };
         if self.target.as_ref() != Some(&review.guid) || !draft_matches {
             self.status = t!("processor_power.review_stale").to_string();
-            return false;
+            return None;
         }
         if self.selected_plan(plans).is_none() {
             self.status = t!("common.selected_plan_unavailable").to_string();
-            return false;
+            return None;
         }
+        Some(review)
+    }
+
+    pub(super) fn preflight_save(&mut self, plans: &[PowerPlan]) -> bool {
+        let Some(review) = self.take_applicable_review(plans) else {
+            return false;
+        };
+        match self
+            .service
+            .validate_reviewed_values(&review.guid, review.current, review.requested)
+        {
+            Ok(()) => {
+                self.review = Some(review);
+                true
+            }
+            Err(AdvancedPowerPlanTuningError::ValuesChanged) => {
+                self.status = t!("processor_power.review_refresh_required").to_string();
+                false
+            }
+            Err(error) => {
+                self.status = error.to_string();
+                false
+            }
+        }
+    }
+
+    pub(super) fn confirm_apply(&mut self, plans: &[PowerPlan]) -> bool {
+        let Some(review) = self.take_applicable_review(plans) else {
+            return false;
+        };
+        let restoring = review.origin == ApplyOrigin::Restore;
         let outcome =
             match self
                 .service

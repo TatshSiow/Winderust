@@ -383,6 +383,9 @@ Read the relevant section before changing feature policy, ownership, restoration
   normalized draft in the review. The same review gates page Apply and any save
   that includes tuning edits. A fresh read must match the draft's original
   readback before review and match the reviewed values before the staged write.
+  Save and Save and Exit also verify the review before saving portable settings.
+  If the recheck after that save fails, feedback reports the settings already
+  saved and the remaining tuning error.
   These checks include boost mode and scheduling availability and raw unknown
   indices for each power source. Selection, confirmation, and the
   Windows write preflight exclude the temporary Winderust Adaptive plan. Apply
