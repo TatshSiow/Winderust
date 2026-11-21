@@ -929,7 +929,10 @@ impl RuntimeCore {
             &mut self.action_log,
         );
         self.focus_and_launch_profile_active = snapshot.focus_and_launch_profile_active;
-        let workload = if settings.general.enabled && adaptive_engine_process_required(settings) {
+        let workload = if foreground_process_id.is_some()
+            && settings.general.enabled
+            && adaptive_engine_process_required(settings)
+        {
             observations
                 .processes()
                 .ok()

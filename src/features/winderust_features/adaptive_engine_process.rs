@@ -326,36 +326,13 @@ impl AdaptiveEngineProcessManager {
         }
 
         if foreground_process_id.is_none() {
-            let failed = self.clear_all_with_memory_priority(
+            return self.pause_for_unknown_focus(
+                settings.dynamic_resource_zones_enabled,
                 cpu_allocation_coordinator,
                 priority_efficiency_controller,
                 memory_priority_controller,
                 action_log,
-                "foreground app is unknown",
             );
-            let zones = if !settings.dynamic_resource_zones_enabled {
-                DynamicResourceZoneSnapshot::default()
-            } else if failed.count > 0 {
-                DynamicResourceZoneSnapshot {
-                    status: ZoneStatus::Degraded,
-                    reason: "zone_retry",
-                    ..Default::default()
-                }
-            } else {
-                DynamicResourceZoneSnapshot {
-                    status: ZoneStatus::Unavailable,
-                    reason: "zone_observations",
-                    ..Default::default()
-                }
-            };
-            return AdaptiveEngineProcessSnapshot {
-                zones,
-                enabled: true,
-                failed_processes: failed.count,
-                message: "Paused: foreground app is unknown.".to_owned(),
-                last_error: failed.last_error,
-                ..Default::default()
-            };
         }
 
         // SAFETY: GetCurrentProcessId takes no arguments and has no caller requirements.
@@ -475,6 +452,15 @@ impl AdaptiveEngineProcessManager {
             .and_then(|process| cached_executable_path(process, &mut executable_paths))
             .is_some_and(|path| settings.custom_rule_enabled_for(&path));
         let foreground_workload = observations.adaptive_workload(processes.as_ref());
+        if foreground_workload.is_empty() {
+            return self.pause_for_unknown_focus(
+                settings.dynamic_resource_zones_enabled,
+                cpu_allocation_coordinator,
+                priority_efficiency_controller,
+                memory_priority_controller,
+                action_log,
+            );
+        }
         let foreground_process_group_ids =
             foreground_workload.keys().copied().collect::<BTreeSet<_>>();
         let visible_window_process_group_ids = processes
@@ -1375,6 +1361,42 @@ impl AdaptiveEngineProcessManager {
             auto_excluded_processes: auto_excluded_processes.into_iter().collect(),
             message: "Adaptive Engine active.".to_owned(),
             last_error: failures.last_error,
+        }
+    }
+
+    fn pause_for_unknown_focus(
+        &mut self,
+        zones_enabled: bool,
+        cpu_allocation_coordinator: &mut CpuAllocationCoordinator,
+        priority_efficiency_controller: &mut PriorityEfficiencyController,
+        memory_priority_controller: &mut MemoryPriorityController,
+        action_log: &mut ActionLog,
+    ) -> AdaptiveEngineProcessSnapshot {
+        let failed = self.clear_all_with_memory_priority(
+            cpu_allocation_coordinator,
+            priority_efficiency_controller,
+            memory_priority_controller,
+            action_log,
+            "foreground app is unknown",
+        );
+        let (status, reason) = if !zones_enabled {
+            (ZoneStatus::Disabled, "")
+        } else if failed.count > 0 {
+            (ZoneStatus::Degraded, "zone_retry")
+        } else {
+            (ZoneStatus::Unavailable, "zone_observations")
+        };
+        AdaptiveEngineProcessSnapshot {
+            zones: DynamicResourceZoneSnapshot {
+                status,
+                reason,
+                ..Default::default()
+            },
+            enabled: true,
+            failed_processes: failed.count,
+            message: "Paused: foreground app is unknown.".to_owned(),
+            last_error: failed.last_error,
+            ..Default::default()
         }
     }
 
