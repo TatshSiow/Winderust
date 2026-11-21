@@ -41,6 +41,25 @@ pub(crate) enum MemoryPriorityApplyOutcome {
     Shadowed,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum EffectiveMemoryPriorityOutcome {
+    Applied,
+    Unchanged,
+    Preserved,
+    RestoredBaseline,
+}
+
+impl From<EffectiveMemoryPriorityOutcome> for MemoryPriorityApplyOutcome {
+    fn from(outcome: EffectiveMemoryPriorityOutcome) -> Self {
+        match outcome {
+            EffectiveMemoryPriorityOutcome::Applied => Self::Applied,
+            EffectiveMemoryPriorityOutcome::Unchanged => Self::Unchanged,
+            EffectiveMemoryPriorityOutcome::Preserved
+            | EffectiveMemoryPriorityOutcome::RestoredBaseline => Self::Preserved,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct MemoryPriorityReleaseFailure {
     pub(crate) process_id: u32,
@@ -194,7 +213,7 @@ impl<P: MemoryPriorityPlatform> MemoryPriorityController<P> {
                 claims.remove(&key);
             }
         }
-        result
+        result.map(Into::into)
     }
 
     pub(crate) fn apply_process_list_action(
@@ -212,13 +231,14 @@ impl<P: MemoryPriorityPlatform> MemoryPriorityController<P> {
             },
             allow_cross_session_process_control,
         )
+        .map(Into::into)
     }
 
     fn apply_effective_claim(
         &mut self,
         claim: MemoryPriorityClaim,
         allow_cross_session_process_control: bool,
-    ) -> Result<MemoryPriorityApplyOutcome, ProcessControlError> {
+    ) -> Result<EffectiveMemoryPriorityOutcome, ProcessControlError> {
         let (identity, process) = self
             .platform
             .open(&claim.target, allow_cross_session_process_control)?;
@@ -265,11 +285,14 @@ impl<P: MemoryPriorityPlatform> MemoryPriorityController<P> {
         if priority_is_preserved(claim.preservation, baseline, desired) {
             if let Some(managed) = managed {
                 self.managed.insert(identity.clone(), managed);
-                self.release_identity(&identity)?;
+                let restored = self.release_identity(&identity)?;
                 self.managed.remove(&identity);
                 self.pending_releases.remove(&identity);
+                if restored {
+                    return Ok(EffectiveMemoryPriorityOutcome::RestoredBaseline);
+                }
             }
-            return Ok(MemoryPriorityApplyOutcome::Preserved);
+            return Ok(EffectiveMemoryPriorityOutcome::Preserved);
         }
 
         if current == desired {
@@ -281,7 +304,7 @@ impl<P: MemoryPriorityPlatform> MemoryPriorityController<P> {
                 managed.expected = current;
                 self.managed.insert(identity, managed);
             }
-            return Ok(MemoryPriorityApplyOutcome::Unchanged);
+            return Ok(EffectiveMemoryPriorityOutcome::Unchanged);
         }
 
         let sequence = self.next_apply_sequence;
@@ -304,7 +327,7 @@ impl<P: MemoryPriorityPlatform> MemoryPriorityController<P> {
                         apply_sequence: sequence,
                     },
                 );
-                Ok(MemoryPriorityApplyOutcome::Applied)
+                Ok(EffectiveMemoryPriorityOutcome::Applied)
             }
             Err(mut failure) => {
                 if failure.relinquish_recovery {
@@ -450,8 +473,11 @@ impl<P: MemoryPriorityPlatform> MemoryPriorityController<P> {
 
         if let Some(claim) = self.effective_claim(key).cloned() {
             match self.apply_effective_claim(claim.clone(), true) {
-                Ok(_) => {
-                    summary.restored_processes += usize::from(was_managed_by_releasing_owner);
+                Ok(outcome) => {
+                    summary.restored_processes += usize::from(
+                        was_managed_by_releasing_owner
+                            && outcome == EffectiveMemoryPriorityOutcome::RestoredBaseline,
+                    );
                 }
                 Err(ProcessControlError::ProcessExited) => {
                     self.drop_exited_identity(managed_identity.as_ref(), summary);

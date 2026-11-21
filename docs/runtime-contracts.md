@@ -726,6 +726,10 @@ Read the relevant section before changing feature policy, ownership, restoration
   remembers that unavailable control for the exact process instance so it does
   not retry-spam.
 - Memory Priority has two simultaneous automatic owners rather than an Adaptive replacement policy: static Memory Priority explicitly outranks an overlapping Adaptive Engine claim, while non-overlapping Adaptive Engine claims remain effective. Both owners retain one shared exact-process baseline and restoration chain.
+  After one owner yields, a surviving policy can take over at the current value
+  or apply its own value. Restoration counts and Action Log entries describe
+  verified writes of the original baseline, including when the surviving
+  policy's preservation rule restores it.
 
 ## Sleep Prevention
 
