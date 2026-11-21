@@ -1281,7 +1281,7 @@ impl ProcessList {
 
     pub(super) fn view<'a>(
         &'a self,
-        settings: &'a Settings,
+        settings: &'a SettingsEditor,
         status: &'a RuntimeStatusSnapshot,
         plans: PlanCatalog<'a>,
     ) -> Element<'a, Message> {
@@ -1924,9 +1924,19 @@ impl ProcessList {
             match self.process_tab {
                 ProcessTab::Rulesets => {
                     if eligible && !selection.path.is_empty() {
-                        pane = pane.push(
-                            details::view(settings, &selection.path, plans).map(Message::Details),
-                        );
+                        let profile = t!(match settings.selected_power_source() {
+                            PowerSourceProfile::PluggedIn => "power_source.plugged_in",
+                            PowerSourceProfile::OnBattery => "power_source.on_battery",
+                        });
+                        pane = pane
+                            .push(super::widgets::settings_card(super::widgets::setting_row(
+                                "power_source.editing_profile",
+                                text(profile.into_owned()),
+                            )))
+                            .push(
+                                details::view(settings, &selection.path, plans)
+                                    .map(Message::Details),
+                            );
                     } else {
                         pane = pane.push(text(t!("process_list.status_access_denied").to_string()));
                     }
@@ -2439,7 +2449,7 @@ mod tests {
             ..ProcessList::default()
         };
         list.rebuild();
-        let settings = Settings::default();
+        let settings = SettingsEditor::with_settings(Settings::default());
         let mut home = super::super::home::Model::default();
         home.populate_smoke_history();
         let log = super::super::action_log::Editor::default();
@@ -2563,7 +2573,7 @@ mod tests {
         };
         list.rebuild();
         let rebuilt = start.elapsed();
-        let settings = Settings::default();
+        let settings = SettingsEditor::with_settings(Settings::default());
         let status = RuntimeStatusSnapshot::default();
         let mut view = list.view(&settings, &status, PlanCatalog::Loaded(&[]));
         let mut tree = Tree::new(&view);
@@ -2659,7 +2669,7 @@ mod tests {
         };
         list.grouped = false;
         list.rebuild();
-        let settings = Settings::default();
+        let settings = SettingsEditor::with_settings(Settings::default());
         let status = RuntimeStatusSnapshot::default();
         let mut view = list.view(&settings, &status, PlanCatalog::Loaded(&[]));
         let mut tree = Tree::new(&view);
@@ -2713,7 +2723,7 @@ mod tests {
             ..ProcessList::default()
         };
         list.rebuild();
-        let settings = Settings::default();
+        let settings = SettingsEditor::with_settings(Settings::default());
         let status = RuntimeStatusSnapshot::default();
         scrolling::check_scroll_damage(
             list.view(&settings, &status, PlanCatalog::Loaded(&[])),
@@ -2741,7 +2751,7 @@ mod tests {
 
         let mut settings = Settings::default();
         settings.general.enabled = false;
-        let mut editor = SettingsEditor::with_settings(settings.clone());
+        let mut editor = SettingsEditor::with_settings(settings);
         let runtime = RuntimeHandle::start(&editor.runtime_settings_snapshot());
         let selection = Selection {
             nested: false,
@@ -2776,7 +2786,7 @@ mod tests {
             assert_eq!(list.stopping.as_ref().unwrap().1, tree);
             {
                 let status = RuntimeStatusSnapshot::default();
-                let mut view = list.view(&settings, &status, PlanCatalog::Loaded(&[]));
+                let mut view = list.view(&editor, &status, PlanCatalog::Loaded(&[]));
                 let mut state = Tree::new(&view);
                 let renderer = iced::Renderer::new(design::typography::FONT, iced::Pixels(14.0));
                 let node = view.as_widget_mut().layout(
@@ -2859,7 +2869,7 @@ mod tests {
 
     #[test]
     fn selection_overlays_preserve_the_list_widget_tree() {
-        let settings = Settings::default();
+        let settings = SettingsEditor::with_settings(Settings::default());
         let status = RuntimeStatusSnapshot::default();
         let mut list = ProcessList::default();
         let view = list.view(&settings, &status, PlanCatalog::Loaded(&[]));
@@ -2981,7 +2991,7 @@ mod tests {
             ..ProcessList::default()
         };
         list.rebuild();
-        let settings = Settings::default();
+        let settings = SettingsEditor::with_settings(Settings::default());
         let status = RuntimeStatusSnapshot::default();
         let renderer = Renderer::new(design::typography::FONT, iced::Pixels(14.0));
         let viewport = Rectangle::with_size(Size::new(900.0, 620.0));

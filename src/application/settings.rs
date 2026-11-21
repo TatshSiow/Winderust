@@ -390,6 +390,10 @@ impl SettingsEditor {
         self.selected_power_source = profile;
     }
 
+    pub(crate) fn selected_power_source(&self) -> PowerSourceProfile {
+        self.selected_power_source
+    }
+
     pub(crate) fn global(&self) -> &Settings {
         &self.draft.value
     }

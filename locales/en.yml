@@ -1141,6 +1141,7 @@ power_plan_control:
   restore_previous_plan: "Restore previous plan when no rule selects a plan"
   restore_previous_plan_help: "When all rules stop selecting a plan, return to the plan active before automatic switching began. Else and Active choices take priority; choose None there to allow restoration. External plan changes are kept. Applies to both power profiles."
 power_source:
+  editing_profile: "Editing profile"
   plugged_in: "Plugged In"
   on_battery: "On Battery"
 exit_prompt:
