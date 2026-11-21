@@ -14,7 +14,6 @@ pub struct TimerResolutionSnapshot {
     pub requested_100ns: Option<u32>,
     pub maximum_100ns: Option<u32>,
     pub minimum_100ns: Option<u32>,
-    pub failed_actions: usize,
     pub observation_paused: bool,
     pub last_error: Option<String>,
 }
@@ -96,7 +95,6 @@ impl TimerResolutionManager {
                 return TimerResolutionSnapshot {
                     enabled: true,
                     requested_100ns: controller.active_request_100ns(),
-                    failed_actions: 1,
                     last_error: Some(error),
                     ..Default::default()
                 };
@@ -173,7 +171,6 @@ impl TimerResolutionManager {
                     true,
                     error.active_100ns,
                     Some(info),
-                    1,
                     Some(error.message),
                     false,
                 );
@@ -184,7 +181,6 @@ impl TimerResolutionManager {
             true,
             controller.active_request_100ns(),
             Some(info),
-            0,
             None,
             false,
         )
@@ -208,16 +204,14 @@ impl TimerResolutionManager {
         reason_key: &str,
         observation_paused: bool,
     ) -> TimerResolutionSnapshot {
-        let mut failures = 0;
         let mut last_error = None;
         if let Some(previous_100ns) = controller.active_request_100ns() {
-            let previous_target = self
-                .active_rule_process
-                .clone()
-                .unwrap_or_else(|| SYSTEM_TARGET_NAME.to_owned());
             match controller.release() {
                 Ok(_) => {
-                    self.active_rule_process = None;
+                    let previous_target = self
+                        .active_rule_process
+                        .take()
+                        .unwrap_or_else(|| SYSTEM_TARGET_NAME.to_owned());
                     self.last_release_error = None;
                     action_log.record(
                         ActionLogFeature::TimerResolution,
@@ -232,13 +226,14 @@ impl TimerResolutionManager {
                     );
                 }
                 Err(message) => {
-                    failures += 1;
                     if self.last_release_error.as_ref() != Some(&message) {
                         self.last_release_error = Some(message.clone());
                         action_log.record(
                             ActionLogFeature::TimerResolution,
                             None,
-                            previous_target,
+                            self.active_rule_process
+                                .as_deref()
+                                .unwrap_or(SYSTEM_TARGET_NAME),
                             ActionLogResult::Failed,
                             message.clone(),
                         );
@@ -254,7 +249,6 @@ impl TimerResolutionManager {
                 Ok(info) => Some(info),
                 Err(error) if enabled && last_error.is_none() => {
                     record_query_failure(action_log, &error);
-                    failures += 1;
                     last_error = Some(error);
                     None
                 }
@@ -267,7 +261,6 @@ impl TimerResolutionManager {
             enabled,
             controller.active_request_100ns(),
             info,
-            failures,
             last_error,
             observation_paused,
         )
@@ -310,7 +303,6 @@ fn snapshot_from_query(
     enabled: bool,
     requested_100ns: Option<u32>,
     info: Option<TimerResolutionInfo>,
-    failed_actions: usize,
     last_error: Option<String>,
     observation_paused: bool,
 ) -> TimerResolutionSnapshot {
@@ -319,7 +311,6 @@ fn snapshot_from_query(
         requested_100ns,
         maximum_100ns: info.map(|info| info.maximum_100ns),
         minimum_100ns: info.map(|info| info.minimum_100ns),
-        failed_actions,
         observation_paused,
         last_error,
     }
