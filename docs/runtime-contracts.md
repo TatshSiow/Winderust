@@ -628,6 +628,8 @@ Read the relevant section before changing feature policy, ownership, restoration
   helper. If both processes terminate, Winderust tries cleanup at its next
   startup and before another capture. Cleanup skips a live helper and verifies
   the exact capture name and logger GUID before stopping a remaining trace.
+  When the user cancels before the page receives the report, any queued report
+  is discarded and cleanup errors still reach the page.
 
 ## Priority and efficiency
 

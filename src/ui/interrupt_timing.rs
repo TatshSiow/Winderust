@@ -140,9 +140,14 @@ impl State {
     }
 
     pub(super) fn poll(&mut self) {
-        if let Self::Capturing { capture, .. } = self {
+        if let Self::Capturing {
+            capture,
+            cancelling,
+        } = self
+        {
             if let Some(result) = capture.poll() {
                 *self = match result {
+                    Ok(_) if *cancelling => Self::failed(InterruptTimingError::Cancelled),
                     Ok(report) => Self::Finished {
                         report,
                         per_cpu_expanded: false,
