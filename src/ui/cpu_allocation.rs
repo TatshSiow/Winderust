@@ -30,13 +30,13 @@ impl Kind {
         }
     }
 }
-fn settings(s: &Settings, k: Kind) -> &CpuAllocationSettings {
+pub(super) fn settings(s: &Settings, k: Kind) -> &CpuAllocationSettings {
     match k {
         Kind::Soft => &s.cpu_sets_soft,
         Kind::Hard => &s.processor_affinity_hard,
     }
 }
-fn settings_mut(s: &mut Settings, k: Kind) -> &mut CpuAllocationSettings {
+pub(super) fn settings_mut(s: &mut Settings, k: Kind) -> &mut CpuAllocationSettings {
     match k {
         Kind::Soft => &mut s.cpu_sets_soft,
         Kind::Hard => &mut s.processor_affinity_hard,
@@ -57,14 +57,14 @@ impl Tier {
         })
         .to_string()
     }
-    fn selection(self, r: &CpuAllocationRule) -> &CpuSelection {
+    pub(super) fn selection(self, r: &CpuAllocationRule) -> &CpuSelection {
         match self {
             Self::Focus => &r.focus_selection,
             Self::Visible => &r.visible_window_selection,
             Self::Background => &r.background_selection,
         }
     }
-    fn set(self, r: &mut CpuAllocationRule, selection: CpuSelection) {
+    pub(super) fn set(self, r: &mut CpuAllocationRule, selection: CpuSelection) {
         match self {
             Self::Focus => r.focus_selection = selection,
             Self::Visible => r.visible_window_selection = selection,

@@ -1,7 +1,12 @@
+use super::super::cpu_allocation::{
+    self,
+    Kind::{Hard, Soft},
+    Tier as AllocationTier,
+};
+use super::super::cpu_limiter;
 use super::super::design;
 use super::super::priority_control::{Kind, Tier, Value};
 use super::super::widgets::{self, action_button, pick_list, setting_row, settings_card, switch};
-use super::super::{cpu_allocation, cpu_limiter};
 use super::PlanCatalog;
 use crate::application::SettingsEditor;
 use crate::config::*;
@@ -171,68 +176,54 @@ pub(super) fn update(s: &mut SettingsEditor, path: &str, m: Message) -> Option<S
             }
         }
         Message::CpuEnabled(soft, enabled) => {
-            let other = if soft {
-                &s.processor_affinity_hard
-            } else {
-                &s.cpu_sets_soft
-            };
-            if enabled && other.contains_rule_for(&path) {
-                return None;
-            }
-            let setting = if soft {
-                &mut s.cpu_sets_soft
-            } else {
-                &mut s.processor_affinity_hard
-            };
-            if !enabled {
-                setting
+            let (kind, other) = if soft { (Soft, Hard) } else { (Hard, Soft) };
+            let has_rule = cpu_allocation::settings(s, kind).contains_rule_for(&path);
+            if !enabled && has_rule {
+                cpu_allocation::settings_mut(s, kind)
                     .rules
-                    .retain(|r| !process_setting_matches(&r.executable_path, &path));
-            } else if !setting.contains_rule_for(&path)
+                    .retain(|rule| !process_setting_matches(&rule.executable_path, &path));
+            } else if enabled
+                && !has_rule
+                && !cpu_allocation::settings(s, other).contains_rule_for(&path)
                 && !crate::cpu_allocation::is_builtin_excluded(&path)
             {
-                let kind = if soft {
-                    cpu_allocation::Kind::Soft
-                } else {
-                    cpu_allocation::Kind::Hard
-                };
                 let selection =
                     match cpu_allocation::SelectionCatalog::capture(kind).all_selection() {
                         Ok(selection) => selection,
                         Err(error) => return Some(error),
                     };
-                setting.rules.push(CpuAllocationRule {
-                    enabled: true,
-                    executable_path: path,
-                    focus_selection: selection.clone(),
-                    visible_window_selection: selection.clone(),
-                    background_selection: selection,
-                });
+                cpu_allocation::settings_mut(s, kind)
+                    .rules
+                    .push(CpuAllocationRule {
+                        enabled: true,
+                        executable_path: path,
+                        focus_selection: selection.clone(),
+                        visible_window_selection: selection.clone(),
+                        background_selection: selection,
+                    });
             }
         }
         Message::CpuMask(soft, tier, selection) => {
-            let setting = if soft {
-                &mut s.cpu_sets_soft
-            } else {
-                &mut s.processor_affinity_hard
-            };
-            if let Some(r) = setting
+            let kind = if soft { Soft } else { Hard };
+            if let Some((index, rule)) = cpu_allocation::settings(s, kind)
                 .rules
-                .iter_mut()
-                .find(|r| process_setting_matches(&r.executable_path, &path))
+                .iter()
+                .enumerate()
+                .find(|(_, rule)| process_setting_matches(&rule.executable_path, &path))
             {
-                let kind = if soft {
-                    cpu_allocation::Kind::Soft
-                } else {
-                    cpu_allocation::Kind::Hard
-                };
                 if let Err(error) = cpu_allocation::verify_selection(&selection, kind) {
                     return Some(error);
                 }
-                match tier {
-                    Tier::Focus => r.focus_selection = selection,
-                    Tier::VisibleWindow => r.visible_window_selection = selection,
-                    Tier::Background => r.background_selection = selection,
+                let tier = match tier {
+                    Tier::Focus => AllocationTier::Focus,
+                    Tier::VisibleWindow => AllocationTier::Visible,
+                    Tier::Background => AllocationTier::Background,
+                };
+                if selection != *tier.selection(rule) {
+                    tier.set(
+                        &mut cpu_allocation::settings_mut(s, kind).rules[index],
+                        selection,
+                    );
                 }
             }
         }
@@ -684,17 +675,26 @@ mod tests {
     }
 
     #[test]
-    fn cpu_rule_cannot_join_both_owners() {
+    fn cpu_rule_ownership_and_noops_preserve_battery_inheritance() {
+        let path = r"C:\App\app.exe";
         let mut s = Settings::default();
         s.cpu_sets_soft.rules.push(CpuAllocationRule {
             enabled: true,
-            executable_path: r"C:\App\app.exe".into(),
+            executable_path: path.into(),
             focus_selection: crate::cpu_topology::test_selection(1),
             visible_window_selection: crate::cpu_topology::test_selection(1),
             background_selection: crate::cpu_topology::test_selection(1),
         });
         let mut s = SettingsEditor::with_settings(s);
-        let _ = update(&mut s, r"C:\App\app.exe", Message::CpuEnabled(false, true));
+        s.select_power_source(PowerSourceProfile::OnBattery);
+        for message in [
+            Message::CpuEnabled(false, true),
+            Message::CpuEnabled(true, true),
+            Message::CpuEnabled(false, false),
+        ] {
+            let _ = update(&mut s, path, message);
+        }
+        assert!(s.global().on_battery.is_none());
         assert!(s.processor_affinity_hard.rules.is_empty());
     }
 
