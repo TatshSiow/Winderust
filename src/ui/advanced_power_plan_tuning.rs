@@ -1457,21 +1457,18 @@ impl std::fmt::Display for PresetChoice {
 struct BoostChoice(ProcessorBoostMode);
 impl std::fmt::Display for BoostChoice {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let key = match self.0 {
-            ProcessorBoostMode::Disabled => "disabled",
-            ProcessorBoostMode::Enabled => "enabled",
-            ProcessorBoostMode::Aggressive => "aggressive",
-            ProcessorBoostMode::EfficientEnabled => "efficient_enabled",
-            ProcessorBoostMode::EfficientAggressive => "efficient_aggressive",
-            ProcessorBoostMode::AggressiveAtGuaranteed => "aggressive_at_guaranteed",
+        f.write_str(&t!(match self.0 {
+            ProcessorBoostMode::Disabled => "processor_power.boost_disabled",
+            ProcessorBoostMode::Enabled => "processor_power.boost_enabled",
+            ProcessorBoostMode::Aggressive => "processor_power.boost_aggressive",
+            ProcessorBoostMode::EfficientEnabled => "processor_power.boost_efficient_enabled",
+            ProcessorBoostMode::EfficientAggressive => "processor_power.boost_efficient_aggressive",
+            ProcessorBoostMode::AggressiveAtGuaranteed =>
+                "processor_power.boost_aggressive_at_guaranteed",
             ProcessorBoostMode::EfficientAggressiveAtGuaranteed => {
-                "efficient_aggressive_at_guaranteed"
+                "processor_power.boost_efficient_aggressive_at_guaranteed"
             }
-        };
-        f.write_str(&{
-            let locale_key = format!("processor_power.boost_{key}");
-            t!(&locale_key).to_string()
-        })
+        }))
     }
 }
 fn preset_label(p: ProcessorPowerPreset) -> String {
@@ -1482,22 +1479,17 @@ fn preset_label(p: ProcessorPowerPreset) -> String {
     })
     .to_string()
 }
-fn mode_label(mode: EffectivePowerMode) -> String {
-    let key = match mode {
-        EffectivePowerMode::Unknown => "unknown",
-        EffectivePowerMode::BatterySaver => "battery_saver",
-        EffectivePowerMode::BetterBattery => "better_battery",
-        EffectivePowerMode::Balanced => "balanced",
-        EffectivePowerMode::HighPerformance => "high_performance",
-        EffectivePowerMode::MaxPerformance => "max_performance",
-        EffectivePowerMode::GameMode => "game_mode",
-        EffectivePowerMode::MixedReality => "mixed_reality",
-    };
-    {
-        let locale_key = format!("processor_power.mode_{key}");
-        t!(&locale_key).to_string()
-    }
-    .to_string()
+fn mode_label(mode: EffectivePowerMode) -> std::borrow::Cow<'static, str> {
+    t!(match mode {
+        EffectivePowerMode::Unknown => "processor_power.mode_unknown",
+        EffectivePowerMode::BatterySaver => "processor_power.mode_battery_saver",
+        EffectivePowerMode::BetterBattery => "processor_power.mode_better_battery",
+        EffectivePowerMode::Balanced => "processor_power.mode_balanced",
+        EffectivePowerMode::HighPerformance => "processor_power.mode_high_performance",
+        EffectivePowerMode::MaxPerformance => "processor_power.mode_max_performance",
+        EffectivePowerMode::GameMode => "processor_power.mode_game_mode",
+        EffectivePowerMode::MixedReality => "processor_power.mode_mixed_reality",
+    })
 }
 #[cfg(test)]
 mod tests {
