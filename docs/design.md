@@ -144,6 +144,8 @@ hover/press; background shading supplies feedback.
 - Stacked Process List parent rows expose only `Stop process tree`, covering every process in the stack and the union of their descendants; their expanded sub-items expose both stop actions. Non-stacked rows always expose `Stop process` and expose `Stop process tree` only while the selected process has a child in the current process snapshot.
 - The rows share one Tab stop. Up and Down move through rows, Enter opens details, and Space expands or collapses the focused group.
 - With the rows focused, Delete opens confirmation for the selected process or stack members without descendants. Tree termination remains an explicit context-menu action. Escape or Cancel dismisses confirmation.
+- If the focused row moves offscreen, Enter, Space, or Delete first scrolls it
+  into view. Press the key again to act on the visible row.
 - Keep Stop process and Stop process tree consistent from their initiating action through the confirmation title and button. Tree confirmations name child processes, and both warnings retain the unsaved-work consequence.
 - Report `Efficiency mode` only when the process has both EcoQoS and `IDLE_PRIORITY_CLASS`, matching Task Manager rather than treating EcoQoS alone as full Efficiency mode.
 - Filters, column visibility, and memory value/percentage controls belong in the Settings side panel.

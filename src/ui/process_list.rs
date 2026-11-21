@@ -164,9 +164,9 @@ pub(super) enum Message {
     Select(usize, u64),
     Focus(usize, u64),
     MoveRowFocus(bool, f32),
-    OpenFocused,
-    ExpandFocused,
-    DeleteFocused,
+    OpenFocused(f32),
+    ExpandFocused(Option<f32>),
+    DeleteFocused(f32),
     Context(usize, u64),
     PointerMoved(iced::Point),
     OpenDetails,
@@ -443,10 +443,13 @@ impl ProcessList {
                 }
             }
             Message::MoveRowFocus(forward, height) => return self.move_row_focus(forward, height),
-            Message::OpenFocused => {
+            Message::OpenFocused(height) => {
                 if self.selected.is_none() && self.stopping.is_none() {
-                    let row = self
-                        .focused_index()
+                    let focused = self.focused_index();
+                    if let Some(task) = focused.and_then(|index| self.reveal_row(index, height)) {
+                        return task;
+                    }
+                    let row = focused
                         .or_else(|| self.focused.is_none().then(|| self.first_visible_row()));
                     if let Some(index) = row {
                         self.focus_row(index, self.rows_revision);
@@ -458,14 +461,19 @@ impl ProcessList {
                     }
                 }
             }
-            Message::ExpandFocused => {
-                if let Some(entry) = self.focused_index().map(|index| &self.rows[index]) {
-                    if entry.indices.len() > 1 {
-                        return self.update(Message::Expand(entry.key.clone()), settings, runtime);
+            Message::ExpandFocused(height) => {
+                if let Some(index) = self
+                    .focused_index()
+                    .filter(|&index| self.rows[index].indices.len() > 1)
+                {
+                    if let Some(task) = height.and_then(|height| self.reveal_row(index, height)) {
+                        return task;
                     }
+                    let key = self.rows[index].key.clone();
+                    return self.update(Message::Expand(key), settings, runtime);
                 }
             }
-            Message::DeleteFocused => {
+            Message::DeleteFocused(height) => {
                 if self.selected.is_some() || self.stopping.is_some() {
                     return Task::none();
                 }
@@ -474,6 +482,9 @@ impl ProcessList {
                 };
                 let selection = self.selection(&self.rows[index]);
                 if selection.processes.iter().any(|p| !inaccessible(p)) {
+                    if let Some(task) = self.reveal_row(index, height) {
+                        return task;
+                    }
                     self.selected = Some(selection);
                     return self.update(Message::Stop(false), settings, runtime);
                 }
@@ -942,6 +953,10 @@ impl ProcessList {
             None => self.first_visible_row(),
         };
         self.focus_row(index, self.rows_revision);
+        self.reveal_row(index, height).unwrap_or_else(Task::none)
+    }
+
+    fn reveal_row(&self, index: usize, height: f32) -> Option<Task<Message>> {
         let start = self.offsets[index];
         let end = self.offsets[index + 1];
         let max = (self.offsets[self.rows.len()] - height).max(0.0);
@@ -950,16 +965,15 @@ impl ProcessList {
             .get()
             .clamp((end - height).min(start), start)
             .clamp(0.0, max);
-        if self.offset.replace(offset) == offset {
-            return Task::none();
-        }
-        iced::widget::operation::scroll_to(
-            PROCESS_TABLE,
-            iced::widget::scrollable::AbsoluteOffset {
-                x: None,
-                y: Some(offset),
-            },
-        )
+        (self.offset.replace(offset) != offset).then(|| {
+            iced::widget::operation::scroll_to(
+                PROCESS_TABLE,
+                iced::widget::scrollable::AbsoluteOffset {
+                    x: None,
+                    y: Some(offset),
+                },
+            )
+        })
     }
 
     fn focus_row(&mut self, index: usize, revision: u64) -> bool {
@@ -1451,7 +1465,7 @@ impl ProcessList {
                                 .clip(true),
                             )
                             .on_press(Message::Focus(row_index, self.rows_revision))
-                            .on_double_click(Message::ExpandFocused),
+                            .on_double_click(Message::ExpandFocused(None)),
                         )
                         .padding(0)
                         .width(Fill)
@@ -1500,9 +1514,9 @@ impl ProcessList {
                     Some(match key {
                         Named::ArrowUp => (Message::MoveRowFocus(false, height), true),
                         Named::ArrowDown => (Message::MoveRowFocus(true, height), true),
-                        Named::Enter => (Message::OpenFocused, false),
-                        Named::Space => (Message::ExpandFocused, false),
-                        Named::Delete => (Message::DeleteFocused, false),
+                        Named::Enter => (Message::OpenFocused(height), false),
+                        Named::Space => (Message::ExpandFocused(Some(height)), false),
+                        Named::Delete => (Message::DeleteFocused(height), false),
                         _ => return None,
                     })
                 },
@@ -2744,7 +2758,7 @@ mod tests {
         assert!(!list.modal_open());
         list.processes.push(process(12, 300, "app.exe"));
         list.rebuild();
-        let _ = list.update(Message::DeleteFocused, &mut editor, &runtime);
+        let _ = list.update(Message::DeleteFocused(200.0), &mut editor, &runtime);
         assert!(list.modal_open());
         let (pending, tree) = list.stopping.as_ref().unwrap();
         assert_eq!(pending.processes.len(), 3);
