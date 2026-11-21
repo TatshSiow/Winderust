@@ -1055,6 +1055,7 @@ mod picker_tests {
     fn picker_overlays_render_and_cancel_or_submit_at_both_widths() {
         let mut settings = crate::config::Settings::default();
         settings.general.accent.custom_colors = vec![0x123456, 0xabcdef];
+        let mut settings = crate::application::SettingsEditor::with_settings(settings);
         for theme in [
             iced::Theme::custom_with_fn(
                 "picker",

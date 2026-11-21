@@ -3,6 +3,7 @@ use super::widgets::{self, checkbox, icon_button, Choice};
 use super::widgets::{action_button, pick_list, slider, text_input};
 use crate::ui::scrolling::scrollable;
 use crate::{
+    application::SettingsEditor,
     config::{
         ByCpuLoadRule, ByCpuLoadStability, ByTimeRule, CpuLoadPercent, CpuUsageComparison,
         RuleTime, Settings, WeekdaySetting,
@@ -115,7 +116,7 @@ impl Editor {
     pub(super) fn update(
         &mut self,
         kind: Kind,
-        s: &mut Settings,
+        s: &mut SettingsEditor,
         plans: &[PowerPlan],
         message: Message,
     ) {
@@ -181,7 +182,7 @@ impl Editor {
             Message::Add | Message::Edit(_) => {
                 self.time_picker = None;
                 self.inputs.clear();
-                let mut draft = s.clone();
+                let mut draft = Settings::clone(s);
                 self.creating = matches!(message, Message::Add);
                 self.editing = match message {
                     Message::Edit(index) => index,
