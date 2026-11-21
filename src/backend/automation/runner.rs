@@ -830,16 +830,7 @@ impl RuntimeCore {
         if self.cpu_limiter_controller.is_none()
             && (!settings.general.enabled || !settings.cpu_limiter.enabled)
         {
-            return CpuLimiterSnapshot {
-                enabled: settings.general.enabled && settings.cpu_limiter.enabled,
-                message: if settings.general.enabled {
-                    "CPU Limiter disabled."
-                } else {
-                    "Automation disabled."
-                }
-                .to_owned(),
-                ..Default::default()
-            };
+            return CpuLimiterSnapshot::default();
         }
         let foreground_process_id =
             feature_refresh_required(settings, cpu_limiter_required(settings))
@@ -852,7 +843,6 @@ impl RuntimeCore {
                 Err(error) => {
                     return CpuLimiterSnapshot {
                         enabled: settings.general.enabled && settings.cpu_limiter.enabled,
-                        message: "CPU Limiter timing worker is unavailable.".to_owned(),
                         last_error: Some(error),
                         ..Default::default()
                     };

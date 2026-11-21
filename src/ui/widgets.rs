@@ -332,7 +332,7 @@ pub(super) fn preset_footer<'a, M: Clone + 'a>(label: String, message: M) -> Ele
 pub(super) fn rule_status_chip(theme: &iced::Theme, key: &str) -> iced::widget::container::Style {
     let color = match key {
         "common.applied" => theme.palette().success,
-        "common.waiting" => theme.palette().warning,
+        "common.waiting" | "sidebar_status.paused" => theme.palette().warning,
         "common.error" => theme.palette().danger,
         "common.unknown" => muted_color(theme),
         _ => return indicator_chip(theme, false),

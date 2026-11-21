@@ -24,6 +24,7 @@ use crate::{
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CpuLimiterSnapshot {
     pub enabled: bool,
+    pub(crate) observation_paused: bool,
     pub scanned_processes: usize,
     pub limited_processes: usize,
     pub tracked_processes: usize,
@@ -32,7 +33,6 @@ pub struct CpuLimiterSnapshot {
     pub limited_apps: Vec<String>,
     pub failed_apps: Vec<String>,
     pub auto_excluded_processes: Vec<String>,
-    pub message: String,
     pub last_error: Option<String>,
 }
 
@@ -71,34 +71,25 @@ impl CpuLimiterManager {
         observations: &mut CycleObservations,
         action_log: &mut ActionLog,
     ) -> CpuLimiterSnapshot {
-        if !automation_enabled {
-            return self.clear(controller, action_log, false, "Automation disabled.");
-        }
-        if !settings.enabled {
-            return self.clear(controller, action_log, false, "CPU Limiter disabled.");
+        if !automation_enabled || !settings.enabled {
+            return self.clear(controller, action_log, false);
         }
         if !has_finite_limits(settings) {
             self.failure_suppression.clear();
-            return self.clear(controller, action_log, true, "No CPU limits configured.");
+            return self.clear(controller, action_log, true);
         }
 
         let needs_foreground = requires_foreground_observation(settings);
         if needs_foreground && foreground_process_id.is_none() {
-            return self.paused(controller, action_log, "Paused: foreground app is unknown.");
+            return self.paused(controller, action_log);
         }
 
         let needs_visible_windows = requires_visible_window_observation(settings);
         let visible_window_process_ids = if needs_visible_windows {
-            match observations.visible_window_process_ids() {
-                Ok(process_ids) => process_ids,
-                Err(_) => {
-                    return self.paused(
-                        controller,
-                        action_log,
-                        "Paused: visible windows are unavailable.",
-                    );
-                }
-            }
+            let Ok(process_ids) = observations.visible_window_process_ids() else {
+                return self.paused(controller, action_log);
+            };
+            process_ids
         } else {
             Default::default()
         };
@@ -106,15 +97,15 @@ impl CpuLimiterManager {
         // SAFETY: GetCurrentProcessId takes no arguments and has no caller requirements.
         let current_process_id = unsafe { GetCurrentProcessId() };
         let Some(current_session_id) = process_session_id(current_process_id) else {
-            return self.paused(
-                controller,
-                action_log,
-                "Paused: current Windows session is unknown.",
-            );
+            return self.paused(controller, action_log);
         };
         let processes = match observations.processes_with_paths() {
             Ok(processes) => processes,
-            Err(error) => return self.paused(controller, action_log, &error),
+            Err(error) => {
+                let mut snapshot = self.paused(controller, action_log);
+                snapshot.last_error.get_or_insert(error);
+                return snapshot;
+            }
         };
         self.release_pending = false;
 
@@ -228,7 +219,6 @@ impl CpuLimiterManager {
                     .map(|target| target.executable_path.clone())
                     .collect(),
                 skipped_processes,
-                message: "CPU Limiter stopped because its timing worker failed.".to_owned(),
                 last_error: Some(error),
                 ..Default::default()
             };
@@ -284,7 +274,6 @@ impl CpuLimiterManager {
                         .map(|target| target.executable_path.clone())
                         .collect(),
                     skipped_processes,
-                    message: "CPU Limiter stopped because its timing worker failed.".to_owned(),
                     last_error: Some(error),
                     ..Default::default()
                 };
@@ -343,6 +332,7 @@ impl CpuLimiterManager {
         }
         CpuLimiterSnapshot {
             enabled: true,
+            observation_paused: false,
             scanned_processes,
             limited_processes: active_keys.len(),
             failed_apps: failed_apps.into_iter().collect(),
@@ -355,7 +345,6 @@ impl CpuLimiterManager {
                 .map(|process| process.executable_path.clone())
                 .collect(),
             auto_excluded_processes: auto_excluded_processes.into_iter().collect(),
-            message: "CPU Limiter active.".to_owned(),
             last_error,
         }
     }
@@ -364,9 +353,10 @@ impl CpuLimiterManager {
         &mut self,
         controller: &mut CpuLimiterController,
         action_log: &mut ActionLog,
-        message: &str,
     ) -> CpuLimiterSnapshot {
-        self.clear(controller, action_log, true, message)
+        let mut snapshot = self.clear(controller, action_log, true);
+        snapshot.observation_paused = true;
+        snapshot
     }
 
     fn clear(
@@ -374,7 +364,6 @@ impl CpuLimiterManager {
         controller: &mut CpuLimiterController,
         action_log: &mut ActionLog,
         enabled: bool,
-        message: &str,
     ) -> CpuLimiterSnapshot {
         let mut last_error = controller.replace_targets(Vec::new()).err();
         let mut release_error = None;
@@ -410,7 +399,6 @@ impl CpuLimiterManager {
         );
         CpuLimiterSnapshot {
             enabled,
-            message: message.to_owned(),
             last_error: release_error
                 .filter(|_| self.release_pending)
                 .or(last_error),

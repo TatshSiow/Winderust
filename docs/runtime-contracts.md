@@ -492,6 +492,8 @@ Read the relevant section before changing feature policy, ownership, restoration
   own CPU allocation or Windows CPU-rate state.
   On Exit, the shared suspension controller's final Job cleanup determines the Job result.
   CPU Limiter reports its own thread fallback and timing worker failures separately.
+  Required observations that are unavailable pause CPU Limiter and its eligible rule status.
+  Process inventory and retained cleanup errors remain visible in the status rail.
 
 ## Runtime observations
 

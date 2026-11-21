@@ -528,7 +528,8 @@ fn sidebar_state(
     if page == Page::AppSuspension && features.app_suspension.status_unknown {
         return FeatureRunState::Unknown;
     }
-    if (page == Page::CpuSetsSoft && features.cpu_sets_soft.observation_paused)
+    if (page == Page::CpuLimiter && features.cpu_limiter.observation_paused)
+        || (page == Page::CpuSetsSoft && features.cpu_sets_soft.observation_paused)
         || (page == Page::ProcessorAffinityHard
             && features.processor_affinity_hard.observation_paused)
     {

@@ -561,6 +561,8 @@ fn rule_status(
         )
     }) {
         "common.error"
+    } else if status.observation_paused {
+        "sidebar_status.paused"
     } else if status.enabled
         && status.limited_apps.iter().any(|path| {
             crate::foreground::same_executable_path(
@@ -614,9 +616,12 @@ mod tests {
         status.limited_apps.push(r"c:\apps\TEST.exe".into());
         assert_eq!(rule_status(&rule, true, &status), "common.applied");
         assert_eq!(rule_status(&rule, false, &status), "common.inactive");
+        status.observation_paused = true;
         status.failed_apps.push(rule.executable_path.clone());
         assert_eq!(rule_status(&rule, true, &status), "common.error");
         status.failed_apps.clear();
+        assert_eq!(rule_status(&rule, true, &status), "sidebar_status.paused");
+        status.observation_paused = false;
         status.enabled = false;
         assert_eq!(rule_status(&rule, true, &status), "common.unknown");
         rule.enabled = false;
