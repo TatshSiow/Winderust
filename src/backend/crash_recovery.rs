@@ -493,8 +493,9 @@ fn run_watchdog_loop(
     }
     let committed_len = append_pending_intents(&mut entries, pending);
     if !entries.is_empty() {
+        let mut resolved = HashSet::new();
         recover_with_retry_using(
-            || recover_journal_with_pending(&entries, committed_len),
+            || recover_journal_with_pending(&entries, committed_len, &mut resolved),
             cleanup,
         )?;
     }
@@ -1082,22 +1083,28 @@ fn compact_or_push(entries: &mut Vec<RecoveryEntry>, entry: RecoveryEntry) {
 
 #[cfg(test)]
 fn recover_journal(entries: &[RecoveryEntry]) -> Result<(), String> {
-    recover_journal_with_pending(entries, entries.len())
+    recover_journal_with_pending(entries, entries.len(), &mut HashSet::new())
 }
 
 fn recover_journal_with_pending(
     entries: &[RecoveryEntry],
     committed_len: usize,
+    resolved: &mut HashSet<String>,
 ) -> Result<(), String> {
-    let mut recovered = HashSet::new();
     let mut failures = Vec::new();
+    let mut retry_keys = Vec::new();
     for entry in entries.iter().rev() {
         let key = entry.key();
-        if recovered.insert(key.clone()) {
+        if resolved.insert(key.clone()) {
             if let Err(error) = recover_entry(entry, &key, entries, committed_len) {
                 failures.push(error);
+                retry_keys.push(key);
             }
         }
+    }
+    // Reopen failed keys after the pass so each attempt still unwinds one chain per key.
+    for key in retry_keys {
+        resolved.remove(&key);
     }
     if failures.is_empty() {
         Ok(())
