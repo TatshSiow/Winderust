@@ -641,10 +641,14 @@ fn restore_and_verify<P: DynamicPriorityBoostPlatform>(
 
 pub(crate) fn current_dynamic_priority_boost_state(
     target: &ProcessActionTarget,
+    allow_cross_session_process_control: bool,
 ) -> Result<DynamicPriorityBoostState, String> {
     let mut platform = WindowsDynamicPriorityBoostPlatform;
     let (_, process) = platform
-        .open(&ProcessControlTarget::from_action_target(target), true)
+        .open(
+            &ProcessControlTarget::from_action_target(target),
+            allow_cross_session_process_control,
+        )
         .map_err(|error| error.to_string())?;
     platform.query(&process).map_err(|error| error.to_string())
 }

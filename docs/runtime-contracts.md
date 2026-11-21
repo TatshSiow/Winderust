@@ -710,6 +710,9 @@ Read the relevant section before changing feature policy, ownership, restoration
 
 ## Priority and efficiency
 
+- Process List shows a current priority or Dynamic Priority Boost value for a
+  group only when every selected process has a matching verified value.
+  Priority readback follows Allow cross-session process control.
 - Background Efficiency uses the same explicit Foreground Detection and Visible Window Detection
   layers as Priority Control. Foreground Detection defaults on, Visible Window Detection defaults
   off, and each layer owns an Enabled/Disabled Efficiency Mode default.
@@ -849,5 +852,5 @@ Read the relevant section before changing feature policy, ownership, restoration
 
 ## Thread Priority discovery
 
-- Automatic Thread Priority reconciliation uses one lazy PID-indexed Toolhelp inventory per pass, including cached capture/enumeration failure. Discovery failure stops the pass without process failure suppression. Process List mutations and priority queries capture fresh operation-local inventories. No inventory survives on the controller.
+- Automatic Thread Priority reconciliation uses one lazy PID-indexed Toolhelp inventory per pass, including cached capture/enumeration failure. Discovery failure stops the pass without process failure suppression. Process List mutations and priority queries capture fresh operation-local inventories. A grouped priority query shares its inventory across the selected processes. No inventory survives on the controller.
 - Discovery is not mutation authorization: exact process/thread checks, priority readback, preservation, baselines and recovery remain controller-owned. Missing entries require exact exit/replacement verification before journal removal; live or uncertain identities remain owned. Release and shutdown never require discovery.

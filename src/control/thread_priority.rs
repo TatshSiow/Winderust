@@ -979,13 +979,13 @@ fn priority_is_preserved(
 pub(crate) fn current_process_thread_priority(
     target: &ProcessActionTarget,
     allow_cross_session_process_control: bool,
+    inventory: &mut ThreadInventory,
 ) -> Result<Option<ProcessThreadPrioritySetting>, String> {
     let mut platform = WindowsThreadPriorityPlatform;
     let target = ProcessControlTarget::from_action_target(target);
     let (identity, process) = platform
         .open_process(&target, allow_cross_session_process_control)
         .map_err(|error| error.to_string())?;
-    let mut inventory = ThreadInventory::default();
     let thread_ids = inventory
         .ids(&mut platform, identity.id)
         .map_err(|error| error.to_string())?;
@@ -2539,8 +2539,11 @@ mod tests {
                 Err(error) => return Err(error.to_string()),
             }
         };
-        let baseline = current_process_thread_priority(&target, true)?
-            .ok_or_else(|| "Disposable process started with mixed thread priorities.".to_owned())?;
+        let baseline =
+            current_process_thread_priority(&target, true, &mut ThreadInventory::default())?
+                .ok_or_else(|| {
+                    "Disposable process started with mixed thread priorities.".to_owned()
+                })?;
         let expected = if baseline == ProcessThreadPrioritySetting::BelowNormal {
             ProcessThreadPrioritySetting::AboveNormal
         } else {
@@ -2552,12 +2555,12 @@ mod tests {
             .apply_process_list_action(&target, expected, true)
             .map_err(|error| error.to_string())?;
         assert_eq!(
-            current_process_thread_priority(&target, true)?,
+            current_process_thread_priority(&target, true, &mut ThreadInventory::default())?,
             Some(expected)
         );
         controller.shutdown()?;
         assert_eq!(
-            current_process_thread_priority(&target, true)?,
+            current_process_thread_priority(&target, true, &mut ThreadInventory::default())?,
             Some(baseline)
         );
         Ok(())

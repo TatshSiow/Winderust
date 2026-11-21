@@ -705,60 +705,67 @@ impl ProcessList {
             current_efficiency_mode, current_process_priority,
         };
 
+        use crate::control::{
+            gpu_priority::current_process_gpu_priority,
+            io_priority::current_process_io_priority,
+            memory_priority::current_process_memory_priority,
+            thread_priority::{current_process_thread_priority, ThreadInventory},
+        };
+
         self.current_query_id = self.current_query_id.wrapping_add(1);
         let query_id = self.current_query_id;
         background(
             move || {
-                let targets = selection
-                    .targets()
-                    .into_iter()
-                    .filter_map(Result::ok)
-                    .collect::<Vec<_>>();
-                let mut values = Vec::new();
-                if let Some(v) = targets
-                    .iter()
-                    .find_map(|target| current_process_priority(target, allow).ok())
-                {
-                    values.push(Value::Process(v));
-                }
-                if let Some(v) = targets.iter().find_map(|target| {
-                    crate::control::thread_priority::current_process_thread_priority(target, allow)
-                        .ok()
-                        .flatten()
-                }) {
-                    values.push(Value::Thread(v));
-                }
-                if let Some(v) = targets.iter().find_map(|target| {
-                    crate::control::io_priority::current_process_io_priority(target, allow).ok()
-                }) {
-                    values.push(Value::Io(v.into()));
-                }
-                if let Some(v) = targets.iter().find_map(|target| {
-                    crate::control::gpu_priority::current_process_gpu_priority(target, allow).ok()
-                }) {
-                    values.push(Value::Gpu(v.into()));
-                }
-                if let Some(v) = targets.iter().find_map(|target| {
-                    crate::control::memory_priority::current_process_memory_priority(target, allow)
-                        .ok()
-                }) {
-                    values.push(Value::Memory(v.into()));
-                }
-                if let Some(v) = targets
-                    .iter()
-                    .find_map(|target| current_dynamic_priority_boost_state(target).ok())
-                {
-                    values.push(Value::DynamicBoost(match v {
-                        DynamicPriorityBoostState::Enabled => {
-                            ProcessDynamicPriorityBoostSetting::Enabled
-                        }
-                        DynamicPriorityBoostState::Disabled => {
-                            ProcessDynamicPriorityBoostSetting::Disabled
-                        }
-                    }));
-                }
+                let targets = selection.targets();
+                let mut threads = ThreadInventory::default();
+                let values = [
+                    shared_priority(&targets, |target| {
+                        current_process_priority(target, allow)
+                            .ok()
+                            .map(Value::Process)
+                    }),
+                    shared_priority(&targets, |target| {
+                        current_process_thread_priority(target, allow, &mut threads)
+                            .ok()
+                            .flatten()
+                            .map(Value::Thread)
+                    }),
+                    shared_priority(&targets, |target| {
+                        current_process_io_priority(target, allow)
+                            .ok()
+                            .map(|value| Value::Io(value.into()))
+                    }),
+                    shared_priority(&targets, |target| {
+                        current_process_gpu_priority(target, allow)
+                            .ok()
+                            .map(|value| Value::Gpu(value.into()))
+                    }),
+                    shared_priority(&targets, |target| {
+                        current_process_memory_priority(target, allow)
+                            .ok()
+                            .map(|value| Value::Memory(value.into()))
+                    }),
+                    shared_priority(&targets, |target| {
+                        current_dynamic_priority_boost_state(target, allow)
+                            .ok()
+                            .map(|value| {
+                                Value::DynamicBoost(match value {
+                                    DynamicPriorityBoostState::Enabled => {
+                                        ProcessDynamicPriorityBoostSetting::Enabled
+                                    }
+                                    DynamicPriorityBoostState::Disabled => {
+                                        ProcessDynamicPriorityBoostSetting::Disabled
+                                    }
+                                })
+                            })
+                    }),
+                ]
+                .into_iter()
+                .flatten()
+                .collect();
                 let efficiency = targets
                     .iter()
+                    .filter_map(|target| target.as_ref().ok())
                     .filter_map(|target| current_efficiency_mode(target, allow).ok())
                     .reduce(|all_enabled, enabled| all_enabled && enabled);
                 Ok((values, efficiency))
@@ -2073,6 +2080,20 @@ fn popup_position(position: iced::Point, bounds: iced::Size, popup: iced::Size) 
     )
 }
 
+fn shared_priority(
+    targets: &[Result<ProcessActionTarget, ProcessActionTargetError>],
+    mut read: impl FnMut(&ProcessActionTarget) -> Option<Value>,
+) -> Option<Value> {
+    let (first, remaining) = targets.split_first()?;
+    let first = read(first.as_ref().ok()?)?;
+    for target in remaining {
+        if read(target.as_ref().ok()?)? != first {
+            return None;
+        }
+    }
+    Some(first)
+}
+
 fn value_kind(v: Value) -> Kind {
     match v {
         Value::Process(_) => Kind::Process,
@@ -3275,6 +3296,30 @@ mod tests {
         assert_eq!(list.begin_detail_action(), None);
         list.record_action_result(Err("Context failure".into()), None);
         assert_eq!(list.action_feedback, Some(Err("Context failure".into())));
+    }
+
+    #[test]
+    fn grouped_priority_requires_matching_verified_values() {
+        let first = process(10, 100, r"C:\A\app.exe");
+        let mut second = process(11, 200, r"C:\A\app.exe");
+        let same = Value::Process(ProcessPrioritySetting::Normal);
+        let targets = [snapshot_target(&first), snapshot_target(&second)];
+        assert_eq!(shared_priority(&targets, |_| Some(same)), Some(same));
+        assert_eq!(
+            shared_priority(&targets, |target| (target.id == 10).then_some(same)),
+            None
+        );
+        assert_eq!(
+            shared_priority(&targets, |target| Some(if target.id == 10 {
+                same
+            } else {
+                Value::Process(ProcessPrioritySetting::Idle)
+            })),
+            None
+        );
+        second.creation_time = None;
+        let targets = [snapshot_target(&first), snapshot_target(&second)];
+        assert_eq!(shared_priority(&targets, |_| Some(same)), None);
     }
 
     #[test]
