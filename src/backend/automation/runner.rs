@@ -1464,20 +1464,23 @@ impl RuntimeCore {
                     )
                 }),
         );
-        errors.extend(
-            self.io_priority_controller
-                .retry_pending_releases(now)
-                .failures
-                .into_iter()
-                .map(|failure| {
-                    process_failure(
-                        "I/O Priority",
-                        failure.process_name,
-                        failure.process_id,
-                        failure.error,
-                    )
-                }),
-        );
+        if self.io_priority_controller.release_retry_delay(now) == Some(Duration::ZERO) {
+            let summary = self.io_priority_controller.retry_pending_releases(now);
+            let status = lock_unpoisoned(&shared.state)
+                .status
+                .feature_status
+                .io_priority
+                .clone();
+            update_io_priority_status(
+                shared,
+                self.io_priority_manager.report_release_retry(
+                    &self.io_priority_controller,
+                    summary,
+                    status,
+                    &mut self.action_log,
+                ),
+            );
+        }
         errors.extend(
             self.gpu_priority_controller
                 .retry_pending_releases(now)
@@ -1506,20 +1509,29 @@ impl RuntimeCore {
                     )
                 }),
         );
-        errors.extend(
-            self.dynamic_priority_boost_controller
-                .retry_pending_releases(now)
-                .failures
-                .into_iter()
-                .map(|failure| {
-                    process_failure(
-                        "Dynamic Priority Boost",
-                        failure.process_name,
-                        failure.process_id,
-                        failure.error,
-                    )
-                }),
-        );
+        if self
+            .dynamic_priority_boost_controller
+            .release_retry_delay(now)
+            == Some(Duration::ZERO)
+        {
+            let summary = self
+                .dynamic_priority_boost_controller
+                .retry_pending_releases(now);
+            let status = lock_unpoisoned(&shared.state)
+                .status
+                .feature_status
+                .dynamic_priority_boost
+                .clone();
+            update_dynamic_priority_boost_status(
+                shared,
+                self.dynamic_priority_boost_manager.report_release_retry(
+                    &self.dynamic_priority_boost_controller,
+                    summary,
+                    status,
+                    &mut self.action_log,
+                ),
+            );
+        }
         if let Err(error) = self.power_plan_controller.retry_pending_cleanup(now) {
             errors.push(format!("Adaptive plan cleanup failed: {error}"));
         }

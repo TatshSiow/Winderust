@@ -38,6 +38,7 @@ pub struct IoPrioritySnapshot {
 #[derive(Default)]
 pub struct IoPriorityManager {
     failure_suppression: ExecutionFailureTracker,
+    apply_failures: IoPriorityFailures,
 }
 
 impl IoPriorityManager {
@@ -56,6 +57,7 @@ impl IoPriorityManager {
         observations: &mut CycleObservations,
         action_log: &mut ActionLog,
     ) -> IoPrioritySnapshot {
+        self.apply_failures = IoPriorityFailures::default();
         if !automation_enabled {
             let failures = self.clear_all(controller, action_log, "automation disabled");
             self.failure_suppression.clear();
@@ -255,7 +257,7 @@ impl IoPriorityManager {
             });
         }
 
-        let mut failures = self.release_non_targets(
+        let release_failures = self.release_non_targets(
             controller,
             &active_targets,
             action_log,
@@ -300,7 +302,13 @@ impl IoPriorityManager {
                 Err(error) => {
                     self.failure_suppression
                         .record_process_failure(&executable_path);
-                    failures.record("Apply", process_id, &process_name, error, action_log);
+                    self.apply_failures.record(
+                        "Apply",
+                        process_id,
+                        &process_name,
+                        error,
+                        Some(action_log),
+                    );
                 }
             }
         }
@@ -323,11 +331,13 @@ impl IoPriorityManager {
             scanned_processes,
             adjusted_processes: adjusted_apps.len(),
             skipped_processes,
-            failed_processes: failures.count,
+            failed_processes: release_failures.count + self.apply_failures.count,
             adjusted_apps: unique_app_names(adjusted_apps.iter().map(String::as_str)),
             auto_excluded_processes: auto_excluded_processes.into_iter().collect(),
             message: "I/O priority defaults active.".to_owned(),
-            last_error: failures.last_error,
+            last_error: release_failures
+                .last_error
+                .or_else(|| self.apply_failures.last_error.clone()),
         }
     }
 
@@ -339,7 +349,7 @@ impl IoPriorityManager {
         reason: &str,
     ) -> IoPriorityFailures {
         let summary = controller.release_policy_except(active_targets);
-        self.record_release_summary(summary, action_log, reason)
+        self.record_policy_release(summary, action_log, reason)
     }
 
     fn clear_all(
@@ -349,25 +359,57 @@ impl IoPriorityManager {
         reason: &str,
     ) -> IoPriorityFailures {
         let summary = controller.release_all_policy();
-        self.record_release_summary(summary, action_log, reason)
+        self.record_policy_release(summary, action_log, reason)
     }
 
-    fn record_release_summary(
+    pub(crate) fn report_release_retry(
+        &self,
+        controller: &IoPriorityController,
+        summary: IoPriorityReleaseSummary,
+        mut status: IoPrioritySnapshot,
+        action_log: &mut ActionLog,
+    ) -> IoPrioritySnapshot {
+        let failures =
+            Self::record_release_summary(summary, action_log, "restoration retry completed", false);
+        status.failed_processes = self.apply_failures.count + failures.count;
+        status.last_error = failures
+            .last_error
+            .or_else(|| self.apply_failures.last_error.clone());
+        if status.enabled {
+            let adjusted_apps = controller.policy_managed_process_names();
+            status.adjusted_processes = adjusted_apps.len();
+            status.adjusted_apps = unique_app_names(adjusted_apps.iter().map(String::as_str));
+        }
+        status
+    }
+
+    fn record_policy_release(
         &mut self,
         summary: IoPriorityReleaseSummary,
         action_log: &mut ActionLog,
         reason: &str,
     ) -> IoPriorityFailures {
-        let mut failures = IoPriorityFailures::default();
-        for failure in summary.failures {
+        for failure in &summary.failures {
             self.failure_suppression
                 .record_process_failure(&failure.executable_path);
+        }
+        Self::record_release_summary(summary, action_log, reason, true)
+    }
+
+    fn record_release_summary(
+        summary: IoPriorityReleaseSummary,
+        action_log: &mut ActionLog,
+        reason: &str,
+        log_failures: bool,
+    ) -> IoPriorityFailures {
+        let mut failures = IoPriorityFailures::default();
+        for failure in summary.failures {
             failures.record(
                 "Restore",
                 failure.process_id,
                 &failure.process_name,
                 failure.error,
-                action_log,
+                log_failures.then_some(&mut *action_log),
             );
         }
         if summary.restored_processes > 0 {
@@ -447,20 +489,22 @@ impl IoPriorityFailures {
         process_id: u32,
         process_name: &str,
         error: ProcessControlError,
-        action_log: &mut ActionLog,
+        action_log: Option<&mut ActionLog>,
     ) {
         let message = error.to_string();
         if self.last_error.is_none() {
             self.last_error = Some(format!("{action} {process_name} ({process_id}): {message}"));
         }
         self.count += 1;
-        action_log.record(
-            ActionLogFeature::IoPriority,
-            Some(process_id),
-            process_name.to_owned(),
-            ActionLogResult::Failed,
-            message,
-        );
+        if let Some(action_log) = action_log {
+            action_log.record(
+                ActionLogFeature::IoPriority,
+                Some(process_id),
+                process_name.to_owned(),
+                ActionLogResult::Failed,
+                message,
+            );
+        }
     }
 }
 
