@@ -555,7 +555,7 @@ pub(super) fn pick_list<'a, T, L, V, M>(
     on_selected: impl Fn(T) -> M + 'a,
 ) -> super::select::Select<'a, T, M>
 where
-    T: ToString + PartialEq + Clone + 'a,
+    T: ToString + PartialEq + Clone + 'static,
     L: Into<Rc<[T]>> + 'a,
     V: std::borrow::Borrow<T> + 'a,
     M: Clone + 'a,
@@ -1636,6 +1636,7 @@ pub(super) fn plan<M: Clone + 'static>(
             )
         });
     pick_list(choices, Some(selected), move |choice| action(choice.0))
+        .same_option(|left, right| left.0 == right.0)
         .width(Fill)
         .into()
 }

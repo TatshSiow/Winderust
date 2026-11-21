@@ -16,23 +16,37 @@ type OptionColor<T> = fn(&T, &Theme) -> Option<iced::Color>;
 
 type Field<'a, T, M> = PickList<'a, T, Rc<[T]>, T, M>;
 
-struct State {
+struct State<T> {
     focus: super::keyboard_focus::Focus,
     chevron: iced_anim::Transition<f32>,
     keyboard: Option<usize>,
     keyboard_open: bool,
     open: bool,
+    shown: Option<Rc<[T]>>,
+    pressed: bool,
 }
 
-impl Default for State {
+impl<T> Default for State<T> {
     fn default() -> Self {
         Self {
             focus: super::keyboard_focus::Focus::default(),
             keyboard: None,
             keyboard_open: false,
             open: false,
+            shown: None,
+            pressed: false,
             chevron: super::motion::animation(false),
         }
+    }
+}
+
+impl<T> State<T> {
+    fn close(&mut self) {
+        self.keyboard = None;
+        self.keyboard_open = false;
+        self.open = false;
+        self.shown = None;
+        self.pressed = false;
     }
 }
 
@@ -40,6 +54,7 @@ pub(super) struct Select<'a, T: ToString + PartialEq + Clone, M> {
     field: Field<'a, T, M>,
     width: Length,
     options: Rc<[T]>,
+    same_option: fn(&T, &T) -> bool,
     option_color: Option<OptionColor<T>>,
     selected: Option<usize>,
     choose: Rc<dyn Fn(T) -> M + 'a>,
@@ -73,12 +88,18 @@ impl<'a, T: ToString + PartialEq + Clone + 'a, M: Clone + 'a> Select<'a, T, M> {
             field,
             width: Length::Shrink,
             options,
+            same_option: T::eq,
             option_color: None,
             selected: index,
             choose,
             menu: None,
         }
     }
+    pub(super) fn same_option(mut self, same_option: fn(&T, &T) -> bool) -> Self {
+        self.same_option = same_option;
+        self
+    }
+
     pub(super) fn option_color(mut self, color: OptionColor<T>) -> Self {
         let selected = self.selected.map(|index| self.options[index].clone());
         self.option_color = Some(color);
@@ -161,17 +182,17 @@ impl<'a, T: ToString + PartialEq + Clone + 'a, M: Clone + 'a> Select<'a, T, M> {
     }
 }
 
-impl<'a, T: ToString + PartialEq + Clone + 'a, M: Clone + 'a> Widget<M, Theme, Renderer>
+impl<'a, T: ToString + PartialEq + Clone + 'static, M: Clone + 'a> Widget<M, Theme, Renderer>
     for Select<'a, T, M>
 {
     fn size(&self) -> Size<Length> {
         self.field.size()
     }
     fn tag(&self) -> tree::Tag {
-        tree::Tag::of::<State>()
+        tree::Tag::of::<State<T>>()
     }
     fn state(&self) -> tree::State {
-        tree::State::new(State::default())
+        tree::State::new(State::<T>::default())
     }
     fn children(&self) -> Vec<Tree> {
         vec![
@@ -180,6 +201,35 @@ impl<'a, T: ToString + PartialEq + Clone + 'a, M: Clone + 'a> Widget<M, Theme, R
         ]
     }
     fn diff(&self, tree: &mut Tree) {
+        let state = tree.state.downcast_mut::<State<T>>();
+        if let Some(shown) = state
+            .shown
+            .as_ref()
+            .filter(|shown| !Rc::ptr_eq(shown, &self.options))
+        {
+            let same_option = self.same_option;
+            if shown.len() != self.options.len()
+                || shown
+                    .iter()
+                    .zip(self.options.iter())
+                    .any(|(old, new)| !same_option(old, new))
+            {
+                let keyboard = state.keyboard;
+                state.keyboard = keyboard
+                    .and_then(|index| shown.get(index))
+                    .and_then(|old| self.options.iter().position(|new| same_option(old, new)));
+                if self.options.is_empty() || keyboard.is_some() && state.keyboard.is_none() {
+                    state.close();
+                    tree.children[0] = Tree::new(&self.field as &dyn Widget<M, Theme, Renderer>);
+                    return;
+                }
+                // Iced buttons keep a press by row position until the release arrives.
+                if std::mem::take(&mut state.pressed) {
+                    tree.children[1] = Tree::empty();
+                }
+            }
+            state.shown = Some(Rc::clone(&self.options));
+        }
         tree.children[0].diff(&self.field as &dyn Widget<M, Theme, Renderer>);
     }
     fn layout(
@@ -235,7 +285,7 @@ impl<'a, T: ToString + PartialEq + Clone + 'a, M: Clone + 'a> Widget<M, Theme, R
         );
         use iced::advanced::svg::Renderer as _;
         let size = design::ICON_SIZE as f32;
-        let state = tree.state.downcast_ref::<State>();
+        let state = tree.state.downcast_ref::<State<T>>();
         let icon = super::assets::chevron_frame(*state.chevron.value());
         renderer.draw_svg(
             iced::advanced::svg::Svg::new(icon).color(widgets::muted_color(theme)),
@@ -262,7 +312,7 @@ impl<'a, T: ToString + PartialEq + Clone + 'a, M: Clone + 'a> Widget<M, Theme, R
             operation.focusable(
                 None,
                 layout.bounds(),
-                &mut tree.state.downcast_mut::<State>().focus,
+                &mut tree.state.downcast_mut::<State<T>>().focus,
             );
         }
         self.field
@@ -279,7 +329,7 @@ impl<'a, T: ToString + PartialEq + Clone + 'a, M: Clone + 'a> Widget<M, Theme, R
         shell: &mut Shell<'_, M>,
         viewport: &Rectangle,
     ) {
-        let state = tree.state.downcast_mut::<State>();
+        let state = tree.state.downcast_mut::<State<T>>();
         state.focus.clear_on_pointer(event, shell);
         if !self.options.is_empty() && state.focus.activate(event, shell) {
             state.keyboard_open = true;
@@ -307,8 +357,11 @@ impl<'a, T: ToString + PartialEq + Clone + 'a, M: Clone + 'a> Widget<M, Theme, R
                 Vector::ZERO,
             )
             .is_some();
-        let state = tree.state.downcast_mut::<State>();
+        let state = tree.state.downcast_mut::<State<T>>();
         let open = open || state.keyboard_open;
+        if open && state.shown.is_none() {
+            state.shown = Some(Rc::clone(&self.options));
+        }
         if let Event::Window(iced::window::Event::RedrawRequested(now)) = event {
             state.chevron.tick(*now);
         }
@@ -350,35 +403,30 @@ impl<'a, T: ToString + PartialEq + Clone + 'a, M: Clone + 'a> Widget<M, Theme, R
                 translation,
             )
             .is_some();
-        if !native_open && !tree.state.downcast_ref::<State>().keyboard_open {
-            let state = tree.state.downcast_mut::<State>();
-            state.keyboard = None;
-            state.open = false;
+        let state = tree.state.downcast_mut::<State<T>>();
+        if !native_open && !state.keyboard_open {
+            state.close();
             self.menu = None;
             return None;
         }
-        let state = tree.state.downcast_mut::<State>();
         let reveal = !state.open;
         if reveal {
             tree.children[1] = Tree::empty();
         }
-        let state = tree.state.downcast_mut::<State>();
         state.open = true;
-        let keyboard = tree.state.downcast_ref::<State>().keyboard;
+        let keyboard = state.keyboard;
         if self.menu.as_ref().is_none_or(|(old, _)| *old != keyboard) {
             self.menu = Some((keyboard, self.menu(keyboard)));
         }
         let (_, content) = self.menu.as_mut()?;
         let (field_tree, menu_tree) = tree.children.split_at_mut(1);
         menu_tree[0].diff(&*content);
-        let state = tree.state.downcast_mut::<State>();
         Some(overlay::Element::new(Box::new(Menu {
             field: &self.field,
             field_tree: &mut field_tree[0],
             tree: &mut menu_tree[0],
             content,
-            keyboard: &mut state.keyboard,
-            keyboard_open: &mut state.keyboard_open,
+            state,
             selected: self.selected,
             options: &self.options,
             choose: &*self.choose,
@@ -387,7 +435,7 @@ impl<'a, T: ToString + PartialEq + Clone + 'a, M: Clone + 'a> Widget<M, Theme, R
         })))
     }
 }
-impl<'a, T: ToString + PartialEq + Clone + 'a, M: Clone + 'a> From<Select<'a, T, M>>
+impl<'a, T: ToString + PartialEq + Clone + 'static, M: Clone + 'a> From<Select<'a, T, M>>
     for Element<'a, M>
 {
     fn from(select: Select<'a, T, M>) -> Self {
@@ -400,8 +448,7 @@ struct Menu<'a, 'b, T: ToString + PartialEq + Clone, M> {
     field_tree: &'b mut Tree,
     tree: &'b mut Tree,
     content: &'b mut Element<'a, usize>,
-    keyboard: &'b mut Option<usize>,
-    keyboard_open: &'b mut bool,
+    state: &'b mut State<T>,
     selected: Option<usize>,
     options: &'b [T],
     choose: &'b (dyn Fn(T) -> M + 'a),
@@ -411,8 +458,7 @@ struct Menu<'a, 'b, T: ToString + PartialEq + Clone, M> {
 impl<'a, T: ToString + PartialEq + Clone + 'a, M: Clone + 'a> Menu<'a, '_, T, M> {
     fn close(&mut self, shell: &mut Shell<'_, M>) {
         *self.field_tree = Tree::new(self.field as &dyn Widget<M, Theme, Renderer>);
-        *self.keyboard = None;
-        *self.keyboard_open = false;
+        self.state.close();
         shell.invalidate_layout();
         shell.request_redraw();
     }
@@ -506,7 +552,7 @@ impl<'a, T: ToString + PartialEq + Clone + 'a, M: Clone + 'a>
             }
         }
         if matches!(event, Event::Mouse(mouse::Event::CursorMoved { .. }))
-            && self.keyboard.take().is_some()
+            && self.state.keyboard.take().is_some()
         {
             shell.invalidate_layout();
             shell.request_redraw();
@@ -538,7 +584,7 @@ impl<'a, T: ToString + PartialEq + Clone + 'a, M: Clone + 'a>
                 Named::ArrowUp | Named::ArrowDown | Named::Home | Named::End
                     if !self.options.is_empty() =>
                 {
-                    let current = self.keyboard.or(self.selected);
+                    let current = self.state.keyboard.or(self.selected);
                     let next = if *key == Named::Home {
                         0
                     } else if *key == Named::End {
@@ -548,7 +594,7 @@ impl<'a, T: ToString + PartialEq + Clone + 'a, M: Clone + 'a>
                     } else {
                         current.map_or(self.options.len() - 1, |i| i.saturating_sub(1))
                     };
-                    *self.keyboard = Some(next);
+                    self.state.keyboard = Some(next);
                     let mut operation = iced::advanced::widget::operation::scrollable::scroll_to(
                         iced::advanced::widget::Id::new("select-options"),
                         iced::widget::scrollable::AbsoluteOffset {
@@ -570,6 +616,7 @@ impl<'a, T: ToString + PartialEq + Clone + 'a, M: Clone + 'a>
                 Named::Enter | Named::Space => {
                     if !*repeat {
                         if let Some(option) = self
+                            .state
                             .keyboard
                             .or(self.selected)
                             .and_then(|i| self.options.get(i))
@@ -596,6 +643,19 @@ impl<'a, T: ToString + PartialEq + Clone + 'a, M: Clone + 'a>
             &mut local,
             &layout.bounds(),
         );
+        match event {
+            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
+            | Event::Touch(iced::touch::Event::FingerPressed { .. })
+                if local.is_event_captured() =>
+            {
+                self.state.pressed = true;
+            }
+            Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left))
+            | Event::Touch(
+                iced::touch::Event::FingerLifted { .. } | iced::touch::Event::FingerLost { .. },
+            ) => self.state.pressed = false,
+            _ => {}
+        }
         let chosen = !local.is_empty();
         shell.merge(local, |index| (self.choose)(self.options[index].clone()));
         if chosen {
@@ -854,18 +914,27 @@ mod tests {
     }
 
     #[test]
-    fn rebuilding_an_open_select_preserves_its_menu_state() {
-        let make = || Select::new((0..30).collect::<Vec<_>>(), Some(0), |value| value);
-        let select = make();
+    fn rebuilding_an_open_select_tracks_the_highlighted_value() {
+        let make = |options: Vec<i32>| Select::new(options, Some(0), |value| value);
+        let select = make((0..30).collect());
         let mut tree = Tree::new(&select as &dyn Widget<i32, Theme, Renderer>);
-        let state = tree.state.downcast_mut::<State>();
+        let state = tree.state.downcast_mut::<State<i32>>();
         state.open = true;
         state.keyboard = Some(20);
-        let rebuilt = make();
+        state.shown = Some(Rc::clone(&select.options));
+        let rebuilt = make((0..30).collect());
         tree.diff(&rebuilt as &dyn Widget<i32, Theme, Renderer>);
-        assert!(tree.state.downcast_ref::<State>().open);
-        assert_eq!(tree.state.downcast_ref::<State>().keyboard, Some(20));
-        assert!(rebuilt.menu.is_none());
+        assert_eq!(tree.state.downcast_ref::<State<i32>>().keyboard, Some(20));
+        let shifted = make((1..30).collect());
+        tree.diff(&shifted as &dyn Widget<i32, Theme, Renderer>);
+        let state = tree.state.downcast_ref::<State<i32>>();
+        assert!(state.open);
+        assert_eq!(state.keyboard, Some(19));
+        let removed = make((1..30).filter(|value| *value != 20).collect());
+        tree.diff(&removed as &dyn Widget<i32, Theme, Renderer>);
+        let state = tree.state.downcast_ref::<State<i32>>();
+        assert!(!state.open);
+        assert_eq!(state.keyboard, None);
     }
 
     #[test]
@@ -877,15 +946,13 @@ mod tests {
         let mut field_tree = Tree::new(&select.field as &dyn Widget<&str, Theme, Renderer>);
         let mut content = select.menu(None);
         let mut tree = Tree::new(&content);
-        let mut keyboard = None;
-        let mut keyboard_open = false;
+        let mut state = State::default();
         let mut menu = Menu {
             field: &select.field,
             field_tree: &mut field_tree,
             tree: &mut tree,
             content: &mut content,
-            keyboard: &mut keyboard,
-            keyboard_open: &mut keyboard_open,
+            state: &mut state,
             selected: select.selected,
             options: &select.options,
             choose: &*select.choose,
@@ -950,7 +1017,7 @@ mod tests {
             );
         }
         assert_eq!(messages, vec!["Light"]);
-        assert_eq!(*menu.keyboard, None);
+        assert_eq!(menu.state.keyboard, None);
         messages.clear();
         menu.update(
             &Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
