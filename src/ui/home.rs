@@ -274,6 +274,16 @@ impl Model {
         status: &'a RuntimeStatusSnapshot,
     ) -> Element<'a, Message> {
         responsive(move |size| {
+            let now = Instant::now();
+            let latest_at = self.latest.captured_at.map(|stamp| stamp.instant);
+            let overdue =
+                latest_at.is_some_and(|at| now.saturating_duration_since(at) > MAX_SAMPLE_GAP);
+            let chart_end = if overdue { Some(now) } else { latest_at };
+            let displayed_sample = if overdue {
+                Sample::default()
+            } else {
+                self.latest
+            };
             let layout = DashboardLayout::for_size(iced::Size::new(
                 (size.width - super::scrolling::SCROLLBAR_GUTTER).max(0.0),
                 size.height,
@@ -289,8 +299,12 @@ impl Model {
             {
                 let mut charts = row![].spacing(super::widgets::CARD_GAP);
                 for kind in kinds {
-                    charts =
-                        charts.push(self.chart_card(*kind, self.chart(*kind), layout.chart_height));
+                    charts = charts.push(self.chart_card(
+                        *kind,
+                        self.chart_at(*kind, chart_end),
+                        layout.chart_height,
+                        displayed_sample,
+                    ));
                 }
                 body = body.push(charts);
             }
@@ -301,14 +315,14 @@ impl Model {
                         PowerSourceProfile::OnBattery => settings.battery_profile(),
                     };
                     let activity = if settings.general.enabled {
-                        status.by_activity_state(source, &profile.by_activity, Instant::now())
+                        status.by_activity_state(source, &profile.by_activity, now)
                     } else {
                         ActivityState::Unknown
                     };
                     Some(enabled_features(
                         profile,
                         &status.feature_status,
-                        &self.latest,
+                        &displayed_sample,
                         activity,
                     ))
                 }
@@ -425,8 +439,13 @@ impl Model {
         })
         .into()
     }
-    fn chart_card(&self, kind: ChartKind, chart: Chart, height: f32) -> Element<'static, Message> {
-        let sample = self.latest;
+    fn chart_card(
+        &self,
+        kind: ChartKind,
+        chart: Chart,
+        height: f32,
+        sample: Sample,
+    ) -> Element<'static, Message> {
         let (title, first, second, first_value, second_value) = match kind {
             ChartKind::Cpu => (
                 t!("home.by_cpu_load"),
@@ -578,11 +597,23 @@ impl Model {
         self.history.get(slot.checked_sub(first_slot)?)
     }
 
+    #[cfg(test)]
     fn chart(&self, kind: ChartKind) -> Chart {
+        self.chart_at(kind, self.latest.captured_at.map(|stamp| stamp.instant))
+    }
+
+    fn chart_at(&self, kind: ChartKind, end: Option<Instant>) -> Chart {
+        let earliest = end.and_then(|at| at.checked_sub(HISTORY_WINDOW));
+        let in_window = |sample: &Sample| {
+            sample
+                .captured_at
+                .is_none_or(|stamp| earliest.is_none_or(|start| stamp.instant >= start))
+        };
         let (base, peak) = if kind == ChartKind::Cpu {
             let frequencies = || {
                 self.history
                     .iter()
+                    .filter(|sample| in_window(sample))
                     .filter_map(|sample| sample.cpu.frequency_mhz)
             };
             let base = self
@@ -596,10 +627,11 @@ impl Model {
             (0, None)
         };
         let samples: [Option<ChartSample>; HISTORY_LEN] = std::array::from_fn(|index| {
-            let sample = self.history_sample(index)?;
-            let seconds_ago = match (self.latest.captured_at, sample.captured_at) {
+            let sample = self
+                .history_sample(index)
+                .filter(|sample| in_window(sample))?;
+            let seconds_ago = match (end, sample.captured_at) {
                 (Some(now), Some(captured_at)) => now
-                    .instant
                     .checked_duration_since(captured_at.instant)?
                     .as_secs_f64(),
                 _ => (HISTORY_LEN - index - 1) as f64,
@@ -1823,7 +1855,7 @@ mod tests {
             );
             let slot = (fraction * (HISTORY_LEN - 1) as f32).round() as usize;
             model.hover_chart(kind, Some(slot));
-            let mut view = model.chart_card(kind, model.chart(kind), height);
+            let mut view = model.chart_card(kind, model.chart(kind), height, model.latest);
             let mut renderer = Renderer::new(design::typography::FONT, iced::Pixels(14.0));
             let viewport = Rectangle::with_size(iced::Size::new(640.0, 280.0));
             let mut tree = Tree::new(&view);
@@ -2001,6 +2033,14 @@ mod tests {
             );
             assert!(model.chart(kind).sample_at(HISTORY_LEN - 1).is_none());
         }
+
+        let overdue = model.chart_at(ChartKind::Cpu, at(12).map(|stamp| stamp.instant));
+        assert_eq!(
+            overdue.sample_at(HISTORY_LEN - 2).unwrap().seconds_ago,
+            12.0
+        );
+        let expired = model.chart_at(ChartKind::Cpu, at(600).map(|stamp| stamp.instant));
+        assert!((0..HISTORY_LEN).all(|slot| expired.sample_at(slot).is_none()));
 
         model.record(Sample {
             captured_at: at(600),
