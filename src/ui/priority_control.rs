@@ -64,6 +64,20 @@ impl Value {
             _ => None,
         }
     }
+
+    pub(super) fn set_rule(self, rule: &mut ProcessExclusionRule, tier: Tier) {
+        let (focus, visible) = tier.flags();
+        match self {
+            Self::Process(value) => rule.set_process_priority_override(focus, visible, value),
+            Self::Thread(value) => rule.set_thread_priority_override(focus, visible, value),
+            Self::Io(value) => rule.set_io_priority_override(focus, visible, value),
+            Self::Gpu(value) => rule.set_gpu_priority_override(focus, visible, value),
+            Self::Memory(value) => rule.set_memory_priority_override(focus, visible, value),
+            Self::DynamicBoost(value) => {
+                rule.set_dynamic_priority_boost_override(focus, visible, value)
+            }
+        }
+    }
 }
 #[derive(Debug, Clone)]
 pub(super) enum Message {
@@ -333,23 +347,7 @@ impl Editor {
                     return;
                 }
                 if let Some(rule) = kind.rules_mut(settings).get_mut(index) {
-                    let (focus, visible) = tier.flags();
-                    match value {
-                        Value::Process(value) => {
-                            rule.set_process_priority_override(focus, visible, value)
-                        }
-                        Value::Thread(value) => {
-                            rule.set_thread_priority_override(focus, visible, value)
-                        }
-                        Value::Io(value) => rule.set_io_priority_override(focus, visible, value),
-                        Value::Gpu(value) => rule.set_gpu_priority_override(focus, visible, value),
-                        Value::Memory(value) => {
-                            rule.set_memory_priority_override(focus, visible, value)
-                        }
-                        Value::DynamicBoost(value) => {
-                            rule.set_dynamic_priority_boost_override(focus, visible, value)
-                        }
-                    }
+                    value.set_rule(rule, tier);
                 }
             }
             Message::Default(tier, value) => {

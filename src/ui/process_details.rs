@@ -1,5 +1,5 @@
 use super::super::design;
-use super::super::priority_control::{self, Kind, Tier, Value};
+use super::super::priority_control::{Kind, Tier, Value};
 use super::super::widgets::{self, action_button, pick_list, setting_row, settings_card, switch};
 use super::super::{cpu_allocation, cpu_limiter};
 use super::PlanCatalog;
@@ -60,23 +60,25 @@ pub(super) fn update(s: &mut SettingsEditor, path: &str, m: Message) -> Option<S
             {
                 return None;
             }
-            let rules = kind.rules_mut(s);
-            let i = rules
+            let existing = kind
+                .rules(s)
                 .iter()
-                .position(|r| process_setting_matches(&r.executable_path, &path))
-                .unwrap_or_else(|| {
-                    rules.push(ProcessExclusionRule {
-                        executable_path: path.clone(),
-                        ..Default::default()
-                    });
-                    rules.len() - 1
-                });
-            rules[i].enabled = true;
-            priority_control::Editor::default().update(
-                s,
-                kind,
-                priority_control::Message::RuleValue(i, tier, value),
+                .enumerate()
+                .find(|(_, rule)| process_setting_matches(&rule.executable_path, &path));
+            let mut rule = existing.map_or_else(
+                || ProcessExclusionRule {
+                    executable_path: path,
+                    ..Default::default()
+                },
+                |(_, rule)| rule.clone(),
             );
+            rule.enabled = true;
+            value.set_rule(&mut rule, tier);
+            match existing {
+                Some((index, original)) if rule != *original => kind.rules_mut(s)[index] = rule,
+                None => kind.rules_mut(s).push(rule),
+                Some(_) => {}
+            }
         }
         Message::ResetPriority(kind) => {
             let matches_path =
@@ -637,6 +639,23 @@ mod tests {
         let _ = update(&mut s, path, Message::ResetPriority(Kind::Process));
         assert!(Kind::Process.rules(&s).is_empty());
     }
+
+    #[test]
+    fn selecting_stored_priority_preserves_battery_inheritance() {
+        let mut s = SettingsEditor::with_settings(Settings::default());
+        let path = r"C:\App\app.exe";
+        let message = Message::Priority(
+            Kind::Process,
+            Tier::Focus,
+            Value::Process(ProcessPrioritySetting::AboveNormal),
+        );
+        let _ = update(&mut s, path, message.clone());
+
+        s.select_power_source(PowerSourceProfile::OnBattery);
+        let _ = update(&mut s, path, message);
+        assert!(s.global().on_battery.is_none());
+    }
+
     #[test]
     fn cpu_rule_cannot_join_both_owners() {
         let mut s = Settings::default();
