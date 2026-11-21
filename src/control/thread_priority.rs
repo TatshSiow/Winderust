@@ -800,16 +800,6 @@ impl<P: ThreadPriorityPlatform> ThreadPriorityController<P> {
         }
     }
 
-    pub(crate) fn policy_managed_process_names(&self) -> Vec<String> {
-        self.managed
-            .iter()
-            .filter(|(_, managed)| managed.owner.is_automatic())
-            .map(|(identity, _)| identity.process.name.clone())
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .collect()
-    }
-
     pub(crate) fn policy_managed_process_count(&self) -> usize {
         self.managed
             .iter()
