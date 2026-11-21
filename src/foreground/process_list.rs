@@ -948,15 +948,6 @@ pub fn process_failure_key(process_identity: &str) -> String {
     executable_path_key(Path::new(process_identity))
 }
 
-pub fn unique_app_names<'a>(names: impl Iterator<Item = &'a str>) -> Vec<String> {
-    names
-        .map(|name| name.trim().to_ascii_lowercase())
-        .filter(|name| !name.is_empty())
-        .collect::<std::collections::BTreeSet<_>>()
-        .into_iter()
-        .collect()
-}
-
 pub fn process_count_label(count: usize) -> String {
     if count == 1 {
         "1 process".to_owned()

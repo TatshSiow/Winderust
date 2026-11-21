@@ -33,7 +33,7 @@ use crate::{
     cpu_topology::{CpuSelection, CpuTopology},
     foreground::{
         contains_process_name, process_count_label, process_executable_path, process_failure_key,
-        process_session_id, same_executable_path, same_process_name, unique_app_names, ProcessInfo,
+        process_session_id, same_executable_path, same_process_name, ProcessInfo,
         ProtectedProcesses, EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS,
     },
     memory_priority::{MemoryPriorityManager, MemoryPriorityTarget},
@@ -69,7 +69,6 @@ pub struct AdaptiveEngineProcessSnapshot {
     pub foreground_cpu_usage_tenths: Option<u16>,
     pub skipped_processes: usize,
     pub failed_processes: usize,
-    pub adjusted_apps: Vec<String>,
     pub auto_excluded_processes: Vec<String>,
     pub last_error: Option<String>,
 }
@@ -1348,12 +1347,6 @@ impl AdaptiveEngineProcessManager {
             foreground_cpu_usage_tenths,
             skipped_processes,
             failed_processes: failures.count,
-            adjusted_apps: unique_app_names(
-                priority_efficiency_controller
-                    .policy_managed_process_names(ControlOwner::AdaptiveEngine)
-                    .iter()
-                    .map(String::as_str),
-            ),
             auto_excluded_processes: auto_excluded_processes.into_iter().collect(),
             last_error: failures.last_error,
         }
