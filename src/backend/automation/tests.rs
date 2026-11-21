@@ -2679,6 +2679,7 @@ fn callbacks_deliver_events_for_either_profile_without_polling() {
         profile.by_time.enabled = true;
         profile.by_time.rules.push(crate::config::ByTimeRule {
             enabled: true,
+            days: vec![WeekdaySetting::Mon],
             power_plan_guid: Some("time-plan".into()),
             ..Default::default()
         });

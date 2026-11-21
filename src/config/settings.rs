@@ -405,6 +405,14 @@ pub struct ByTimeRule {
     pub power_plan_guid: Option<String>,
 }
 
+impl ByTimeRule {
+    pub(crate) fn configured_plan(&self) -> Option<&str> {
+        self.power_plan_guid
+            .as_deref()
+            .filter(|_| self.enabled && !self.days.is_empty() && self.start_time != self.end_time)
+    }
+}
+
 impl Default for ByTimeRule {
     fn default() -> Self {
         Self {

@@ -33,11 +33,11 @@ where
         .iter()
         .enumerate()
         .find_map(|(rule_index, rule)| {
-            let power_plan_guid = rule.power_plan_guid.as_ref()?;
-            rule_applies(rule, now).then(|| ByTimeDecision {
+            let power_plan_guid = matching_plan(rule, now)?;
+            Some(ByTimeDecision {
                 rule_index,
                 rule_name: rule.name.clone(),
-                power_plan_guid: power_plan_guid.clone(),
+                power_plan_guid: power_plan_guid.to_owned(),
             })
         })
 }
@@ -51,24 +51,22 @@ pub(crate) fn next_change_delay(
         .map(|delay| delay.max(MIN_BY_TIME_DELAY))
 }
 
-fn rule_applies<Tz: TimeZone>(rule: &ByTimeRule, now: DateTime<Tz>) -> bool {
-    if !rule.enabled || rule.power_plan_guid.is_none() {
-        return false;
-    }
-
+fn matching_plan<Tz: TimeZone>(rule: &ByTimeRule, now: DateTime<Tz>) -> Option<&str> {
+    let plan = rule.configured_plan()?;
     let start = rule.start_time.as_naive_time();
     let end = rule.end_time.as_naive_time();
 
     let today = WeekdaySetting::from_chrono(now.weekday());
     let now_time = now.time();
 
-    if start <= end {
+    let matches = if start < end {
         rule.days.contains(&today) && now_time >= start && now_time < end
     } else {
         let yesterday = WeekdaySetting::from_chrono(now.weekday().pred());
         (rule.days.contains(&today) && now_time >= start)
             || (rule.days.contains(&yesterday) && now_time < end)
-    }
+    };
+    matches.then_some(plan)
 }
 
 fn next_change_at(settings: &ByTimeSettings, now: DateTime<Local>) -> Option<DateTime<Local>> {
@@ -78,9 +76,11 @@ fn next_change_at(settings: &ByTimeSettings, now: DateTime<Local>) -> Option<Dat
 
     let mut next = None;
     for rule in &settings.rules {
-        let Some((start, end)) = enabled_rule_times(rule) else {
+        if rule.configured_plan().is_none() {
             continue;
-        };
+        }
+        let start = rule.start_time.as_naive_time();
+        let end = rule.end_time.as_naive_time();
 
         for day_offset in -1..=BY_TIME_LOOKAHEAD_DAYS {
             let Some(start_date) = now
@@ -97,7 +97,7 @@ fn next_change_at(settings: &ByTimeSettings, now: DateTime<Local>) -> Option<Dat
             }
 
             update_next_datetime(&mut next, local_datetime_after(start_date, start, now), now);
-            let end_date = if start <= end {
+            let end_date = if start < end {
                 start_date
             } else if let Some(date) = start_date.checked_add_signed(ChronoDuration::days(1)) {
                 date
@@ -108,13 +108,6 @@ fn next_change_at(settings: &ByTimeSettings, now: DateTime<Local>) -> Option<Dat
         }
     }
     next
-}
-
-fn enabled_rule_times(rule: &ByTimeRule) -> Option<(NaiveTime, NaiveTime)> {
-    (rule.enabled && rule.power_plan_guid.is_some()).then_some((
-        rule.start_time.as_naive_time(),
-        rule.end_time.as_naive_time(),
-    ))
 }
 
 fn update_next_datetime(
@@ -264,7 +257,7 @@ mod tests {
         };
         let now = Local.with_ymd_and_hms(2026, 5, 30, 2, 0, 0).unwrap();
 
-        assert!(rule_applies(&rule, now));
+        assert!(matching_plan(&rule, now).is_some());
     }
 
     #[test]
@@ -279,7 +272,7 @@ mod tests {
         };
         let now = Local.with_ymd_and_hms(2026, 5, 30, 2, 0, 0).unwrap();
 
-        assert!(!rule_applies(&rule, now));
+        assert!(matching_plan(&rule, now).is_none());
     }
 
     #[test]
@@ -298,7 +291,7 @@ mod tests {
         };
         let now = Local.with_ymd_and_hms(2026, 5, 29, 12, 0, 0).unwrap();
 
-        assert!(!rule_applies(&rule, now));
+        assert!(matching_plan(&rule, now).is_none());
         assert!(next_change_at(&settings, now).is_none());
     }
     #[test]

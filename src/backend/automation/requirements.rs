@@ -538,7 +538,7 @@ pub(super) fn by_time_rules_required(settings: &Settings) -> bool {
             .by_time
             .rules
             .iter()
-            .any(|rule| rule.enabled && rule.power_plan_guid.is_some())
+            .any(|rule| rule.configured_plan().is_some())
 }
 
 pub(super) fn cpu_usage_required(settings: &Settings) -> bool {
