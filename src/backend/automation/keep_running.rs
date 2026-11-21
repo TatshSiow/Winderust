@@ -170,8 +170,11 @@ struct InFlight<L> {
 
 pub(super) type KeepRunningCoordinator = Coordinator<Windows>;
 
-fn lexical_key(path: &str) -> String {
-    crate::foreground::executable_path_key(std::path::Path::new(path)).to_ascii_lowercase()
+fn lexical_path_bytes(path: &str) -> impl Iterator<Item = u8> + '_ {
+    path.trim().bytes().map(|byte| match byte {
+        b'/' => std::path::MAIN_SEPARATOR as u8,
+        _ => byte.to_ascii_lowercase(),
+    })
 }
 
 pub(super) struct Coordinator<P: Platform> {
@@ -197,7 +200,8 @@ impl<P: Platform> Coordinator<P> {
         }
         for rule in &settings.rules {
             let index = self.owners.iter().position(|owner| {
-                lexical_key(&owner.rule.executable_path) == lexical_key(&rule.executable_path)
+                lexical_path_bytes(&owner.rule.executable_path)
+                    .eq(lexical_path_bytes(&rule.executable_path))
             });
             let owner = if let Some(index) = index {
                 &mut self.owners[index]
