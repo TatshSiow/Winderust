@@ -1819,9 +1819,22 @@ impl RuntimeCore {
             .refresh_active_plan_if_due(Instant::now())
         {
             self.by_cpu_load_scheduler.reset();
-            if let Some(feature) = self
-                .power_plan_controller
-                .status()
+            let status = self.power_plan_controller.status();
+            if self
+                .power_plan_rule_context
+                .as_ref()
+                .is_some_and(|context| {
+                    !Arc::ptr_eq(&context.settings, configured_settings)
+                        && !indexed_power_plan_rule_matches(
+                            &status,
+                            active_power_source_settings(&context.settings, plugged_in),
+                            settings,
+                        )
+                })
+            {
+                self.power_plan_rule_context = None;
+            }
+            if let Some(feature) = status
                 .decision_state
                 .and_then(power_plan_action_log_feature)
             {
@@ -2000,7 +2013,7 @@ impl RuntimeCore {
         {
             self.power_plan_rule_context = None;
         } else if self.power_plan_rule_context.is_none() {
-            // An interrupted check after a source change has no current indexed rule.
+            // An interrupted check left no rule from the current policy.
             return (
                 PowerPlanStatus {
                     current_guid: status.current_guid,
@@ -2015,6 +2028,33 @@ impl RuntimeCore {
 
     pub(super) fn clear_ordinary_power_plan_decision(&mut self) {
         self.power_plan_controller.clear_ordinary_decision();
+    }
+}
+
+fn indexed_power_plan_rule_matches(
+    status: &PowerPlanStatus,
+    previous: &Settings,
+    current: &Settings,
+) -> bool {
+    let Some(index) = status.rule_index else {
+        return false;
+    };
+    macro_rules! same_rule {
+        ($feature:ident) => {
+            current.$feature.enabled
+                && current
+                    .$feature
+                    .rules
+                    .get(index)
+                    .is_some_and(|rule| previous.$feature.rules.get(index) == Some(rule))
+        };
+    }
+    match status.decision_state {
+        Some(DecisionState::ByFocus) => same_rule!(by_focus),
+        Some(DecisionState::ByRunningApp) => same_rule!(by_running_app),
+        Some(DecisionState::ByCpuLoad) => same_rule!(by_cpu_load),
+        Some(DecisionState::ByTime) => same_rule!(by_time),
+        _ => false,
     }
 }
 
@@ -2145,6 +2185,35 @@ mod settings_tests {
         let (_, context) = runner.power_plan_status();
         assert!(context.is_none());
         assert!(runner.power_plan_rule_context.is_none());
+    }
+
+    #[test]
+    fn saved_power_plan_rules_preserve_only_the_matching_index() {
+        let mut previous = Settings::default();
+        previous.by_time.enabled = true;
+        previous.by_time.rules.push(crate::config::ByTimeRule {
+            power_plan_guid: Some("original".to_owned()),
+            ..Default::default()
+        });
+        let status = PowerPlanStatus {
+            decision_state: Some(DecisionState::ByTime),
+            rule_index: Some(1),
+            ..Default::default()
+        };
+        let mut current = previous.clone();
+        current.by_time.rules[0].enabled = false;
+        assert!(indexed_power_plan_rule_matches(
+            &status, &previous, &current
+        ));
+        current.by_time.rules[1].power_plan_guid = Some("replacement".to_owned());
+        assert!(!indexed_power_plan_rule_matches(
+            &status, &previous, &current
+        ));
+        current.by_time.rules = previous.by_time.rules.clone();
+        current.by_time.rules.swap(0, 1);
+        assert!(!indexed_power_plan_rule_matches(
+            &status, &previous, &current
+        ));
     }
 
     #[test]
