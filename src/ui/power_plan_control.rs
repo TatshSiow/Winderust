@@ -43,10 +43,10 @@ pub(super) fn is_selectable(plans: &[PowerPlan], guid: &str) -> bool {
         .any(|plan| !plan.managed_adaptive && plan.guid.eq_ignore_ascii_case(guid))
 }
 
-#[derive(Debug)]
-pub(super) enum AfterSave {
-    Stay(Option<String>),
-    Exit,
+#[derive(Debug, Default)]
+pub(super) struct AfterSave {
+    pub(super) exit: bool,
+    pub(super) warning: Option<String>,
 }
 
 pub(super) fn view(
@@ -460,7 +460,7 @@ mod tests {
     fn a_fresh_catalog_clears_an_unavailable_draft_after_the_switch_finishes() {
         let mut editor = Editor {
             selected_guid: Some("Balanced".into()),
-            pending: Some(AfterSave::Stay(None)),
+            pending: Some(AfterSave::default()),
         };
         assert!(!editor.discard_unavailable_plan(&[]));
         editor.pending = None;

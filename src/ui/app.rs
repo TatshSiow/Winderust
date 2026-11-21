@@ -1132,11 +1132,10 @@ impl WinderustApp {
             #[cfg(feature = "render-smoke")]
             Message::SmokeScreenshot(screenshot) => return smoke::captured(self, screenshot),
             Message::DismissError => {
-                if let Some(power_plan_control::AfterSave::Stay(startup_warning)) =
-                    &mut self.power_plan_control.pending
-                {
-                    let _ =
-                        startup_warning.take_if(|warning| warning.as_str() == self.error_message);
+                if let Some(after_save) = &mut self.power_plan_control.pending {
+                    let _ = after_save
+                        .warning
+                        .take_if(|warning| warning.as_str() == self.error_message);
                 }
                 self.error_message.clear();
             }
@@ -1770,9 +1769,7 @@ impl WinderustApp {
                 match result {
                     Ok(()) => {
                         self.power_plan_control.selected_guid = None;
-                        if matches!(after_save, Some(power_plan_control::AfterSave::Exit))
-                            && self.closing
-                        {
+                        if after_save.is_some_and(|save| save.exit) && self.closing {
                             return self.shutdown();
                         }
                     }
@@ -1786,13 +1783,8 @@ impl WinderustApp {
                         ) {
                             self.power_plan_control.selected_guid = None;
                         }
-                        let startup_warning = match &after_save {
-                            Some(power_plan_control::AfterSave::Stay(warning)) => {
-                                warning.as_deref()
-                            }
-                            _ => None,
-                        };
-                        self.error_message = power_plan_switch_error(error, startup_warning);
+                        let warning = after_save.and_then(|save| save.warning);
+                        self.error_message = power_plan_switch_error(error, warning.as_deref());
                     }
                 }
                 self.power_plans_reload_pending |= self.power_plans_loading;
@@ -2231,7 +2223,7 @@ impl WinderustApp {
                 if self.power_plan_control.selected_guid.is_some()
                     && !self.pending_settings_changes() =>
             {
-                return self.finish_save(None);
+                return self.finish_save(self.closing, None);
             }
             Message::Save if self.pending_editor() => {
                 self.error_message = t!("unsaved.message").to_string();
@@ -2302,7 +2294,9 @@ impl WinderustApp {
                 if self.power_tuning.dirty {
                     self.power_tuning.refresh(&self.power_plans);
                 }
-                self.settings_replaced(previous_channel);
+                if let Some(error) = self.settings_replaced(previous_channel) {
+                    self.error_message = error;
+                }
                 self.closing = false;
             }
             Message::PausePowerPlans(value) => self.settings.edit_global(|settings| {
@@ -2319,7 +2313,7 @@ impl WinderustApp {
             }
             Message::Stay => {
                 if let Some(after_save) = &mut self.power_plan_control.pending {
-                    *after_save = power_plan_control::AfterSave::Stay(None);
+                    *after_save = power_plan_control::AfterSave::default();
                 }
                 self.closing = false;
                 self.exit_export_failed = false;
@@ -2357,11 +2351,16 @@ impl WinderustApp {
                             let previous_channel = self.settings.global().general.update_channel;
                             match self.settings.import_toml_from(&path) {
                                 Ok(outcome) => {
-                                    self.settings_replaced(previous_channel);
-                                    if let Some(error) = outcome.startup_registration_error() {
-                                        self.error_message =
+                                    let tray_warning = self.settings_replaced(previous_channel);
+                                    let startup_warning =
+                                        outcome.startup_registration_error().map(|error| {
                                             t!("settings.imported_startup_failed", error = error)
-                                                .to_string();
+                                                .into_owned()
+                                        });
+                                    if let Some(warning) =
+                                        combine_warnings(startup_warning, tray_warning)
+                                    {
+                                        self.error_message = warning;
                                     }
                                 }
                                 Err(error) => self.error_message = error.to_string(),
@@ -2413,35 +2412,40 @@ impl WinderustApp {
                 return Task::none();
             }
         };
-        let startup_error = outcome
+        let startup_warning = outcome
             .startup_registration_error()
             .map(|error| t!("settings.saved_startup_failed", error = error).into_owned());
-        if let Some(error) = &startup_error {
-            self.error_message.clone_from(error);
-        }
-        self.publish_settings();
+        let exit_after_save = self.closing && startup_warning.is_none();
+        let reported_saved = startup_warning.is_some();
+        let tray_warning = self.publish_settings_with_tray_warning();
+        let warning = combine_warnings(startup_warning, tray_warning);
         if self.power_tuning.dirty && !self.power_tuning.confirm_apply(&self.power_plans) {
             let status = self.power_tuning.status();
-            self.error_message = if let Some(error) = startup_error {
-                let tuning_error = t!("processor_power.apply_failed", error = status.as_ref());
-                format!("{error}\n{tuning_error}")
+            let tuning_error = if reported_saved {
+                t!("processor_power.apply_failed", error = status.as_ref()).into_owned()
             } else if settings_changed {
                 t!(
                     "processor_power.settings_saved_tuning_failed",
                     error = status.as_ref()
                 )
-                .to_string()
+                .into_owned()
             } else {
                 status.into_owned()
             };
+            self.error_message = match warning {
+                Some(warning) => format!("{warning}\n{tuning_error}"),
+                None => tuning_error,
+            };
             return Task::none();
         }
+        if let Some(warning) = &warning {
+            self.error_message.clone_from(warning);
+        }
         self.reset_editors();
-        self.finish_save(startup_error)
+        self.finish_save(exit_after_save, warning)
     }
 
-    fn finish_save(&mut self, startup_warning: Option<String>) -> Task<Message> {
-        let exit_after_save = self.closing && startup_warning.is_none();
+    fn finish_save(&mut self, exit_after_save: bool, warning: Option<String>) -> Task<Message> {
         let Some(guid) = self.power_plan_control.selected_guid.clone() else {
             return if exit_after_save {
                 self.shutdown()
@@ -2452,14 +2456,13 @@ impl WinderustApp {
         let receiver = match self.runtime.request_power_plan_switch(guid) {
             Ok(receiver) => receiver,
             Err(error) => {
-                self.error_message = power_plan_switch_error(error, startup_warning.as_deref());
+                self.error_message = power_plan_switch_error(error, warning.as_deref());
                 return Task::none();
             }
         };
-        self.power_plan_control.pending = Some(if exit_after_save {
-            power_plan_control::AfterSave::Exit
-        } else {
-            power_plan_control::AfterSave::Stay(startup_warning)
+        self.power_plan_control.pending = Some(power_plan_control::AfterSave {
+            exit: exit_after_save,
+            warning,
         });
         tasks::run(move || {
             receiver
@@ -2611,14 +2614,14 @@ impl WinderustApp {
         true
     }
 
-    fn settings_replaced(&mut self, previous_channel: UpdateChannel) {
+    fn settings_replaced(&mut self, previous_channel: UpdateChannel) -> Option<String> {
         self.reset_editors();
         let general = &self.settings.global().general;
         if general.update_channel != previous_channel {
             self.preferences.reset_update_check();
         }
         rust_i18n::set_locale(general.language.locale());
-        self.publish_settings();
+        self.publish_settings_with_tray_warning()
     }
 
     fn reset_editors(&mut self) {
@@ -2659,9 +2662,15 @@ impl WinderustApp {
     }
 
     fn publish_settings(&mut self) {
+        if let Some(error) = self.publish_settings_with_tray_warning() {
+            self.error_message = error;
+        }
+    }
+
+    fn publish_settings_with_tray_warning(&mut self) -> Option<String> {
         self.runtime
             .replace_settings(&self.settings.runtime_settings_snapshot());
-        self.sync_tray();
+        self.sync_tray_warning()
     }
 
     fn load_power_plans(&mut self) -> Task<Message> {
@@ -2682,6 +2691,12 @@ impl WinderustApp {
     }
 
     fn sync_tray(&mut self) {
+        if let Some(error) = self.sync_tray_warning() {
+            self.error_message = error;
+        }
+    }
+
+    fn sync_tray_warning(&mut self) -> Option<String> {
         let profile = if crate::backend::power_source::is_plugged_in() != Some(false) {
             PowerSourceProfile::PluggedIn
         } else {
@@ -2757,13 +2772,12 @@ impl WinderustApp {
                 } else {
                     tray::TrayIcon::install().map(|icon| self.tray = Some(icon))
                 };
-                if let Err(error) = result {
-                    if first_attempt {
-                        self.error_message = error;
-                    }
+                if first_attempt {
+                    return result.err();
                 }
             }
         }
+        None
     }
 
     fn exit_blocking_status(&self) -> Option<&'static str> {
@@ -3914,7 +3928,18 @@ fn page_needs_power_plans(page: Page, process_rulesets_open: bool) -> bool {
         || page.section_landing_page() == Page::PowerPlanControl
 }
 
-fn power_plan_switch_error(error: RuntimeCommandError, startup_warning: Option<&str>) -> String {
+fn combine_warnings(first: Option<String>, second: Option<String>) -> Option<String> {
+    match (first, second) {
+        (Some(mut first), Some(second)) => {
+            first.push('\n');
+            first.push_str(&second);
+            Some(first)
+        }
+        (first, second) => first.or(second),
+    }
+}
+
+fn power_plan_switch_error(error: RuntimeCommandError, warning: Option<&str>) -> String {
     let key = match error {
         RuntimeCommandError::PowerPlanUnavailable => "common.selected_plan_unavailable",
         RuntimeCommandError::PowerPlan(ManualPowerPlanError::ManagedByAdaptive) => {
@@ -3941,7 +3966,7 @@ fn power_plan_switch_error(error: RuntimeCommandError, startup_warning: Option<&
         }
     };
     let error = t!(key);
-    if let Some(warning) = startup_warning {
+    if let Some(warning) = warning {
         format!("{warning}\n{error}")
     } else {
         error.into_owned()
