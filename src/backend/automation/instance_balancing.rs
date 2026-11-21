@@ -131,7 +131,11 @@ struct Rule {
     retained: BTreeMap<ProcessTargetKey, Member>,
     exited: BTreeMap<ProcessTargetKey, ProcessControlTarget>,
     accepted: BTreeSet<ProcessTargetKey>,
-    last_action: Option<(ActionLogResult, String)>,
+    last_action: Option<(
+        ActionLogResult,
+        InstanceBalancingDetail,
+        Vec<InstanceBalancingExclusion>,
+    )>,
 }
 
 #[derive(Default)]
@@ -656,26 +660,27 @@ impl RuntimeCore {
                     (outcome, InstanceBalancingDetail::Diagnostic(reason))
                 }
             };
-            let message = detail.message(&exclusions);
-            snapshot.detail = Some(detail);
-            if Some(index) != last_rule {
-                exclusions.retain(InstanceBalancingExclusion::is_explicit_selection);
-            }
-            snapshot.exclusions.extend(exclusions);
-            if !rule
-                .last_action
-                .as_ref()
-                .is_some_and(|(previous, detail)| *previous == outcome && detail == &message)
-            {
+            if rule.last_action.as_ref().is_none_or(
+                |(previous_outcome, previous_detail, previous_exclusions)| {
+                    *previous_outcome != outcome
+                        || previous_detail != &detail
+                        || previous_exclusions != &exclusions
+                },
+            ) {
                 self.action_log.record(
                     ActionLogFeature::InstanceBalancing,
                     None,
                     &rule.settings.executable_path,
                     outcome,
-                    message.clone(),
+                    detail.message(&exclusions),
                 );
-                rule.last_action = Some((outcome, message));
+                rule.last_action = Some((outcome, detail.clone(), exclusions.clone()));
             }
+            snapshot.detail = Some(detail);
+            if Some(index) != last_rule {
+                exclusions.retain(InstanceBalancingExclusion::is_explicit_selection);
+            }
+            snapshot.exclusions.extend(exclusions);
             if let Some(error) = release(
                 runtime,
                 &mut self.cpu_allocation_coordinator,
