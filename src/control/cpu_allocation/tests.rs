@@ -642,7 +642,6 @@ fn stale_selection_restores_its_allocation_without_suppressing_apps_or_releasing
             vec![allocation_target(42, 1, false)],
             None,
             2,
-            String::new(),
             true,
             &mut log,
         );
@@ -1260,7 +1259,6 @@ fn mapping_failure_is_shared_without_suppressing_apps_or_losing_assignments() {
             targets(),
             None,
             2,
-            String::new(),
             true,
             log,
         )
@@ -1356,7 +1354,6 @@ fn zone_generation_orders_background_first_and_preserves_handoff_baselines() {
         fallback(),
         None,
         2,
-        String::new(),
         true,
         &mut log,
     );
@@ -1374,7 +1371,6 @@ fn zone_generation_orders_background_first_and_preserves_handoff_baselines() {
         fallback(),
         zones(),
         2,
-        String::new(),
         true,
         &mut log,
     );
@@ -1399,7 +1395,6 @@ fn zone_generation_orders_background_first_and_preserves_handoff_baselines() {
         fallback(),
         zones(),
         2,
-        String::new(),
         true,
         &mut log,
     );
@@ -1422,7 +1417,6 @@ fn zone_generation_orders_background_first_and_preserves_handoff_baselines() {
         fallback(),
         None,
         2,
-        String::new(),
         true,
         &mut log,
     );
@@ -1437,7 +1431,6 @@ fn zone_generation_orders_background_first_and_preserves_handoff_baselines() {
         Vec::new(),
         None,
         2,
-        String::new(),
         true,
         &mut log,
     );
@@ -1507,7 +1500,6 @@ fn failed_or_shadowed_background_never_narrows_foreground() {
                 vec![allocation_target(43, 14, false)],
             )),
             2,
-            String::new(),
             true,
             &mut ActionLog::default(),
         );
@@ -1563,7 +1555,6 @@ fn partial_foreground_failure_withdraws_successful_zone_roles() {
             ],
         )),
         3,
-        String::new(),
         true,
         &mut ActionLog::default(),
     );

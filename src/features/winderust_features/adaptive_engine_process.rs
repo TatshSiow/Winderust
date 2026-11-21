@@ -973,7 +973,6 @@ impl AdaptiveEngineProcessManager {
             cpu_allocation_targets,
             attempted_zones.then_some((zone_background_targets, zone_foreground_targets)),
             scanned_processes,
-            "Adaptive Engine allocation.".into(),
             allow_cross_session_process_control,
             action_log,
         );

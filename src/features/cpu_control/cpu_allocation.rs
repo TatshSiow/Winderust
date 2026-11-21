@@ -34,7 +34,7 @@ use crate::{
 const BUILT_IN_EXCLUSIONS: &[&str] = EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS;
 const EXTRA_BUILT_IN_EXCLUSIONS: &[&str] = &["rtkauduservice64.exe"];
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CpuAllocationSnapshot {
     pub enabled: bool,
     pub(crate) observation_paused: bool,
@@ -43,7 +43,6 @@ pub struct CpuAllocationSnapshot {
     pub skipped_processes: usize,
     pub failed_processes: usize,
     pub auto_excluded_processes: Vec<String>,
-    pub message: String,
     pub last_error: Option<String>,
 }
 
@@ -143,7 +142,6 @@ impl CpuAllocationManager {
                 coordinator,
                 owner,
                 false,
-                "Automation disabled.",
                 "automation disabled",
                 action_log,
             );
@@ -154,7 +152,6 @@ impl CpuAllocationManager {
                 coordinator,
                 owner,
                 false,
-                &format!("{} disabled.", self.feature_label()),
                 &format!("{} disabled", self.feature_label()),
                 action_log,
             );
@@ -170,14 +167,7 @@ impl CpuAllocationManager {
             .collect::<BTreeSet<_>>();
         if enabled_process_names.is_empty() {
             let reason = format!("no {} rules configured", self.feature_label());
-            return self.disabled_snapshot(
-                coordinator,
-                owner,
-                true,
-                &format!("No {} rules configured.", self.feature_label()),
-                &reason,
-                action_log,
-            );
+            return self.disabled_snapshot(coordinator, owner, true, &reason, action_log);
         }
 
         let (needs_foreground, needs_visible_windows) =
@@ -186,7 +176,6 @@ impl CpuAllocationManager {
             return self.paused_snapshot(
                 coordinator,
                 owner,
-                "Paused: foreground app is unknown.".to_owned(),
                 "foreground app is unknown",
                 action_log,
             );
@@ -197,7 +186,6 @@ impl CpuAllocationManager {
                 return self.paused_snapshot(
                     coordinator,
                     owner,
-                    "Paused: visible windows are unavailable.".to_owned(),
                     "visible windows are unavailable",
                     action_log,
                 );
@@ -213,7 +201,6 @@ impl CpuAllocationManager {
             return self.paused_snapshot(
                 coordinator,
                 owner,
-                "Paused: current Windows session is unknown.".to_owned(),
                 "current Windows session is unknown",
                 action_log,
             );
@@ -225,7 +212,6 @@ impl CpuAllocationManager {
                 let mut snapshot = self.paused_snapshot(
                     coordinator,
                     owner,
-                    err.clone(),
                     "process list unavailable",
                     action_log,
                 );
@@ -297,16 +283,17 @@ impl CpuAllocationManager {
         }
 
         let topology = observations.cpu_topology();
-        self.apply_targets(
+        self.reconcile_targets(
             coordinator,
             topology.as_deref().map_err(String::as_str),
             owner,
             targets,
+            None,
             scanned_processes,
-            cpu_allocation_message(mode),
             allow_cross_session_process_control,
             action_log,
         )
+        .snapshot
     }
 
     pub(crate) fn clear_discovered_targets<P: CpuAllocationPlatform>(
@@ -316,36 +303,7 @@ impl CpuAllocationManager {
         reason: &str,
         action_log: &mut ActionLog,
     ) -> CpuAllocationSnapshot {
-        self.disabled_snapshot(coordinator, owner, false, reason, reason, action_log)
-    }
-
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "the controller call keeps policy owner, access, and reporting context explicit"
-    )]
-    fn apply_targets(
-        &mut self,
-        coordinator: &mut CpuAllocationCoordinator,
-        topology: Result<&CpuTopology, &str>,
-        owner: ControlOwner,
-        targets: Vec<CpuAllocationTarget>,
-        scanned_processes: usize,
-        message: String,
-        allow_cross_session_process_control: bool,
-        action_log: &mut ActionLog,
-    ) -> CpuAllocationSnapshot {
-        self.reconcile_targets(
-            coordinator,
-            topology,
-            owner,
-            targets,
-            None,
-            scanned_processes,
-            message,
-            allow_cross_session_process_control,
-            action_log,
-        )
-        .snapshot
+        self.disabled_snapshot(coordinator, owner, false, reason, action_log)
     }
 
     #[expect(
@@ -360,7 +318,6 @@ impl CpuAllocationManager {
         targets: Vec<CpuAllocationTarget>,
         zones: Option<(Vec<CpuAllocationTarget>, Vec<CpuAllocationTarget>)>,
         scanned_processes: usize,
-        message: String,
         allow_cross_session_process_control: bool,
         action_log: &mut ActionLog,
     ) -> CpuAllocationGeneration {
@@ -655,7 +612,6 @@ impl CpuAllocationManager {
                 skipped_processes,
                 failed_processes: failures.count,
                 auto_excluded_processes: auto_excluded_processes.into_iter().collect(),
-                message,
                 last_error: failures.last_error,
             },
             zone_counts,
@@ -669,7 +625,6 @@ impl CpuAllocationManager {
         coordinator: &mut CpuAllocationCoordinator<P>,
         owner: ControlOwner,
         enabled: bool,
-        message: &str,
         reason: &str,
         action_log: &mut ActionLog,
     ) -> CpuAllocationSnapshot {
@@ -685,7 +640,6 @@ impl CpuAllocationManager {
         CpuAllocationSnapshot {
             enabled,
             failed_processes: failures.count,
-            message: message.to_owned(),
             last_error: failures.last_error,
             ..Default::default()
         }
@@ -695,12 +649,10 @@ impl CpuAllocationManager {
         &mut self,
         coordinator: &mut CpuAllocationCoordinator,
         owner: ControlOwner,
-        message: String,
         reason: &str,
         action_log: &mut ActionLog,
     ) -> CpuAllocationSnapshot {
-        let mut snapshot =
-            self.disabled_snapshot(coordinator, owner, true, &message, reason, action_log);
+        let mut snapshot = self.disabled_snapshot(coordinator, owner, true, reason, action_log);
         snapshot.observation_paused = true;
         snapshot
     }
@@ -939,22 +891,6 @@ fn cpu_allocation_request_label(
     }
 }
 
-impl Default for CpuAllocationSnapshot {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            observation_paused: false,
-            scanned_processes: 0,
-            adjusted_processes: 0,
-            skipped_processes: 0,
-            failed_processes: 0,
-            auto_excluded_processes: Vec::new(),
-            message: "CPU allocation disabled.".to_owned(),
-            last_error: None,
-        }
-    }
-}
-
 pub fn is_builtin_excluded(process_name: &str) -> bool {
     let process_name = std::path::Path::new(process_name)
         .file_name()
@@ -1021,24 +957,6 @@ pub fn logical_processor_no_smt_mask(processors: &[LogicalProcessorInfo]) -> u64
 
 pub fn has_multiple_processor_groups() -> bool {
     active_processor_group_count() > 1
-}
-
-fn cpu_allocation_message(mode: CpuAllocationMode) -> String {
-    match mode {
-        CpuAllocationMode::SoftCpuSets => "CPU Sets (Soft) active.".to_owned(),
-        CpuAllocationMode::HardAffinity => {
-            processor_affinity_hard_message_for_group_count(active_processor_group_count())
-        }
-    }
-}
-
-fn processor_affinity_hard_message_for_group_count(group_count: u16) -> String {
-    if group_count > 1 {
-        "Processor Affinity (Hard) active. Multi-group CPU detected: new allocations require an app assigned only to processor group 0. Other or uncertain group assignments are unavailable."
-            .to_owned()
-    } else {
-        "Processor Affinity (Hard) active.".to_owned()
-    }
 }
 
 pub(crate) fn processor_topology() -> Result<crate::cpu_topology::CpuTopology, String> {
@@ -1461,17 +1379,6 @@ mod tests {
         assert!(first.newly_suppressed);
         assert!(second.suppressed);
         assert!(!second.newly_suppressed);
-    }
-
-    #[test]
-    fn processor_affinity_hard_message_warns_on_multiple_processor_groups() {
-        assert_eq!(
-            processor_affinity_hard_message_for_group_count(1),
-            "Processor Affinity (Hard) active."
-        );
-        let message = processor_affinity_hard_message_for_group_count(2);
-        assert!(message.contains("Multi-group CPU detected"));
-        assert!(message.contains("only to processor group 0"));
     }
 
     #[test]
