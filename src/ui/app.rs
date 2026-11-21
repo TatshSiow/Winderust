@@ -281,7 +281,7 @@ pub(crate) fn run(
                 hard_allocation: cpu_allocation::Editor::default(),
                 adaptive: adaptive_engine::Editor::default(),
                 interrupt_timing: interrupt_timing::State::default(),
-                candidates: Vec::new(),
+                candidates: Arc::default(),
                 unavailable_candidates: Vec::new(),
                 catalog_loading: false,
                 settings,
@@ -597,7 +597,7 @@ struct WinderustApp {
     hard_allocation: cpu_allocation::Editor,
     adaptive: adaptive_engine::Editor,
     interrupt_timing: interrupt_timing::State,
-    candidates: Vec<super::app_picker::Candidate>,
+    candidates: Arc<Vec<super::app_picker::Candidate>>,
     unavailable_candidates: Vec<String>,
     catalog_loading: bool,
     settings: SettingsEditor,
@@ -682,7 +682,7 @@ enum Message {
     Allocation(cpu_allocation::Kind, cpu_allocation::Message),
     Adaptive(adaptive_engine::Message),
     PollInterruptTiming,
-    Catalog(Result<Vec<super::app_picker::Candidate>, String>),
+    Catalog(Result<Arc<Vec<super::app_picker::Candidate>>, String>),
     ExecutableChosen(Page, PowerSourceProfile, Option<PathBuf>),
     Page(Page),
     Tick,
@@ -1980,14 +1980,7 @@ impl WinderustApp {
                     ))
                     && !self.catalog_loading
                 {
-                    self.catalog_loading = true;
-                    tasks.push(
-                        tasks::run({
-                            let cached = self.candidates.clone();
-                            move || super::app_picker::load(cached)
-                        })
-                        .map(|result| Message::Catalog(result.and_then(|result| result))),
-                    );
+                    tasks.push(self.load_catalog());
                 }
                 return Task::batch(tasks);
             }
@@ -2159,15 +2152,8 @@ impl WinderustApp {
                         && !self.catalog_loading
                         && self.catalog_sampled_at.elapsed() >= Duration::from_secs(3)
                     {
-                        self.catalog_loading = true;
                         self.catalog_sampled_at = std::time::Instant::now();
-                        work.push(
-                            tasks::run({
-                                let cached = self.candidates.clone();
-                                move || super::app_picker::load(cached)
-                            })
-                            .map(|r| Message::Catalog(r.and_then(|r| r))),
-                        );
+                        work.push(self.load_catalog());
                     }
                 }
                 if self.page == Page::Home
@@ -2670,6 +2656,13 @@ impl WinderustApp {
         self.runtime
             .replace_settings(&self.settings.runtime_settings_snapshot());
         self.sync_tray_warning()
+    }
+
+    fn load_catalog(&mut self) -> Task<Message> {
+        self.catalog_loading = true;
+        let cached = Arc::clone(&self.candidates);
+        tasks::run(move || super::app_picker::load(&cached))
+            .map(|result| Message::Catalog(result.and_then(|result| result)))
     }
 
     fn load_power_plans(&mut self) -> Task<Message> {

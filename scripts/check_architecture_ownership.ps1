@@ -758,7 +758,7 @@ Assert-SourceMatchCount `
 
 Assert-SourceMatchCount `
     -Boundary 'WinderustApp owns one Process Catalog candidate collection' `
-    -Pattern '^\s*candidates:\s*Vec<super::app_picker::Candidate>,' `
+    -Pattern '^\s*candidates:\s*Arc<Vec<super::app_picker::Candidate>>,' `
     -Paths @('src/ui/app.rs') `
     -ExpectedCount 1
 

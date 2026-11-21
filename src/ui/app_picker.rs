@@ -13,28 +13,29 @@ use iced::{
 use rust_i18n::t;
 use std::{collections::HashMap, ffi::OsString, sync::Arc};
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub(super) struct Candidate {
     pub info: crate::foreground::ProcessCandidateInfo,
     icon: Option<Arc<image::Handle>>,
 }
 
-pub(super) fn load(cached: Vec<Candidate>) -> Result<Vec<Candidate>, String> {
+pub(super) fn load(cached: &[Candidate]) -> Result<Arc<Vec<Candidate>>, String> {
     crate::foreground::list_process_candidates().map(|items| {
         let cached = cached
-            .into_iter()
-            .map(|candidate| (candidate.info.image_path, candidate.icon))
+            .iter()
+            .map(|candidate| (candidate.info.image_path.as_path(), candidate))
             .collect::<HashMap<_, _>>();
-        items
+        let candidates = items
             .into_iter()
             .map(|info| {
                 let icon = cached
-                    .get(&info.image_path)
-                    .cloned()
+                    .get(info.image_path.as_path())
+                    .map(|candidate| candidate.icon.clone())
                     .unwrap_or_else(|| crate::process_icon::load_process_icon(&info.image_path));
                 Candidate { info, icon }
             })
-            .collect()
+            .collect();
+        Arc::new(candidates)
     })
 }
 
@@ -725,20 +726,19 @@ mod tests {
 
     #[test]
     fn log_icons_require_an_unambiguous_cached_executable() {
-        let candidate = Candidate {
+        let icon = Arc::new(image::Handle::from_rgba(1, 1, vec![255; 4]));
+        let candidate = |path: &str| Candidate {
             info: crate::foreground::ProcessCandidateInfo {
                 name: "app.exe".into(),
-                image_path: r"C:\Apps\app.exe".into(),
+                image_path: path.into(),
                 has_suspendable_instance: true,
             },
-            icon: Some(Arc::new(image::Handle::from_rgba(1, 1, vec![255; 4]))),
+            icon: Some(Arc::clone(&icon)),
         };
-        let mut candidates = vec![candidate.clone()];
+        let mut candidates = vec![candidate(r"C:\Apps\app.exe")];
         assert!(icon_for_name("APP.EXE", &candidates).is_some());
         assert!(icon_for_name("missing.exe", &candidates).is_none());
-        let mut other = candidate;
-        other.info.image_path = r"C:\Other\app.exe".into();
-        candidates.push(other);
+        candidates.push(candidate(r"C:\Other\app.exe"));
         assert!(icon_for_name("app.exe", &candidates).is_none());
     }
 
