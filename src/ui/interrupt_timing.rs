@@ -6,7 +6,7 @@ use crate::backend::interrupt_timing::{
 use iced::widget::{column, row, text, Column, Row, Text};
 use iced::{Element, Fill, Length, Subscription, Task};
 use rust_i18n::t;
-use std::time::Duration;
+use std::{path::PathBuf, time::Duration};
 use windows_sys::Win32::Foundation::HWND;
 
 #[derive(Debug, Clone)]
@@ -15,15 +15,23 @@ pub(super) enum Message {
     Cancel,
     TogglePerCpu,
     Export,
-    ExportFinished(Option<Result<(), String>>),
+    ExportChosen(Option<PathBuf>),
+    ExportFinished(Result<(), String>),
 }
 
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum ExportStatus {
     Ready,
-    Saving,
+    ChoosingDestination,
+    Writing,
     Saved,
     Failed(String),
+}
+
+impl ExportStatus {
+    fn pending(&self) -> bool {
+        matches!(self, Self::ChoosingDestination | Self::Writing)
+    }
 }
 
 #[derive(Default)]
@@ -57,31 +65,36 @@ impl State {
             Message::Run => {}
             Message::Cancel => self.cancel(),
             Message::Export => {
-                if let Self::Finished { report, export, .. } = self {
-                    if *export != ExportStatus::Saving {
-                        *export = ExportStatus::Saving;
-                        let report = report.clone();
-                        return Task::future(
+                if let Self::Finished { export, .. } = self {
+                    if !export.pending() {
+                        *export = ExportStatus::ChoosingDestination;
+                        return Task::perform(
                             crate::file_dialog::choose_interrupt_timing_export_file(hwnd),
-                        )
-                        .then(move |path| {
-                            let Some(path) = path else {
-                                return Task::done(Message::ExportFinished(None));
-                            };
-                            let report = report.clone();
-                            super::tasks::run(move || export_report(&path, &report))
-                                .map(|result| Message::ExportFinished(Some(result.and_then(|r| r))))
-                        });
+                            Message::ExportChosen,
+                        );
+                    }
+                }
+            }
+            Message::ExportChosen(path) => {
+                if let Self::Finished { report, export, .. } = self {
+                    if *export == ExportStatus::ChoosingDestination {
+                        let Some(path) = path else {
+                            *export = ExportStatus::Ready;
+                            return Task::none();
+                        };
+                        *export = ExportStatus::Writing;
+                        let report = report.clone();
+                        return super::tasks::run(move || export_report(&path, &report))
+                            .map(|result| Message::ExportFinished(result.and_then(|r| r)));
                     }
                 }
             }
             Message::ExportFinished(result) => {
                 if let Self::Finished { export, .. } = self {
-                    if *export == ExportStatus::Saving {
+                    if *export == ExportStatus::Writing {
                         *export = match result {
-                            Some(Ok(())) => ExportStatus::Saved,
-                            Some(Err(error)) => ExportStatus::Failed(error),
-                            None => ExportStatus::Ready,
+                            Ok(()) => ExportStatus::Saved,
+                            Err(error) => ExportStatus::Failed(error),
                         };
                     }
                 }
@@ -99,13 +112,17 @@ impl State {
     }
 
     fn can_run(&self) -> bool {
-        !matches!(
+        !matches!(self, Self::Capturing { .. })
+            && !matches!(self, Self::Finished { export, .. } if export.pending())
+    }
+
+    pub(super) fn export_writing(&self) -> bool {
+        matches!(
             self,
-            Self::Capturing { .. }
-                | Self::Finished {
-                    export: ExportStatus::Saving,
-                    ..
-                }
+            Self::Finished {
+                export: ExportStatus::Writing,
+                ..
+            }
         )
     }
 
@@ -194,7 +211,7 @@ impl State {
             } => {
                 let feedback = match export {
                     ExportStatus::Ready => None,
-                    ExportStatus::Saving => {
+                    ExportStatus::ChoosingDestination | ExportStatus::Writing => {
                         Some(text(t!("interrupt_timing.export_saving")).style(text::secondary))
                     }
                     ExportStatus::Saved => {
@@ -252,7 +269,7 @@ fn report_view<'a>(
     let mut body = column![row![
         label.width(Fill).wrapping(text::Wrapping::WordOrGlyph),
         widgets::action_button(t!("interrupt_timing.export_report"))
-            .on_press_maybe((*export != ExportStatus::Saving).then_some(Message::Export)),
+            .on_press_maybe((!export.pending()).then_some(Message::Export)),
     ]
     .spacing(design::space::SMALL)
     .align_y(iced::Center)]
@@ -439,15 +456,30 @@ mod tests {
             per_cpu_expanded: true,
             export: ExportStatus::Ready,
         };
+        assert!(state.update(Message::Export, None).units() > 0);
+        assert!(!state.can_run());
+        assert!(!state.export_writing());
+        assert_eq!(state.update(Message::Export, None).units(), 0);
+        drop(state.update(Message::ExportChosen(None), None));
+        assert!(state.can_run());
+        assert!(matches!(
+            &state,
+            State::Finished { report: current, per_cpu_expanded: true, export: ExportStatus::Ready }
+                if current == &report
+        ));
+
         for (result, expected) in [
-            (None, ExportStatus::Ready),
-            (Some(Ok(())), ExportStatus::Saved),
+            (Ok(()), ExportStatus::Saved),
             (
-                Some(Err("Read-only destination".into())),
+                Err("Read-only destination".into()),
                 ExportStatus::Failed("Read-only destination".into()),
             ),
         ] {
-            assert!(state.update(Message::Export, None).units() > 0);
+            let State::Finished { export, .. } = &mut state else {
+                unreachable!();
+            };
+            *export = ExportStatus::Writing;
+            assert!(state.export_writing());
             assert!(!state.can_run());
             assert_eq!(state.update(Message::Export, None).units(), 0);
             drop(state.update(Message::ExportFinished(result), None));

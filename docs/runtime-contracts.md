@@ -672,7 +672,9 @@ Read the relevant section before changing feature policy, ownership, restoration
   export includes driver basenames, aggregate durations, loss and attribution
   counts, and per-CPU totals when available. It does not include raw trace
   events, addresses, or driver paths. Cancelling or failing an export leaves
-  the completed report available for another attempt.
+  the completed report available for another attempt. Once a destination is
+  selected, the Exit prompt shows export progress and enables Exit after the
+  write finishes. Closing the prompt lets the export continue.
 - Cancel and app exit close the capture helper's lifetime pipe. The helper
   records the capture ID in an administrator-only, volatile Windows registry
   value before starting ETW. The surviving app can clean up after a failed

@@ -2205,6 +2205,7 @@ impl WinderustApp {
                 self.closing = true;
                 return self.show_window();
             }
+            Message::Save if self.closing && self.exit_blocking_status().is_some() => {}
             Message::Save | Message::Cancel if self.power_plan_control.pending.is_some() => {}
             Message::Save
                 if self.power_plan_control.selected_guid.is_some()
@@ -2303,7 +2304,7 @@ impl WinderustApp {
                 self.closing = false;
                 self.error_message.clear();
             }
-            Message::DiscardAndClose if self.power_plan_control.pending.is_some() => {}
+            Message::DiscardAndClose if self.exit_blocking_status().is_some() => {}
             Message::DiscardAndClose => {
                 self.settings.cancel();
                 if self.power_tuning.dirty {
@@ -2740,7 +2741,21 @@ impl WinderustApp {
         }
     }
 
+    fn exit_blocking_status(&self) -> Option<&'static str> {
+        if self.interrupt_timing.export_writing() {
+            Some("interrupt_timing.export_saving")
+        } else {
+            self.power_plan_control
+                .pending
+                .is_some()
+                .then_some("power_plan_control.switching")
+        }
+    }
+
     fn shutdown(&mut self) -> Task<Message> {
+        if self.exit_blocking_status().is_some() {
+            return Task::none();
+        }
         crate::backend::diagnostics::event("Exit requested; restoring managed state.");
         self.exiting = true;
         self.closing = true;
@@ -2821,17 +2836,14 @@ impl WinderustApp {
             .spacing(design::space::LARGE);
             if !self.exiting && self.closing {
                 let pending_changes = self.pending_changes();
-                let switching = self.power_plan_control.pending.is_some();
-                body = body.push(text(
-                    t!(if switching {
-                        "power_plan_control.switching"
-                    } else if pending_changes {
-                        "exit_prompt.unsaved"
-                    } else {
-                        "exit_prompt.message"
-                    })
-                    .to_string(),
-                ));
+                let blocking_status = self.exit_blocking_status();
+                let can_exit = blocking_status.is_none();
+                let status = blocking_status.unwrap_or(if pending_changes {
+                    "exit_prompt.unsaved"
+                } else {
+                    "exit_prompt.message"
+                });
+                body = body.push(text(t!(status).to_string()));
                 actions = actions.push(
                     action_button(t!("common.cancel").to_string())
                         .style(widgets::tertiary_button)
@@ -2842,18 +2854,18 @@ impl WinderustApp {
                         .push(
                             action_button(t!("exit_prompt.save_and_exit").to_string())
                                 .style(widgets::primary_button)
-                                .on_press_maybe((!switching).then_some(Message::Save)),
+                                .on_press_maybe(can_exit.then_some(Message::Save)),
                         )
                         .push(
                             action_button(t!("exit_prompt.without_saving").to_string())
                                 .style(widgets::danger_button)
-                                .on_press_maybe((!switching).then_some(Message::DiscardAndClose)),
+                                .on_press_maybe(can_exit.then_some(Message::DiscardAndClose)),
                         );
                 } else {
                     actions = actions.push(
                         action_button(t!("tray.exit").to_string())
                             .style(widgets::danger_button)
-                            .on_press(Message::DiscardAndClose),
+                            .on_press_maybe(can_exit.then_some(Message::DiscardAndClose)),
                     );
                 }
             } else if !self.exiting {
