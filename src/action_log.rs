@@ -1,12 +1,12 @@
 use std::{
     collections::{BTreeMap, VecDeque},
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use crate::config::ActionLogMode;
 
 pub const DEFAULT_ACTION_LOG_CAPACITY: usize = 512;
-const SKIPPED_ENTRY_DEDUPLICATION_WINDOW_MS: u128 = 30_000;
+const SKIPPED_ENTRY_DEDUPLICATION_WINDOW: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActionLogEntry {
@@ -96,7 +96,7 @@ impl ActionLogResult {
 }
 
 pub struct ActionLog {
-    entries: VecDeque<ActionLogEntry>,
+    entries: VecDeque<(Instant, ActionLogEntry)>,
     next_sequence: u64,
     batch_id: Option<u64>,
     revision: u64,
@@ -141,16 +141,15 @@ impl ActionLog {
         }
         let process_name = process_name.into();
         let reason = reason.into();
-        let timestamp_epoch_ms = timestamp_epoch_ms();
+        let now = Instant::now();
         if result == ActionLogResult::Skipped
-            && self.entries.iter().rev().any(|entry| {
+            && self.entries.iter().rev().any(|(recorded_at, entry)| {
                 entry.feature == feature
                     && entry.process_id == process_id
                     && entry.process_name == process_name
                     && entry.result == result
                     && entry.reason == reason
-                    && timestamp_epoch_ms.saturating_sub(entry.timestamp_epoch_ms)
-                        < SKIPPED_ENTRY_DEDUPLICATION_WINDOW_MS
+                    && now.duration_since(*recorded_at) < SKIPPED_ENTRY_DEDUPLICATION_WINDOW
             })
         {
             return;
@@ -159,7 +158,7 @@ impl ActionLog {
         let entry = ActionLogEntry {
             sequence: self.next_sequence,
             batch_id: self.batch_id.unwrap_or(self.next_sequence),
-            timestamp_epoch_ms,
+            timestamp_epoch_ms: timestamp_epoch_ms(),
             feature,
             process_id,
             process_name,
@@ -184,13 +183,16 @@ impl ActionLog {
             if self.entries.len() == self.capacity {
                 self.entries.pop_front();
             }
-            self.entries.push_back(entry);
+            self.entries.push_back((now, entry));
         }
         self.revision = self.revision.wrapping_add(1);
     }
 
     pub fn entries(&self) -> Vec<ActionLogEntry> {
-        self.entries.iter().cloned().collect()
+        self.entries
+            .iter()
+            .map(|(_, entry)| entry.clone())
+            .collect()
     }
 
     pub fn summaries(&self) -> ActionLogSummaries {
