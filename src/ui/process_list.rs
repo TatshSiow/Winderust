@@ -201,7 +201,10 @@ pub(super) enum Message {
     Stop(bool),
     ConfirmStop,
     CancelStop,
-    TreeReady(Result<Vec<ProcessActionTarget>, String>),
+    TreeReady {
+        name: String,
+        targets: Result<Vec<ProcessActionTarget>, String>,
+    },
     Result {
         name: String,
         result: Result<(), String>,
@@ -614,8 +617,9 @@ impl ProcessList {
                         .into_iter()
                         .collect::<Result<Vec<_>, _>>()
                         .map_err(|e| e.to_string());
+                    let name = selection.name;
                     if !tree {
-                        return self.stop_targets(roots, runtime);
+                        return self.stop_targets(name, roots, runtime);
                     }
                     let roots = match roots.and_then(|roots| {
                         runtime
@@ -624,7 +628,7 @@ impl ProcessList {
                         Ok(roots)
                     }) {
                         Ok(roots) => roots,
-                        Err(error) => return self.stop_targets(Err(error), runtime),
+                        Err(error) => return self.stop_targets(name, Err(error), runtime),
                     };
                     return background(
                         move || {
@@ -633,11 +637,16 @@ impl ProcessList {
                                 &foreground::list_processes_with_paths()?,
                             )
                         },
-                        Message::TreeReady,
+                        move |targets| Message::TreeReady {
+                            name: name.clone(),
+                            targets,
+                        },
                     );
                 }
             }
-            Message::TreeReady(targets) => return self.stop_targets(targets, runtime),
+            Message::TreeReady { name, targets } => {
+                return self.stop_targets(name, targets, runtime);
+            }
             Message::Result {
                 name,
                 result,
@@ -802,15 +811,10 @@ impl ProcessList {
     }
     fn stop_targets(
         &mut self,
+        name: String,
         targets: Result<Vec<ProcessActionTarget>, String>,
         runtime: &RuntimeHandle,
     ) -> Task<Message> {
-        let name = targets
-            .as_ref()
-            .ok()
-            .and_then(|targets| targets.first())
-            .map(|target| target.name.clone())
-            .unwrap_or_default();
         match targets.and_then(|targets| {
             runtime
                 .request_process_termination(targets)
