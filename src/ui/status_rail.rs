@@ -6,6 +6,7 @@ use crate::{
     action_log::{ActionLogEntry, ActionLogFeature},
     automation::RuntimeStatusSnapshot,
     config::Settings,
+    features::winderust_features::memory_trim::MemoryTrimStatus,
     power::PowerPlan,
     ui::Page,
 };
@@ -240,6 +241,8 @@ pub(super) fn view<'a>(
             column![text(request)],
         ));
     } else {
+        let activity_available =
+            available && (page != Page::MemoryTrim || state != FeatureRunState::Unknown);
         body = body.push(section(
             "common.process_activity",
             column![
@@ -249,7 +252,7 @@ pub(super) fn view<'a>(
                     } else {
                         "common.scanned_processes"
                     },
-                    count(available.then_some(summary.scanned).flatten())
+                    count(activity_available.then_some(summary.scanned).flatten())
                 ),
                 metric(
                     if page == Page::Watchdog {
@@ -257,15 +260,19 @@ pub(super) fn view<'a>(
                     } else {
                         "common.adjusted_processes"
                     },
-                    count(available.then_some(summary.adjusted).flatten())
+                    count(activity_available.then_some(summary.adjusted).flatten())
                 ),
                 metric(
                     "common.protected_or_denied_processes",
-                    count(available.then_some(summary.protected_or_denied).flatten())
+                    count(
+                        activity_available
+                            .then_some(summary.protected_or_denied)
+                            .flatten()
+                    )
                 ),
                 metric(
                     "common.skipped_processes",
-                    count(available.then_some(summary.skipped).flatten())
+                    count(activity_available.then_some(summary.skipped).flatten())
                 )
             ]
             .spacing(design::space::CONTROL),
@@ -615,13 +622,14 @@ fn sidebar_state(
     {
         return FeatureRunState::Paused;
     }
-    if page == Page::MemoryTrim
-        && matches!(
-            features.memory_trim.status,
-            crate::features::winderust_features::memory_trim::MemoryTrimStatus::ForegroundUnknown
-        )
-    {
-        return FeatureRunState::Paused;
+    if page == Page::MemoryTrim {
+        match features.memory_trim.status {
+            MemoryTrimStatus::Disabled | MemoryTrimStatus::AutomationDisabled => {
+                return FeatureRunState::Unknown;
+            }
+            MemoryTrimStatus::ForegroundUnknown => return FeatureRunState::Paused,
+            _ => {}
+        }
     }
     let adaptive_power_applied = page == Page::AdaptiveEngine
         && plan.owner == Some(PowerPlanOwner::AdaptiveEngine)
@@ -768,11 +776,15 @@ fn feature_status_summary(
         },
         Page::MemoryTrim => {
             let status = &runtime.feature_status.memory_trim;
+            let activity_known = !matches!(
+                status.status,
+                MemoryTrimStatus::ForegroundUnknown | MemoryTrimStatus::Error(_)
+            );
             FeatureStatusSummary {
-                scanned: Some(status.scanned_processes),
-                adjusted: Some(status.trimmed_processes),
+                scanned: activity_known.then_some(status.scanned_processes),
+                adjusted: activity_known.then_some(status.trimmed_processes),
                 protected_or_denied: None,
-                skipped: Some(status.skipped_processes),
+                skipped: activity_known.then_some(status.skipped_processes),
                 last_error: status.last_error.as_deref(),
                 action_log_feature: ActionLogFeature::MemoryTrim,
             }
@@ -1229,11 +1241,25 @@ mod tests {
     fn unavailable_metrics_are_not_reported_as_zero() {
         assert_eq!(count(None), "\u{2014}");
         assert_eq!(count(Some(0)), "0");
-        let runtime = RuntimeStatusSnapshot::default();
+        let mut runtime = RuntimeStatusSnapshot::default();
         let summary = feature_status_summary(Page::MemoryPriority, &runtime).unwrap();
         assert_eq!(summary.scanned, None);
         assert_eq!(summary.adjusted, None);
         assert_eq!(summary.protected_or_denied, None);
         assert_eq!(summary.skipped, None);
+
+        for (status, expected) in [
+            (MemoryTrimStatus::ForegroundUnknown, None),
+            (MemoryTrimStatus::Error("query failed".into()), None),
+            (MemoryTrimStatus::Active, Some(0)),
+        ] {
+            std::sync::Arc::make_mut(&mut runtime.feature_status)
+                .memory_trim
+                .status = status;
+            let summary = feature_status_summary(Page::MemoryTrim, &runtime).unwrap();
+            assert_eq!(summary.scanned, expected);
+            assert_eq!(summary.adjusted, expected);
+            assert_eq!(summary.skipped, expected);
+        }
     }
 }

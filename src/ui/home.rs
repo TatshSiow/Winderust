@@ -10,6 +10,7 @@ use crate::backend::power_source::is_plugged_in;
 use crate::config::{PowerSourceProfile, Settings};
 use crate::cpu::{CpuUsageMonitor, CpuUsageSnapshot};
 use crate::cpu_allocation::CpuAllocationSnapshot;
+use crate::features::winderust_features::memory_trim::MemoryTrimStatus;
 use crate::ui::scrolling::scrollable;
 use crate::ui::Page;
 use iced::widget::{canvas, column, container, responsive, row, text};
@@ -1535,14 +1536,20 @@ fn enabled_features(
         watchdog,
         t!("common.rule_count", count = settings.watchdog.rules.len()).to_string()
     );
+    let memory_trim = &status.memory_trim;
     feature!(
         MemoryTrim,
         memory_trim,
-        t!(
-            "home.trimmed_count",
-            count = status.memory_trim.trimmed_processes
-        )
-        .to_string()
+        match memory_trim.status {
+            MemoryTrimStatus::Disabled | MemoryTrimStatus::AutomationDisabled
+                if settings.general.enabled =>
+            {
+                t!("common.unknown").into_owned()
+            }
+            MemoryTrimStatus::ForegroundUnknown => observation_pause_detail(false),
+            MemoryTrimStatus::Error(_) => observation_pause_detail(true),
+            _ => t!("home.trimmed_count", count = memory_trim.trimmed_processes).into_owned(),
+        }
     );
     feature!(
         SleepPrevention,
@@ -1629,6 +1636,7 @@ mod tests {
         status.cpu_sets_soft.adjusted_processes = 7;
         status.instance_balancing.adjusted_processes = 2;
         status.app_suspension.suspended_processes = 3;
+        status.memory_trim.status = MemoryTrimStatus::Active;
         let sample = Sample {
             cpu: CpuUsageSnapshot {
                 percent: Some(42.5),
@@ -1659,6 +1667,10 @@ mod tests {
             (
                 Page::AppSuspension,
                 t!("home.suspended_count", count = 3).to_string(),
+            ),
+            (
+                Page::MemoryTrim,
+                t!("home.trimmed_count", count = 0).to_string(),
             ),
         ] {
             assert!(expected.contains(&entry));
