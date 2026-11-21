@@ -1499,11 +1499,7 @@ impl WinderustApp {
                 ) {
                     self.side_panel_tab = SidePanelTab::Presets;
                 }
-                if let Some(message) = self.adaptive.update_view(&self.settings, message) {
-                    self.settings.edit_with_presets(|settings| {
-                        self.adaptive.update_settings(settings, message)
-                    });
-                }
+                self.adaptive.update(&mut self.settings, message);
             }
             Message::Catalog(result) => {
                 self.catalog_loading = false;

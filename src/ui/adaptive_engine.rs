@@ -5,6 +5,7 @@ use super::priority_control::{
     process_priority_setting_label, process_thread_priority_setting_label,
 };
 use super::widgets::{action_button, button, checkbox, icon_button, pick_list, text_input};
+use crate::application::SettingsEditor;
 use crate::config::*;
 use crate::power::{ProcessorBoostMode, ProcessorPowerValues};
 use crate::ui::scrolling::scrollable;
@@ -142,7 +143,7 @@ impl Editor {
         self.tuning_tabs[0] = TuningTab::ProcessorPower;
     }
 
-    pub(super) fn update_view(&mut self, s: &Settings, m: Message) -> Option<Message> {
+    pub(super) fn update(&mut self, s: &mut SettingsEditor, m: Message) {
         if matches!(
             m,
             Message::ViewBuiltIn(_)
@@ -174,20 +175,13 @@ impl Editor {
                 }
             }
             Message::ViewBuiltIn(p) => {
-                let mut draft = s.clone();
+                let mut draft = (**s).clone();
                 apply_built_in_adaptive_engine_preset(&mut draft, p);
                 self.draft = Some(draft);
                 self.read_only = true;
                 self.name = built_in_adaptive_engine_preset_label(p);
             }
             Message::Cancel => self.draft = None,
-            m => return Some(m),
-        }
-        None
-    }
-
-    pub(super) fn update_settings(&mut self, s: &mut Settings, m: Message) {
-        match m {
             Message::BuiltIn(p) => {
                 self.error.clear();
                 self.live_numbers.drafts.clear();
@@ -195,13 +189,13 @@ impl Editor {
                     .iter()
                     .position(|v| *v == p)
                     .map(|i| Choice(i, built_in_adaptive_engine_preset_label(p)));
-                let mut draft = s.clone();
+                let mut draft = (**s).clone();
                 apply_built_in_adaptive_engine_preset(&mut draft, p);
                 let preset = capture_adaptive_engine_preset(&draft, String::new());
                 apply_adaptive_engine_preset(s, &preset);
             }
             Message::Apply(i) => {
-                if let Some(p) = s.adaptive_engine_presets.get(i).cloned() {
+                if let Some(p) = s.global().adaptive_engine_presets.get(i).cloned() {
                     self.error.clear();
                     self.live_numbers.drafts.clear();
                     self.selected_preset = Some(Choice(i + 4, p.name.clone()));
@@ -209,8 +203,8 @@ impl Editor {
                 }
             }
             Message::Edit(i) => {
-                if let Some(p) = s.adaptive_engine_presets.get(i) {
-                    let mut draft = s.clone();
+                if let Some(p) = s.global().adaptive_engine_presets.get(i) {
+                    let mut draft = (**s).clone();
                     apply_adaptive_engine_preset(&mut draft, p);
                     self.name = p.name.clone();
                     self.editing = Some(i);
@@ -219,7 +213,7 @@ impl Editor {
                 }
             }
             Message::New => {
-                self.draft = Some(s.clone());
+                self.draft = Some((**s).clone());
                 self.name.clear();
                 self.editing = None;
                 self.read_only = false;
@@ -239,18 +233,25 @@ impl Editor {
                     if !self.read_only
                         && self.preset_numbers.invalid().is_none()
                         && !name.is_empty()
-                        && !s.adaptive_engine_presets.iter().enumerate().any(|(i, p)| {
-                            Some(i) != self.editing && p.name.trim().eq_ignore_ascii_case(name)
-                        })
+                        && !s
+                            .global()
+                            .adaptive_engine_presets
+                            .iter()
+                            .enumerate()
+                            .any(|(i, p)| {
+                                Some(i) != self.editing && p.name.trim().eq_ignore_ascii_case(name)
+                            })
                     {
                         let p = capture_adaptive_engine_preset(draft, name.into());
-                        if let Some(i) = self.editing {
-                            if let Some(old) = s.adaptive_engine_presets.get_mut(i) {
-                                *old = p;
+                        s.edit_global(|settings| {
+                            if let Some(i) = self.editing {
+                                if let Some(old) = settings.adaptive_engine_presets.get_mut(i) {
+                                    *old = p;
+                                }
+                            } else {
+                                settings.adaptive_engine_presets.push(p);
                             }
-                        } else {
-                            s.adaptive_engine_presets.push(p);
-                        }
+                        });
                         self.draft = None;
                         self.preset_numbers.drafts.clear();
                     } else {
@@ -259,15 +260,17 @@ impl Editor {
                 }
             }
             Message::Delete(index) => {
-                if index < s.adaptive_engine_presets.len() {
-                    s.adaptive_engine_presets.remove(index);
+                if index < s.global().adaptive_engine_presets.len() {
+                    s.edit_global(|settings| {
+                        settings.adaptive_engine_presets.remove(index);
+                    });
                 }
                 self.draft = None;
                 self.preset_numbers.drafts.clear();
             }
             Message::UseCurrent => {
                 if !self.read_only {
-                    self.draft = Some(s.clone())
+                    self.draft = Some((**s).clone())
                 }
             }
             Message::Path(v) => self.path = v,
@@ -322,11 +325,15 @@ impl Editor {
                 } else {
                     &mut self.live_numbers
                 };
-                let target = self.draft.as_mut().unwrap_or(s);
                 match edit {
-                    Message::Toggle(f, v) => f(target, v),
+                    Message::Toggle(f, v) => f(self.draft.as_mut().unwrap_or_else(|| &mut **s), v),
                     Message::Number(f, v, min, max, key, label) => {
-                        let before = target.adaptive_engine.base_processor_policy;
+                        let before = self
+                            .draft
+                            .as_ref()
+                            .unwrap_or(&**s)
+                            .adaptive_engine
+                            .base_processor_policy;
                         let min = if key == PROCESSOR_MAX_FIELD {
                             u64::from(before.performance_min.min(100))
                         } else {
@@ -341,6 +348,7 @@ impl Editor {
                             },
                         );
                         if let Some(n) = value {
+                            let target = self.draft.as_mut().unwrap_or_else(|| &mut **s);
                             f(target, n);
                             let policy = &mut target.adaptive_engine.base_processor_policy;
                             *policy = policy.normalized();
@@ -371,7 +379,7 @@ impl Editor {
                             }
                         }
                     }
-                    Message::Choice(f, v) => f(target, v),
+                    Message::Choice(f, v) => f(self.draft.as_mut().unwrap_or_else(|| &mut **s), v),
                     _ => {}
                 }
             }
@@ -379,7 +387,7 @@ impl Editor {
     }
     fn set_cpu_selection(
         &mut self,
-        s: &mut Settings,
+        s: &mut SettingsEditor,
         zone: bool,
         selection: crate::cpu_topology::CpuSelection,
         topology: &Result<crate::cpu_topology::CpuTopology, String>,
@@ -395,7 +403,7 @@ impl Editor {
             self.error = error;
             return;
         }
-        let target = self.draft.as_mut().unwrap_or(s);
+        let target = self.draft.as_mut().unwrap_or_else(|| &mut **s);
         if zone {
             target
                 .adaptive_engine_process
@@ -2079,10 +2087,7 @@ impl Editor {
         .height(Fill)
         .into()
     }
-    pub(super) fn presets_panel<'a>(
-        &'a self,
-        live: &'a crate::application::SettingsEditor,
-    ) -> Element<'a, Message> {
+    pub(super) fn presets_panel<'a>(&'a self, live: &'a SettingsEditor) -> Element<'a, Message> {
         let mut rail = column![super::widgets::heading(
             t!("adaptive_engine.built_in_presets").to_string(),
             design::typography::SECONDARY
@@ -2259,10 +2264,11 @@ mod tests {
         )
         .unwrap();
         let before = applied.clone();
+        let mut applied = SettingsEditor::with_settings(applied);
         let mut editor = Editor::default();
         for zone in [false, true] {
             editor.set_cpu_selection(&mut applied, zone, selection.clone(), &Ok(changed.clone()));
-            assert_eq!(applied, before);
+            assert_eq!(applied.global(), &before);
             assert!(!editor.error.is_empty());
         }
     }
@@ -2270,7 +2276,7 @@ mod tests {
     #[test]
     fn zone_preset_editing_is_independent_and_speed_keeps_background_limiting() {
         let mut editor = Editor::default();
-        let mut settings = Settings::default();
+        let mut settings = SettingsEditor::with_settings(Settings::default());
         editor.update(
             &mut settings,
             Message::BuiltIn(BuiltInAdaptiveEnginePreset::Speed),
@@ -2343,7 +2349,7 @@ mod tests {
             draft.adaptive_engine_process.dynamic_resource_zone_settings
         );
         editor.update(&mut settings, Message::Cancel);
-        assert_eq!(settings, before);
+        assert_eq!(settings.global(), &before);
         editor.update(
             &mut settings,
             Message::ViewBuiltIn(BuiltInAdaptiveEnginePreset::Performance),
@@ -2367,7 +2373,7 @@ mod tests {
     #[test]
     fn explicit_custom_selection_wins_over_identical_builtin() {
         let mut editor = Editor::default();
-        let mut settings = Settings::default();
+        let mut settings = SettingsEditor::with_settings(Settings::default());
         let builtin = BuiltInAdaptiveEnginePreset::Balanced;
         editor.update(&mut settings, Message::BuiltIn(builtin));
         editor.update(&mut settings, Message::New);
@@ -2399,7 +2405,7 @@ mod tests {
     #[test]
     fn sidebar_delete_removes_only_the_selected_preset() {
         let mut editor = Editor::default();
-        let mut settings = Settings::default();
+        let mut settings = SettingsEditor::with_settings(Settings::default());
         for name in ["First", "Second"] {
             editor.update(&mut settings, Message::New);
             editor.update(&mut settings, Message::Name(name.into()));
@@ -2440,7 +2446,7 @@ mod tests {
     #[test]
     fn priority_cards_expand_independently_for_live_and_preset_views() {
         let mut editor = Editor::default();
-        let mut settings = Settings::default();
+        let mut settings = SettingsEditor::with_settings(Settings::default());
         editor.update(&mut settings, Message::TogglePriority(2));
         assert_eq!(
             editor.priority_expanded[0],
@@ -2460,20 +2466,13 @@ mod tests {
 
     use super::*;
 
-    impl Editor {
-        fn update(&mut self, settings: &mut Settings, message: Message) {
-            if let Some(message) = self.update_view(settings, message) {
-                self.update_settings(settings, message);
-            }
-        }
-    }
     #[test]
     fn priority_card_changes_keep_repaint_regions_bounded() {
         use iced::advanced::Renderer as _;
         use iced::advanced::{layout, widget::Tree};
         let mut renderer = iced::Renderer::new(design::typography::FONT, iced::Pixels(14.0));
         let mut editor = Editor::default();
-        let mut settings = Settings::default();
+        let mut settings = SettingsEditor::with_settings(Settings::default());
         let interrupt_timing = super::super::interrupt_timing::State::default();
         let bounds = iced::Rectangle::with_size(iced::Size::new(1040.0, 700.0));
         for tab in TuningTab::ALL {
@@ -2526,7 +2525,7 @@ mod tests {
     #[test]
     fn priority_tab_scroll_damage_stays_bounded() {
         let mut editor = Editor::default();
-        let mut settings = Settings::default();
+        let mut settings = SettingsEditor::with_settings(Settings::default());
         let interrupt_timing = super::super::interrupt_timing::State::default();
         editor.update(
             &mut settings,
@@ -2546,11 +2545,11 @@ mod tests {
     #[test]
     fn tuning_navigation_keeps_live_and_preset_state_separate() {
         let mut editor = Editor::default();
-        let mut settings = Settings::default();
+        let mut settings = SettingsEditor::with_settings(Settings::default());
         let before = settings.clone();
         editor.update(&mut settings, Message::TuningTab(TuningTab::CustomRules));
         editor.update(&mut settings, Message::Collapse(0));
-        assert_eq!(settings, before);
+        assert_eq!(settings.global(), &before);
         editor.update(
             &mut settings,
             Message::ViewBuiltIn(BuiltInAdaptiveEnginePreset::Balanced),
@@ -2567,12 +2566,12 @@ mod tests {
         editor.update(&mut settings, Message::Cancel);
         assert_eq!(editor.tuning_tabs[0], TuningTab::CustomRules);
         assert_eq!(editor.expanded[0], [true, false, false]);
-        assert_eq!(settings, before);
+        assert_eq!(settings.global(), &before);
     }
 
     #[test]
     fn independent_cpu_gates_and_preset_isolation() {
-        let mut settings = Settings::default();
+        let mut settings = SettingsEditor::with_settings(Settings::default());
         let mut editor = Editor::default();
         settings
             .adaptive_engine_process
@@ -2637,7 +2636,7 @@ mod tests {
     }
     #[test]
     fn processor_max_draft_is_rechecked_when_minimum_changes() {
-        let mut settings = Settings::default();
+        let mut settings = SettingsEditor::with_settings(Settings::default());
         settings
             .adaptive_engine
             .base_processor_policy
@@ -2705,7 +2704,7 @@ mod tests {
 
     #[test]
     fn preset_numbers_are_independent_of_unfinished_live_edits() {
-        let mut settings = Settings::default();
+        let mut settings = SettingsEditor::with_settings(Settings::default());
         let mut editor = Editor::default();
         let threshold = |text: &str| {
             Message::Number(
@@ -2762,7 +2761,8 @@ mod tests {
 
     #[test]
     fn read_only_builtin_and_invalid_numbers_do_not_mutate() {
-        let mut settings = Settings::default();
+        let mut settings = SettingsEditor::with_settings(Settings::default());
+        settings.select_power_source(PowerSourceProfile::OnBattery);
         let old = settings.clone();
         let mut editor = Editor::default();
         editor.update(
@@ -2791,6 +2791,6 @@ mod tests {
             ),
         );
         assert_eq!(editor.draft, draft);
-        assert_eq!(settings, old);
+        assert_eq!(settings.global(), &old);
     }
 }

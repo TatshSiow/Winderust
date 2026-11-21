@@ -735,15 +735,21 @@ fn runtime_settings_projection_keeps_live_general_and_advanced_only() {
 
 #[test]
 fn preset_edits_survive_profile_switching_and_save() {
-    for profile in [PowerSourceProfile::PluggedIn, PowerSourceProfile::OnBattery] {
+    for (profile, explicit_battery) in [
+        (PowerSourceProfile::PluggedIn, true),
+        (PowerSourceProfile::OnBattery, true),
+        (PowerSourceProfile::OnBattery, false),
+    ] {
         let mut initial = Settings::default();
-        initial.battery_profile_mut();
+        if explicit_battery {
+            initial.battery_profile_mut();
+        }
         let storage = FakeStorage::new(initial.clone(), Ok(initial), Ok(()), Ok(()));
         let (mut editor, _, _) =
             editor_with_fixtures(storage, FakeStartupRegistration::new(Ok(())));
         let runtime_before = editor.runtime_settings_snapshot();
         editor.select_power_source(profile);
-        editor.edit_with_presets(|settings| {
+        editor.edit_global(|settings| {
             settings
                 .adaptive_engine_presets
                 .push(crate::config::AdaptiveEnginePreset {
@@ -800,12 +806,13 @@ fn preset_edits_survive_profile_switching_and_save() {
             assert_eq!(editor.advanced_power_plan_tuning_presets[0].name, "Saved");
         }
         editor.select_power_source(profile);
-        editor.edit_with_presets(|settings| {
+        editor.edit_global(|settings| {
             settings.adaptive_engine_presets[0].name = "Edited".into();
             settings.cpu_allocation_presets.clear();
             settings.advanced_power_plan_tuning_presets.clear();
         });
         editor.save().expect("save edits");
+        assert_eq!(editor.persisted().on_battery.is_some(), explicit_battery);
         assert_eq!(editor.persisted().adaptive_engine_presets[0].name, "Edited");
         assert!(editor.persisted().cpu_allocation_presets.is_empty());
         assert!(editor

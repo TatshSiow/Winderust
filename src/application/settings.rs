@@ -393,24 +393,6 @@ impl SettingsEditor {
         self.draft.value.sync_shared_settings_to_battery();
     }
 
-    pub(crate) fn edit_with_presets(&mut self, edit: impl FnOnce(&mut Settings)) {
-        self.draft.value.sync_shared_settings_to_battery();
-        edit(self);
-        // Preset collections are shared even when tuning the battery profile.
-        if self.selected_power_source == PowerSourceProfile::OnBattery {
-            let root = &mut self.draft.value;
-            if let Some(battery) = root.on_battery.as_mut() {
-                root.adaptive_engine_presets
-                    .clone_from(&battery.adaptive_engine_presets);
-                root.cpu_allocation_presets
-                    .clone_from(&battery.cpu_allocation_presets);
-                root.advanced_power_plan_tuning_presets
-                    .clone_from(&battery.advanced_power_plan_tuning_presets);
-            }
-        }
-        self.draft.value.sync_shared_settings_to_battery();
-    }
-
     pub(crate) fn runtime_settings_snapshot(&mut self) -> RuntimeSettingsSnapshot {
         self.coordinator.runtime_settings_snapshot(&self.draft)
     }
