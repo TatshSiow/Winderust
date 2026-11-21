@@ -305,6 +305,7 @@ pub(crate) fn run(
                 auto_exclusion_generation: 0,
                 auto_exclusion_retry: false,
                 closing: false,
+                exit_export_failed: false,
                 hwnd: None,
                 tray: None,
                 tray_attempt: None,
@@ -613,6 +614,7 @@ struct WinderustApp {
     auto_exclusion_generation: u64,
     auto_exclusion_retry: bool,
     closing: bool,
+    exit_export_failed: bool,
     hwnd: Option<usize>,
     tray: Option<tray::TrayIcon>,
     tray_attempt: Option<((bool, bool), std::time::Instant)>,
@@ -1568,6 +1570,9 @@ impl WinderustApp {
                 return self.browse(Page::AdaptiveEngine);
             }
             Message::Adaptive(adaptive_engine::Message::InterruptTiming(message)) => {
+                self.exit_export_failed |= self.closing
+                    && self.interrupt_timing.export_writing()
+                    && matches!(&message, interrupt_timing::Message::ExportFinished(Err(_)));
                 let hwnd = self
                     .hwnd
                     .map(|hwnd| hwnd as windows_sys::Win32::Foundation::HWND);
@@ -2201,6 +2206,7 @@ impl WinderustApp {
                 self.power_tuning.cancel_apply_review();
                 if !self.closing {
                     self.error_message.clear();
+                    self.exit_export_failed = false;
                 }
                 self.closing = true;
                 return self.show_window();
@@ -2302,6 +2308,7 @@ impl WinderustApp {
                     *after_save = power_plan_control::AfterSave::Stay;
                 }
                 self.closing = false;
+                self.exit_export_failed = false;
                 self.error_message.clear();
             }
             Message::DiscardAndClose if self.exit_blocking_status().is_some() => {}
@@ -2877,8 +2884,18 @@ impl WinderustApp {
                         .on_press(Message::DismissError),
                 );
             }
-            if !self.exiting && !self.error_message.is_empty() {
-                let details = text(&self.error_message).wrapping(text::Wrapping::WordOrGlyph);
+            let export_failure = (self.closing && self.exit_export_failed)
+                .then(|| self.interrupt_timing.export_failure())
+                .flatten();
+            if !self.exiting && (!self.error_message.is_empty() || export_failure.is_some()) {
+                let mut details = column![].spacing(design::space::SMALL);
+                if !self.error_message.is_empty() {
+                    details = details
+                        .push(text(&self.error_message).wrapping(text::Wrapping::WordOrGlyph));
+                }
+                if let Some(error) = export_failure {
+                    details = details.push(text(error).wrapping(text::Wrapping::WordOrGlyph));
+                }
                 body = body.push(container(scrollable(details)).max_height(320));
             }
             if !self.exiting {

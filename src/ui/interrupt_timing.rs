@@ -126,6 +126,16 @@ impl State {
         )
     }
 
+    pub(super) fn export_failure(&self) -> Option<String> {
+        match self {
+            Self::Finished {
+                export: ExportStatus::Failed(error),
+                ..
+            } => Some(export_failure_message(error)),
+            _ => None,
+        }
+    }
+
     pub(super) fn subscription(&self) -> Subscription<()> {
         if matches!(self, Self::Capturing { .. }) {
             iced::time::every(Duration::from_millis(100)).map(|_| ())
@@ -217,10 +227,9 @@ impl State {
                     ExportStatus::Saved => {
                         Some(text(t!("interrupt_timing.export_saved")).style(text::secondary))
                     }
-                    ExportStatus::Failed(error) => Some(
-                        text(t!("interrupt_timing.export_failed", error = error))
-                            .style(text::danger),
-                    ),
+                    ExportStatus::Failed(error) => {
+                        Some(text(export_failure_message(error)).style(text::danger))
+                    }
                 };
                 if let Some(feedback) = feedback {
                     body = body.push(
@@ -251,6 +260,10 @@ impl State {
         }
         widgets::settings_card(body).into()
     }
+}
+
+fn export_failure_message(error: &str) -> String {
+    t!("interrupt_timing.export_failed", error = error).into_owned()
 }
 
 fn report_view<'a>(
