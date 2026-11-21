@@ -516,6 +516,11 @@ fn sidebar_state(
         if !timer.enabled && timer.requested_100ns.is_some() && timer.last_error.is_some() {
             return FeatureRunState::Error;
         }
+    } else if page == Page::ProcessPriority {
+        let priority = &runtime.feature_status.process_priority;
+        if !priority.enabled && priority.last_error.is_some() {
+            return FeatureRunState::Error;
+        }
     }
     if !settings.general.enabled
         || super::navigation::feature_page_enabled(settings, page) == Some(false)
