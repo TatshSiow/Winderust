@@ -1434,13 +1434,10 @@ impl WinderustApp {
             {
                 return self.save_settings();
             }
-            Message::PowerTuning(message) => self.settings.edit_with_presets(|settings| {
-                self.power_tuning.update(
-                    &mut settings.advanced_power_plan_tuning_presets,
-                    &self.power_plans,
-                    message,
-                )
-            }),
+            Message::PowerTuning(message) => {
+                self.power_tuning
+                    .update(&mut self.settings, &self.power_plans, message)
+            }
 
             Message::PowerRules(kind, message) => {
                 if matches!(message, power_rules::Message::OpenTimePicker(_)) {
@@ -2814,7 +2811,7 @@ impl WinderustApp {
         } else if page == Page::AdvancedPowerPlanTuning {
             Some(
                 self.power_tuning
-                    .presets_panel(&self.settings.advanced_power_plan_tuning_presets)
+                    .presets_panel(&self.settings.global().advanced_power_plan_tuning_presets)
                     .map(Message::PowerTuning),
             )
         } else if page == Page::CpuSetsSoft && self.side_panel_tab == SidePanelTab::Presets {
@@ -3247,7 +3244,7 @@ impl WinderustApp {
                 .map(|modal| modal.map(Message::CpuLimiter)),
             Page::AdvancedPowerPlanTuning => self
                 .power_tuning
-                .preset_modal(&self.settings.advanced_power_plan_tuning_presets)
+                .preset_modal(&self.settings.global().advanced_power_plan_tuning_presets)
                 .map(|modal| modal.map(Message::PowerTuning)),
             Page::AdaptiveEngine if self.adaptive.preset_open() => Some(
                 self.adaptive
@@ -3402,7 +3399,7 @@ impl WinderustApp {
             Page::AdvancedPowerPlanTuning => self
                 .power_tuning
                 .view(
-                    &self.settings.advanced_power_plan_tuning_presets,
+                    &self.settings.global().advanced_power_plan_tuning_presets,
                     &self.power_plans,
                     self.effective_power_mode
                         .as_ref()

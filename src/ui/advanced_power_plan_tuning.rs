@@ -3,7 +3,8 @@ use super::widgets::{
     action_button, button, icon_button, pick_list, power_plan_label, slider, text_input,
 };
 use crate::application::{
-    AdvancedPowerPlanTuningApplyError, AdvancedPowerPlanTuningError, AdvancedPowerPlanTuningService,
+    AdvancedPowerPlanTuningApplyError, AdvancedPowerPlanTuningError,
+    AdvancedPowerPlanTuningService, SettingsEditor,
 };
 use crate::config::AdvancedPowerPlanTuningPreset;
 use crate::power::{
@@ -531,7 +532,7 @@ impl Editor {
     }
     pub(super) fn update(
         &mut self,
-        presets: &mut Vec<AdvancedPowerPlanTuningPreset>,
+        settings: &mut SettingsEditor,
         plans: &[PowerPlan],
         message: Message,
     ) {
@@ -582,7 +583,7 @@ impl Editor {
                     if let Some(value) =
                         self.invalid_percentages[source as usize].edit(field, value)
                     {
-                        self.update(presets, plans, Message::Value(source, field, value));
+                        self.update(settings, plans, Message::Value(source, field, value));
                     }
                 }
             }
@@ -626,7 +627,8 @@ impl Editor {
                         AdvancedPowerPlanTuningValues::for_preset(p),
                     ),
                     PresetTarget::Custom(Some(i)) => {
-                        let Some(p) = presets.get(i) else {
+                        let Some(p) = settings.global().advanced_power_plan_tuning_presets.get(i)
+                        else {
                             return;
                         };
                         (p.name.clone(), p.values.normalized())
@@ -693,31 +695,35 @@ impl Editor {
                 }
             }
             Message::SavePreset => {
-                if let Some(p) = &self.preset {
-                    if let PresetTarget::Custom(index) = p.target {
-                        if p.can_save(presets, index) {
-                            let value = AdvancedPowerPlanTuningPreset {
-                                name: p.name.trim().to_string(),
-                                values: p.values.normalized(),
-                            };
-                            match index {
-                                Some(i) => {
-                                    let Some(existing) = presets.get_mut(i) else {
-                                        return;
-                                    };
-                                    *existing = value;
-                                }
-                                None => presets.push(value),
-                            }
-                            self.preset = None;
-                        }
-                    }
+                let Some(p) = &self.preset else {
+                    return;
+                };
+                let PresetTarget::Custom(index) = p.target else {
+                    return;
+                };
+                let presets = &settings.global().advanced_power_plan_tuning_presets;
+                if !p.can_save(presets, index) || index.is_some_and(|i| i >= presets.len()) {
+                    return;
                 }
+                let value = AdvancedPowerPlanTuningPreset {
+                    name: p.name.trim().to_string(),
+                    values: p.values.normalized(),
+                };
+                settings.edit_global(|settings| {
+                    let presets = &mut settings.advanced_power_plan_tuning_presets;
+                    match index {
+                        Some(i) => presets[i] = value,
+                        None => presets.push(value),
+                    }
+                });
+                self.preset = None;
             }
             Message::ClosePreset => self.preset = None,
             Message::Remove(i) => {
-                if i < presets.len() {
-                    presets.remove(i);
+                if i < settings.global().advanced_power_plan_tuning_presets.len() {
+                    settings.edit_global(|settings| {
+                        settings.advanced_power_plan_tuning_presets.remove(i);
+                    });
                     self.preset = None;
                 }
             }
@@ -1455,6 +1461,14 @@ fn mode_label(mode: EffectivePowerMode) -> String {
 mod tests {
     use super::*;
 
+    fn test_settings() -> SettingsEditor {
+        SettingsEditor::with_settings(crate::config::Settings::default())
+    }
+
+    fn saved_presets(settings: &SettingsEditor) -> &[AdvancedPowerPlanTuningPreset] {
+        &settings.global().advanced_power_plan_tuning_presets
+    }
+
     #[test]
     fn invalid_percentages_block_review_and_confirmation_until_resolved_or_reset() {
         let values = AdvancedPowerPlanTuningValues::for_preset(ProcessorPowerPreset::Balanced);
@@ -1466,14 +1480,14 @@ mod tests {
             values: Some(current.writable()),
             ..Default::default()
         };
-        let mut presets = vec![];
+        let mut settings = test_settings();
         editor.update(
-            &mut presets,
+            &mut settings,
             &[],
             Message::ValueText(Source::Ac, Field::Parking, "".into()),
         );
         editor.update(
-            &mut presets,
+            &mut settings,
             &[],
             Message::ValueText(Source::Battery, Field::Boost, "101".into()),
         );
@@ -1501,21 +1515,21 @@ mod tests {
         assert!(editor.review.is_none());
         assert_eq!(editor.status, error);
         editor.update(
-            &mut presets,
+            &mut settings,
             &[],
             Message::Value(Source::Ac, Field::Parking, 0),
         );
         assert!(!editor.invalid_percentages[0].any());
         assert!(editor.invalid_percentages[1].any());
         editor.update(
-            &mut presets,
+            &mut settings,
             &[],
             Message::Load(Source::Battery, PresetChoice("Balanced".into(), values)),
         );
         assert!(!editor.has_invalid_inputs());
         let invalidate = |editor: &mut Editor| {
             editor.update(
-                &mut vec![],
+                &mut test_settings(),
                 &[],
                 Message::ValueText(Source::Ac, Field::Parking, "".into()),
             );
@@ -1536,21 +1550,21 @@ mod tests {
     #[test]
     fn invalid_preset_values_refuse_save_without_changing_the_page_draft() {
         let mut editor = Editor::default();
-        let mut presets = vec![];
+        let mut settings = test_settings();
         editor.update(
-            &mut presets,
+            &mut settings,
             &[],
             Message::OpenPreset(PresetTarget::Custom(None)),
         );
-        editor.update(&mut presets, &[], Message::PresetName("Fixture".into()));
+        editor.update(&mut settings, &[], Message::PresetName("Fixture".into()));
         editor.invalid_percentages[0].edit(Field::Parking, "".into());
         editor.update(
-            &mut presets,
+            &mut settings,
             &[],
             Message::PresetValueText(Field::Boost, "".into()),
         );
-        editor.update(&mut presets, &[], Message::SavePreset);
-        assert!(presets.is_empty());
+        editor.update(&mut settings, &[], Message::SavePreset);
+        assert!(saved_presets(&settings).is_empty());
         assert!(editor.preset.is_some());
         for (field, value) in [
             (Field::Boost, "80"),
@@ -1558,13 +1572,13 @@ mod tests {
             (Field::Maximum, "10"),
         ] {
             editor.update(
-                &mut presets,
+                &mut settings,
                 &[],
                 Message::PresetValueText(field, value.into()),
             );
         }
-        editor.update(&mut presets, &[], Message::SavePreset);
-        assert!(presets.is_empty());
+        editor.update(&mut settings, &[], Message::SavePreset);
+        assert!(saved_presets(&settings).is_empty());
         assert_eq!(
             editor
                 .preset
@@ -1576,14 +1590,23 @@ mod tests {
             10
         );
         editor.update(
-            &mut presets,
+            &mut settings,
             &[],
             Message::PresetValueText(Field::Minimum, "10".into()),
         );
-        editor.update(&mut presets, &[], Message::SavePreset);
-        assert_eq!(presets[0].values.processor.boost_policy, 80);
-        assert_eq!(presets[0].values.processor.performance_min, 10);
-        assert_eq!(presets[0].values.processor.performance_max, 10);
+        editor.update(&mut settings, &[], Message::SavePreset);
+        assert_eq!(
+            saved_presets(&settings)[0].values.processor.boost_policy,
+            80
+        );
+        assert_eq!(
+            saved_presets(&settings)[0].values.processor.performance_min,
+            10
+        );
+        assert_eq!(
+            saved_presets(&settings)[0].values.processor.performance_max,
+            10
+        );
         assert!(
             editor.has_invalid_inputs(),
             "preset Save must leave the page draft alone"
@@ -1757,7 +1780,7 @@ mod tests {
         };
 
         editor.review = Some(review());
-        editor.update(&mut vec![], &[], Message::CancelApply);
+        editor.update(&mut test_settings(), &[], Message::CancelApply);
         assert!(!editor.confirm_apply(&[]));
         assert_eq!(editor.values, Some(draft));
         assert!(editor.dirty);
@@ -1796,7 +1819,11 @@ mod tests {
         let mut editor = Editor::default();
         editor.ensure_plan(&plans);
         assert_eq!(editor.selected_plan(&plans), Some(&plans[1]));
-        editor.update(&mut vec![], &plans, Message::Plan(plans[0].guid.clone()));
+        editor.update(
+            &mut test_settings(),
+            &plans,
+            Message::Plan(plans[0].guid.clone()),
+        );
         assert_eq!(editor.selected_plan(&plans), Some(&plans[1]));
 
         let current = AdvancedPowerPlanTuningSourceValues::same(
@@ -1938,13 +1965,13 @@ mod tests {
             ..Default::default()
         };
         editor.update(
-            &mut vec![],
+            &mut test_settings(),
             &[],
             Message::Boost(Source::Ac, ProcessorBoostMode::Disabled),
         );
         assert!(!editor.dirty);
         editor.update(
-            &mut vec![],
+            &mut test_settings(),
             &[],
             Message::Scheduling(
                 Source::Ac,
@@ -1958,7 +1985,7 @@ mod tests {
             Some(ProcessorSchedulingPolicy::PerformanceProcessors)
         );
         editor.update(
-            &mut vec![],
+            &mut test_settings(),
             &[],
             Message::Load(
                 Source::Ac,
@@ -1977,40 +2004,40 @@ mod tests {
             values.short_scheduling_policy
         );
         assert_eq!(editor.values.unwrap().ac.processor.boost_mode, None);
-        let mut presets = vec![];
+        let mut settings = test_settings();
         editor.update(
-            &mut presets,
+            &mut settings,
             &[],
             Message::OpenPreset(PresetTarget::Custom(None)),
         );
-        editor.update(&mut presets, &[], Message::PresetName("Scheduling".into()));
+        editor.update(&mut settings, &[], Message::PresetName("Scheduling".into()));
         editor.update(
-            &mut presets,
+            &mut settings,
             &[],
             Message::PresetScheduling(
                 SchedulingField::ShortRunning,
                 Some(ProcessorSchedulingPolicy::PreferEfficiencyProcessors),
             ),
         );
-        editor.update(&mut presets, &[], Message::SavePreset);
+        editor.update(&mut settings, &[], Message::SavePreset);
         assert_eq!(
-            presets[0].values.short_scheduling_policy,
+            saved_presets(&settings)[0].values.short_scheduling_policy,
             Some(ProcessorSchedulingPolicy::PreferEfficiencyProcessors)
         );
-        let choice = PresetChoice("Scheduling".into(), presets[0].values);
+        let choice = PresetChoice("Scheduling".into(), saved_presets(&settings)[0].values);
         editor.update(
-            &mut presets,
+            &mut settings,
             &[],
             Message::Load(Source::Battery, choice.clone()),
         );
         assert_eq!(
             editor.values.unwrap().battery.short_scheduling_policy,
-            presets[0].values.short_scheduling_policy
+            saved_presets(&settings)[0].values.short_scheduling_policy
         );
         editor.values.as_mut().unwrap().battery.scheduling_policy = None;
         editor.dirty = false;
         editor.update(
-            &mut presets,
+            &mut settings,
             &[],
             Message::Scheduling(
                 Source::Battery,
@@ -2019,15 +2046,15 @@ mod tests {
             ),
         );
         assert!(!editor.dirty);
-        editor.update(&mut presets, &[], Message::Load(Source::Battery, choice));
+        editor.update(&mut settings, &[], Message::Load(Source::Battery, choice));
         assert_eq!(editor.values.unwrap().battery.scheduling_policy, None);
         editor.update(
-            &mut presets,
+            &mut settings,
             &[],
             Message::OpenPreset(PresetTarget::BuiltIn(ProcessorPowerPreset::Balanced)),
         );
         editor.update(
-            &mut presets,
+            &mut settings,
             &[],
             Message::PresetScheduling(
                 SchedulingField::LongRunning,
@@ -2061,14 +2088,18 @@ mod tests {
             if automatic {
                 editor.ensure_plan(&plans);
             } else {
-                editor.update(&mut vec![], &plans, Message::Plan(replacement.guid.clone()));
+                editor.update(
+                    &mut test_settings(),
+                    &plans,
+                    Message::Plan(replacement.guid.clone()),
+                );
             }
             assert_eq!(editor.target.as_deref(), Some(replacement.guid.as_str()));
             assert!(editor.values.is_none());
             assert!(editor.personality.is_none());
             assert_eq!(editor.selected_presets, [None, None]);
             editor.update(
-                &mut vec![],
+                &mut test_settings(),
                 &plans,
                 Message::Value(Source::Ac, Field::Minimum, 25),
             );
@@ -2088,12 +2119,12 @@ mod tests {
             PresetChoice("Mine".into(), values),
         ];
         editor.update(
-            &mut vec![],
+            &mut test_settings(),
             &[],
             Message::Load(Source::Ac, options[0].clone()),
         );
         editor.update(
-            &mut vec![],
+            &mut test_settings(),
             &[],
             Message::Load(Source::Battery, options[1].clone()),
         );
@@ -2106,7 +2137,7 @@ mod tests {
             Some(options[1].clone())
         );
         editor.update(
-            &mut vec![],
+            &mut test_settings(),
             &[],
             Message::Load(Source::Ac, options[1].clone()),
         );
@@ -2133,12 +2164,13 @@ mod tests {
     #[test]
     fn presets_are_unique_readonly_and_change_only_requested_source() {
         let mut e = Editor::default();
-        let mut presets = vec![];
+        let mut settings = test_settings();
+        settings.select_power_source(crate::config::PowerSourceProfile::OnBattery);
         let balanced = AdvancedPowerPlanTuningValues::for_preset(ProcessorPowerPreset::Balanced);
         let loaded = AdvancedPowerPlanTuningSourceValues::same(balanced);
         e.values = Some(loaded);
         e.update(
-            &mut presets,
+            &mut settings,
             &[],
             Message::Load(
                 Source::Ac,
@@ -2150,21 +2182,22 @@ mod tests {
         );
         assert_eq!(e.values.unwrap().battery, loaded.battery);
         e.update(
-            &mut presets,
+            &mut settings,
             &[],
             Message::OpenPreset(PresetTarget::Custom(None)),
         );
-        e.update(&mut presets, &[], Message::PresetName(" Custom ".into()));
-        e.update(&mut presets, &[], Message::SavePreset);
-        assert_eq!(presets[0].name, "Custom");
-        assert!(!valid_name(&presets, None, "CUSTOM"));
+        e.update(&mut settings, &[], Message::PresetName(" Custom ".into()));
+        e.update(&mut settings, &[], Message::SavePreset);
+        assert_eq!(saved_presets(&settings)[0].name, "Custom");
+        assert!(settings.global().on_battery.is_none());
+        assert!(!valid_name(saved_presets(&settings), None, "CUSTOM"));
         e.update(
-            &mut presets,
+            &mut settings,
             &[],
             Message::OpenPreset(PresetTarget::BuiltIn(ProcessorPowerPreset::Balanced)),
         );
         e.update(
-            &mut presets,
+            &mut settings,
             &[],
             Message::PresetValueText(Field::Parking, "99".into()),
         );
