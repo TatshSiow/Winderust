@@ -20,6 +20,7 @@ use std::{collections::BTreeMap, path::PathBuf};
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct InstanceBalancingSnapshot {
     pub(crate) enabled: bool,
+    pub(crate) process_activity_known: bool,
     pub(crate) scanned_processes: usize,
     pub(crate) adjusted_processes: usize,
     pub(crate) skipped_processes: usize,
@@ -532,6 +533,8 @@ impl RuntimeCore {
             return snapshot;
         }
         let last_rule = enabled.last().copied();
+        let rule_count = enabled.len();
+        let mut observed_rules = 0;
         for (index, observation) in enabled.into_iter().zip(observations) {
             let rule = &mut runtime.rules[index];
             if !rule.settings.enabled {
@@ -554,6 +557,7 @@ impl RuntimeCore {
                     rule,
                     active,
                 )?;
+                observed_rules += 1;
                 snapshot.scanned_processes += rule.retained.len();
                 snapshot.skipped_processes += excluded.len();
                 exclusions = excluded;
@@ -680,6 +684,7 @@ impl RuntimeCore {
                 snapshot.last_error = Some(error);
             }
         }
+        snapshot.process_activity_known = observed_rules != 0 && observed_rules == rule_count;
         if let Some(error) = &snapshot.last_error {
             snapshot.detail = Some(InstanceBalancingDetail::Diagnostic(error.clone()));
             snapshot.exclusions.clear();

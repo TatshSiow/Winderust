@@ -896,10 +896,11 @@ fn feature_status_summary(
         }
         Page::InstanceBalancing => {
             let status = &runtime.feature_status.instance_balancing;
-            let observed = status.enabled && status.detail.is_some();
+            let observed = status.enabled && status.process_activity_known;
+            let adjusted_known = observed || (status.enabled && status.adjusted_processes > 0);
             FeatureStatusSummary {
                 scanned: observed.then_some(status.scanned_processes),
-                adjusted: observed.then_some(status.adjusted_processes),
+                adjusted: adjusted_known.then_some(status.adjusted_processes),
                 protected_or_denied: None,
                 skipped: observed.then_some(status.skipped_processes),
                 last_error: status.last_error.as_deref(),
@@ -1169,6 +1170,15 @@ mod tests {
         balancing.enabled = true;
         balancing.detail = Some(crate::automation::InstanceBalancingDetail::WaitingForStableCohort);
         assert_eq!(state(&settings, &runtime), FeatureRunState::Waiting);
+        assert_eq!(
+            feature_status_summary(Page::InstanceBalancing, &runtime)
+                .unwrap()
+                .scanned,
+            None
+        );
+        std::sync::Arc::make_mut(&mut runtime.feature_status)
+            .instance_balancing
+            .process_activity_known = true;
         assert_eq!(
             feature_status_summary(Page::InstanceBalancing, &runtime)
                 .unwrap()

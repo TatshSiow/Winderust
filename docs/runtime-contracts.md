@@ -640,6 +640,8 @@ Read the relevant section before changing feature policy, ownership, restoration
   changes that prevent application remain Skipped.
   The live Status panel translates waiting reasons, assignments, and explicit CPU
   selection exclusions in the current UI language from the existing observation.
+  Scanned and skipped totals require complete coverage of enabled rules. Verified
+  adjustments remain visible when another rule's observation is unavailable.
   Explicit CPU selection exclusions remain visible across rules during assignment.
 - Observed cohort, pool or control-context changes withdraw current preferences
   before qualifying again. Topology changes remain paused until explicit rearm.
