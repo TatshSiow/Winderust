@@ -184,7 +184,8 @@ fn a_partial_apply_stops_the_group_and_release_restores_original_defaults() {
         },
     )
     .unwrap_err();
-    assert!(error.contains("injected CPU Set failure"));
+    assert_eq!(error.outcome, ActionLogResult::Failed);
+    assert!(error.reason.contains("injected CPU Set failure"));
     assert_eq!(authorized, [1, 2]);
     assert_eq!(state.borrow().cpu_sets[&1], [100]);
     assert!(state.borrow().writes.iter().all(|(id, _)| *id != 3));
@@ -225,7 +226,8 @@ fn revoking_context_mid_group_stops_before_the_next_native_change() {
         },
     )
     .unwrap_err();
-    assert_eq!(error, "context revoked");
+    assert_eq!(error.outcome, ActionLogResult::Skipped);
+    assert_eq!(error.reason, "context revoked");
     assert_eq!(state.borrow().writes, [(1, vec![100])]);
     assert_eq!(
         release(

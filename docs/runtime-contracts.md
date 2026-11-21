@@ -580,6 +580,8 @@ Read the relevant section before changing feature policy, ownership, restoration
   watcher changes cancel subsequent work; an admitted native operation may finish.
   Native writes are not atomic across members. Any failed or shadowed share stops
   the plan and withdraws every balancing claim for the rule, retaining failed cleanup.
+  A failed target operation records Failed in Action Log. Context and eligibility
+  changes that prevent application remain Skipped.
 - Observed cohort, pool or control-context changes withdraw current preferences
   before qualifying again. Topology changes remain paused until explicit rearm.
   Rule/feature/master edits preserve reset intents even when reversed between worker

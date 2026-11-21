@@ -53,7 +53,7 @@ struct Rule {
     retained: BTreeMap<ProcessTargetKey, Member>,
     exited: BTreeMap<ProcessTargetKey, ProcessControlTarget>,
     accepted: BTreeSet<ProcessTargetKey>,
-    last_message: Option<String>,
+    last_action: Option<(ActionLogResult, String)>,
 }
 
 #[derive(Default)]
@@ -102,7 +102,7 @@ impl Runtime {
                     retained: BTreeMap::new(),
                     exited: BTreeMap::new(),
                     accepted: BTreeSet::new(),
-                    last_message: None,
+                    last_action: None,
                 }
             })
             .collect();
@@ -292,6 +292,20 @@ fn context_is_current(
     true
 }
 
+struct PlanRejection {
+    outcome: ActionLogResult,
+    reason: String,
+}
+
+impl From<String> for PlanRejection {
+    fn from(reason: String) -> Self {
+        Self {
+            outcome: ActionLogResult::Skipped,
+            reason,
+        }
+    }
+}
+
 fn apply_plan<P: CpuAllocationPlatform>(
     coordinator: &mut CpuAllocationCoordinator<P>,
     inventory: &mut CpuSetInventory,
@@ -300,7 +314,7 @@ fn apply_plan<P: CpuAllocationPlatform>(
     generation: u64,
     allow_cross_session: bool,
     mut authorize: impl FnMut(&ProcessControlTarget) -> Result<(), String>,
-) -> Result<(), String> {
+) -> Result<(), PlanRejection> {
     for assignment in assignments {
         authorize(&assignment.target)?;
         let result = coordinator
@@ -317,12 +331,20 @@ fn apply_plan<P: CpuAllocationPlatform>(
                 },
                 allow_cross_session,
             )
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| PlanRejection {
+                outcome: match error {
+                    CpuAllocationApplyError::Target(ProcessControlError::Failed(_)) => {
+                        ActionLogResult::Failed
+                    }
+                    _ => ActionLogResult::Skipped,
+                },
+                reason: error.to_string(),
+            })?;
         if !matches!(
             result,
             CpuAllocationApplyOutcome::Applied | CpuAllocationApplyOutcome::Unchanged
         ) {
-            return Err(t!("instance_balancing.not_accepted").to_string());
+            return Err(t!("instance_balancing.not_accepted").to_string().into());
         }
     }
     Ok(())
@@ -438,7 +460,7 @@ impl RuntimeCore {
             let mut inventory = CpuSetInventory::default();
             let mut exclusions = Vec::new();
             let mut waiting_message = t!("instance_balancing.waiting_stable").to_string();
-            let result = (|| -> Result<Option<Vec<Assignment>>, String> {
+            let result = (|| -> Result<Option<Vec<Assignment>>, PlanRejection> {
                 rule.observe_members(observation)?;
                 let topology = topology.as_ref().map_err(Clone::clone)?;
                 rule.policy
@@ -491,7 +513,7 @@ impl RuntimeCore {
                     active,
                 )?;
                 if fresh_cohort != cohort || fresh_excluded != exclusions {
-                    return Err(t!("instance_balancing.changed").to_string());
+                    return Err(t!("instance_balancing.changed").to_string().into());
                 }
                 apply_plan(
                     &mut self.cpu_allocation_coordinator,
@@ -542,19 +564,23 @@ impl RuntimeCore {
                     rule.accepted.clear();
                     (ActionLogResult::Skipped, waiting_message)
                 }
-                Err(reason) => {
+                Err(PlanRejection { outcome, reason }) => {
                     rule.accepted.clear();
                     rule.policy.invalidate();
                     snapshot.failed_processes += 1;
                     snapshot.last_error = Some(reason.clone());
-                    (ActionLogResult::Skipped, reason)
+                    (outcome, reason)
                 }
             };
             if !exclusions.is_empty() {
                 message.push_str(&format!(" {}", exclusions.join("; ")));
             }
             snapshot.message.clone_from(&message);
-            if rule.last_message.as_ref() != Some(&message) {
+            if !rule
+                .last_action
+                .as_ref()
+                .is_some_and(|(previous, detail)| *previous == outcome && detail == &message)
+            {
                 self.action_log.record(
                     ActionLogFeature::InstanceBalancing,
                     None,
@@ -562,7 +588,7 @@ impl RuntimeCore {
                     outcome,
                     message.clone(),
                 );
-                rule.last_message = Some(message);
+                rule.last_action = Some((outcome, message));
             }
             if let Some(error) = release(
                 runtime,
