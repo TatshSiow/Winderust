@@ -133,21 +133,27 @@ pub(crate) fn matching_by_focus_rule<'a>(
     })
 }
 
-fn decide_plan(settings: &Settings, input: DecisionInput) -> DecisionOutcome {
+pub(crate) fn ordinary_power_plan_stop(
+    settings: &Settings,
+    plugged_in: Option<bool>,
+) -> Option<(DecisionState, &'static str)> {
     if !settings.general.enabled {
-        return DecisionOutcome::without_power_plan(
-            DecisionState::Disabled,
-            "Automation is disabled.",
-        );
-    }
-
-    if settings.general.pause_power_plan_switching_while_plugged_in
-        && input.plugged_in == Some(true)
+        Some((DecisionState::Disabled, "Automation is disabled."))
+    } else if settings.general.pause_power_plan_switching_while_plugged_in
+        && plugged_in == Some(true)
     {
-        return DecisionOutcome::without_power_plan(
+        Some((
             DecisionState::PausedWhilePluggedIn,
             "Power-plan switching is paused while plugged in.",
-        );
+        ))
+    } else {
+        None
+    }
+}
+
+fn decide_plan(settings: &Settings, input: DecisionInput) -> DecisionOutcome {
+    if let Some((state, reason)) = ordinary_power_plan_stop(settings, input.plugged_in) {
+        return DecisionOutcome::without_power_plan(state, reason);
     }
 
     let mut winner = None;

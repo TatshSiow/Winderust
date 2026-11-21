@@ -4,6 +4,7 @@ use crate::runtime::observations::CycleObservations;
 use crate::{
     action_log::{ActionLogFeature, ActionLogResult},
     control::memory_priority::MemoryPriorityReleaseOwner,
+    rules::decision_engine::ordinary_power_plan_stop,
 };
 use std::path::PathBuf;
 
@@ -2022,21 +2023,29 @@ impl RuntimeCore {
             || status.owner != Some(crate::control::power_plan::PowerPlanOwner::OrdinaryAutomation)
         {
             self.power_plan_rule_context = None;
-        } else if self.power_plan_rule_context.is_none() {
-            // An interrupted check left no choice from the current policy.
+            return (status, None);
+        }
+        let stop_state = self.last_settings.as_ref().and_then(|settings| {
+            ordinary_power_plan_stop(settings, self.last_power_source.flatten())
+                .map(|(state, _)| state)
+        });
+        let context = self.power_plan_rule_context.as_ref();
+        if let Some(decision_state) = stop_state.or_else(|| {
+            context
+                .is_none()
+                .then_some(DecisionState::WaitingForObservation)
+        }) {
+            // This is a display projection. The controller still owns any pending restoration.
             return (
                 PowerPlanStatus {
                     current_guid: status.current_guid,
-                    decision_state: Some(DecisionState::WaitingForObservation),
+                    decision_state: Some(decision_state),
                     ..Default::default()
                 },
                 None,
             );
         }
-        let rule_context = self
-            .power_plan_rule_context
-            .as_ref()
-            .filter(|_| status.rule_index.is_some());
+        let rule_context = context.filter(|_| status.rule_index.is_some());
         (status, rule_context)
     }
 

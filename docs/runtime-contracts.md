@@ -320,6 +320,9 @@ Read the relevant section before changing feature policy, ownership, restoration
   successful switch.
 - When the last automation feature releases the worker, Power Plan Control
   receives the last verified plan and any cleanup error before the worker exits.
+- If a plan read fails after automation is disabled or paused on A/C, Power Plan
+  Control shows the effective stop state beside the last verified plan. A pending
+  restoration keeps its own status.
 - By Focus and By Running App rules choose one executable path or exact executable
   filename. A name rule confirms the filename against the observed absolute image
   path. The first enabled rule with a matching target and selected plan wins within
