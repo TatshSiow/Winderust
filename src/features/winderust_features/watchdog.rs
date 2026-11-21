@@ -109,6 +109,13 @@ struct AppState {
     resources: [ResourceState; 2],
 }
 
+impl AppState {
+    fn interrupt_observation(&mut self) {
+        self.members.values_mut().for_each(|sample| *sample = None);
+        self.resources.iter_mut().for_each(ResourceState::interrupt);
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct WatchdogManager {
     settings: WatchdogSettings,
@@ -196,7 +203,10 @@ impl WatchdogManager {
         let processes = match observations.processes_with_paths() {
             Ok(processes) => processes,
             Err(error) => {
-                self.states.clear();
+                self.note_settings(settings);
+                for state in self.states.values_mut() {
+                    state.interrupt_observation();
+                }
                 return (
                     WatchdogSnapshot {
                         last_error: Some(error),
@@ -230,6 +240,13 @@ impl WatchdogManager {
         self.evaluate(settings, &matched, &samples, total_memory, Instant::now())
     }
 
+    fn note_settings(&mut self, settings: &WatchdogSettings) {
+        if self.settings != *settings {
+            self.states.clear();
+            self.settings.clone_from(settings);
+        }
+    }
+
     fn evaluate(
         &mut self,
         settings: &WatchdogSettings,
@@ -238,10 +255,7 @@ impl WatchdogManager {
         total_memory: Option<u64>,
         now: Instant,
     ) -> (WatchdogSnapshot, Vec<WatchdogEvent>) {
-        if self.settings != *settings {
-            self.states.clear();
-            self.settings.clone_from(settings);
-        }
+        self.note_settings(settings);
         let mut states = BTreeMap::new();
         let mut snapshot = WatchdogSnapshot::default();
         let mut events = Vec::new();
@@ -298,15 +312,17 @@ impl WatchdogManager {
                     self.states.remove(&previous)
                 })
                 .unwrap_or_default();
-            if state
-                .last_observed
-                .is_some_and(|last| now.saturating_duration_since(last) > Duration::from_secs(3))
-                || !members
-                    .keys()
-                    .any(|identity| state.members.contains_key(identity))
+            if !members
+                .keys()
+                .any(|identity| state.members.contains_key(identity))
             {
                 // A restarted app cannot inherit the previous app's sustained interval.
                 state = AppState::default();
+            } else if state
+                .last_observed
+                .is_some_and(|last| now.saturating_duration_since(last) > Duration::from_secs(3))
+            {
+                state.interrupt_observation();
             }
             // Catalog identity preserves the incident when a member's CPU baseline is unavailable.
             let previous_members = std::mem::replace(&mut state.members, members);
@@ -695,14 +711,21 @@ mod tests {
         assert!(tick(&mut manager, &settings, &process, start, 0, Some(950)).is_empty());
         assert!(tick(&mut manager, &settings, &process, start, 10, Some(950)).is_empty());
         assert!(tick(&mut manager, &settings, &process, start, 11, Some(950)).is_empty());
+        assert_eq!(
+            tick(&mut manager, &settings, &process, start, 12, Some(950)).len(),
+            1
+        );
+        for second in 20..=22 {
+            assert!(tick(&mut manager, &settings, &process, start, second, Some(950)).is_empty());
+        }
         settings.notify = false;
-        assert!(tick(&mut manager, &settings, &process, start, 12, Some(950)).is_empty());
+        assert!(tick(&mut manager, &settings, &process, start, 23, Some(950)).is_empty());
         let mut observations = CycleObservations::default();
         let (status, events) = manager.update(&settings, false, &mut observations);
         assert_eq!(status, WatchdogSnapshot::default());
         assert!(events.is_empty());
         assert!(manager.states.is_empty());
-        assert!(tick(&mut manager, &settings, &process, start, 14, Some(950)).is_empty());
+        assert!(tick(&mut manager, &settings, &process, start, 25, Some(950)).is_empty());
         settings.enabled = false;
         assert!(manager
             .update(&settings, true, &mut observations)
