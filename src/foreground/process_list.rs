@@ -20,6 +20,7 @@ use windows_sys::Win32::{
         GetLastError, ERROR_INSUFFICIENT_BUFFER, ERROR_NO_MORE_FILES, FILETIME, HANDLE,
         INVALID_HANDLE_VALUE, NTSTATUS,
     },
+    Globalization::{CompareStringOrdinal, CSTR_EQUAL},
     Security::{
         GetTokenInformation, IsWellKnownSid, LookupAccountSidW, TokenUser, WinLocalServiceSid,
         WinLocalSystemSid, WinNetworkServiceSid, PSID, SID_NAME_USE, TOKEN_QUERY, TOKEN_USER,
@@ -872,7 +873,8 @@ pub fn same_executable_path(left: &Path, right: &Path) -> bool {
     if left_key == right_key {
         return true;
     }
-    if !left_key.eq_ignore_ascii_case(&right_key) {
+    let ascii_case_match = left_key.eq_ignore_ascii_case(&right_key);
+    if !ascii_case_match && !unicode_case_match(&left_key, &right_key) {
         return false;
     }
 
@@ -886,9 +888,26 @@ pub fn same_executable_path(left: &Path, right: &Path) -> bool {
                         normalize_executable_path(left) == normalize_executable_path(right)
                     })
         }
-        (Err(_), Err(_)) => true,
+        (Err(_), Err(_)) => ascii_case_match,
         _ => false,
     }
+}
+
+// Ordinal equality only decides whether two Unicode spellings warrant canonical readback.
+fn unicode_case_match(left: &str, right: &str) -> bool {
+    if left.is_ascii() && right.is_ascii() {
+        return false;
+    }
+    let left: Vec<_> = left.encode_utf16().collect();
+    let right: Vec<_> = right.encode_utf16().collect();
+    let (Ok(left_len), Ok(right_len)) = (i32::try_from(left.len()), i32::try_from(right.len()))
+    else {
+        return false;
+    };
+    // SAFETY: Both buffers remain alive for the call and each count is their exact UTF-16 length.
+    let result =
+        unsafe { CompareStringOrdinal(left.as_ptr(), left_len, right.as_ptr(), right_len, 1) };
+    result == CSTR_EQUAL
 }
 
 pub fn process_matches_executable_path(process: &ProcessInfo, executable_path: &str) -> bool {
