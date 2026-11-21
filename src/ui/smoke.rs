@@ -292,6 +292,8 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
         let was_open = app.side_panel_open;
         let navigate = app.update(Message::Page(page));
         if matches!(extra, Some(66..=69)) {
+            use crate::automation::InstanceBalancingDetail;
+
             app.reset_editors();
             app.settings.edit_global(|settings| {
                 settings.general.enabled = true;
@@ -314,12 +316,11 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             status.enabled = true;
             status.scanned_processes = 4;
             status.adjusted_processes = if extra == Some(66) { 4 } else { 0 };
-            status.message = if extra == Some(66) {
-                t!("instance_balancing.assigned", count = 4)
+            status.detail = Some(if extra == Some(66) {
+                InstanceBalancingDetail::Assigned(4)
             } else {
-                t!("instance_balancing.waiting_stable")
-            }
-            .to_string();
+                InstanceBalancingDetail::WaitingForStableCohort
+            });
             if matches!(extra, Some(68..=69)) {
                 let before = app.settings.global().instance_balancing.clone();
                 let _ = app.update(Message::InstanceBalancing(

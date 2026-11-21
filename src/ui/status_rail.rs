@@ -119,24 +119,23 @@ pub(super) fn view<'a>(
             "common.unknown",
         ),
     };
+    let detail = if page == Page::InstanceBalancing
+        && available
+        && !matches!(state, FeatureRunState::Inactive | FeatureRunState::Unknown)
+        && runtime.worker_error.is_none()
+    {
+        runtime.feature_status.instance_balancing.message()
+    } else {
+        None
+    }
+    .unwrap_or_else(|| t!(detail).into_owned());
     let mut body = column![
         container(text(t!(state_label).to_string()).size(design::typography::SECONDARY))
             .padding([4, 8])
             .style(move |theme| super::widgets::rule_status_chip(theme, color)),
-        text(
-            if page == Page::InstanceBalancing
-                && available
-                && !matches!(state, FeatureRunState::Inactive | FeatureRunState::Unknown)
-                && runtime.worker_error.is_none()
-                && !runtime.feature_status.instance_balancing.message.is_empty()
-            {
-                runtime.feature_status.instance_balancing.message.clone()
-            } else {
-                t!(detail).to_string()
-            }
-        )
-        .size(design::typography::CAPTION)
-        .style(text::secondary)
+        text(detail)
+            .size(design::typography::CAPTION)
+            .style(text::secondary)
     ]
     .spacing(design::space::MEDIUM);
     if power_feature.is_some() {
@@ -467,7 +466,7 @@ fn sidebar_state(
     }
     let features = &runtime.feature_status;
     if page == Page::InstanceBalancing
-        && (!features.instance_balancing.enabled || features.instance_balancing.message.is_empty())
+        && (!features.instance_balancing.enabled || features.instance_balancing.detail.is_none())
     {
         return FeatureRunState::Unknown;
     }
@@ -760,30 +759,36 @@ fn feature_status_summary(
                 action_log_feature: ActionLogFeature::CpuLimiter,
             }
         }
-        Page::CpuSetsSoft | Page::ProcessorAffinityHard | Page::InstanceBalancing => {
+        Page::CpuSetsSoft | Page::ProcessorAffinityHard => {
             let (status, feature) = match page {
                 Page::CpuSetsSoft => (
                     &runtime.feature_status.cpu_sets_soft,
                     ActionLogFeature::CpuSetsSoft,
-                ),
-                Page::InstanceBalancing => (
-                    &runtime.feature_status.instance_balancing,
-                    ActionLogFeature::InstanceBalancing,
                 ),
                 _ => (
                     &runtime.feature_status.processor_affinity_hard,
                     ActionLogFeature::ProcessorAffinityHard,
                 ),
             };
-            let observed = page != Page::InstanceBalancing
-                || (status.enabled && !status.message.is_empty());
+            FeatureStatusSummary {
+                scanned: Some(status.scanned_processes),
+                adjusted: Some(status.adjusted_processes),
+                protected_or_denied: None,
+                skipped: Some(status.skipped_processes),
+                last_error: status.last_error.as_deref(),
+                action_log_feature: feature,
+            }
+        }
+        Page::InstanceBalancing => {
+            let status = &runtime.feature_status.instance_balancing;
+            let observed = status.enabled && status.detail.is_some();
             FeatureStatusSummary {
                 scanned: observed.then_some(status.scanned_processes),
                 adjusted: observed.then_some(status.adjusted_processes),
                 protected_or_denied: None,
                 skipped: observed.then_some(status.skipped_processes),
                 last_error: status.last_error.as_deref(),
-                action_log_feature: feature,
+                action_log_feature: ActionLogFeature::InstanceBalancing,
             }
         }
         Page::AppSuspension => {
@@ -902,7 +907,7 @@ mod tests {
         let balancing =
             &mut std::sync::Arc::make_mut(&mut runtime.feature_status).instance_balancing;
         balancing.enabled = true;
-        balancing.message = t!("instance_balancing.waiting_stable").to_string();
+        balancing.detail = Some(crate::automation::InstanceBalancingDetail::WaitingForStableCohort);
         assert_eq!(state(&settings, &runtime), FeatureRunState::Waiting);
         assert_eq!(
             feature_status_summary(Page::InstanceBalancing, &runtime)

@@ -584,6 +584,8 @@ Read the relevant section before changing feature policy, ownership, restoration
   the plan and withdraws every balancing claim for the rule, retaining failed cleanup.
   A failed target operation records Failed in Action Log. Context and eligibility
   changes that prevent application remain Skipped.
+  The live Status panel translates waiting reasons, assignments, and explicit CPU
+  selection exclusions in the current UI language from the existing observation.
 - Observed cohort, pool or control-context changes withdraw current preferences
   before qualifying again. Topology changes remain paused until explicit rearm.
   Rule/feature/master edits preserve reset intents even when reversed between worker

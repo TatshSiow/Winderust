@@ -118,7 +118,7 @@ pub(super) fn update_keep_running_status(
 
 pub(super) fn update_instance_balancing_status(
     shared: &SharedAutomationState,
-    status: CpuAllocationSnapshot,
+    status: InstanceBalancingSnapshot,
 ) {
     update_feature_status(
         shared,

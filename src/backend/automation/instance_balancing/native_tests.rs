@@ -139,12 +139,12 @@ fn tick(
         Instant::now() < deadline,
         "Native producer exceeded its deadline"
     );
-    assert_eq!(status.last_error, None, "{}", status.message);
-    assert_eq!(status.failed_processes, 0, "{}", status.message);
+    assert_eq!(status.last_error, None, "{:?}", status.detail);
+    assert_eq!(status.failed_processes, 0, "{:?}", status.detail);
     if status.enabled && status.adjusted_processes == 0 {
         assert_eq!(
-            status.message,
-            t!("instance_balancing.waiting_stable").to_string()
+            status.detail,
+            Some(InstanceBalancingDetail::WaitingForStableCohort)
         );
     }
     status.adjusted_processes

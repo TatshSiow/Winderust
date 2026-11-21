@@ -17,6 +17,79 @@ use crate::{
 use rust_i18n::t;
 use std::{collections::BTreeMap, path::PathBuf};
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct InstanceBalancingSnapshot {
+    pub(crate) enabled: bool,
+    pub(crate) scanned_processes: usize,
+    pub(crate) adjusted_processes: usize,
+    pub(crate) skipped_processes: usize,
+    pub(crate) failed_processes: usize,
+    pub(crate) detail: Option<InstanceBalancingDetail>,
+    pub(crate) exclusions: Vec<InstanceBalancingExclusion>,
+    pub(crate) last_error: Option<String>,
+}
+
+impl InstanceBalancingSnapshot {
+    pub(crate) fn message(&self) -> Option<String> {
+        self.detail
+            .as_ref()
+            .map(|detail| detail.message(&self.exclusions))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum InstanceBalancingDetail {
+    Disabled,
+    WaitingForContext,
+    WaitingForInstances,
+    WaitingForStableCohort,
+    InsufficientCapacity,
+    Assigned(usize),
+    Diagnostic(String),
+}
+
+impl InstanceBalancingDetail {
+    fn message(&self, exclusions: &[InstanceBalancingExclusion]) -> String {
+        let mut message = match self {
+            Self::Disabled => t!("instance_balancing.disabled"),
+            Self::WaitingForContext => t!("instance_balancing.waiting_context"),
+            Self::WaitingForInstances => t!("instance_balancing.waiting"),
+            Self::WaitingForStableCohort => t!("instance_balancing.waiting_stable"),
+            Self::InsufficientCapacity => t!("instance_balancing.insufficient_capacity"),
+            Self::Assigned(count) => t!("instance_balancing.assigned", count = count),
+            Self::Diagnostic(error) => std::borrow::Cow::Borrowed(error.as_str()),
+        }
+        .into_owned();
+        if !exclusions.is_empty() {
+            let details = exclusions
+                .iter()
+                .map(InstanceBalancingExclusion::message)
+                .collect::<Vec<_>>();
+            message.push(' ');
+            message.push_str(&details.join("; "));
+        }
+        message
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum InstanceBalancingExclusion {
+    ExplicitSelection { process_name: String, pid: u32 },
+    Diagnostic(String),
+}
+
+impl InstanceBalancingExclusion {
+    fn message(&self) -> String {
+        match self {
+            Self::ExplicitSelection { process_name, pid } => format!(
+                "{process_name} ({pid}): {}",
+                t!("instance_balancing.explicit_selection")
+            ),
+            Self::Diagnostic(message) => message.clone(),
+        }
+    }
+}
+
 #[derive(Default)]
 pub(super) struct PendingResets {
     pub(super) all: bool,
@@ -224,7 +297,7 @@ fn prepare_cohort<P: CpuAllocationPlatform>(
     topology: &CpuTopology,
     rule: &Rule,
     settings: &Settings,
-) -> Result<(Cohort, Vec<String>), String> {
+) -> Result<(Cohort, Vec<InstanceBalancingExclusion>), String> {
     let generation = rule
         .generation
         .ok_or_else(|| "Instance Balancing exhausted its rule generations.".to_owned())?;
@@ -236,12 +309,10 @@ fn prepare_cohort<P: CpuAllocationPlatform>(
         }
         let target = target(member)?;
         if explicit_selection(settings, &member.path)? {
-            excluded.push(format!(
-                "{} ({}): {}",
-                target.name,
-                target.id,
-                t!("instance_balancing.explicit_selection")
-            ));
+            excluded.push(InstanceBalancingExclusion::ExplicitSelection {
+                process_name: target.name,
+                pid: target.id,
+            });
             continue;
         }
         match coordinator.instance_balancing_allowed_processors(
@@ -253,7 +324,10 @@ fn prepare_cohort<P: CpuAllocationPlatform>(
         ) {
             Ok(allowed) => members.push((target, allowed)),
             Err(error) if known_exclusion(&error) => {
-                excluded.push(format!("{} ({}): {error}", target.name, target.id))
+                excluded.push(InstanceBalancingExclusion::Diagnostic(format!(
+                    "{} ({}): {error}",
+                    target.name, target.id
+                )))
             }
             Err(error) => return Err(error.to_string()),
         }
@@ -383,7 +457,7 @@ impl RuntimeCore {
         configured: &Arc<Settings>,
         active: &Settings,
         watcher_active: bool,
-    ) -> CpuAllocationSnapshot {
+    ) -> InstanceBalancingSnapshot {
         let runtime = &mut self.instance_balancing;
         let controls = (
             active.cpu_sets_soft.clone(),
@@ -398,15 +472,10 @@ impl RuntimeCore {
             runtime.invalidate();
         }
         runtime.controls = Some(controls);
-        let mut snapshot = CpuAllocationSnapshot {
+        let mut snapshot = InstanceBalancingSnapshot {
             enabled: runtime.enabled,
-            scanned_processes: 0,
-            adjusted_processes: 0,
-            skipped_processes: 0,
-            failed_processes: 0,
-            auto_excluded_processes: Vec::new(),
-            message: t!("instance_balancing.waiting").to_string(),
-            last_error: None,
+            detail: Some(InstanceBalancingDetail::WaitingForInstances),
+            ..Default::default()
         };
         if !runtime.enabled || !active.general.enabled || !watcher_active {
             runtime.invalidate();
@@ -418,11 +487,11 @@ impl RuntimeCore {
         );
         runtime.dirty = false;
         if !runtime.enabled || !active.general.enabled || !watcher_active {
-            snapshot.message = if runtime.enabled && active.general.enabled {
-                t!("instance_balancing.waiting_context").to_string()
+            snapshot.detail = Some(if runtime.enabled && active.general.enabled {
+                InstanceBalancingDetail::WaitingForContext
             } else {
-                t!("instance_balancing.disabled").to_string()
-            };
+                InstanceBalancingDetail::Disabled
+            });
             return snapshot;
         }
         let topology = cpu_allocation::processor_topology();
@@ -459,7 +528,7 @@ impl RuntimeCore {
             }
             let mut inventory = CpuSetInventory::default();
             let mut exclusions = Vec::new();
-            let mut waiting_message = t!("instance_balancing.waiting_stable").to_string();
+            let mut waiting = InstanceBalancingDetail::WaitingForStableCohort;
             let result = (|| -> Result<Option<Vec<Assignment>>, PlanRejection> {
                 rule.observe_members(observation)?;
                 let topology = topology.as_ref().map_err(Clone::clone)?;
@@ -479,12 +548,11 @@ impl RuntimeCore {
                 let now = Instant::now();
                 let plan = match rule.policy.observe(topology, &cohort, now) {
                     Err(PlanError::WaitingForInstances) => {
-                        waiting_message = t!("instance_balancing.waiting").to_string();
+                        waiting = InstanceBalancingDetail::WaitingForInstances;
                         return Ok(None);
                     }
                     Err(PlanError::InsufficientCapacity) => {
-                        waiting_message =
-                            t!("instance_balancing.insufficient_capacity").to_string();
+                        waiting = InstanceBalancingDetail::InsufficientCapacity;
                         return Ok(None);
                     }
                     result => result.map_err(|error| error.to_string())?,
@@ -548,7 +616,7 @@ impl RuntimeCore {
                         active.general.allow_cross_session_process_control,
                     )
             });
-            let (outcome, mut message) = match result {
+            let (outcome, detail) = match result {
                 Ok(Some(plan)) => {
                     rule.accepted = plan
                         .iter()
@@ -557,25 +625,24 @@ impl RuntimeCore {
                     snapshot.adjusted_processes += plan.len();
                     (
                         ActionLogResult::Applied,
-                        t!("instance_balancing.assigned", count = plan.len()).to_string(),
+                        InstanceBalancingDetail::Assigned(plan.len()),
                     )
                 }
                 Ok(None) => {
                     rule.accepted.clear();
-                    (ActionLogResult::Skipped, waiting_message)
+                    (ActionLogResult::Skipped, waiting)
                 }
                 Err(PlanRejection { outcome, reason }) => {
                     rule.accepted.clear();
                     rule.policy.invalidate();
                     snapshot.failed_processes += 1;
                     snapshot.last_error = Some(reason.clone());
-                    (outcome, reason)
+                    (outcome, InstanceBalancingDetail::Diagnostic(reason))
                 }
             };
-            if !exclusions.is_empty() {
-                message.push_str(&format!(" {}", exclusions.join("; ")));
-            }
-            snapshot.message.clone_from(&message);
+            let message = detail.message(&exclusions);
+            snapshot.detail = Some(detail);
+            snapshot.exclusions = exclusions;
             if !rule
                 .last_action
                 .as_ref()
@@ -599,13 +666,13 @@ impl RuntimeCore {
             }
         }
         if let Some(error) = &snapshot.last_error {
-            snapshot.message.clone_from(error);
+            snapshot.detail = Some(InstanceBalancingDetail::Diagnostic(error.clone()));
+            snapshot.exclusions.clear();
         } else if snapshot.adjusted_processes > 0 {
-            snapshot.message = t!(
-                "instance_balancing.assigned",
-                count = snapshot.adjusted_processes
-            )
-            .to_string();
+            snapshot.detail = Some(InstanceBalancingDetail::Assigned(
+                snapshot.adjusted_processes,
+            ));
+            snapshot.exclusions.clear();
         }
         snapshot
     }

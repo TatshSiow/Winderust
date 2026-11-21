@@ -109,6 +109,9 @@ mod runner;
 mod status;
 mod wake;
 
+#[cfg(any(test, feature = "render-smoke"))]
+pub(crate) use instance_balancing::InstanceBalancingDetail;
+use instance_balancing::InstanceBalancingSnapshot;
 use requirements::*;
 use runner::*;
 use status::*;
@@ -331,7 +334,7 @@ pub struct RuntimeFeatureStatus {
     pub app_suspension: AppSuspensionSnapshot,
     pub cpu_sets_soft: CpuAllocationSnapshot,
     pub processor_affinity_hard: CpuAllocationSnapshot,
-    pub(crate) instance_balancing: CpuAllocationSnapshot,
+    pub(crate) instance_balancing: InstanceBalancingSnapshot,
     pub cpu_limiter: CpuLimiterSnapshot,
     pub by_running_app: ByRunningAppSnapshot,
     pub adaptive_engine_process: AdaptiveEngineProcessSnapshot,
