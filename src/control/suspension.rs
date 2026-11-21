@@ -599,6 +599,14 @@ where
         })
     }
 
+    pub(crate) fn app_suspension_retry_error(&self) -> Option<&str> {
+        self.managed.values().find_map(|managed| {
+            let retry = managed.retry.as_ref()?;
+            // A temporarily thawed App Suspension claim can coexist with a CPU Limiter retry.
+            (managed.app_suspension_phase == Some(true)).then_some(retry.message.as_str())
+        })
+    }
+
     pub(crate) fn reconcile_pending(&mut self, force: bool) {
         let pending_keys = self
             .managed

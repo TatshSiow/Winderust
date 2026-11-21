@@ -386,7 +386,7 @@ impl AppSuspensionManager {
         }
 
         let process_ids = process_ids.into_iter().collect::<Vec<_>>();
-        let failed_actions = self.release_foreground_processes(
+        let (failed_actions, first_error) = self.release_foreground_processes(
             controller,
             &process_ids,
             action_log,
@@ -398,7 +398,7 @@ impl AppSuspensionManager {
             0,
             failed_actions,
             AppSuspensionStatus::Active,
-            None,
+            first_error.as_ref().map(suspension_error_message),
         ))
     }
 
@@ -1142,8 +1142,9 @@ impl AppSuspensionManager {
         process_ids: &[u32],
         action_log: &mut ActionLog,
         reason: &str,
-    ) -> usize {
+    ) -> (usize, Option<SuspensionError>) {
         let mut failed = 0;
+        let mut first_error = None;
         for process_id in process_ids {
             let process_name = self.controlled_process_name(*process_id).map(str::to_owned);
             let was_suspended = self.suspended.contains_key(process_id);
@@ -1165,8 +1166,8 @@ impl AppSuspensionManager {
                     if !controller.is_frozen_process(*process_id) {
                         self.suspended.remove(process_id);
                     }
+                    failed += 1;
                     if err.should_report() {
-                        failed += 1;
                         action_log.record(
                             ActionLogFeature::AppSuspension,
                             Some(*process_id),
@@ -1175,6 +1176,7 @@ impl AppSuspensionManager {
                             suspension_error_message(&err),
                         );
                     }
+                    first_error.get_or_insert(err);
                     continue;
                 }
             }
@@ -1186,7 +1188,7 @@ impl AppSuspensionManager {
             self.temporary_thawed.remove(process_id);
         }
 
-        failed
+        (failed, first_error)
     }
 
     pub fn release_window_owner_processes_for_user_intent(

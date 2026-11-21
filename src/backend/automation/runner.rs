@@ -681,7 +681,7 @@ impl RuntimeCore {
     ) -> AppSuspensionSnapshot {
         let foreground_process_id = observations.foreground_process_id();
         self.with_app_suspension(|manager, controller, action_log| {
-            manager.update(
+            let mut status = manager.update(
                 controller,
                 &settings.app_suspension,
                 settings.general.enabled,
@@ -690,7 +690,15 @@ impl RuntimeCore {
                 manual_freeze_processes,
                 observations,
                 action_log,
-            )
+            );
+            if status.last_error.is_some() {
+                return status;
+            }
+            if let Some(error) = controller.app_suspension_retry_error() {
+                status.failed_actions = status.failed_actions.max(1);
+                status.last_error = Some(error.to_owned());
+            }
+            status
         })
         .unwrap_or_else(app_suspension_lock_failure)
     }
