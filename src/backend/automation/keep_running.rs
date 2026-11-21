@@ -116,6 +116,20 @@ impl<P: Platform> Worker<P> {
     }
 }
 
+#[derive(Clone, PartialEq, Eq)]
+enum RuleError {
+    Pending(String),
+    Recorded(String),
+}
+
+impl RuleError {
+    fn message(&self) -> &str {
+        match self {
+            Self::Pending(message) | Self::Recorded(message) => message,
+        }
+    }
+}
+
 struct Owner<P: Platform> {
     id: Arc<()>,
     rule: KeepRunningRule,
@@ -123,9 +137,9 @@ struct Owner<P: Platform> {
     policy: KeepRunningManager,
     identity: Option<P::Identity>,
     members: BTreeMap<ProcessTargetKey, P::Member>,
-    last_error: Option<String>,
+    last_error: Option<RuleError>,
     retry_error: Option<String>,
-    published: Option<(KeepRunningState, Option<String>)>,
+    published: Option<(KeepRunningState, Option<RuleError>)>,
 }
 
 impl<P: Platform> Owner<P> {
@@ -148,7 +162,7 @@ impl<P: Platform> Owner<P> {
             );
             self.retry_error = Some(failure.message);
         } else {
-            self.last_error = Some(failure.message);
+            self.last_error = Some(RuleError::Pending(failure.message));
         }
     }
 }
@@ -377,22 +391,29 @@ impl<P: Platform> Coordinator<P> {
                         if let Some(key) = P::launch_key(&launch) {
                             let process_id = key.id;
                             owner.policy.accepted(&flight.ticket, key);
-                            if let Err(error) = result {
-                                owner.last_error = Some(error.message);
-                            } else {
-                                log.record(
-                                    ActionLogFeature::KeepRunning,
-                                    Some(process_id),
-                                    &owner.rule.executable_path,
+                            let (result, reason) = match result {
+                                Ok(()) => (
                                     ActionLogResult::Applied,
                                     rust_i18n::t!("keep_running.relaunched").to_string(),
-                                );
-                            }
+                                ),
+                                Err(error) => {
+                                    owner.last_error =
+                                        Some(RuleError::Recorded(error.message.clone()));
+                                    (ActionLogResult::Failed, error.message)
+                                }
+                            };
+                            log.record(
+                                ActionLogFeature::KeepRunning,
+                                Some(process_id),
+                                &owner.rule.executable_path,
+                                result,
+                                reason,
+                            );
                             flight.phase = Phase::Accepted(launch);
                         } else {
-                            owner.last_error = Some(
+                            owner.last_error = Some(RuleError::Pending(
                                 "Accepted Keep Running process identity is unavailable.".into(),
-                            );
+                            ));
                             owner.policy.pause(PauseReason::CleanupUnconfirmed);
                             // Retain the accepted handle; it must never enter provisional disposal.
                             flight.phase = Phase::Accepted(launch);
@@ -414,7 +435,7 @@ impl<P: Platform> Coordinator<P> {
                             == CleanupAcknowledgment::Released;
                     }
                     Err(error) => {
-                        owner.last_error = Some(error.message);
+                        owner.last_error = Some(RuleError::Pending(error.message));
                         owner
                             .policy
                             .cleanup_ack(&flight.ticket, CleanupOutcome::Unknown);
@@ -423,8 +444,9 @@ impl<P: Platform> Coordinator<P> {
                 },
             }
         } else if matches!(completion, Some(Err(mpsc::TryRecvError::Disconnected))) {
-            self.owners[index].last_error =
-                Some("Keep Running worker disconnected; restart Winderust to recover.".into());
+            self.owners[index].last_error = Some(RuleError::Pending(
+                "Keep Running worker disconnected; restart Winderust to recover.".into(),
+            ));
             self.owners[index]
                 .policy
                 .pause(PauseReason::CleanupUnconfirmed);
@@ -435,7 +457,7 @@ impl<P: Platform> Coordinator<P> {
                 Phase::CleanupRetry(launch) => match self.send(Work::Dispose(launch)) {
                     Ok(()) => Phase::Cleaning,
                     Err((error, work)) => {
-                        self.owners[index].last_error = Some(error);
+                        self.owners[index].last_error = Some(RuleError::Pending(error));
                         let Work::Dispose(launch) = *work else {
                             unreachable!("dispose submission returns its own command")
                         };
@@ -449,12 +471,13 @@ impl<P: Platform> Coordinator<P> {
                         Phase::Quarantined
                     }
                     Ok(None) => {
-                        self.owners[index].last_error =
-                            Some("Keep Running accepted process handle is unavailable.".into());
+                        self.owners[index].last_error = Some(RuleError::Pending(
+                            "Keep Running accepted process handle is unavailable.".into(),
+                        ));
                         Phase::Accepted(launch)
                     }
                     Err(error) => {
-                        self.owners[index].last_error = Some(error.message);
+                        self.owners[index].last_error = Some(RuleError::Pending(error.message));
                         Phase::Accepted(launch)
                     }
                 },
@@ -534,7 +557,7 @@ impl<P: Platform> Coordinator<P> {
                     }
                     Ok(false) => true,
                     Err(error) => {
-                        owner.last_error = Some(error.message);
+                        owner.last_error = Some(RuleError::Pending(error.message));
                         exits_known = false;
                         true
                     }
@@ -553,17 +576,17 @@ impl<P: Platform> Coordinator<P> {
                     }
                     Ok(_) => {
                         owner.policy.pause(PauseReason::UnsupportedContext);
-                        owner.last_error = Some(
+                        owner.last_error = Some(RuleError::Pending(
                             "The Keep Running executable changed; edit the rule before resuming."
                                 .into(),
-                        );
+                        ));
                         exits_known = false;
                     }
                     Err(error) => {
                         if matches!(error.kind, FailureKind::UnsupportedContext) {
                             owner.policy.pause(PauseReason::UnsupportedContext);
                         }
-                        owner.last_error = Some(error.message);
+                        owner.last_error = Some(RuleError::Pending(error.message));
                         exits_known = false;
                     }
                 }
@@ -605,7 +628,7 @@ impl<P: Platform> Coordinator<P> {
                         if matches!(error.kind, FailureKind::UnsupportedContext) {
                             owner.policy.pause(PauseReason::UnsupportedContext);
                         }
-                        owner.last_error = Some(error.message);
+                        owner.last_error = Some(RuleError::Pending(error.message));
                         owner.policy.observe(now, Observation::Unavailable);
                     }
                 }
@@ -629,7 +652,7 @@ impl<P: Platform> Coordinator<P> {
                             self.owners[index]
                                 .policy
                                 .pause(PauseReason::UnsupportedContext);
-                            self.owners[index].last_error = Some("Keep Running rules refer to the same executable; remove the duplicate rule.".into());
+                            self.owners[index].last_error = Some(RuleError::Pending("Keep Running rules refer to the same executable; remove the duplicate rule.".into()));
                             evidence.remove(&index);
                         }
                     }
@@ -667,7 +690,7 @@ impl<P: Platform> Coordinator<P> {
                             disposition
                         } else if let Err(error) = fresh {
                             let owner = &mut self.owners[index];
-                            owner.last_error = Some(error.message);
+                            owner.last_error = Some(RuleError::Pending(error.message));
                             if matches!(error.kind, FailureKind::UnsupportedContext) {
                                 owner.policy.pause(PauseReason::UnsupportedContext);
                             }
@@ -721,7 +744,7 @@ impl<P: Platform> Coordinator<P> {
                             if matches!(error.kind, FailureKind::UnsupportedContext) {
                                 owner.policy.pause(PauseReason::UnsupportedContext);
                             }
-                            owner.last_error = Some(error.message);
+                            owner.last_error = Some(RuleError::Pending(error.message));
                             owner.policy.observe(clock(), Observation::Unavailable);
                             known = false;
                             continue;
@@ -794,7 +817,7 @@ impl<P: Platform> Coordinator<P> {
                     .iter_mut()
                     .filter(|owner| owner.active && owner.rule.enabled)
                 {
-                    owner.last_error = Some(error.message.clone());
+                    owner.last_error = Some(RuleError::Pending(error.message.clone()));
                 }
             }
         }
@@ -819,7 +842,7 @@ impl<P: Platform> Coordinator<P> {
             }
             let published = (state, owner.last_error.clone());
             if owner.published.as_ref() != Some(&published) {
-                if let Some(error) = &owner.last_error {
+                if let Some(RuleError::Pending(error)) = &owner.last_error {
                     log.record(
                         ActionLogFeature::KeepRunning,
                         None,
@@ -830,9 +853,13 @@ impl<P: Platform> Coordinator<P> {
                 }
                 owner.published = Some(published);
             }
-            let last_error = owner.last_error.as_ref().or(owner.retry_error.as_ref());
+            let last_error = owner
+                .last_error
+                .as_ref()
+                .map(RuleError::message)
+                .or(owner.retry_error.as_deref());
             if snapshot.last_error.is_none() {
-                snapshot.last_error = last_error.cloned();
+                snapshot.last_error = last_error.map(str::to_owned);
             }
             if !owner.active {
                 continue;
@@ -846,7 +873,7 @@ impl<P: Platform> Coordinator<P> {
                 } else {
                     None
                 },
-                last_error: last_error.cloned(),
+                last_error: last_error.map(str::to_owned),
             });
         }
         snapshot

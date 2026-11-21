@@ -43,6 +43,7 @@ Read the relevant section before changing feature policy, ownership, restoration
   A failed launch attempt is logged once and remains visible during its retry
   wait. An observation error takes precedence until a complete scan recovers.
   Keep Running records a successful action only after Windows confirms the relaunch.
+  A failed post-launch verification remains in Action Log after a healthy member scan.
 - This is a fresh launch, not crash diagnosis, saved-session recovery, or the
   Watchdog's restart operation. Winderust never reads another app's arguments or
   copies its environment. Unsupported/elevated/service/restricted app contexts
