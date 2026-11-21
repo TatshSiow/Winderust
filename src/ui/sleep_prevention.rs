@@ -174,7 +174,11 @@ fn indicator(status: &SleepPreventionSnapshot, rule: &SleepPreventionRule) -> St
     } else if !status.observation_known {
         "common.unknown"
     } else if status.system_requested && contains(&status.requesting_apps) {
-        "sleep_prevention.request_accepted"
+        if rule.keep_display_on && !status.display_requested {
+            "sleep_prevention.system_request_accepted"
+        } else {
+            "sleep_prevention.request_accepted"
+        }
     } else if contains(&status.suppressed_apps) {
         "sleep_prevention.requests_paused"
     } else if contains(&status.running_apps) {
@@ -219,7 +223,7 @@ mod tests {
 
     #[test]
     fn rule_status_distinguishes_accepted_requests_and_sleep_suppression() {
-        let rule = SleepPreventionRule {
+        let mut rule = SleepPreventionRule {
             executable_path: r"C:\Apps\test.exe".into(),
             enabled: true,
             keep_display_on: false,
@@ -237,6 +241,12 @@ mod tests {
             indicator(&status, &rule),
             t!("sleep_prevention.request_accepted")
         );
+        rule.keep_display_on = true;
+        assert_eq!(
+            indicator(&status, &rule),
+            t!("sleep_prevention.system_request_accepted")
+        );
+        status.display_requested = true;
         status.observation_known = false;
         assert_eq!(indicator(&status, &rule), t!("common.unknown"));
         status.observation_known = true;

@@ -939,6 +939,7 @@ sleep_prevention:
   not_running: "Not running"
   requests_paused: "Requests paused"
   request_accepted: "Request accepted"
+  system_request_accepted: "System request accepted"
   requests: "Windows requests"
   matching_rules: "Matching rules"
   matching_processes: "Matching processes"
