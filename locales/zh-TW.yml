@@ -995,6 +995,7 @@ cpu_allocation:
   core: "核心"
   rules_help: "為每個應用程式選擇焦點、可見視窗與背景預設。應用程式只能屬於 CPU 集合（軟性）或處理器親和性（硬性）其中之一。"
   ownership_conflict: "請先移除此應用程式的 %{owner} 規則。"
+  builtin_exclusion: "此應用程式無法使用 CPU 配置規則。"
   all: "全部"
   p_cores: "P 核心"
   e_cores: "E 核心"

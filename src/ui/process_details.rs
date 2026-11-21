@@ -466,6 +466,7 @@ pub(super) fn view<'a>(
         body = body.push(text(t!("cpu_sets_soft.warning").to_string()));
     }
     body = body.push(text(t!("processor_affinity_hard.warning").to_string()));
+    let excluded = crate::cpu_allocation::is_builtin_excluded(path);
     for soft in [true, false] {
         let (settings, other) = if soft {
             (&s.cpu_sets_soft, &s.processor_affinity_hard)
@@ -476,7 +477,7 @@ pub(super) fn view<'a>(
             .rules
             .iter()
             .find(|r| process_setting_matches(&r.executable_path, path));
-        let blocked = rule.is_none() && other.contains_rule_for(path);
+        let blocked = rule.is_none() && (excluded || other.contains_rule_for(path));
         let catalog = rule.map(|_| {
             cpu_allocation::SelectionCatalog::capture(if soft {
                 cpu_allocation::Kind::Soft
@@ -515,13 +516,18 @@ pub(super) fn view<'a>(
                     ));
             }
         } else if blocked {
-            let owner = t!(if soft {
-                "nav.processor_affinity_hard"
+            let reason = if excluded {
+                t!("cpu_allocation.builtin_exclusion").to_string()
             } else {
-                "nav.cpu_sets_soft"
-            });
+                let owner = t!(if soft {
+                    "nav.processor_affinity_hard"
+                } else {
+                    "nav.cpu_sets_soft"
+                });
+                t!("cpu_allocation.ownership_conflict", owner = owner).to_string()
+            };
             card = card.push(
-                text(t!("cpu_allocation.ownership_conflict", owner = owner).to_string())
+                text(reason)
                     .size(design::typography::SECONDARY)
                     .style(text::secondary)
                     .width(Fill)

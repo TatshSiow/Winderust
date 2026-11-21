@@ -992,6 +992,7 @@ cpu_allocation:
   core: "Core"
   rules_help: "Choose Focus, Visible Window, and Background presets for each app. An app can belong to CPU Sets (Soft) or Processor Affinity (Hard), not both."
   ownership_conflict: "Remove this app's %{owner} rule first."
+  builtin_exclusion: "CPU allocation is unavailable for this app."
   all: "All"
   p_cores: "P-cores"
   e_cores: "E-cores"
