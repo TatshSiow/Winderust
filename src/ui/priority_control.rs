@@ -34,7 +34,7 @@ impl Tier {
         match self {
             Self::Focus => t!("cpu_allocation.focus"),
             Self::VisibleWindow => t!("common.visible_window"),
-            Self::Background => t!("process_list.background"),
+            Self::Background => t!("common.background_process"),
         }
         .to_string()
     }

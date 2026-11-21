@@ -340,7 +340,10 @@ pub(super) fn view<'a>(
                     .find(|r| r.enabled && selector_path_matches(&r.selector, path))
                     .and_then(|r| r.power_plan_guid.clone())
             };
-            let mut options = vec![Plan(None, t!("common.default").to_string())];
+            let mut options = vec![Plan(
+                None,
+                t!("process_list.no_path_specific_plan").to_string(),
+            )];
             options.extend(
                 plans
                     .iter()
@@ -358,9 +361,9 @@ pub(super) fn view<'a>(
             power.push(
                 setting_row(
                     if focus {
-                        "process_list.power_plan_focus"
+                        "nav.by_focus"
                     } else {
-                        "process_list.power_plan_running"
+                        "nav.by_running_app"
                     },
                     pick_list(options, selected, move |p| Message::Power(focus, p.0))
                         .width(design::SELECT_WIDTH),
