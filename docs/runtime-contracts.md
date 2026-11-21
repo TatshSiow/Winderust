@@ -487,7 +487,9 @@ Read the relevant section before changing feature policy, ownership, restoration
   failures in the returned status.
 - App Suspension is a complete typed cutover through `src/control/suspension.rs`. Automatic rules,
   App-page Freeze, and Process List Suspend/Resume share the RuntimeCore controller; feature code
-  owns grace/wake/reporting policy only. The controller retains failed thaw/finalization state for
+  owns grace/wake/reporting policy only. Automatic rules require executable paths representable
+  in settings. Foreground release and saved-rule Resume compare native paths held by the
+  controller. The controller retains failed thaw/finalization state for
   bounded retry and explicit shutdown. The crash helper opens the exact named job before freeze and
   thaws that retained job even if the recorded root exits while inherited children remain. Raw Job
   Object creation, assignment, and membership live in `src/platform/windows/job.rs`; freeze/thaw

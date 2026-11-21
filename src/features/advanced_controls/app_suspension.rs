@@ -564,7 +564,9 @@ impl AppSuspensionManager {
             let Some(executable_path) = process_executable_path(process) else {
                 continue;
             };
-            let executable_path = executable_path.to_string_lossy().into_owned();
+            let Ok(executable_path) = executable_path.into_os_string().into_string() else {
+                continue;
+            };
             if !settings.suspendable_app_enabled_for(&executable_path) {
                 continue;
             }
@@ -1225,13 +1227,12 @@ impl AppSuspensionManager {
         executable_path: &Path,
         action_log: &mut ActionLog,
     ) -> AppSuspensionSnapshot {
-        let process_ids = self
-            .suspended
-            .iter()
-            .filter(|(_process_id, process)| {
-                same_executable_path(Path::new(&process.executable_path), executable_path)
+        let process_ids = controller
+            .managed_process_paths()
+            .filter_map(|(id, path)| {
+                (self.suspended.contains_key(&id) && same_executable_path(path, executable_path))
+                    .then_some(id)
             })
-            .map(|(process_id, _process)| *process_id)
             .collect::<Vec<_>>();
         self.release_process_ids_for_user_intent(controller, &process_ids, action_log)
     }
@@ -1371,17 +1372,19 @@ impl AppSuspensionManager {
             process_ids.insert(process_id);
         }
 
-        let executable_path = executable_path
-            .map(|path| path.to_string_lossy().into_owned())
-            .or_else(|| {
-                self.controlled_process(process_id)
-                    .map(|(_name, path)| path.to_owned())
-            });
-        let Some(executable_path) = executable_path else {
-            return process_ids;
-        };
-
-        process_ids.extend(self.controlled_process_ids_by_path(Path::new(&executable_path)));
+        let executable_path = executable_path.or_else(|| {
+            self.controlled_process(process_id)?;
+            controller
+                .managed_process_paths()
+                .find_map(|(id, path)| (id == process_id).then_some(path))
+        });
+        if let Some(executable_path) = executable_path {
+            process_ids.extend(controller.managed_process_paths().filter_map(|(id, path)| {
+                (self.controlled_process(id).is_some()
+                    && same_executable_path(path, executable_path))
+                .then_some(id)
+            }));
+        }
         process_ids
     }
 
@@ -1428,24 +1431,6 @@ impl AppSuspensionManager {
     fn controlled_process_key(&self, process_id: u32) -> Option<String> {
         self.controlled_process(process_id)
             .map(|(_process_name, executable_path)| executable_path_key(Path::new(executable_path)))
-    }
-
-    fn controlled_process_ids_by_path(&self, executable_path: &Path) -> BTreeSet<u32> {
-        self.suspended
-            .iter()
-            .filter(|(_process_id, process)| {
-                same_executable_path(Path::new(&process.executable_path), executable_path)
-            })
-            .map(|(process_id, _process)| *process_id)
-            .chain(
-                self.temporary_thawed
-                    .iter()
-                    .filter(|(_process_id, process)| {
-                        same_executable_path(Path::new(&process.executable_path), executable_path)
-                    })
-                    .map(|(process_id, _process)| *process_id),
-            )
-            .collect()
     }
 
     fn window_owner_suspended_process_ids(
@@ -3055,6 +3040,10 @@ mod tests {
             },
         );
 
+        insert_inert(&mut controller, 7, "chat.exe", r"C:\Apps\chat.exe", true);
+        insert_inert(&mut controller, 8, "CHAT.EXE", r"C:\Apps\chat.exe", true);
+        insert_inert(&mut controller, 9, "mail.exe", r"C:\Mail\mail.exe", true);
+
         let status = manager
             .release_interactive_process(
                 &mut controller,
@@ -3097,6 +3086,21 @@ mod tests {
                 suspended_since: now,
                 manual: false,
             },
+        );
+
+        insert_inert(
+            &mut controller,
+            7,
+            "browser.exe",
+            r"C:\Apps\browser.exe",
+            true,
+        );
+        insert_inert(
+            &mut controller,
+            8,
+            "BROWSER.EXE",
+            r"C:\Apps\browser.exe",
+            true,
         );
 
         let status = manager

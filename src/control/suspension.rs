@@ -549,17 +549,19 @@ where
         Ok(true)
     }
 
-    pub(crate) fn managed_process_ids(&self) -> impl Iterator<Item = u32> + '_ {
+    pub(crate) fn managed_process_paths(&self) -> impl Iterator<Item = (u32, &Path)> + '_ {
         self.managed
             .iter()
             .filter(|(_key, managed)| managed.app_suspension_phase.is_some())
-            .map(|(key, _managed)| key.id)
+            .map(|(key, managed)| (key.id, managed.identity.executable_path.as_path()))
+    }
+
+    pub(crate) fn managed_process_ids(&self) -> impl Iterator<Item = u32> + '_ {
+        self.managed_process_paths().map(|(id, _path)| id)
     }
 
     pub(crate) fn contains_process(&self, process_id: u32) -> bool {
-        self.managed
-            .iter()
-            .any(|(key, managed)| key.id == process_id && managed.app_suspension_phase.is_some())
+        self.managed_process_ids().any(|id| id == process_id)
     }
 
     pub(crate) fn matches_target(&self, target: &SuspensionTarget) -> bool {
@@ -569,13 +571,8 @@ where
     }
 
     pub(crate) fn matches_process_path(&self, process_id: u32, executable_path: &Path) -> bool {
-        self.managed.iter().any(|(key, managed)| {
-            key.id == process_id
-                && managed.app_suspension_phase.is_some()
-                && crate::foreground::same_executable_path(
-                    &managed.identity.executable_path,
-                    executable_path,
-                )
+        self.managed_process_paths().any(|(id, path)| {
+            id == process_id && crate::foreground::same_executable_path(path, executable_path)
         })
     }
 
