@@ -4,7 +4,7 @@ use windows_sys::Win32::System::Threading::GetCurrentProcessId;
 
 use crate::{
     action_log::{ActionLog, ActionLogFeature, ActionLogResult},
-    config::IoPrioritySettings,
+    config::{IoPrioritySettings, ProcessIoPriority},
     control::{
         io_priority::{
             IoPriorityApplyOutcome, IoPriorityClaim, IoPriorityController, IoPriorityPreservation,
@@ -82,17 +82,10 @@ impl IoPriorityManager {
             };
         }
 
-        let foreground_sensitive = settings.foreground_detection_enabled
-            && settings.foreground_priority != settings.background_priority;
-        if foreground_sensitive && foreground_process_id.is_none() {
-            let failures = self.clear_all(controller, action_log, "foreground app is unknown");
-            return IoPrioritySnapshot {
-                enabled: true,
-                failed_processes: failures.count,
-                message: "Paused: foreground app is unknown.".to_owned(),
-                last_error: failures.last_error,
-                ..Default::default()
-            };
+        let focus_unknown =
+            settings.foreground_detection_enabled && foreground_process_id.is_none();
+        if focus_unknown && settings.foreground_priority != settings.background_priority {
+            return self.pause_for_unknown_focus(controller, action_log);
         }
 
         // SAFETY: GetCurrentProcessId takes no arguments and has no caller requirements.
@@ -186,29 +179,21 @@ impl IoPriorityManager {
                 && settings.visible_window_detection_enabled
                 && visible_processes.contains(process.id, &executable_path);
             let tier = PriorityProcessTier::from_flags(foreground, visible_window);
-            let configured_override = settings.override_for(
-                executable_path.to_string_lossy().as_ref(),
-                foreground,
-                visible_window,
-            );
-            let default_priority = tier.select(
-                settings.foreground_priority,
-                settings.visible_window_priority,
-                settings.background_priority,
-            );
-            let priority = match configured_override {
-                Some(Some(priority)) => priority,
-                Some(None) => continue,
-                None => default_priority,
-            };
-            if let Some(priority) = priority.priority() {
+            let path = executable_path.to_string_lossy();
+            let policy = priority_policy(settings, &path, tier);
+            if focus_unknown
+                && policy != priority_policy(settings, &path, PriorityProcessTier::Foreground)
+            {
+                return self.pause_for_unknown_focus(controller, action_log);
+            }
+            if let Some((priority, preservation)) = policy {
                 target_processes.insert(
                     process.id,
                     (
                         process.name.clone(),
                         executable_path,
                         priority,
-                        tier,
+                        preservation,
                         creation_time,
                     ),
                 );
@@ -230,7 +215,7 @@ impl IoPriorityManager {
         let mut skipped_processes = 0;
         let mut auto_excluded_processes = BTreeSet::new();
         let mut claims = Vec::new();
-        for (process_id, (process_name, executable_path, priority, tier, creation_time)) in
+        for (process_id, (process_name, executable_path, priority, preservation, creation_time)) in
             target_processes
         {
             let executable_path_text = executable_path.to_string_lossy().into_owned();
@@ -253,7 +238,7 @@ impl IoPriorityManager {
                 ),
                 owner,
                 priority,
-                preservation: tier_preservation(settings, tier),
+                preservation,
             });
         }
 
@@ -338,6 +323,21 @@ impl IoPriorityManager {
             last_error: release_failures
                 .last_error
                 .or_else(|| self.apply_failures.last_error.clone()),
+        }
+    }
+
+    fn pause_for_unknown_focus(
+        &mut self,
+        controller: &mut IoPriorityController,
+        action_log: &mut ActionLog,
+    ) -> IoPrioritySnapshot {
+        let failures = self.clear_all(controller, action_log, "foreground app is unknown");
+        IoPrioritySnapshot {
+            enabled: true,
+            failed_processes: failures.count,
+            message: "Paused: foreground app is unknown.".to_owned(),
+            last_error: failures.last_error,
+            ..Default::default()
         }
     }
 
@@ -456,6 +456,28 @@ impl IoPriorityManager {
         }
         true
     }
+}
+
+fn priority_policy(
+    settings: &IoPrioritySettings,
+    path: &str,
+    tier: PriorityProcessTier,
+) -> Option<(ProcessIoPriority, IoPriorityPreservation)> {
+    let priority = settings
+        .override_for(
+            path,
+            tier == PriorityProcessTier::Foreground,
+            tier == PriorityProcessTier::VisibleWindow,
+        )
+        .unwrap_or_else(|| {
+            Some(tier.select(
+                settings.foreground_priority,
+                settings.visible_window_priority,
+                settings.background_priority,
+            ))
+        })?
+        .priority()?;
+    Some((priority, tier_preservation(settings, tier)))
 }
 
 fn tier_preservation(

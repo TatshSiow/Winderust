@@ -87,17 +87,10 @@ impl DynamicPriorityBoostManager {
             };
         }
 
-        let foreground_sensitive = settings.foreground_detection_enabled
-            && settings.foreground_boost != settings.background_boost;
-        if foreground_sensitive && foreground_process_id.is_none() {
-            let failures = self.clear_all(controller, action_log, "foreground app is unknown");
-            return DynamicPriorityBoostSnapshot {
-                enabled: true,
-                failed_processes: failures.count,
-                message: "Paused: foreground app is unknown.".to_owned(),
-                last_error: failures.last_error,
-                ..Default::default()
-            };
+        let focus_unknown =
+            settings.foreground_detection_enabled && foreground_process_id.is_none();
+        if focus_unknown && settings.foreground_boost != settings.background_boost {
+            return self.pause_for_unknown_focus(controller, action_log);
         }
 
         // SAFETY: GetCurrentProcessId takes no arguments and has no caller requirements.
@@ -190,30 +183,18 @@ impl DynamicPriorityBoostManager {
             let visible_window = !foreground
                 && settings.visible_window_detection_enabled
                 && visible_processes.contains(process.id, &executable_path);
-            let default_boost = PriorityProcessTier::from_flags(foreground, visible_window).select(
-                settings.foreground_boost,
-                settings.visible_window_boost,
-                settings.background_boost,
-            );
-            let configured_override = settings.override_for(
-                executable_path.to_string_lossy().as_ref(),
-                foreground,
-                visible_window,
-            );
-            let boost = match configured_override {
-                Some(Some(boost)) => boost,
-                Some(None) => continue,
-                None => default_boost,
-            };
-            if let Some(disabled) = boost.disabled_flag() {
+            let tier = PriorityProcessTier::from_flags(foreground, visible_window);
+            let path = executable_path.to_string_lossy();
+            let policy = boost_policy(settings, &path, tier);
+            if focus_unknown
+                && policy != boost_policy(settings, &path, PriorityProcessTier::Foreground)
+            {
+                return self.pause_for_unknown_focus(controller, action_log);
+            }
+            if let Some(state) = policy {
                 target_processes.insert(
                     process.id,
-                    (
-                        process.name.clone(),
-                        executable_path,
-                        DynamicPriorityBoostState::from_disabled(disabled),
-                        creation_time,
-                    ),
+                    (process.name.clone(), executable_path, state, creation_time),
                 );
             }
         }
@@ -338,6 +319,21 @@ impl DynamicPriorityBoostManager {
         }
     }
 
+    fn pause_for_unknown_focus(
+        &mut self,
+        controller: &mut DynamicPriorityBoostController,
+        action_log: &mut ActionLog,
+    ) -> DynamicPriorityBoostSnapshot {
+        let failures = self.clear_all(controller, action_log, "foreground app is unknown");
+        DynamicPriorityBoostSnapshot {
+            enabled: true,
+            failed_processes: failures.count,
+            message: "Paused: foreground app is unknown.".to_owned(),
+            last_error: failures.last_error,
+            ..Default::default()
+        }
+    }
+
     fn release_non_targets(
         &mut self,
         controller: &mut DynamicPriorityBoostController,
@@ -455,6 +451,28 @@ impl DynamicPriorityBoostManager {
 
         true
     }
+}
+
+fn boost_policy(
+    settings: &DynamicPriorityBoostSettings,
+    path: &str,
+    tier: PriorityProcessTier,
+) -> Option<DynamicPriorityBoostState> {
+    settings
+        .override_for(
+            path,
+            tier == PriorityProcessTier::Foreground,
+            tier == PriorityProcessTier::VisibleWindow,
+        )
+        .unwrap_or_else(|| {
+            Some(tier.select(
+                settings.foreground_boost,
+                settings.visible_window_boost,
+                settings.background_boost,
+            ))
+        })?
+        .disabled_flag()
+        .map(DynamicPriorityBoostState::from_disabled)
 }
 
 #[derive(Default)]
