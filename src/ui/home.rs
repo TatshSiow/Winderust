@@ -14,7 +14,10 @@ use crate::ui::Page;
 use iced::widget::{canvas, column, container, responsive, row, text};
 use iced::{mouse, Element, Fill, Point, Rectangle, Renderer, Theme};
 use rust_i18n::t;
-use std::{collections::VecDeque, time::Instant};
+use std::{
+    collections::VecDeque,
+    time::{Instant, SystemTime},
+};
 
 const HISTORY_LEN: usize = 61;
 const HISTORY_WINDOW: std::time::Duration =
@@ -102,7 +105,10 @@ impl Default for Sampler {
                         network = NetworkUsageMonitor::default();
                     }
                     let sample = Sample {
-                        captured_at: Some(std::time::SystemTime::now()),
+                        captured_at: Some(SampleTimestamp {
+                            instant: now,
+                            wall: SystemTime::now(),
+                        }),
                         power_source: match is_plugged_in() {
                             Some(true) => {
                                 PowerSourceReading::Available(PowerSourceProfile::PluggedIn)
@@ -139,12 +145,26 @@ pub(super) enum PowerSourceReading {
 
 #[derive(Debug, Clone, Copy, Default)]
 pub(super) struct Sample {
-    captured_at: Option<std::time::SystemTime>,
+    captured_at: Option<SampleTimestamp>,
     power_source: PowerSourceReading,
     cpu: CpuUsageSnapshot,
     memory: MemoryUsageSnapshot,
     io: IoUsageSnapshot,
     network: NetworkUsageSnapshot,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SampleTimestamp {
+    instant: Instant,
+    wall: SystemTime,
+}
+
+#[cfg(any(test, feature = "render-smoke"))]
+fn fixture_timestamp(start: Instant, offset: std::time::Duration) -> SampleTimestamp {
+    SampleTimestamp {
+        instant: start + offset,
+        wall: std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_770_000_000) + offset,
+    }
 }
 impl Sampler {
     // Call from an application task once per second while Home sampling is enabled.
@@ -170,13 +190,14 @@ impl Model {
     #[cfg(any(test, feature = "render-smoke"))]
     pub(super) fn populate_smoke_history(&mut self) {
         // Deterministic visual fixtures stay outside normal application builds.
+        let start = Instant::now();
         for index in 0..HISTORY_LEN {
             let wave = (index as f64 * 0.55).sin();
             self.record(Sample {
-                captured_at: Some(
-                    std::time::UNIX_EPOCH
-                        + std::time::Duration::from_secs(1_770_000_000 + index as u64),
-                ),
+                captured_at: Some(fixture_timestamp(
+                    start,
+                    std::time::Duration::from_secs(index as u64),
+                )),
                 power_source: PowerSourceReading::Available(PowerSourceProfile::PluggedIn),
                 cpu: CpuUsageSnapshot {
                     percent: Some((24.0 + 12.0 * wave) as f32),
@@ -202,24 +223,25 @@ impl Model {
         }
     }
     pub(super) fn record(&mut self, sample: Sample) {
-        if let Some(now) = sample.captured_at {
+        if let Some(now) = sample.captured_at.map(|timestamp| timestamp.instant) {
             if self
                 .latest
                 .captured_at
-                .is_some_and(|previous| now < previous)
+                .is_some_and(|previous| now < previous.instant)
             {
                 self.history.clear();
             } else if self
                 .history
                 .back()
-                .is_some_and(|previous| previous.captured_at == Some(now))
+                .and_then(|previous| previous.captured_at)
+                .is_some_and(|previous| previous.instant == now)
             {
                 self.history.pop_back();
             }
             self.history.retain(|previous| {
                 previous.captured_at.is_none_or(|captured_at| {
-                    now.duration_since(captured_at)
-                        .is_ok_and(|age| age <= HISTORY_WINDOW)
+                    now.checked_duration_since(captured_at.instant)
+                        .is_some_and(|age| age <= HISTORY_WINDOW)
                 })
             });
         }
@@ -572,9 +594,10 @@ impl Model {
         let samples: [Option<ChartSample>; HISTORY_LEN] = std::array::from_fn(|index| {
             let sample = self.history_sample(index)?;
             let seconds_ago = match (self.latest.captured_at, sample.captured_at) {
-                (Some(now), Some(captured_at)) => {
-                    now.duration_since(captured_at).ok()?.as_secs_f64()
-                }
+                (Some(now), Some(captured_at)) => now
+                    .instant
+                    .checked_duration_since(captured_at.instant)?
+                    .as_secs_f64(),
                 _ => (HISTORY_LEN - index - 1) as f64,
             };
             let reading = match kind {
@@ -755,7 +778,7 @@ impl ChartKind {
 
 #[derive(Clone, PartialEq)]
 struct ChartSample {
-    captured_at: Option<std::time::SystemTime>,
+    captured_at: Option<SampleTimestamp>,
     seconds_ago: f64,
     reading: [Option<f64>; 2],
 }
@@ -769,8 +792,9 @@ impl ChartSample {
             && next.reading[series].is_some()
             && match (self.captured_at, next.captured_at) {
                 (Some(previous), Some(next)) => next
-                    .duration_since(previous)
-                    .is_ok_and(|gap| gap <= MAX_SAMPLE_GAP),
+                    .instant
+                    .checked_duration_since(previous.instant)
+                    .is_some_and(|gap| gap <= MAX_SAMPLE_GAP),
                 _ => (0.0..=MAX_SAMPLE_GAP.as_secs_f64())
                     .contains(&(self.seconds_ago - next.seconds_ago)),
             }
@@ -869,7 +893,7 @@ impl Chart {
         let time = sample
             .captured_at
             .map(|time| {
-                chrono::DateTime::<chrono::Local>::from(time)
+                chrono::DateTime::<chrono::Local>::from(time.wall)
                     .format("%H:%M:%S")
                     .to_string()
             })
@@ -1678,12 +1702,13 @@ mod tests {
     fn chart_hover_overlay_fits_edges_and_short_charts() {
         use iced::advanced::{layout, renderer::Renderer as _, widget::Tree, Layout, Shell};
         let mut model = Model::default();
+        let start = Instant::now();
         for index in 0..HISTORY_LEN {
             model.record(Sample {
-                captured_at: Some(
-                    std::time::UNIX_EPOCH
-                        + std::time::Duration::from_secs(1_770_000_000 + index as u64),
-                ),
+                captured_at: Some(fixture_timestamp(
+                    start,
+                    std::time::Duration::from_secs(index as u64),
+                )),
                 cpu: CpuUsageSnapshot {
                     percent: Some(30.0 + (index as f32 * 0.5).sin() * 10.0),
                     frequency_mhz: Some(3600 + index as u32 * 10),
@@ -1836,8 +1861,19 @@ mod tests {
     #[test]
     fn chart_timestamps_preserve_missing_intervals_and_expire_paused_history() {
         let mut model = Model::default();
-        let start = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_770_000_000);
-        let at = |seconds| Some(start + std::time::Duration::from_secs(seconds));
+        let start = Instant::now();
+        let at = |seconds| {
+            Some(fixture_timestamp(
+                start,
+                std::time::Duration::from_secs(seconds),
+            ))
+        };
+        let at_millis = |millis| {
+            Some(fixture_timestamp(
+                start,
+                std::time::Duration::from_millis(millis),
+            ))
+        };
         let first = Sample {
             captured_at: at(0),
             cpu: CpuUsageSnapshot {
@@ -1969,7 +2005,7 @@ mod tests {
             "an observation exactly 60 seconds old remains at the left edge"
         );
         model.record(Sample {
-            captured_at: Some(start + std::time::Duration::from_millis(661_001)),
+            captured_at: at_millis(661_001),
             ..Default::default()
         });
         assert!(model
@@ -1992,7 +2028,7 @@ mod tests {
             ..first
         });
         model.record(Sample {
-            captured_at: Some(start + std::time::Duration::from_millis(665_200)),
+            captured_at: at_millis(665_200),
             cpu: CpuUsageSnapshot {
                 frequency_mhz: Some(60_000),
                 ..first.cpu
@@ -2016,7 +2052,7 @@ mod tests {
         );
         let count = model.history.len();
         model.record(Sample {
-            captured_at: Some(start + std::time::Duration::from_millis(665_200)),
+            captured_at: at_millis(665_200),
             cpu: CpuUsageSnapshot {
                 base_frequency_mhz: Some(2000),
                 ..Default::default()
@@ -2047,7 +2083,7 @@ mod tests {
         assert_eq!(
             model.history.len(),
             1,
-            "backward clock changes reset the history"
+            "out-of-order observations reset the history"
         );
         assert_eq!(
             model
@@ -2057,13 +2093,26 @@ mod tests {
                 .captured_at,
             at(664)
         );
+
+        model.record(Sample {
+            captured_at: Some(SampleTimestamp {
+                wall: at(0).unwrap().wall,
+                ..at(665).unwrap()
+            }),
+            ..first
+        });
+        let chart = model.chart(ChartKind::Cpu);
+        let previous = chart.sample_at(HISTORY_LEN - 2).unwrap();
+        let latest = chart.sample_at(HISTORY_LEN - 1).unwrap();
+        assert_eq!(previous.seconds_ago, 1.0);
+        assert!(previous.connects_to(latest, 0));
     }
     #[test]
     fn chart_jitter_preserves_real_timestamps_without_false_gaps() {
         use canvas::Program;
         use iced::advanced::{graphics::geometry::Renderer as _, renderer::Renderer as _};
 
-        let start = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_770_000_000);
+        let start = Instant::now();
         let valid = Sample {
             cpu: CpuUsageSnapshot {
                 percent: Some(30.0),
@@ -2087,7 +2136,10 @@ mod tests {
             ..Default::default()
         };
         let at = |millis| Sample {
-            captured_at: Some(start + std::time::Duration::from_millis(millis)),
+            captured_at: Some(fixture_timestamp(
+                start,
+                std::time::Duration::from_millis(millis),
+            )),
             ..valid
         };
         let render = |chart: Chart| {
