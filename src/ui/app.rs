@@ -1855,7 +1855,11 @@ impl WinderustApp {
                 }
             }
             Message::NavigateHistory(forward) => {
-                if !self.closing && self.error_message.is_empty() && !self.blocking_editor_open() {
+                if !self.closing
+                    && self.error_message.is_empty()
+                    && !self.blocking_editor_open()
+                    && self.process_power_plan_preview().is_none()
+                {
                     if let Some(page) = self.navigation_history.travel(forward) {
                         return self.update(Message::Page(page));
                     }
