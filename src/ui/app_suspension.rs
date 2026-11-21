@@ -2,7 +2,7 @@ use super::design;
 use super::widgets::{action_button, checkbox, pick_list, text_input};
 use crate::app_suspension::{self, AppSuspensionSnapshot};
 use crate::application::SettingsEditor;
-use crate::config::{AppSuspensionSettings, NetworkThresholdUnit};
+use crate::config::{AppSuspensionRule, AppSuspensionSettings, NetworkThresholdUnit};
 use crate::ui::process_rules::{
     can_add_app_suspension_process, new_app_suspension_rule, process_setting_matches,
 };
@@ -10,7 +10,7 @@ use crate::ui::scrolling::scrollable;
 use iced::widget::{column, text};
 use iced::{Element, Fill};
 use rust_i18n::t;
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, path::Path};
 
 #[derive(Default)]
 pub(super) struct Editor {
@@ -235,12 +235,10 @@ impl Editor {
                         &status.suspended_apps,
                         &r.executable_path,
                     );
-                    if frozen
-                        || (status.enabled
-                            && r.enabled
-                            && !unavailable
-                                .iter()
-                                .any(|p| process_setting_matches(p, &r.executable_path)))
+                    let blocked = unavailable
+                        .iter()
+                        .any(|p| process_setting_matches(p, &r.executable_path));
+                    if frozen || can_suspend(r, status, blocked, live_suspension_settings(settings))
                     {
                         return Some((r.executable_path.clone(), !frozen));
                     }
@@ -272,11 +270,13 @@ impl Editor {
     }
     pub(super) fn view<'a>(
         &'a self,
-        s: &'a AppSuspensionSettings,
+        settings: &'a SettingsEditor,
         status: &AppSuspensionSnapshot,
         unavailable: &[String],
         candidates: &'a [super::app_picker::Candidate],
     ) -> Element<'a, Message> {
+        let s = &settings.app_suspension;
+        let live = live_suspension_settings(settings);
         let mut body = column![
             super::widgets::heading(
                 t!("app_suspension.behavior").to_string(),
@@ -362,8 +362,7 @@ impl Editor {
                     .to_string()
                 )
                 .on_press_maybe(
-                    (frozen || (status.enabled && r.enabled && !blocked))
-                        .then_some(Message::Toggle(i))
+                    (frozen || can_suspend(r, status, blocked, live)).then_some(Message::Toggle(i))
                 ),
             ]
             .spacing(design::space::SMALL);
@@ -486,6 +485,28 @@ fn parse_threshold(value: &str) -> Option<f64> {
     (value.is_finite() && value >= 0.0).then_some(value)
 }
 
+fn live_suspension_settings(settings: &SettingsEditor) -> Option<&AppSuspensionSettings> {
+    let saved = super::status_rail::saved_runtime_settings(
+        settings,
+        crate::backend::power_source::is_plugged_in(),
+    );
+    (saved.general.enabled && saved.app_suspension.enabled).then_some(&saved.app_suspension)
+}
+
+fn can_suspend(
+    rule: &AppSuspensionRule,
+    status: &AppSuspensionSnapshot,
+    unavailable: bool,
+    live: Option<&AppSuspensionSettings>,
+) -> bool {
+    let path = rule.executable_path.trim();
+    status.enabled
+        && rule.enabled
+        && !unavailable
+        && Path::new(path).is_absolute()
+        && live.is_some_and(|settings| settings.suspendable_app_enabled_for(path))
+}
+
 fn indicator(s: &AppSuspensionSnapshot, p: &str, unavailable: bool) -> String {
     let key = if app_suspension::is_builtin_excluded(p) {
         "protected"
@@ -505,10 +526,16 @@ fn indicator(s: &AppSuspensionSnapshot, p: &str, unavailable: bool) -> String {
         "unknown"
     } else if app_suspension::contains_process(&s.running_apps, p) {
         "running"
-    } else if s.enabled {
+    } else if !s.enabled {
+        "off"
+    } else if s
+        .observed_rule_paths
+        .as_deref()
+        .is_some_and(|paths| app_suspension::contains_process(paths, p))
+    {
         "not_running"
     } else {
-        "off"
+        "unknown"
     };
     {
         let locale_key = format!("app_suspension.indicator.{key}");

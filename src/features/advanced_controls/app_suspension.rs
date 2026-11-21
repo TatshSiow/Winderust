@@ -5,6 +5,7 @@ use std::{
     path::{Path, PathBuf},
     ptr,
     ptr::null_mut,
+    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -60,6 +61,7 @@ pub struct AppSuspensionSnapshot {
     pub network_wake_apps: Vec<String>,
     pub audio_wake_apps: Vec<String>,
     pub running_apps: Vec<String>,
+    pub(crate) observed_rule_paths: Option<Arc<[String]>>,
     pub status_unknown: bool,
     pub skipped_processes: usize,
     pub failed_actions: usize,
@@ -107,6 +109,7 @@ pub struct AppSuspensionManager {
     network_wake_windows: BTreeMap<String, NetworkWakeWindow>,
     audio_wake_windows: BTreeMap<String, AudioWakeWindow>,
     running_apps: BTreeSet<String>,
+    observed_rule_paths: Option<Arc<[String]>>,
     manual_freeze_outcomes: BTreeMap<String, ManualFreezeOutcome>,
     job_freeze_unsupported: bool,
 }
@@ -457,10 +460,12 @@ impl AppSuspensionManager {
             );
         }
 
-        let enabled_process_names = settings
+        let enabled_rules = settings
             .suspendable_apps
             .iter()
-            .filter(|rule| rule.enabled && Path::new(rule.executable_path.trim()).is_absolute())
+            .filter(|rule| rule.enabled && Path::new(rule.executable_path.trim()).is_absolute());
+        let enabled_process_names = enabled_rules
+            .clone()
             .filter_map(|rule| Path::new(&rule.executable_path).file_name())
             .filter_map(|name| name.to_str())
             .collect::<Vec<_>>();
@@ -592,6 +597,14 @@ impl AppSuspensionManager {
             );
         }
         self.running_apps = running_apps;
+        let enabled_paths = enabled_rules.map(|rule| rule.executable_path.as_str());
+        if !self
+            .observed_rule_paths
+            .as_ref()
+            .is_some_and(|paths| paths.iter().map(String::as_str).eq(enabled_paths.clone()))
+        {
+            self.observed_rule_paths = Some(enabled_paths.map(str::to_owned).collect());
+        }
 
         let stale_process_ids = target_processes
             .iter()
@@ -985,6 +998,7 @@ impl AppSuspensionManager {
         self.network_wake_windows.clear();
         self.audio_wake_windows.clear();
         self.running_apps.clear();
+        self.observed_rule_paths = None;
         let process_ids = self
             .managed_process_ids(controller)
             .into_iter()
@@ -1005,6 +1019,7 @@ impl AppSuspensionManager {
         self.network_wake_windows.clear();
         self.audio_wake_windows.clear();
         self.running_apps.clear();
+        self.observed_rule_paths = None;
         let manual_process_ids = self
             .suspended
             .iter()
@@ -1031,6 +1046,7 @@ impl AppSuspensionManager {
     ) -> AppSuspensionSnapshot {
         self.tracked.clear();
         self.network_snapshot.clear();
+        self.observed_rule_paths = None;
         let process_ids_without_rules = self
             .suspended
             .iter()
@@ -1972,6 +1988,7 @@ impl AppSuspensionManager {
                 .map(str::to_owned)
                 .collect(),
             running_apps: self.running_apps.iter().cloned().collect(),
+            observed_rule_paths: self.observed_rule_paths.clone(),
             status_unknown: false,
             skipped_processes,
             failed_actions,

@@ -3522,7 +3522,7 @@ impl WinderustApp {
             Page::AppSuspension => self
                 .suspension
                 .view(
-                    &self.settings.app_suspension,
+                    &self.settings,
                     &self.status.feature_status.app_suspension,
                     &self.unavailable_candidates,
                     &self.candidates,
