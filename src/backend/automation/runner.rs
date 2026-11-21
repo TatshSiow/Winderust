@@ -141,7 +141,7 @@ enum WatchdogRestartOutcome {
 
 #[derive(Default)]
 struct WatchdogActionCycle {
-    stopped: BTreeSet<(u32, u64)>,
+    termination_handled: BTreeSet<(u32, u64)>,
     restarts: std::collections::BTreeMap<Vec<(u32, u64)>, Result<WatchdogRestartOutcome, String>>,
 }
 
@@ -151,9 +151,11 @@ impl WatchdogActionCycle {
         targets: &[crate::foreground::ProcessActionTarget],
     ) -> Option<&'static str> {
         if targets.is_empty()
-            || targets
-                .iter()
-                .any(|target| !self.stopped.contains(&(target.id, target.creation_time)))
+            || targets.iter().any(|target| {
+                !self
+                    .termination_handled
+                    .contains(&(target.id, target.creation_time))
+            })
         {
             return None;
         }
@@ -164,7 +166,7 @@ impl WatchdogActionCycle {
         key.sort_unstable();
         Some(match self.restarts.get(&key) {
             Some(Ok(WatchdogRestartOutcome::Applied)) => "watchdog.already_restarted",
-            _ => "watchdog.already_stopped",
+            _ => "watchdog.termination_already_handled",
         })
     }
 
@@ -194,7 +196,7 @@ impl WatchdogActionCycle {
                     cooldowns.push((path.clone(), now + WATCHDOG_RESTART_COOLDOWN));
                 }
                 let outcome = restart();
-                self.stopped.extend(outcome.stopped);
+                self.termination_handled.extend(outcome.termination_handled);
                 outcome.result.map(|()| WatchdogRestartOutcome::Applied)
             })
             .clone()
@@ -301,7 +303,9 @@ impl RuntimeCore {
                         .targets
                         .iter()
                         .filter(|target| {
-                            !actions.stopped.contains(&(target.id, target.creation_time))
+                            !actions
+                                .termination_handled
+                                .contains(&(target.id, target.creation_time))
                         })
                         .cloned()
                         .collect();
@@ -311,7 +315,7 @@ impl RuntimeCore {
                     );
                     for result in &batch.results {
                         if result.outcome == crate::control::process_termination::ProcessTerminationOutcome::Terminated {
-                            actions.stopped.insert((result.target.id, result.target.creation_time));
+                            actions.termination_handled.insert((result.target.id, result.target.creation_time));
                         }
                     }
                     batch.into_process_list_result().map(|()| None)
@@ -2445,10 +2449,10 @@ mod watchdog_action_tests {
             let expected = if result.is_ok() {
                 "watchdog.already_restarted"
             } else {
-                "watchdog.already_stopped"
+                "watchdog.termination_already_handled"
             };
             let _ = cycle.restart_once(&targets, &mut Vec::new(), now, || RestartResult {
-                stopped: vec![(1, 1), (2, 2)],
+                termination_handled: vec![(1, 1), (2, 2)],
                 result,
             });
             assert_eq!(cycle.skipped_termination_reason(&targets), Some(expected));
@@ -2462,15 +2466,15 @@ mod watchdog_action_tests {
         }
         let mut cycle = WatchdogActionCycle::default();
         let _ = cycle.restart_once(&[target(3)], &mut Vec::new(), now, || RestartResult {
-            stopped: vec![(3, 3)],
+            termination_handled: vec![(3, 3)],
             result: Ok(()),
         });
-        cycle.stopped.insert((1, 1));
+        cycle.termination_handled.insert((1, 1));
         assert_eq!(cycle.skipped_termination_reason(&targets), None);
-        cycle.stopped.insert((2, 2));
+        cycle.termination_handled.insert((2, 2));
         assert_eq!(
             cycle.skipped_termination_reason(&targets),
-            Some("watchdog.already_stopped")
+            Some("watchdog.termination_already_handled")
         );
         assert_eq!(cycle.skipped_termination_reason(&[]), None);
     }
@@ -2499,7 +2503,7 @@ mod watchdog_action_tests {
                     cycle.restart_once(&batch, &mut cooldowns, start, || {
                         launches += 1;
                         RestartResult {
-                            stopped: vec![(1, 1)],
+                            termination_handled: vec![(1, 1)],
                             result: result.clone(),
                         }
                     }),
@@ -2507,7 +2511,7 @@ mod watchdog_action_tests {
                 );
             }
             assert_eq!(launches, 1);
-            assert_eq!(cycle.stopped, BTreeSet::from([(1, 1)]));
+            assert_eq!(cycle.termination_handled, BTreeSet::from([(1, 1)]));
             let mut replacement = target(3);
             replacement.executable_path = "c:/apps/APP.exe".into();
             let mut next_cycle = WatchdogActionCycle::default();
@@ -2531,7 +2535,7 @@ mod watchdog_action_tests {
             assert_eq!(
                 next_cycle.restart_once(&[independent], &mut cooldowns, just_before_expiry, || {
                     RestartResult {
-                        stopped: Vec::new(),
+                        termination_handled: Vec::new(),
                         result: Ok(()),
                     }
                 },),
@@ -2543,7 +2547,7 @@ mod watchdog_action_tests {
                     &mut cooldowns,
                     start + WATCHDOG_RESTART_COOLDOWN,
                     || RestartResult {
-                        stopped: vec![(3, 3)],
+                        termination_handled: vec![(3, 3)],
                         result: Ok(())
                     },
                 ),

@@ -81,7 +81,7 @@ fn main() {
     stale.creation_time = stale.creation_time.wrapping_add(1);
     let rejected = restart_app(vec![target.clone(), stale], false);
     assert!(rejected.result.is_err());
-    assert!(rejected.stopped.is_empty());
+    assert!(rejected.termination_handled.is_empty());
     assert!(child.0.try_wait().map_err(|e| e.to_string())?.is_none());
 
     let (_, process) =
@@ -112,7 +112,7 @@ fn main() {
             .map_err(|e| e.to_string())?;
     let restarted = restart_app(vec![other_target, target], false);
     restarted.result?;
-    assert_eq!(restarted.stopped.len(), 2);
+    assert_eq!(restarted.termination_handled.len(), 2);
     other.0.wait().map_err(|e| e.to_string())?;
     child.0.wait().map_err(|e| e.to_string())?;
     let after = wait_for_lines(3)?;
