@@ -1468,23 +1468,27 @@ fn enabled_features(
             thread_priority.adjusted_processes
         )
     );
+    let dynamic_priority_boost = &status.dynamic_priority_boost;
     feature!(
         DynamicPriorityBoost,
         dynamic_priority_boost,
-        t!(
-            "home.adjusted_count",
-            count = status.dynamic_priority_boost.adjusted_processes
+        priority_observation_detail(
+            dynamic_priority_boost.enabled,
+            dynamic_priority_boost.observation_paused,
+            dynamic_priority_boost.last_error.is_some(),
+            dynamic_priority_boost.adjusted_processes
         )
-        .to_string()
     );
+    let io_priority = &status.io_priority;
     feature!(
         IoPriority,
         io_priority,
-        t!(
-            "home.adjusted_count",
-            count = status.io_priority.adjusted_processes
+        priority_observation_detail(
+            io_priority.enabled,
+            io_priority.observation_paused,
+            io_priority.last_error.is_some(),
+            io_priority.adjusted_processes
         )
-        .to_string()
     );
     let gpu_priority = &status.gpu_priority;
     feature!(

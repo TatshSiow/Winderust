@@ -664,12 +664,14 @@ Read the relevant section before changing feature policy, ownership, restoration
 - I/O Priority and Dynamic Priority Boost restoration retries publish their current
   state and record verified baseline writes in Action Log even after the feature is
   disabled. Retry failures update current status. Successful retries clear the
-  resolved current error, retain any unrelated application error, and leave the
-  original Action Log failure in history. When focus is unavailable, both
+  resolved restoration error, retain current inventory or application errors,
+  and leave the original Action Log failure in history. When focus is unavailable, both
   features pause if an eligible process would receive different Focus App and
   fallback policies after accounting for custom rules and I/O preservation.
   Existing automatic claims yield through the usual restoration. Verified
-  Process List changes keep their manual owner.
+  Process List changes keep their manual owner. Home and the status rail
+  distinguish paused observations from a confirmed zero. Missing required
+  inventory and failed restoration surface as errors.
 - Process Priority, Power Throttling/Efficiency Mode, Dynamic Priority Boost,
   Thread Priority, I/O Priority, GPU Priority, and Memory Priority are complete
   typed process-control cutovers. Static Priority Control, Background

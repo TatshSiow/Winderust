@@ -32,14 +32,14 @@ pub struct DynamicPriorityBoostSnapshot {
     pub failed_processes: usize,
     pub adjusted_apps: Vec<String>,
     pub auto_excluded_processes: Vec<String>,
-    pub message: String,
+    pub observation_paused: bool,
     pub last_error: Option<String>,
 }
 
 #[derive(Default)]
 pub struct DynamicPriorityBoostManager {
     failure_suppression: ExecutionFailureTracker,
-    apply_failures: DynamicPriorityBoostFailures,
+    non_release_failures: DynamicPriorityBoostFailures,
 }
 
 impl DynamicPriorityBoostManager {
@@ -58,14 +58,13 @@ impl DynamicPriorityBoostManager {
         observations: &mut CycleObservations,
         action_log: &mut ActionLog,
     ) -> DynamicPriorityBoostSnapshot {
-        self.apply_failures = DynamicPriorityBoostFailures::default();
+        self.non_release_failures = DynamicPriorityBoostFailures::default();
         if !automation_enabled {
             let failures = self.clear_all(controller, action_log, "automation disabled");
             self.failure_suppression.clear();
             return DynamicPriorityBoostSnapshot {
                 enabled: false,
                 failed_processes: failures.count,
-                message: "Automation disabled.".to_owned(),
                 last_error: failures.last_error,
                 ..Default::default()
             };
@@ -81,7 +80,6 @@ impl DynamicPriorityBoostManager {
             return DynamicPriorityBoostSnapshot {
                 enabled: false,
                 failed_processes: failures.count,
-                message: "Dynamic priority boost defaults disabled.".to_owned(),
                 last_error: failures.last_error,
                 ..Default::default()
             };
@@ -90,48 +88,34 @@ impl DynamicPriorityBoostManager {
         let focus_unknown =
             settings.foreground_detection_enabled && foreground_process_id.is_none();
         if focus_unknown && settings.foreground_boost != settings.background_boost {
-            return self.pause_for_unknown_focus(controller, action_log);
+            return self.paused_snapshot(controller, action_log, "foreground app is unknown");
         }
 
         // SAFETY: GetCurrentProcessId takes no arguments and has no caller requirements.
         let current_process_id = unsafe { GetCurrentProcessId() };
         let Some(current_session_id) = process_session_id(current_process_id) else {
-            let failures =
-                self.clear_all(controller, action_log, "current Windows session is unknown");
-            return DynamicPriorityBoostSnapshot {
-                enabled: true,
-                failed_processes: failures.count,
-                message: "Paused: current Windows session is unknown.".to_owned(),
-                last_error: failures.last_error,
-                ..Default::default()
-            };
+            return self.paused_snapshot(
+                controller,
+                action_log,
+                "current Windows session is unknown",
+            );
         };
 
         let processes = match observations.processes_with_paths() {
             Ok(processes) => processes,
             Err(err) => {
-                let failures = self.clear_all(controller, action_log, "process list unavailable");
-                return DynamicPriorityBoostSnapshot {
-                    enabled: true,
-                    failed_processes: failures.count,
-                    message: err,
-                    last_error: failures.last_error,
-                    ..Default::default()
-                };
+                self.non_release_failures.last_error = Some(err);
+                return self.paused_snapshot(controller, action_log, "process list unavailable");
             }
         };
 
         let visible_processes = if settings.visible_window_detection_enabled {
             let Ok(process_ids) = observations.visible_window_process_ids() else {
-                let failures =
-                    self.clear_all(controller, action_log, "visible windows are unavailable");
-                return DynamicPriorityBoostSnapshot {
-                    enabled: true,
-                    failed_processes: failures.count,
-                    message: "Paused: visible windows are unavailable.".to_owned(),
-                    last_error: failures.last_error,
-                    ..Default::default()
-                };
+                return self.paused_snapshot(
+                    controller,
+                    action_log,
+                    "visible windows are unavailable",
+                );
             };
             ProtectedProcesses::capture(processes.as_ref(), false, None, process_ids)
         } else {
@@ -189,7 +173,7 @@ impl DynamicPriorityBoostManager {
             if focus_unknown
                 && policy != boost_policy(settings, &path, PriorityProcessTier::Foreground)
             {
-                return self.pause_for_unknown_focus(controller, action_log);
+                return self.paused_snapshot(controller, action_log, "foreground app is unknown");
             }
             if let Some(state) = policy {
                 target_processes.insert(
@@ -280,7 +264,7 @@ impl DynamicPriorityBoostManager {
                 Err(err) => {
                     self.failure_suppression
                         .record_process_failure(&executable_path);
-                    self.apply_failures.record(
+                    self.non_release_failures.record(
                         "Apply",
                         process_id,
                         &process_name,
@@ -309,27 +293,30 @@ impl DynamicPriorityBoostManager {
             scanned_processes,
             adjusted_processes: adjusted_apps.len(),
             skipped_processes,
-            failed_processes: release_failures.count + self.apply_failures.count,
+            failed_processes: release_failures.count + self.non_release_failures.count,
             adjusted_apps: unique_app_names(adjusted_apps.iter().map(String::as_str)),
             auto_excluded_processes: auto_excluded_processes.into_iter().collect(),
-            message: "Dynamic priority boost defaults active.".to_owned(),
+            observation_paused: false,
             last_error: release_failures
                 .last_error
-                .or_else(|| self.apply_failures.last_error.clone()),
+                .or_else(|| self.non_release_failures.last_error.clone()),
         }
     }
 
-    fn pause_for_unknown_focus(
+    fn paused_snapshot(
         &mut self,
         controller: &mut DynamicPriorityBoostController,
         action_log: &mut ActionLog,
+        reason: &str,
     ) -> DynamicPriorityBoostSnapshot {
-        let failures = self.clear_all(controller, action_log, "foreground app is unknown");
+        let failures = self.clear_all(controller, action_log, reason);
         DynamicPriorityBoostSnapshot {
             enabled: true,
+            observation_paused: true,
             failed_processes: failures.count,
-            message: "Paused: foreground app is unknown.".to_owned(),
-            last_error: failures.last_error,
+            last_error: failures
+                .last_error
+                .or_else(|| self.non_release_failures.last_error.clone()),
             ..Default::default()
         }
     }
@@ -364,10 +351,10 @@ impl DynamicPriorityBoostManager {
     ) -> DynamicPriorityBoostSnapshot {
         let failures =
             Self::record_release_summary(summary, action_log, "restoration retry completed", false);
-        status.failed_processes = self.apply_failures.count + failures.count;
+        status.failed_processes = self.non_release_failures.count + failures.count;
         status.last_error = failures
             .last_error
-            .or_else(|| self.apply_failures.last_error.clone());
+            .or_else(|| self.non_release_failures.last_error.clone());
         if status.enabled {
             let adjusted_apps = controller.policy_managed_process_names();
             status.adjusted_processes = adjusted_apps.len();

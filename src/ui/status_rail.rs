@@ -534,6 +534,14 @@ fn sidebar_state(
             features.thread_priority.enabled,
             features.thread_priority.observation_paused,
         )),
+        Page::DynamicPriorityBoost => Some((
+            features.dynamic_priority_boost.enabled,
+            features.dynamic_priority_boost.observation_paused,
+        )),
+        Page::IoPriority => Some((
+            features.io_priority.enabled,
+            features.io_priority.observation_paused,
+        )),
         _ => None,
     };
     if let Some((enabled, paused)) = priority_observation {
@@ -735,22 +743,24 @@ fn feature_status_summary(
         }
         Page::DynamicPriorityBoost => {
             let status = &runtime.feature_status.dynamic_priority_boost;
+            let observed = status.enabled && !status.observation_paused;
             FeatureStatusSummary {
-                scanned: Some(status.scanned_processes),
-                adjusted: Some(status.adjusted_processes),
+                scanned: observed.then_some(status.scanned_processes),
+                adjusted: observed.then_some(status.adjusted_processes),
                 protected_or_denied: None,
-                skipped: Some(status.skipped_processes),
+                skipped: observed.then_some(status.skipped_processes),
                 last_error: status.last_error.as_deref(),
                 action_log_feature: ActionLogFeature::DynamicPriorityBoost,
             }
         }
         Page::IoPriority => {
             let status = &runtime.feature_status.io_priority;
+            let observed = status.enabled && !status.observation_paused;
             FeatureStatusSummary {
-                scanned: Some(status.scanned_processes),
-                adjusted: Some(status.adjusted_processes),
+                scanned: observed.then_some(status.scanned_processes),
+                adjusted: observed.then_some(status.adjusted_processes),
                 protected_or_denied: None,
-                skipped: Some(status.skipped_processes),
+                skipped: observed.then_some(status.skipped_processes),
                 last_error: status.last_error.as_deref(),
                 action_log_feature: ActionLogFeature::IoPriority,
             }

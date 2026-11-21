@@ -31,14 +31,14 @@ pub struct IoPrioritySnapshot {
     pub failed_processes: usize,
     pub adjusted_apps: Vec<String>,
     pub auto_excluded_processes: Vec<String>,
-    pub message: String,
+    pub observation_paused: bool,
     pub last_error: Option<String>,
 }
 
 #[derive(Default)]
 pub struct IoPriorityManager {
     failure_suppression: ExecutionFailureTracker,
-    apply_failures: IoPriorityFailures,
+    non_release_failures: IoPriorityFailures,
 }
 
 impl IoPriorityManager {
@@ -57,14 +57,13 @@ impl IoPriorityManager {
         observations: &mut CycleObservations,
         action_log: &mut ActionLog,
     ) -> IoPrioritySnapshot {
-        self.apply_failures = IoPriorityFailures::default();
+        self.non_release_failures = IoPriorityFailures::default();
         if !automation_enabled {
             let failures = self.clear_all(controller, action_log, "automation disabled");
             self.failure_suppression.clear();
             return IoPrioritySnapshot {
                 enabled: false,
                 failed_processes: failures.count,
-                message: "Automation disabled.".to_owned(),
                 last_error: failures.last_error,
                 ..Default::default()
             };
@@ -76,7 +75,6 @@ impl IoPriorityManager {
             return IoPrioritySnapshot {
                 enabled: false,
                 failed_processes: failures.count,
-                message: "I/O priority defaults disabled.".to_owned(),
                 last_error: failures.last_error,
                 ..Default::default()
             };
@@ -85,48 +83,34 @@ impl IoPriorityManager {
         let focus_unknown =
             settings.foreground_detection_enabled && foreground_process_id.is_none();
         if focus_unknown && settings.foreground_priority != settings.background_priority {
-            return self.pause_for_unknown_focus(controller, action_log);
+            return self.paused_snapshot(controller, action_log, "foreground app is unknown");
         }
 
         // SAFETY: GetCurrentProcessId takes no arguments and has no caller requirements.
         let current_process_id = unsafe { GetCurrentProcessId() };
         let Some(current_session_id) = process_session_id(current_process_id) else {
-            let failures =
-                self.clear_all(controller, action_log, "current Windows session is unknown");
-            return IoPrioritySnapshot {
-                enabled: true,
-                failed_processes: failures.count,
-                message: "Paused: current Windows session is unknown.".to_owned(),
-                last_error: failures.last_error,
-                ..Default::default()
-            };
+            return self.paused_snapshot(
+                controller,
+                action_log,
+                "current Windows session is unknown",
+            );
         };
 
         let processes = match observations.processes_with_paths() {
             Ok(processes) => processes,
             Err(err) => {
-                let failures = self.clear_all(controller, action_log, "process list unavailable");
-                return IoPrioritySnapshot {
-                    enabled: true,
-                    failed_processes: failures.count,
-                    message: err,
-                    last_error: failures.last_error,
-                    ..Default::default()
-                };
+                self.non_release_failures.last_error = Some(err);
+                return self.paused_snapshot(controller, action_log, "process list unavailable");
             }
         };
 
         let visible_processes = if settings.visible_window_detection_enabled {
             let Ok(process_ids) = observations.visible_window_process_ids() else {
-                let failures =
-                    self.clear_all(controller, action_log, "visible windows are unavailable");
-                return IoPrioritySnapshot {
-                    enabled: true,
-                    failed_processes: failures.count,
-                    message: "Paused: visible windows are unavailable.".to_owned(),
-                    last_error: failures.last_error,
-                    ..Default::default()
-                };
+                return self.paused_snapshot(
+                    controller,
+                    action_log,
+                    "visible windows are unavailable",
+                );
             };
             ProtectedProcesses::capture(processes.as_ref(), false, None, process_ids)
         } else {
@@ -184,7 +168,7 @@ impl IoPriorityManager {
             if focus_unknown
                 && policy != priority_policy(settings, &path, PriorityProcessTier::Foreground)
             {
-                return self.pause_for_unknown_focus(controller, action_log);
+                return self.paused_snapshot(controller, action_log, "foreground app is unknown");
             }
             if let Some((priority, preservation)) = policy {
                 target_processes.insert(
@@ -287,7 +271,7 @@ impl IoPriorityManager {
                 Err(error) => {
                     self.failure_suppression
                         .record_process_failure(&executable_path);
-                    self.apply_failures.record(
+                    self.non_release_failures.record(
                         "Apply",
                         process_id,
                         &process_name,
@@ -316,27 +300,30 @@ impl IoPriorityManager {
             scanned_processes,
             adjusted_processes: adjusted_apps.len(),
             skipped_processes,
-            failed_processes: release_failures.count + self.apply_failures.count,
+            failed_processes: release_failures.count + self.non_release_failures.count,
             adjusted_apps: unique_app_names(adjusted_apps.iter().map(String::as_str)),
             auto_excluded_processes: auto_excluded_processes.into_iter().collect(),
-            message: "I/O priority defaults active.".to_owned(),
+            observation_paused: false,
             last_error: release_failures
                 .last_error
-                .or_else(|| self.apply_failures.last_error.clone()),
+                .or_else(|| self.non_release_failures.last_error.clone()),
         }
     }
 
-    fn pause_for_unknown_focus(
+    fn paused_snapshot(
         &mut self,
         controller: &mut IoPriorityController,
         action_log: &mut ActionLog,
+        reason: &str,
     ) -> IoPrioritySnapshot {
-        let failures = self.clear_all(controller, action_log, "foreground app is unknown");
+        let failures = self.clear_all(controller, action_log, reason);
         IoPrioritySnapshot {
             enabled: true,
+            observation_paused: true,
             failed_processes: failures.count,
-            message: "Paused: foreground app is unknown.".to_owned(),
-            last_error: failures.last_error,
+            last_error: failures
+                .last_error
+                .or_else(|| self.non_release_failures.last_error.clone()),
             ..Default::default()
         }
     }
@@ -371,10 +358,10 @@ impl IoPriorityManager {
     ) -> IoPrioritySnapshot {
         let failures =
             Self::record_release_summary(summary, action_log, "restoration retry completed", false);
-        status.failed_processes = self.apply_failures.count + failures.count;
+        status.failed_processes = self.non_release_failures.count + failures.count;
         status.last_error = failures
             .last_error
-            .or_else(|| self.apply_failures.last_error.clone());
+            .or_else(|| self.non_release_failures.last_error.clone());
         if status.enabled {
             let adjusted_apps = controller.policy_managed_process_names();
             status.adjusted_processes = adjusted_apps.len();
