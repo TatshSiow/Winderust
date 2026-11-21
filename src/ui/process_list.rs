@@ -214,6 +214,7 @@ pub(super) struct ProcessList {
     process_tab: ProcessTab,
     detail_action_id: u64,
     detail_feedback: Option<Result<String, String>>,
+    rulesets_error: Option<String>,
     current_query_id: u64,
     current: Vec<Value>,
     efficiency: Option<bool>,
@@ -253,6 +254,7 @@ impl Default for ProcessList {
             process_tab: ProcessTab::Immediate,
             detail_action_id: 0,
             detail_feedback: None,
+            rulesets_error: None,
             current_query_id: 0,
             current: Vec::new(),
             efficiency: None,
@@ -400,6 +402,7 @@ impl ProcessList {
             Message::Menu(message) => {
                 let task = self.update(*message, settings, runtime);
                 self.selected = None;
+                self.rulesets_error = None;
                 self.context = None;
                 return task;
             }
@@ -472,6 +475,7 @@ impl ProcessList {
                 self.context = None;
                 self.stopping = None;
                 self.reset_detail_feedback();
+                self.rulesets_error = None;
                 self.current.clear();
                 self.efficiency = None;
                 self.selected = Some(selection.clone());
@@ -497,6 +501,7 @@ impl ProcessList {
                 self.context = None;
                 self.stopping = None;
                 self.reset_detail_feedback();
+                self.rulesets_error = None;
             }
             Message::Action(action) => {
                 let detail_action = self.begin_detail_action();
@@ -614,7 +619,7 @@ impl ProcessList {
             }
             Message::Details(message) => {
                 if let Some(selection) = &self.selected {
-                    self.error = details::update(settings, &selection.path, message);
+                    self.rulesets_error = details::update(settings, &selection.path, message);
                 }
             }
         }
@@ -1885,20 +1890,20 @@ impl ProcessList {
             }
             let mut tabs = column![container(container(tabs).style(super::widgets::tab_bar))
                 .padding([design::space::SMALL as u16, design::space::LARGE as u16]),];
-            if let Some(feedback) = self
-                .detail_feedback
-                .as_ref()
-                .filter(|_| self.process_tab == ProcessTab::Immediate)
-            {
-                let message = match feedback {
-                    Ok(message) | Err(message) => message,
-                };
+            let feedback = match self.process_tab {
+                ProcessTab::Immediate => self.detail_feedback.as_ref().map(|result| match result {
+                    Ok(message) => (message, false),
+                    Err(message) => (message, true),
+                }),
+                ProcessTab::Rulesets => self.rulesets_error.as_ref().map(|message| (message, true)),
+            };
+            if let Some((message, is_error)) = feedback {
                 tabs = tabs.push(
                     container(
                         text(message)
                             .size(design::typography::SECONDARY)
                             .wrapping(text::Wrapping::WordOrGlyph)
-                            .style(if feedback.is_err() {
+                            .style(if is_error {
                                 text::danger
                             } else {
                                 text::success
@@ -3067,6 +3072,7 @@ mod tests {
                 path: String::new(),
                 name: "app.exe".into(),
             }),
+            rulesets_error: Some("Rulesets failure".into()),
             ..Default::default()
         };
         let first = list.begin_detail_action().unwrap();
@@ -3074,6 +3080,7 @@ mod tests {
         assert!(list.detail_feedback.is_some());
         let latest = list.begin_detail_action().unwrap();
         assert!(list.detail_feedback.is_none());
+        assert_eq!(list.rulesets_error.as_deref(), Some("Rulesets failure"));
         list.record_action_result(Ok("Latest success".into()), Some(latest));
         list.record_action_result(Err("Delayed failure".into()), Some(first));
         assert_eq!(list.detail_feedback, Some(Ok("Latest success".into())));
