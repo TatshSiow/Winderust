@@ -56,7 +56,9 @@ Read the relevant section before changing feature policy, ownership, restoration
   reservation. Native calls run after unlocking. Later intents pause subsequent
   retries; they cannot roll back a committed launch. Manual Stop/Stop Process Tree
   and Watchdog Terminate/Restart attempts pause affected rules before acting, even
-  when the attempt fails.
+  when the attempt fails. Confirmation of Stop Process Tree submits the captured
+  roots for pausing before the fresh tree scan. Verified descendants are paused
+  before termination is attempted.
 - Closing to tray retains this owner. Suspend/session changes require Resume;
   power-source handoff does not reset global rules. Disable and Exit never stop
   an accepted replacement. Fresh launches are not crash-helper recovery records.

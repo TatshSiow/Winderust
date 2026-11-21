@@ -576,18 +576,27 @@ impl ProcessList {
                         .into_iter()
                         .collect::<Result<Vec<_>, _>>()
                         .map_err(|e| e.to_string());
-                    if tree {
-                        return background(
-                            move || {
-                                foreground::process_tree_action_targets(
-                                    &roots?,
-                                    &foreground::list_processes_with_paths()?,
-                                )
-                            },
-                            Message::TreeReady,
-                        );
+                    if !tree {
+                        return self.stop_targets(roots, runtime);
                     }
-                    return self.stop_targets(roots, runtime);
+                    let roots = match roots.and_then(|roots| {
+                        runtime
+                            .request_stop_tree_intent(&roots)
+                            .map_err(|error| error.to_string())?;
+                        Ok(roots)
+                    }) {
+                        Ok(roots) => roots,
+                        Err(error) => return self.stop_targets(Err(error), runtime),
+                    };
+                    return background(
+                        move || {
+                            foreground::process_tree_action_targets(
+                                &roots,
+                                &foreground::list_processes_with_paths()?,
+                            )
+                        },
+                        Message::TreeReady,
+                    );
                 }
             }
             Message::TreeReady(targets) => return self.stop_targets(targets, runtime),

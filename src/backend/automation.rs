@@ -262,6 +262,9 @@ enum ProcessControlCommand {
         targets: Vec<ProcessActionTarget>,
         result: SyncSender<Result<ProcessTerminationBatchResult, RuntimeCommandError>>,
     },
+    StopTreeIntent {
+        roots: Vec<ProcessActionTarget>,
+    },
     KeepRunningResume {
         executable_path: String,
     },
@@ -293,7 +296,7 @@ impl ProcessControlCommand {
             Self::AppSuspensionPathAction { result, .. } => {
                 let _ = result.try_send(Err(error));
             }
-            Self::KeepRunningResume { .. } => {}
+            Self::StopTreeIntent { .. } | Self::KeepRunningResume { .. } => {}
             Self::SwitchPowerPlan { result, .. } => {
                 let _ = result.try_send(Err(error));
             }
@@ -308,6 +311,13 @@ impl ProcessControlCommand {
         matches!(
             self,
             Self::AppSuspension { .. } | Self::AppSuspensionPathAction { .. }
+        )
+    }
+
+    fn is_process_stop(&self) -> bool {
+        matches!(
+            self,
+            Self::StopProcesses { .. } | Self::StopTreeIntent { .. }
         )
     }
 }
@@ -912,6 +922,15 @@ impl RuntimeHandle {
             result,
         })?;
         Ok(receiver)
+    }
+
+    pub(crate) fn request_stop_tree_intent(
+        &self,
+        roots: &[ProcessActionTarget],
+    ) -> Result<(), RuntimeCommandError> {
+        self.enqueue_process_control_command(ProcessControlCommand::StopTreeIntent {
+            roots: roots.to_vec(),
+        })
     }
 
     pub(crate) fn request_keep_running_resume(
@@ -2008,7 +2027,7 @@ fn reserve_keep_running_commit(
         && !state
             .process_control_commands
             .iter()
-            .any(|command| matches!(command, ProcessControlCommand::StopProcesses { .. }));
+            .any(ProcessControlCommand::is_process_stop);
     // This reservation orders accepted intents; native launch calls run after the guard is released.
     manager.try_reserve_commit(now, ticket, observation, current_intents_clear)
 }
@@ -2215,32 +2234,38 @@ mod keep_running_intake_tests {
         let shared = shared(&settings);
         let (mut manager, ticket) = ready(base, &context);
         let (result, _receiver) = sync_channel(1);
-        lock_unpoisoned(&shared.state)
-            .process_control_commands
-            .push_back(ProcessControlCommand::StopProcesses {
+        let stops = [
+            ProcessControlCommand::StopProcesses {
                 targets: vec![],
                 result,
-            });
+            },
+            ProcessControlCommand::StopTreeIntent { roots: vec![] },
+        ];
         let observation = Observation::Complete {
             observed_at: now,
             context: &context,
             members: &[],
         };
-        assert_eq!(
-            reserve_keep_running_commit(
-                &shared,
-                &settings,
-                true,
-                &mut manager,
-                &ticket,
-                now,
-                observation,
-            ),
-            CommitDisposition::Deferred
-        );
-        lock_unpoisoned(&shared.state)
-            .process_control_commands
-            .clear();
+        for stop in stops {
+            lock_unpoisoned(&shared.state)
+                .process_control_commands
+                .push_back(stop);
+            assert_eq!(
+                reserve_keep_running_commit(
+                    &shared,
+                    &settings,
+                    true,
+                    &mut manager,
+                    &ticket,
+                    now,
+                    observation,
+                ),
+                CommitDisposition::Deferred
+            );
+            lock_unpoisoned(&shared.state)
+                .process_control_commands
+                .clear();
+        }
         assert_eq!(
             reserve_keep_running_commit(
                 &shared,

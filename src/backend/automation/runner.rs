@@ -1388,6 +1388,10 @@ impl RuntimeCore {
                     );
                     let _ = result.try_send(Ok(outcome));
                 }
+                ProcessControlCommand::StopTreeIntent { roots } => {
+                    self.keep_running
+                        .pause_targets(&roots, PauseReason::IntentionalStop);
+                }
                 ProcessControlCommand::KeepRunningResume { executable_path } => {
                     self.keep_running.resume(&executable_path);
                 }
