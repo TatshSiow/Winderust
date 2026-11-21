@@ -108,13 +108,13 @@ impl TimerResolutionManager {
             .active_rule_process
             .as_deref()
             .unwrap_or(SYSTEM_TARGET_NAME);
-        self.last_release_error = None;
         let result = controller.set_request(desired_100ns);
         let released = match &result {
             Ok(transition) => transition.released_100ns,
             Err(error) => error.released_100ns,
         };
         if let Some(previous_100ns) = released {
+            self.last_release_error = None;
             action_log.record(
                 ActionLogFeature::TimerResolution,
                 None,
@@ -146,27 +146,34 @@ impl TimerResolutionManager {
                 }
             }
             Err(error) => {
-                let (failed_target, action_message) = match error.stage {
-                    TimerResolutionTransitionStage::ReleasePrevious => (
-                        previous_target,
-                        rust_i18n::t!(
-                            "timer_resolution.log_release_previous_failed",
-                            error = error.message
-                        )
-                        .into_owned(),
-                    ),
+                let failure = match error.stage {
+                    TimerResolutionTransitionStage::ReleasePrevious
+                        if remember_release_error(&mut self.last_release_error, &error.message) =>
+                    {
+                        Some((
+                            previous_target,
+                            rust_i18n::t!(
+                                "timer_resolution.log_release_previous_failed",
+                                error = error.message
+                            )
+                            .into_owned(),
+                        ))
+                    }
+                    TimerResolutionTransitionStage::ReleasePrevious => None,
                     TimerResolutionTransitionStage::RequestDesired => {
                         self.active_rule_process = None;
-                        (rule_process_name, error.message.clone())
+                        Some((rule_process_name, error.message.clone()))
                     }
                 };
-                action_log.record(
-                    ActionLogFeature::TimerResolution,
-                    None,
-                    failed_target,
-                    ActionLogResult::Failed,
-                    action_message,
-                );
+                if let Some((target, reason)) = failure {
+                    action_log.record(
+                        ActionLogFeature::TimerResolution,
+                        None,
+                        target,
+                        ActionLogResult::Failed,
+                        reason,
+                    );
+                }
                 return snapshot_from_query(
                     true,
                     error.active_100ns,
@@ -226,8 +233,7 @@ impl TimerResolutionManager {
                     );
                 }
                 Err(message) => {
-                    if self.last_release_error.as_ref() != Some(&message) {
-                        self.last_release_error = Some(message.clone());
+                    if remember_release_error(&mut self.last_release_error, &message) {
                         action_log.record(
                             ActionLogFeature::TimerResolution,
                             None,
@@ -265,6 +271,14 @@ impl TimerResolutionManager {
             observation_paused,
         )
     }
+}
+
+fn remember_release_error(last_error: &mut Option<String>, error: &str) -> bool {
+    if last_error.as_deref() == Some(error) {
+        return false;
+    }
+    *last_error = Some(error.to_owned());
+    true
 }
 
 fn record_query_failure(action_log: &mut ActionLog, error: &str) {
