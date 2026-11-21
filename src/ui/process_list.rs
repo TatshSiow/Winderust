@@ -1,6 +1,7 @@
 use super::design;
 use super::priority_control::{Kind, Value};
 use super::widgets::{action_button, button, checkbox, pick_list, text_input};
+use crate::application::SettingsEditor;
 use crate::automation::{RuntimeHandle, RuntimeStatusSnapshot};
 use crate::config::*;
 use crate::foreground::{
@@ -288,7 +289,7 @@ impl ProcessList {
     pub(super) fn update(
         &mut self,
         message: Message,
-        settings: &mut Settings,
+        settings: &mut SettingsEditor,
         runtime: &RuntimeHandle,
     ) -> Task<Message> {
         match message {
@@ -2497,7 +2498,8 @@ mod tests {
     fn population_is_visible_before_icons_and_refreshes_do_not_overlap() {
         let mut settings = Settings::default();
         settings.general.enabled = false;
-        let mut editor = crate::application::SettingsEditor::with_settings(settings.clone());
+        let mut editor = SettingsEditor::with_settings(settings);
+        editor.select_power_source(PowerSourceProfile::OnBattery);
         let runtime = RuntimeHandle::start(&editor.runtime_settings_snapshot());
         let mut list = ProcessList::default();
         let path = PathBuf::from("missing-process-list-test.exe");
@@ -2507,39 +2509,39 @@ mod tests {
             samples: BTreeMap::new(),
             total_memory_bytes: None,
         };
-        let icons = list.update(Message::Loaded(Ok(population())), &mut settings, &runtime);
+        let icons = list.update(Message::Loaded(Ok(population())), &mut editor, &runtime);
         assert_eq!(list.rows.len(), 1);
         assert!(list.refreshing);
         assert!(list.icons.is_empty());
         assert!(icons.units() > 0);
         assert_eq!(
-            list.update(Message::Refresh, &mut settings, &runtime)
-                .units(),
+            list.update(Message::Refresh, &mut editor, &runtime).units(),
             0
         );
         drop(icons);
 
         let _ = list.update(
             Message::IconsLoaded(Ok(HashMap::from([(path.clone(), None)]))),
-            &mut settings,
+            &mut editor,
             &runtime,
         );
         assert!(!list.refreshing);
         assert!(list.icons.contains_key(&path));
         // Cache failed extractions too, so subsequent refreshes do not repeat them.
         assert_eq!(
-            list.update(Message::Loaded(Ok(population())), &mut settings, &runtime)
+            list.update(Message::Loaded(Ok(population())), &mut editor, &runtime)
                 .units(),
             0
         );
         assert!(!list.refreshing);
         let _ = list.update(
             Message::IconsLoaded(Err("worker unavailable".into())),
-            &mut settings,
+            &mut editor,
             &runtime,
         );
         assert!(!list.refreshing);
         assert_eq!(list.error.as_deref(), Some("worker unavailable"));
+        assert!(editor.global().on_battery.is_none());
     }
 
     #[test]
@@ -2636,7 +2638,7 @@ mod tests {
 
         let mut settings = Settings::default();
         settings.general.enabled = false;
-        let mut editor = crate::application::SettingsEditor::with_settings(settings.clone());
+        let mut editor = SettingsEditor::with_settings(settings.clone());
         let runtime = RuntimeHandle::start(&editor.runtime_settings_snapshot());
         let selection = Selection {
             nested: false,
@@ -2651,12 +2653,12 @@ mod tests {
         list.rebuild();
         assert!(list.focus_row(0, list.rows_revision));
         assert!(!list.modal_open());
-        let _ = list.update(Message::DeleteFocused, &mut settings, &runtime);
+        let _ = list.update(Message::DeleteFocused, &mut editor, &runtime);
         assert!(list.modal_open());
         let (pending, tree) = list.stopping.as_ref().unwrap();
         assert_eq!(pending.processes.len(), 2);
         assert!(!tree);
-        let _ = list.update(Message::CancelStop, &mut settings, &runtime);
+        let _ = list.update(Message::CancelStop, &mut editor, &runtime);
         assert!(list.stopping.is_none());
         assert!(!list.modal_open());
         for tree in [false, true] {
@@ -2665,7 +2667,7 @@ mod tests {
             list.context = Some(iced::Point::ORIGIN);
             assert!(!list.modal_open());
             list.context = None;
-            let _ = list.update(Message::Stop(tree), &mut settings, &runtime);
+            let _ = list.update(Message::Stop(tree), &mut editor, &runtime);
             assert_eq!(list.stopping.as_ref().unwrap().1, tree);
             {
                 let status = RuntimeStatusSnapshot::default();
@@ -2700,7 +2702,7 @@ mod tests {
                     labels.0
                 );
             }
-            let _ = list.update(Message::CancelStop, &mut settings, &runtime);
+            let _ = list.update(Message::CancelStop, &mut editor, &runtime);
             assert!(list.stopping.is_none());
         }
         runtime.shutdown().unwrap();
@@ -3087,7 +3089,7 @@ mod tests {
     fn current_controls_ignore_older_queries_and_closed_selections() {
         let mut settings = Settings::default();
         settings.general.enabled = false;
-        let mut editor = crate::application::SettingsEditor::with_settings(settings.clone());
+        let mut editor = SettingsEditor::with_settings(settings.clone());
         let runtime = RuntimeHandle::start(&editor.runtime_settings_snapshot());
         let mut list = ProcessList {
             selected: Some(Selection {
@@ -3107,7 +3109,7 @@ mod tests {
             Message::CloseSelection,
             Message::Current(2, Err("closed selection".into())),
         ] {
-            let _ = list.update(message, &mut settings, &runtime);
+            let _ = list.update(message, &mut editor, &runtime);
         }
         assert_eq!(list.current, [value]);
         assert_eq!(list.efficiency, Some(true));
