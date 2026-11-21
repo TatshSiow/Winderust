@@ -796,6 +796,11 @@ impl<P: Platform> Coordinator<P> {
             owner.active || flight_owner.is_some_and(|id| Arc::ptr_eq(id, &owner.id))
         }) {
             let state = owner.policy.state();
+            if state == KeepRunningState::Disabled
+                && !flight_owner.is_some_and(|id| Arc::ptr_eq(id, &owner.id))
+            {
+                owner.last_error = None;
+            }
             if !matches!(state, KeepRunningState::Retrying { .. }) {
                 owner.retry_error = None;
             }

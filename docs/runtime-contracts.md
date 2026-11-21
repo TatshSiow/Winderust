@@ -51,6 +51,8 @@ Read the relevant section before changing feature policy, ownership, restoration
   The five-second preparation deadline bounds acceptance of results, not Windows
   call duration. A timed-out call or unconfirmed cleanup occupies the global slot;
   disabling, editing, removing, or re-adding a rule cannot discard its ownership.
+  A disabled rule keeps its current diagnostic while it still owns pending
+  native work. The Action Log retains recorded failures after the diagnostic clears.
   Shutdown cancels provisional work without joining a blocked Windows call.
   Membership and filesystem queries remain synchronous on RuntimeCore; the
   preparation deadline is not a bound on the entire runtime cycle.
