@@ -1207,9 +1207,9 @@ impl WinderustApp {
             ) => {
                 let automatic = matches!(message, settings_pages::Message::CheckStartup);
                 let channel = self.settings.global().general.update_channel;
-                if !self.preferences.begin_check(automatic) {
+                let Some(check) = self.preferences.begin_check(channel, automatic) else {
                     return Task::none();
-                }
+                };
                 return tasks::run(move || {
                     crate::update_checker::check(channel)
                         .map(|r| (r.latest_version, r.available_update.map(|u| u.url)))
@@ -1221,7 +1221,10 @@ impl WinderustApp {
                             "Update check failed: {error}"
                         ));
                     });
-                    Message::Preferences(settings_pages::Message::Checked(channel, result))
+                    Message::Preferences(settings_pages::Message::Checked(
+                        Arc::clone(&check),
+                        result,
+                    ))
                 });
             }
             Message::Preferences(
@@ -2482,7 +2485,7 @@ impl WinderustApp {
         self.reset_editors();
         let general = &self.settings.global().general;
         if general.update_channel != previous_channel {
-            self.preferences.clear_update_result();
+            self.preferences.reset_update_check();
         }
         rust_i18n::set_locale(general.language.locale());
         self.publish_settings();
@@ -4351,13 +4354,13 @@ mod tests {
         let mut editor = settings_pages::Editor::default();
         let mut settings = crate::config::Settings::default();
         let channel = settings.general.update_channel;
-        assert!(editor.begin_check(false));
-        let completed = Message::Preferences(settings_pages::Message::Checked(channel, Err(())));
+        let check = editor.begin_check(channel, false).unwrap();
+        let completed = Message::Preferences(settings_pages::Message::Checked(check, Err(())));
         assert!(completed.allowed_during_exit());
         if let Message::Preferences(message) = completed {
             editor.update(&mut settings, message);
         }
-        assert!(editor.begin_check(false));
+        assert!(editor.begin_check(channel, false).is_some());
         assert!(Message::ShutdownFinished(Err("fixture".into())).allowed_during_exit());
         for message in [
             Message::Processes(process_list::Message::Refresh),

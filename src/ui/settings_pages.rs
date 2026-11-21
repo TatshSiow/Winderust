@@ -6,6 +6,7 @@ use crate::{config::*, ui::Page};
 use iced::widget::{column, row, text};
 use iced::{Color, Element, Fill, Theme};
 use rust_i18n::t;
+use std::sync::Arc;
 
 #[derive(Default)]
 pub(super) struct Editor {
@@ -15,13 +16,19 @@ pub(super) struct Editor {
     accent_expanded: bool,
     picker: Option<super::pickers::ColorDraft>,
     editing_color: Option<u32>,
-    pub(super) checking: bool,
-    notify_on_update: bool,
+    active_check: Option<Arc<UpdateCheck>>,
     pub(super) latest: Option<String>,
     pub(super) download: Option<String>,
     update_failed: bool,
     pub(super) show_update: bool,
 }
+
+#[derive(Debug)]
+pub(super) struct UpdateCheck {
+    channel: UpdateChannel,
+    notify: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum SearchHotkeySlot {
     Primary,
@@ -82,7 +89,7 @@ pub(super) enum Message {
     Channel(UpdateChannel),
     Check,
     CheckStartup,
-    Checked(UpdateChannel, Result<(String, Option<String>), ()>),
+    Checked(Arc<UpdateCheck>, Result<(String, Option<String>), ()>),
     Open(String),
     Export,
     Import,
@@ -119,25 +126,30 @@ impl Editor {
         self.failure_threshold = None;
     }
 
-    pub(super) fn clear_update_result(&mut self) {
+    pub(super) fn reset_update_check(&mut self) {
+        self.active_check = None;
         self.latest = None;
         self.download = None;
         self.update_failed = false;
         self.show_update = false;
     }
 
-    pub(super) fn begin_check(&mut self, automatic: bool) -> bool {
-        if self.checking {
-            return false;
+    pub(super) fn begin_check(
+        &mut self,
+        channel: UpdateChannel,
+        notify: bool,
+    ) -> Option<Arc<UpdateCheck>> {
+        if self.active_check.is_some() {
+            return None;
         }
-        self.checking = true;
-        self.notify_on_update = automatic;
+        let check = Arc::new(UpdateCheck { channel, notify });
+        self.active_check = Some(Arc::clone(&check));
         self.update_failed = false;
-        true
+        Some(check)
     }
 
     fn update_status(&self) -> std::borrow::Cow<'_, str> {
-        if self.checking {
+        if self.active_check.is_some() {
             t!("about.checking")
         } else if self.update_failed {
             t!("about.update_check_failed")
@@ -180,16 +192,20 @@ impl Editor {
             Message::CancelSearchHotkey => self.hotkey_capture = None,
             Message::ToggleAccent => self.accent_expanded = !self.accent_expanded,
             Message::DismissUpdate => self.show_update = false,
-            Message::Checked(channel, result) => {
-                if channel != current_channel {
-                    self.checking = false;
+            Message::Checked(check, result) => {
+                let Some(check) = self
+                    .active_check
+                    .take_if(|active| Arc::ptr_eq(active, &check))
+                else {
+                    return;
+                };
+                if check.channel != current_channel {
                     return;
                 }
-                self.checking = false;
                 match result {
                     Ok((version, url)) => {
                         self.latest = Some(version);
-                        self.show_update = self.notify_on_update && url.is_some();
+                        self.show_update = check.notify && url.is_some();
                         self.download = url;
                         self.update_failed = false;
                     }
@@ -324,7 +340,7 @@ impl Editor {
             Message::Channel(value) => {
                 if s.general.update_channel != value {
                     s.general.update_channel = value;
-                    self.clear_update_result();
+                    self.reset_update_check();
                 }
             }
             Message::Check | Message::CheckStartup => {}
@@ -761,7 +777,9 @@ impl Editor {
                             )
                             .width(design::SELECT_WIDTH),
                             action_button(t!("about.check_for_updates").to_string())
-                                .on_press_maybe((!self.checking).then_some(Message::Check))
+                                .on_press_maybe(
+                                    self.active_check.is_none().then_some(Message::Check)
+                                )
                         ]
                         .spacing(design::space::MEDIUM),
                     )
@@ -1224,27 +1242,27 @@ mod tests {
         assert_eq!(editor.update_status(), t!("about.not_checked"));
         editor.update_ui(channel, Message::ToggleAccent);
         assert!(editor.accent_expanded);
-        assert!(editor.begin_check(true));
+        let check = editor.begin_check(channel, true).unwrap();
         assert_eq!(editor.update_status(), t!("about.checking"));
         editor.update_ui(
             channel,
-            Message::Checked(channel, Ok(("next".into(), Some("url".into())))),
+            Message::Checked(check, Ok(("next".into(), Some("url".into())))),
         );
-        assert!(!editor.checking);
+        assert!(editor.active_check.is_none());
         assert!(editor.show_update);
         assert_eq!(editor.update_status(), t!("about.update_available"));
         editor.update_ui(channel, Message::DismissUpdate);
         assert!(!editor.show_update);
-        assert!(editor.begin_check(false));
+        let check = editor.begin_check(channel, false).unwrap();
         assert_eq!(editor.update_status(), t!("about.checking"));
-        editor.update_ui(channel, Message::Checked(channel, Err(())));
+        editor.update_ui(channel, Message::Checked(check, Err(())));
         assert_eq!(editor.update_status(), t!("about.update_check_failed"));
         assert!(editor.download.is_some());
-        assert!(editor.begin_check(false));
+        let check = editor.begin_check(channel, false).unwrap();
         assert_eq!(editor.update_status(), t!("about.checking"));
         editor.update_ui(
             channel,
-            Message::Checked(channel, Ok(("current".into(), None))),
+            Message::Checked(check, Ok(("current".into(), None))),
         );
         assert_eq!(editor.update_status(), t!("about.up_to_date"));
     }
@@ -1401,10 +1419,13 @@ mod tests {
     }
     #[test]
     fn resetting_drafts_preserves_update_check_state() {
+        let check = Arc::new(UpdateCheck {
+            channel: UpdateChannel::Stable,
+            notify: true,
+        });
         let mut e = Editor {
             color: Some("#123456".into()),
-            checking: true,
-            notify_on_update: true,
+            active_check: Some(Arc::clone(&check)),
             latest: Some("1.0.0".into()),
             download: Some("https://example.com".into()),
             update_failed: true,
@@ -1412,7 +1433,7 @@ mod tests {
             ..Editor::default()
         };
         e.reset_drafts();
-        assert!(e.checking && e.notify_on_update);
+        assert!(Arc::ptr_eq(e.active_check.as_ref().unwrap(), &check));
         assert!(e.color.is_none());
         assert_eq!(e.latest.as_deref(), Some("1.0.0"));
         assert_eq!(e.download.as_deref(), Some("https://example.com"));
@@ -1466,25 +1487,25 @@ mod tests {
         assert_eq!(ACCENT_PALETTE.len(), 48);
     }
     #[test]
-    fn only_current_channel_startup_checks_raise_update_notification() {
+    fn only_the_current_update_check_can_publish_and_notify() {
         let mut e = Editor::default();
         let mut s = Settings::default();
         let channel = s.general.update_channel;
-        assert!(e.begin_check(false));
-        assert!(!e.begin_check(true));
+        let manual = e.begin_check(channel, false).unwrap();
+        assert!(e.begin_check(channel, true).is_none());
         e.update(
             &mut s,
             Message::Checked(
-                channel,
+                manual,
                 Ok(("1.0".into(), Some("https://example.com".into()))),
             ),
         );
         assert!(!e.show_update);
-        assert!(e.begin_check(true));
+        let automatic = e.begin_check(channel, true).unwrap();
         e.update(
             &mut s,
             Message::Checked(
-                channel,
+                automatic,
                 Ok(("1.0".into(), Some("https://example.com".into()))),
             ),
         );
@@ -1492,19 +1513,30 @@ mod tests {
         e.update(&mut s, Message::Channel(channel));
         assert_eq!(e.latest.as_deref(), Some("1.0"));
         assert!(e.show_update);
-        assert!(e.begin_check(true));
+        let abandoned = e.begin_check(channel, true).unwrap();
         let other = if channel == UpdateChannel::Stable {
             UpdateChannel::PreRelease
         } else {
             UpdateChannel::Stable
         };
         e.update(&mut s, Message::Channel(other));
+        assert_eq!(e.update_status(), t!("about.not_checked"));
+        let other_check = e.begin_check(other, false).unwrap();
+        e.update(&mut s, Message::Channel(channel));
+        let current = e.begin_check(channel, false).unwrap();
         e.update(
             &mut s,
-            Message::Checked(channel, Ok(("wrong-channel".into(), None))),
+            Message::Checked(abandoned, Ok(("stale".into(), Some("url".into())))),
         );
+        e.update(&mut s, Message::Checked(other_check, Err(())));
         assert!(e.latest.is_none());
         assert!(!e.show_update);
-        assert_eq!(e.update_status(), t!("about.not_checked"));
+        assert_eq!(e.update_status(), t!("about.checking"));
+        e.update(
+            &mut s,
+            Message::Checked(current, Ok(("current".into(), None))),
+        );
+        assert_eq!(e.latest.as_deref(), Some("current"));
+        assert_eq!(e.update_status(), t!("about.up_to_date"));
     }
 }
