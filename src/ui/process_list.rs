@@ -186,6 +186,7 @@ pub(super) enum Message {
         readback: Option<Selection>,
         detail_action: Option<u64>,
     },
+    DismissActionFeedback,
     OpenLocation,
     Properties,
     Details(details::Message),
@@ -207,6 +208,7 @@ pub(super) struct ProcessList {
     refreshing: bool,
     refresh_started_at: Option<std::time::Instant>,
     error: Option<String>,
+    action_feedback: Option<Result<String, String>>,
     hide_inaccessible: bool,
     grouped: bool,
     memory_percentage: bool,
@@ -248,6 +250,7 @@ impl Default for ProcessList {
             refreshing: false,
             refresh_started_at: None,
             error: None,
+            action_feedback: None,
             hide_inaccessible: true,
             grouped: true,
             memory_percentage: false,
@@ -609,6 +612,7 @@ impl ProcessList {
                     );
                 }
             }
+            Message::DismissActionFeedback => self.action_feedback = None,
             Message::Properties => {
                 if let Some(selection) = &self.selected {
                     let path = PathBuf::from(&selection.path);
@@ -728,9 +732,7 @@ impl ProcessList {
         {
             self.detail_feedback = Some(result);
         } else {
-            self.error = Some(match result {
-                Ok(message) | Err(message) => message,
-            });
+            self.action_feedback = Some(result);
         }
     }
     fn result_message(
@@ -783,7 +785,7 @@ impl ProcessList {
                 },
             ),
             Err(e) => {
-                self.error = Some(e);
+                self.record_action_result(Err(e), None);
                 Task::none()
             }
         }
@@ -1285,6 +1287,29 @@ impl ProcessList {
             .height(Fill);
         if let Some(e) = &self.error {
             body = body.push(text(e));
+        }
+        if let Some(result) = &self.action_feedback {
+            let message = match result {
+                Ok(message) | Err(message) => message,
+            };
+            body = body.push(
+                row![
+                    text(message)
+                        .width(Fill)
+                        .size(design::typography::SECONDARY)
+                        .wrapping(text::Wrapping::WordOrGlyph)
+                        .style(if result.is_err() {
+                            text::danger
+                        } else {
+                            text::success
+                        }),
+                    button(text(t!("common.close").to_string()))
+                        .style(super::widgets::quiet)
+                        .on_press(Message::DismissActionFeedback),
+                ]
+                .spacing(design::space::SMALL)
+                .align_y(iced::Center),
+            );
         }
         body = body.push(super::widgets::table_frame(responsive(move |size| {
             let widths = self.layout_widths(size.width);
@@ -2574,6 +2599,7 @@ mod tests {
         );
         assert!(!list.refreshing);
         assert!(list.icons.contains_key(&path));
+        list.record_action_result(Ok("Process action completed".into()), None);
         // Cache failed extractions too, so subsequent refreshes do not repeat them.
         assert_eq!(
             list.update(Message::Loaded(Ok(population())), &mut editor, &runtime)
@@ -2581,6 +2607,10 @@ mod tests {
             0
         );
         assert!(!list.refreshing);
+        assert_eq!(
+            list.action_feedback,
+            Some(Ok("Process action completed".into()))
+        );
         let _ = list.update(
             Message::IconsLoaded(Err("worker unavailable".into())),
             &mut editor,
@@ -2588,6 +2618,8 @@ mod tests {
         );
         assert!(!list.refreshing);
         assert!(list.population_loaded);
+        let _ = list.update(Message::DismissActionFeedback, &mut editor, &runtime);
+        assert!(list.action_feedback.is_none());
         assert_eq!(list.error.as_deref(), Some("worker unavailable"));
         assert!(editor.global().on_battery.is_none());
     }
@@ -3125,12 +3157,12 @@ mod tests {
         list.record_action_result(Ok("Latest success".into()), Some(latest));
         list.record_action_result(Err("Delayed failure".into()), Some(first));
         assert_eq!(list.detail_feedback, Some(Ok("Latest success".into())));
-        assert_eq!(list.error.as_deref(), Some("Delayed failure"));
+        assert_eq!(list.action_feedback, Some(Err("Delayed failure".into())));
 
         list.context = Some(iced::Point::ORIGIN);
         assert_eq!(list.begin_detail_action(), None);
         list.record_action_result(Err("Context failure".into()), None);
-        assert_eq!(list.error.as_deref(), Some("Context failure"));
+        assert_eq!(list.action_feedback, Some(Err("Context failure".into())));
     }
 
     #[test]
