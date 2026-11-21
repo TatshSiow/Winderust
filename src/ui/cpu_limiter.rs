@@ -9,6 +9,7 @@ use std::ops::{Deref, DerefMut};
 
 use crate::application::SettingsEditor;
 use crate::config::{CpuLimiterRule, CpuLimiterSettings, ProcessRuleMode};
+use crate::features::cpu_control::cpu_limiter::CpuLimiterSnapshot;
 use crate::ui::process_rules::{can_add_cpu_limiter_process, new_cpu_limiter_rule};
 
 pub(super) fn limit_slider<'a, M: Clone + 'a>(
@@ -343,7 +344,7 @@ impl CpuLimiter {
         settings: &'a CpuLimiterSettings,
         candidates: &'a [super::app_picker::Candidate],
         master_enabled: bool,
-        status: &crate::features::cpu_control::cpu_limiter::CpuLimiterSnapshot,
+        status: Option<&CpuLimiterSnapshot>,
     ) -> Element<'a, Message> {
         let mut body = column![].spacing(super::widgets::CARD_GAP);
         if self.has_invalid_inputs() {
@@ -439,7 +440,7 @@ impl CpuLimiter {
     pub(super) fn modal<'a>(
         &'a self,
         candidates: &[super::app_picker::Candidate],
-        status: &crate::features::cpu_control::cpu_limiter::CpuLimiterSnapshot,
+        status: Option<&CpuLimiterSnapshot>,
     ) -> Option<Element<'a, Message>> {
         let (index, settings) = self.draft.as_ref()?;
         let index = *index;
@@ -548,13 +549,15 @@ fn mode_label(mode: ProcessRuleMode) -> String {
 fn rule_status(
     rule: &CpuLimiterRule,
     enabled: bool,
-    status: &crate::features::cpu_control::cpu_limiter::CpuLimiterSnapshot,
+    status: Option<&CpuLimiterSnapshot>,
 ) -> &'static str {
     if !enabled || !rule.enabled {
-        "common.inactive"
-    } else if rule.executable_path.trim().is_empty() {
-        "common.unknown"
-    } else if status.failed_apps.iter().any(|path| {
+        return "common.inactive";
+    }
+    let Some(status) = status.filter(|_| !rule.executable_path.trim().is_empty()) else {
+        return "common.unknown";
+    };
+    if status.failed_apps.iter().any(|path| {
         crate::foreground::same_executable_path(
             std::path::Path::new(path),
             std::path::Path::new(&rule.executable_path),
@@ -608,24 +611,27 @@ mod tests {
     fn rule_status_uses_confirmed_limited_apps_and_enable_switches() {
         let mut rule = new_cpu_limiter_rule(r"C:\Apps\test.exe");
         rule.enabled = true;
-        let mut status = crate::features::cpu_control::cpu_limiter::CpuLimiterSnapshot {
+        let mut status = CpuLimiterSnapshot {
             enabled: true,
             ..Default::default()
         };
-        assert_eq!(rule_status(&rule, true, &status), "common.waiting");
+        assert_eq!(rule_status(&rule, true, Some(&status)), "common.waiting");
         status.limited_apps.push(r"c:\apps\TEST.exe".into());
-        assert_eq!(rule_status(&rule, true, &status), "common.applied");
-        assert_eq!(rule_status(&rule, false, &status), "common.inactive");
+        assert_eq!(rule_status(&rule, true, Some(&status)), "common.applied");
+        assert_eq!(rule_status(&rule, false, Some(&status)), "common.inactive");
         status.observation_paused = true;
         status.failed_apps.push(rule.executable_path.clone());
-        assert_eq!(rule_status(&rule, true, &status), "common.error");
+        assert_eq!(rule_status(&rule, true, Some(&status)), "common.error");
         status.failed_apps.clear();
-        assert_eq!(rule_status(&rule, true, &status), "sidebar_status.paused");
+        assert_eq!(
+            rule_status(&rule, true, Some(&status)),
+            "sidebar_status.paused"
+        );
         status.observation_paused = false;
         status.enabled = false;
-        assert_eq!(rule_status(&rule, true, &status), "common.unknown");
+        assert_eq!(rule_status(&rule, true, Some(&status)), "common.unknown");
         rule.enabled = false;
-        assert_eq!(rule_status(&rule, true, &status), "common.inactive");
+        assert_eq!(rule_status(&rule, true, Some(&status)), "common.inactive");
     }
 
     #[test]

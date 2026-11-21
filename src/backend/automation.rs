@@ -1650,7 +1650,10 @@ fn run_background_automation(
         }
         if cpu_limiter_refresh_required && scheduler.is_due(RefreshDomain::CpuLimiter, now) {
             if cpu_limiter_refresh_requested || !runner.cpu_limiter_release_in_progress() {
-                let cpu_limiter_status = runner.run_cpu_limiter_update(settings, &mut observations);
+                let cpu_limiter_status = CpuLimiterSnapshot {
+                    source: plugged_in.map(|plugged_in| active_power_source(Some(plugged_in))),
+                    ..runner.run_cpu_limiter_update(settings, &mut observations)
+                };
                 update_cpu_limiter_status(&shared, cpu_limiter_status);
             }
             scheduler.schedule_after(RefreshDomain::CpuLimiter, now, cpu_limiter_refresh_interval);

@@ -7,7 +7,7 @@ use windows_sys::Win32::System::Threading::GetCurrentProcessId;
 
 use crate::{
     action_log::{ActionLog, ActionLogFeature, ActionLogResult},
-    config::{CpuLimiterRule, CpuLimiterSettings, ProcessRuleMode},
+    config::{CpuLimiterRule, CpuLimiterSettings, PowerSourceProfile, ProcessRuleMode},
     control::{
         cpu_limiter::{CpuLimiterController, CpuLimiterTarget},
         process::ProcessTargetKey,
@@ -23,6 +23,7 @@ use crate::{
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CpuLimiterSnapshot {
+    pub(crate) source: Option<PowerSourceProfile>,
     pub enabled: bool,
     pub(crate) observation_paused: bool,
     pub scanned_processes: usize,
@@ -331,6 +332,7 @@ impl CpuLimiterManager {
             }
         }
         CpuLimiterSnapshot {
+            source: None,
             enabled: true,
             observation_paused: false,
             scanned_processes,

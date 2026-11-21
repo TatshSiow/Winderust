@@ -23,6 +23,7 @@ use crate::application::SettingsEditor;
 use crate::automation::{RuntimeCommandError, RuntimeHandle, RuntimeStatusSnapshot};
 use crate::config::{PowerSourceProfile, UpdateChannel};
 use crate::control::power_plan::ManualPowerPlanError;
+use crate::features::cpu_control::cpu_limiter::CpuLimiterSnapshot;
 use crate::ui::Page;
 use crate::SingleInstanceRestoreEvent;
 use crate::{
@@ -3401,7 +3402,7 @@ impl WinderustApp {
                 .map(|m| m.map(|m| Message::Allocation(cpu_allocation::Kind::Hard, m))),
             Page::CpuLimiter => self
                 .cpu_limiter
-                .modal(&self.candidates, &self.status.feature_status.cpu_limiter)
+                .modal(&self.candidates, self.cpu_limiter_rule_status())
                 .map(|modal| modal.map(Message::CpuLimiter)),
             Page::AdvancedPowerPlanTuning => self
                 .power_tuning
@@ -3487,6 +3488,14 @@ impl WinderustApp {
                 .spacing(design::space::SMALL),
             )
             .spacing(design::space::MEDIUM)
+    }
+
+    fn cpu_limiter_rule_status(&self) -> Option<&CpuLimiterSnapshot> {
+        let status = &self.status.feature_status.cpu_limiter;
+        let selected_is_plugged_in = self.power_source == PowerSourceProfile::PluggedIn;
+        (status.source == Some(self.power_source)
+            && crate::backend::power_source::is_plugged_in() == Some(selected_is_plugged_in))
+        .then_some(status)
     }
 
     fn page_view(&self) -> Element<'_, Message> {
@@ -3687,7 +3696,7 @@ impl WinderustApp {
                     &self.settings.cpu_limiter,
                     &self.candidates,
                     self.settings.global().general.enabled,
-                    &self.status.feature_status.cpu_limiter,
+                    self.cpu_limiter_rule_status(),
                 )
                 .map(Message::CpuLimiter),
             Page::ProcessList => self

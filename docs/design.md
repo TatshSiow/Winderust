@@ -248,6 +248,8 @@ hover/press; background shading supplies feedback.
   Visible Window, and Background have editable 1% to 100% page defaults. A rule's expandable
   details show a 1% to 100% Allowed CPU Time slider only for Custom tiers, and an inactive rule
   retains its configured values while those sliders are disabled. A 100% target is Unlimited.
+  CPU Limiter rule status follows the published observation for the selected live power source.
+  With the other profile selected or the source unconfirmed, enabled rules show Unknown.
 
 ### Advanced Power Plan Tuning
 
