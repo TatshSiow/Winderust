@@ -162,7 +162,9 @@ impl State {
     fn failed(error: InterruptTimingError) -> Self {
         if matches!(
             error,
-            InterruptTimingError::Worker(_) | InterruptTimingError::Capture(_)
+            InterruptTimingError::Worker(_)
+                | InterruptTimingError::Capture(_)
+                | InterruptTimingError::TimedOut(_)
         ) {
             crate::backend::diagnostics::error(&format!("Interrupt Timing failed with {error}"));
         }
@@ -221,6 +223,7 @@ impl State {
                 InterruptTimingError::AccessDenied => "interrupt_timing.access_denied",
                 InterruptTimingError::InUse => "interrupt_timing.in_use",
                 InterruptTimingError::Cancelled => "interrupt_timing.cancelled",
+                InterruptTimingError::TimedOut(_) => "interrupt_timing.timed_out",
                 InterruptTimingError::Worker(_) | InterruptTimingError::Capture(_) => {
                     "interrupt_timing.failed"
                 }

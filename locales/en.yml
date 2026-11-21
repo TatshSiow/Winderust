@@ -647,6 +647,7 @@ interrupt_timing:
   access_denied: "Administrator access is required to capture interrupt timing."
   in_use: "An interrupt timing session is already running."
   failed: "Windows could not capture interrupt timing."
+  timed_out: "Interrupt Timing timed out. Cleanup may still be in progress."
   no_samples: "No completed interrupt samples were captured."
   top_drivers: "Top drivers by total elapsed time"
   driver: "Driver"

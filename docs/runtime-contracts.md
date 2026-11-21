@@ -667,6 +667,10 @@ Read the relevant section before changing feature policy, ownership, restoration
   helper. If both processes terminate, Winderust tries cleanup at its next
   startup and before another capture. Cleanup skips a live helper and verifies
   the exact capture name and logger GUID before stopping a remaining trace.
+  The app gives the helper 12 seconds overall and up to four seconds after
+  Cancel or Exit. It stops only its own child and confirms exit before checking
+  the lease. The UI can report a timeout while cleanup continues, and another
+  capture stays blocked until the pending exit or cleanup check completes.
   When the user cancels before the page receives the report, any queued report
   is discarded and cleanup errors still reach the page.
 

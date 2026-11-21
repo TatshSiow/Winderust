@@ -4,13 +4,13 @@ use std::{
     io::{self, Read, Write},
     num::NonZeroU128,
     os::windows::process::CommandExt,
-    process::{Child, ChildStdin, Command, Stdio},
+    process::{Child, ChildStdin, Command, ExitStatus, Stdio},
     sync::{
         atomic::{AtomicU32, Ordering::Relaxed},
-        mpsc::{self, Receiver, TryRecvError},
+        mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError},
     },
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use serde::{Deserialize, Serialize};
@@ -30,6 +30,11 @@ const START: u8 = 1;
 const STARTUP_RECORD_LEN: usize = 17;
 const STARTING: u32 = u32::MAX;
 const MAX_RESPONSE_BYTES: u64 = 1024 * 1024;
+const CAPTURE_LIMIT: Duration = Duration::from_secs(12);
+const CANCEL_LIMIT: Duration = Duration::from_secs(4);
+const CLEANUP_GRACE: Duration = Duration::from_secs(1);
+const WORKER_POLL: Duration = Duration::from_millis(20);
+const EXIT_CONFIRMATION_POLL: Duration = Duration::from_millis(50);
 static WORKER_PROCESS_ID: AtomicU32 = AtomicU32::new(0);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]
@@ -40,6 +45,8 @@ pub(crate) enum InterruptTimingError {
     InUse,
     #[error("Interrupt timing capture was cancelled.")]
     Cancelled,
+    #[error("Interrupt timing helper timed out: {0}")]
+    TimedOut(String),
     #[error("{0}")]
     Worker(String),
     #[error("{0}")]
@@ -50,56 +57,51 @@ type Outcome = Result<InterruptTimingReport, InterruptTimingError>;
 
 #[derive(Debug)]
 pub(crate) struct InterruptTimingCapture {
-    cancel_pipe: Option<ChildStdin>,
+    cancel_signal: Option<Sender<()>>,
     outcome: Option<Receiver<Outcome>>,
+    deadline: Instant,
 }
 
 impl InterruptTimingCapture {
     pub(crate) fn start() -> Result<Self, InterruptTimingError> {
         let reservation = WorkerReservation::acquire()?;
         let identity = CaptureIdentity::new()?;
-        let executable = std::env::current_exe().map_err(worker_error)?;
-        let mut child = Command::new(executable)
-            .arg(WORKER_ARGUMENT)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .creation_flags(CREATE_NO_WINDOW)
-            .spawn()
-            .map_err(worker_error)?;
-        WORKER_PROCESS_ID.store(child.id(), Relaxed);
-        let mut cancel_pipe = child.stdin.take().ok_or_else(|| {
-            InterruptTimingError::Worker("Interrupt timing worker stdin is unavailable.".into())
-        })?;
+        let deadline = Instant::now() + CAPTURE_LIMIT;
+        let (cancel_signal, cancelled) = mpsc::channel();
         let (sender, outcome) = mpsc::channel();
         thread::Builder::new()
             .name("interrupt-timing-worker-reaper".into())
             .spawn(move || {
-                let result = receive_worker_outcome(child, identity);
+                let result = supervise_worker(identity, &cancelled, deadline);
                 drop(reservation);
-                let _ = sender.send(result);
+                if let Err(mpsc::SendError(Err(error))) = sender.send(result) {
+                    crate::backend::diagnostics::error(&format!(
+                        "Interrupt Timing failed with {error}"
+                    ));
+                }
             })
             .map_err(worker_error)?;
-        cancel_pipe
-            .write_all(&identity.startup_record())
-            .map_err(worker_error)?;
         Ok(Self {
-            cancel_pipe: Some(cancel_pipe),
+            cancel_signal: Some(cancel_signal),
             outcome: Some(outcome),
+            deadline: deadline + CLEANUP_GRACE,
         })
     }
 
     pub(crate) fn cancel(&mut self) {
-        self.cancel_pipe.take();
+        if self.cancel_signal.take().is_some() {
+            self.deadline = self
+                .deadline
+                .min(Instant::now() + CANCEL_LIMIT + CLEANUP_GRACE);
+        }
     }
 
     pub(crate) fn poll(&mut self) -> Option<Outcome> {
         let result = match self.outcome.as_ref()?.try_recv() {
             Ok(result) => result,
-            Err(TryRecvError::Empty) => return None,
-            Err(TryRecvError::Disconnected) => Err(InterruptTimingError::Worker(
-                "Interrupt timing worker exited without a report.".into(),
-            )),
+            Err(TryRecvError::Empty) if Instant::now() < self.deadline => return None,
+            Err(TryRecvError::Empty) => Err(pending_timeout()),
+            Err(error) => Err(worker_error(error)),
         };
         self.outcome.take();
         self.cancel();
@@ -111,9 +113,10 @@ impl InterruptTimingCapture {
         let Some(outcome) = self.outcome.take() else {
             return Ok(());
         };
-        match outcome.recv_timeout(Duration::from_secs(5)) {
+        match outcome.recv_timeout(self.deadline.saturating_duration_since(Instant::now())) {
             Ok(Ok(_) | Err(InterruptTimingError::Cancelled)) => Ok(()),
             Ok(Err(error)) => Err(error),
+            Err(RecvTimeoutError::Timeout) => Err(pending_timeout()),
             Err(error) => Err(worker_error(error)),
         }
     }
@@ -242,37 +245,140 @@ fn run_worker() -> Outcome {
     outcome
 }
 
-fn receive_worker_outcome(mut child: Child, identity: CaptureIdentity) -> Outcome {
-    let mut bytes = Vec::new();
-    let read = child
-        .stdout
-        .take()
-        .ok_or_else(|| {
-            InterruptTimingError::Worker("Interrupt timing worker stdout is unavailable.".into())
-        })
-        .and_then(|pipe| {
-            pipe.take(MAX_RESPONSE_BYTES + 1)
-                .read_to_end(&mut bytes)
-                .map_err(worker_error)
-        });
-    let status = child.wait().map_err(worker_error)?;
-    let outcome = read.and_then(|_| {
-        if status.success() && bytes.len() as u64 <= MAX_RESPONSE_BYTES {
-            return serde_json::from_slice::<Outcome>(&bytes).map_err(worker_error)?;
+fn supervise_worker(
+    identity: CaptureIdentity,
+    cancelled: &Receiver<()>,
+    deadline: Instant,
+) -> Outcome {
+    if Instant::now() >= deadline {
+        return Err(helper_timeout());
+    }
+    if cancel_requested(cancelled) {
+        return Err(InterruptTimingError::Cancelled);
+    }
+    let executable = std::env::current_exe().map_err(worker_error)?;
+    let mut child = Command::new(executable)
+        .arg(WORKER_ARGUMENT)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW)
+        .spawn()
+        .map_err(worker_error)?;
+    WORKER_PROCESS_ID.store(child.id(), Relaxed);
+    let completed = prepare_worker(&mut child).and_then(|(mut input, output)| {
+        if Instant::now() >= deadline {
+            return Err(helper_timeout());
         }
-        Err(InterruptTimingError::Worker(format!(
-            "Interrupt timing worker returned an invalid report ({status})."
-        )))
+        if cancel_requested(cancelled) {
+            return Err(InterruptTimingError::Cancelled);
+        }
+        input
+            .write_all(&identity.startup_record())
+            .map_err(worker_error)?;
+        wait_for_worker(&mut child, input, cancelled, deadline).map(|status| (status, output))
     });
+    if completed.is_err() {
+        stop_worker(&mut child);
+    }
+    // Keep the reservation during cleanup without protecting the old PID.
+    WORKER_PROCESS_ID.store(STARTING, Relaxed);
+    let outcome = completed.and_then(|(status, output)| decode_worker_outcome(status, output));
     match outcome {
-        Err(error @ (InterruptTimingError::Worker(_) | InterruptTimingError::Capture(_))) => {
-            recover_if_idle(Some(identity)).map_err(|cleanup| {
-                worker_error(format!("{error} ETW cleanup failed: {cleanup}"))
-            })?;
-            Err(error)
-        }
+        Err(
+            error @ (InterruptTimingError::TimedOut(_)
+            | InterruptTimingError::Worker(_)
+            | InterruptTimingError::Capture(_)),
+        ) => match recover_if_idle(Some(identity)) {
+            Ok(()) => Err(error),
+            Err(cleanup) => Err(match error {
+                InterruptTimingError::TimedOut(detail) => InterruptTimingError::TimedOut(format!(
+                    "{detail} ETW cleanup failed: {cleanup}"
+                )),
+                error => worker_error(format!("{error} ETW cleanup failed: {cleanup}")),
+            }),
+        },
         outcome => outcome,
     }
+}
+
+type WorkerOutput = Receiver<io::Result<Vec<u8>>>;
+
+fn prepare_worker(child: &mut Child) -> Result<(ChildStdin, WorkerOutput), InterruptTimingError> {
+    let input = child
+        .stdin
+        .take()
+        .ok_or_else(|| worker_error("stdin unavailable"))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| worker_error("stdout unavailable"))?;
+    let (send, receive) = mpsc::channel();
+    thread::Builder::new()
+        .name("interrupt-timing-worker-stdout".into())
+        .spawn(move || {
+            let mut bytes = Vec::new();
+            let read = stdout.take(MAX_RESPONSE_BYTES + 1).read_to_end(&mut bytes);
+            let _ = send.send(read.map(|_| bytes));
+        })
+        .map_err(worker_error)?;
+    Ok((input, receive))
+}
+
+fn wait_for_worker(
+    child: &mut Child,
+    input: ChildStdin,
+    cancelled: &Receiver<()>,
+    mut deadline: Instant,
+) -> Result<ExitStatus, InterruptTimingError> {
+    let mut input = Some(input);
+    loop {
+        if let Some(status) = child.try_wait().map_err(worker_error)? {
+            return Ok(status);
+        }
+        let now = Instant::now();
+        if input.is_some() && cancel_requested(cancelled) {
+            input.take();
+            deadline = deadline.min(now + CANCEL_LIMIT);
+        }
+        if now >= deadline {
+            return Err(helper_timeout());
+        }
+        thread::sleep(WORKER_POLL.min(deadline - now));
+    }
+}
+
+fn cancel_requested(cancelled: &Receiver<()>) -> bool {
+    !matches!(cancelled.try_recv(), Err(TryRecvError::Empty))
+}
+
+fn stop_worker(child: &mut Child) {
+    let mut requested = false;
+    while !matches!(child.try_wait(), Ok(Some(_))) {
+        if !requested {
+            requested = child.kill().is_ok();
+        }
+        thread::sleep(EXIT_CONFIRMATION_POLL);
+    }
+}
+
+fn decode_worker_outcome(status: ExitStatus, output: WorkerOutput) -> Outcome {
+    let bytes = output
+        .recv_timeout(CLEANUP_GRACE)
+        .map_err(worker_error)?
+        .map_err(worker_error)?;
+    if status.success() && bytes.len() as u64 <= MAX_RESPONSE_BYTES {
+        return serde_json::from_slice::<Outcome>(&bytes).map_err(worker_error)?;
+    }
+    Err(worker_error(format!("invalid report ({status})")))
+}
+
+fn pending_timeout() -> InterruptTimingError {
+    InterruptTimingError::TimedOut("Waiting for helper exit and capture cleanup.".into())
+}
+
+fn helper_timeout() -> InterruptTimingError {
+    InterruptTimingError::TimedOut("The helper did not finish within its time limit.".into())
 }
 
 fn worker_error(error: impl std::fmt::Display) -> InterruptTimingError {

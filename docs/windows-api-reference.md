@@ -61,8 +61,10 @@ memory. Users can export the summarized report after the capture finishes.
 
 `src/platform/windows/interrupt_timing/lease.rs` owns the temporary registry
 value and the machine-wide mutex. Startup and the next capture can recover a
-trace after both processes terminate. The surviving app's reaper waits for the
-exact failed helper and only recovers its recorded capture. Cleanup clears the
+trace after both processes terminate. The surviving app supervises the exact
+child process handle and reads a size-capped report concurrently. On timeout it
+requests termination through that handle and confirms exit before matching the
+recorded capture. Cleanup clears the
 value once ETW confirms the trace stopped or was absent and keeps the value on
 failure. Each generated capture name is used once. Query and stop are separate
 operations because ETW provides no documented atomic identity check for stop.
