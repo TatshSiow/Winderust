@@ -84,7 +84,7 @@ impl Editor {
     pub(super) fn view<'a>(
         &'a self,
         settings: &'a SleepPreventionSettings,
-        status: &SleepPreventionSnapshot,
+        status: Option<&SleepPreventionSnapshot>,
         candidates: &'a [app_picker::Candidate],
     ) -> Element<'a, Message> {
         let rules = settings
@@ -163,13 +163,19 @@ impl Editor {
     }
 }
 
-fn indicator(status: &SleepPreventionSnapshot, rule: &SleepPreventionRule) -> String {
+fn indicator(status: Option<&SleepPreventionSnapshot>, rule: &SleepPreventionRule) -> String {
+    if !rule.enabled {
+        return t!("common.off").to_string();
+    }
+    let Some(status) = status else {
+        return t!("common.unknown").to_string();
+    };
     let contains = |paths: &[String]| {
         paths
             .iter()
             .any(|path| process_setting_matches(path, &rule.executable_path))
     };
-    let key = if !status.enabled || !rule.enabled {
+    let key = if !status.enabled {
         "common.off"
     } else if !status.observation_known {
         "common.unknown"
@@ -235,30 +241,33 @@ mod tests {
             requesting_apps: vec![rule.executable_path.clone()],
             ..Default::default()
         };
-        assert_eq!(indicator(&status, &rule), t!("common.waiting"));
+        assert_eq!(indicator(None, &rule), t!("common.unknown"));
+        assert_eq!(indicator(Some(&status), &rule), t!("common.waiting"));
         status.system_requested = true;
         assert_eq!(
-            indicator(&status, &rule),
+            indicator(Some(&status), &rule),
             t!("sleep_prevention.request_accepted")
         );
         rule.keep_display_on = true;
         assert_eq!(
-            indicator(&status, &rule),
+            indicator(Some(&status), &rule),
             t!("sleep_prevention.system_request_accepted")
         );
         status.display_requested = true;
         status.observation_known = false;
-        assert_eq!(indicator(&status, &rule), t!("common.unknown"));
+        assert_eq!(indicator(Some(&status), &rule), t!("common.unknown"));
         status.observation_known = true;
         status.suppressed_apps.push(rule.executable_path.clone());
         assert_eq!(
-            indicator(&status, &rule),
+            indicator(Some(&status), &rule),
             t!("sleep_prevention.request_accepted")
         );
         status.requesting_apps.clear();
         assert_eq!(
-            indicator(&status, &rule),
+            indicator(Some(&status), &rule),
             t!("sleep_prevention.requests_paused")
         );
+        rule.enabled = false;
+        assert_eq!(indicator(None, &rule), t!("common.off"));
     }
 }

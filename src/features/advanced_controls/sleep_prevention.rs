@@ -2,7 +2,7 @@ use std::{collections::BTreeMap, path::Path};
 
 use crate::{
     action_log::{ActionLog, ActionLogFeature, ActionLogResult},
-    config::{Settings, SleepPreventionSettings},
+    config::{PowerSourceProfile, Settings, SleepPreventionSettings},
     control::sleep_prevention::{
         SleepPreventionController, SleepPreventionMode, SleepPreventionRequests,
     },
@@ -15,6 +15,7 @@ use crate::{
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SleepPreventionSnapshot {
+    pub(crate) source: Option<PowerSourceProfile>,
     pub enabled: bool,
     pub matched_rules: usize,
     pub matched_processes: usize,
@@ -498,6 +499,13 @@ impl SleepPreventionManager {
             snapshot.last_error = Some(error.to_string());
         }
         let after = controller.requests();
+        snapshot.source = self.power_source.map(|plugged_in| {
+            if plugged_in {
+                PowerSourceProfile::PluggedIn
+            } else {
+                PowerSourceProfile::OnBattery
+            }
+        });
         snapshot.system_requested = after.system;
         snapshot.display_requested = after.display;
         if before != after {

@@ -795,6 +795,8 @@ Read the relevant section before changing feature policy, ownership, restoration
   Windows sleep and power-source notifications wake it independently of the UI.
   Transient power-source read failures retain the last confirmed profile without
   renewing request counts; before the first confirmed source, requests stay off.
+  Enabled rule rows show Unknown until the selected profile has a matching
+  observation. A confirmed source change invalidates the previous profile's rows.
 
 ## Timer Resolution
 

@@ -3525,14 +3525,17 @@ impl WinderustApp {
             })
         };
         match self.page {
-            Page::SleepPrevention => self
-                .sleep_prevention
-                .view(
-                    &self.settings.sleep_prevention,
-                    &self.status.feature_status.sleep_prevention,
-                    &self.candidates,
-                )
-                .map(Message::SleepPrevention),
+            Page::SleepPrevention => {
+                let status = &self.status.feature_status.sleep_prevention;
+                let selected_is_plugged_in = self.power_source == PowerSourceProfile::PluggedIn;
+                let status = (status.source == Some(self.power_source)
+                    && crate::backend::power_source::is_plugged_in()
+                        .is_none_or(|plugged_in| plugged_in == selected_is_plugged_in))
+                .then_some(status);
+                self.sleep_prevention
+                    .view(&self.settings.sleep_prevention, status, &self.candidates)
+                    .map(Message::SleepPrevention)
+            }
             Page::AppSuspension => self
                 .suspension
                 .view(
