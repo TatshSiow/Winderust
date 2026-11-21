@@ -2963,7 +2963,12 @@ impl WinderustApp {
             .height(Fill)
             .style(widgets::navigation_surface);
         let navigation = shield(navigation.into());
-        let side_panel = self.side_panel(self.page).map(shield);
+        let side_panel_available = matches!(self.page, Page::ProcessList | Page::ActionLog)
+            || navigation::page_feature_info_intro(self.page).is_some();
+        let side_panel = (self.side_panel_open && side_panel_available)
+            .then(|| self.side_panel(self.page))
+            .flatten()
+            .map(shield);
         const BREADCRUMB_TEXT_SIZE: u32 = design::typography::SUBTITLE;
         let mut header = row![].spacing(design::space::COMPACT).align_y(iced::Center);
         for (index, page) in self.breadcrumb.iter().copied().enumerate() {
@@ -3028,7 +3033,7 @@ impl WinderustApp {
             }
             profile_controls = Some(container(tabs).style(widgets::tab_bar));
         }
-        let panel_button = side_panel.as_ref().map(|_| {
+        let panel_button = side_panel_available.then(|| {
             button(
                 row![
                     navigation::glyph("icons/panel-right-open.svg"),
@@ -3069,7 +3074,7 @@ impl WinderustApp {
         .width(Fill)
         .height(Fill);
         let body = page_canvas(shield(heading), content.into());
-        let panel_visible = self.side_panel_open && side_panel.is_some();
+        let panel_visible = side_panel.is_some();
         let layout = row![
             navigation,
             container(body)
@@ -3079,11 +3084,7 @@ impl WinderustApp {
         ]
         .height(Fill)
         .into();
-        let layout = side_panel_dock(
-            layout,
-            side_panel.filter(|_| panel_visible),
-            side_panel_width,
-        );
+        let layout = side_panel_dock(layout, side_panel, side_panel_width);
         if self.navigation_search_open {
             let searching = !self.navigation_search.trim().is_empty();
             let choices = navigation_search_choices(

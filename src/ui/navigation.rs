@@ -333,8 +333,8 @@ pub(super) fn rail_item<'a, Message: Clone + 'a>(
         .into()
 }
 
-pub(super) fn page_feature_info(page: Page) -> String {
-    let (prefix, paragraphs) = match page {
+pub(super) fn page_feature_info_intro(page: Page) -> Option<(&'static str, u8)> {
+    Some(match page {
         Page::AdaptiveEngine => ("adaptive_engine", 3),
         Page::BackgroundEfficiency => ("background_efficiency", 3),
         Page::MemoryTrim => ("memory_trim", 3),
@@ -362,7 +362,13 @@ pub(super) fn page_feature_info(page: Page) -> String {
         Page::PowerPlanControl | Page::AdvancedPowerPlanTuning | Page::Win32PrioritySeparation => {
             ("", 0)
         }
-        _ => return String::new(),
+        _ => return None,
+    })
+}
+
+pub(super) fn page_feature_info(page: Page) -> String {
+    let Some((prefix, paragraphs)) = page_feature_info_intro(page) else {
+        return String::new();
     };
     let mut help = (1..=paragraphs)
         .map(|index| {
