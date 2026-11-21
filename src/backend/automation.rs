@@ -418,6 +418,7 @@ struct AutomationWorkerState {
     pending_auto_exclusions_revision: Option<SettingsRevision>,
     pending_auto_exclusions_retry_at: Option<Instant>,
     process_control_commands: VecDeque<ProcessControlCommand>,
+    idle_action_log: Option<ActionLog>,
     action_log_clear_requested: bool,
     pending_events: AutomationWakeEvents,
     pending_instance_limits_resets: instance_limits::PendingResets,
@@ -480,6 +481,7 @@ impl RuntimeHandle {
                 pending_auto_exclusions_revision: None,
                 pending_auto_exclusions_retry_at: None,
                 process_control_commands: VecDeque::new(),
+                idle_action_log: Some(ActionLog::default()),
                 action_log_clear_requested: false,
                 pending_events: AutomationWakeEvents::default(),
                 pending_instance_limits_resets: instance_limits::PendingResets::default(),
@@ -658,7 +660,11 @@ impl RuntimeHandle {
         state.status.action_log_entries = Arc::new(Vec::new());
         state.status.action_log_summaries = Arc::new(ActionLogSummaries::new());
         bump_status_generation(&self.shared, &mut state);
-        state.action_log_clear_requested = true;
+        if let Some(log) = &mut state.idle_action_log {
+            log.clear();
+        } else {
+            state.action_log_clear_requested = true;
+        }
         state.change_generation = state.change_generation.wrapping_add(1);
         self.shared.changed.notify_one();
     }
@@ -1095,12 +1101,15 @@ fn run_background_automation(
     power_source: impl Fn() -> Option<bool>,
 ) -> Result<(), String> {
     let _exit_guard = AutomationWorkerExitGuard { shared: &shared };
-    let mut runner = RuntimeCore::default();
+    let mut runner = RuntimeCore::for_worker(&shared)?;
     let mut scheduler = RefreshScheduler::new(Instant::now());
     let mut cpu_allocation_reconciliation_retry_interval =
         CPU_ALLOCATION_RECONCILIATION_RETRY_INITIAL;
 
     while let Some(snapshot) = automation_snapshot(&shared) {
+        if snapshot.action_log_clear_requested {
+            runner.action_log.clear();
+        }
         runner.action_log.begin_batch();
         let configured_settings = snapshot.settings;
         let plugged_in = power_source();
@@ -1118,9 +1127,6 @@ fn run_background_automation(
         let keep_running_command_requested = process_control_commands
             .iter()
             .any(|command| matches!(command, ProcessControlCommand::KeepRunningResume { .. }));
-        if snapshot.action_log_clear_requested {
-            runner.action_log.clear();
-        }
         let wake_events = snapshot.wake_events;
         if wake_events.keep_running_settings_changed {
             runner.keep_running.invalidate_settings();
@@ -1958,7 +1964,8 @@ fn run_background_automation(
                     )),
                 );
             }
-            runner = RuntimeCore::default();
+            drop(runner);
+            runner = RuntimeCore::for_worker(&shared)?;
             scheduler = RefreshScheduler::new(Instant::now());
             cpu_allocation_reconciliation_retry_interval =
                 CPU_ALLOCATION_RECONCILIATION_RETRY_INITIAL;
@@ -2110,6 +2117,7 @@ mod keep_running_intake_tests {
                 pending_auto_exclusions_revision: None,
                 pending_auto_exclusions_retry_at: None,
                 process_control_commands: VecDeque::new(),
+                idle_action_log: Some(ActionLog::default()),
                 action_log_clear_requested: false,
                 pending_events: AutomationWakeEvents::default(),
                 pending_instance_limits_resets: instance_limits::PendingResets::default(),

@@ -93,6 +93,7 @@ fn shared(settings: &Arc<Settings>) -> Arc<SharedAutomationState> {
             pending_auto_exclusions_revision: None,
             pending_auto_exclusions_retry_at: None,
             process_control_commands: VecDeque::new(),
+            idle_action_log: Some(Default::default()),
             action_log_clear_requested: false,
             pending_events: AutomationWakeEvents::default(),
             pending_instance_limits_resets: super::super::instance_limits::PendingResets::default(),

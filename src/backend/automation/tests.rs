@@ -2,9 +2,7 @@ use super::*;
 use chrono::{Datelike, Duration as ChronoDuration, Local};
 use std::sync::Arc;
 
-use crate::action_log::{
-    ActionLogFeature, ActionLogFeatureSummary, ActionLogResult, ActionLogSummaries,
-};
+use crate::action_log::{ActionLogFeature, ActionLogResult};
 use crate::application::settings::{RuntimeSettingsSnapshot, SettingsRevision};
 use crate::config::{
     AppSuspensionRule, ByFocusRule, ByRunningAppRule, ByTimeRule, CpuAllocationRule,
@@ -366,33 +364,33 @@ fn power_plan_action_logs_are_attributed_to_the_winning_rule_family() {
 }
 
 #[test]
-fn clearing_action_log_immediately_clears_runtime_summaries() {
+fn action_log_survives_worker_replacement_and_clear_prevents_stale_publication() {
     let automation = RuntimeHandle::start(&runtime_settings(Settings::default()));
-    let entry = ActionLogEntry {
-        batch_id: 1,
-        sequence: 1,
-        timestamp_epoch_ms: 1,
-        feature: ActionLogFeature::ByTime,
-        process_id: None,
-        process_name: String::new(),
-        result: ActionLogResult::Applied,
-        reason: "applied".to_owned(),
-    };
-    update_action_log(
-        &automation.shared,
-        vec![entry.clone()],
-        ActionLogSummaries::from([(
+    let record = |runner: &mut RuntimeCore| {
+        runner.action_log.record(
             ActionLogFeature::ByTime,
-            ActionLogFeatureSummary {
-                successful_actions: 1,
-                last_success: Some(entry),
-                ..Default::default()
-            },
-        )]),
-    );
+            None,
+            "",
+            ActionLogResult::Applied,
+            "applied",
+        );
+        runner.publish_action_log_if_changed(&automation.shared);
+    };
+    let mut first = RuntimeCore::for_worker(&automation.shared).unwrap();
+    record(&mut first);
+    drop(first);
+
+    let mut second = RuntimeCore::for_worker(&automation.shared).unwrap();
+    record(&mut second);
     let published = automation
         .status_snapshot_since(1)
         .expect("published action summary advances status generation");
+    assert_eq!(published.action_log_entries.len(), 2);
+    assert_eq!(published.action_log_entries[1].sequence, 2);
+    assert_eq!(
+        published.action_log_summaries[&ActionLogFeature::ByTime].successful_actions,
+        2
+    );
 
     automation.clear_action_log();
 
@@ -401,6 +399,15 @@ fn clearing_action_log_immediately_clears_runtime_summaries() {
         .expect("clearing action summaries advances status generation");
     assert!(cleared.action_log_entries.is_empty());
     assert!(cleared.action_log_summaries.is_empty());
+
+    record(&mut second);
+    assert!(automation
+        .status_snapshot_since(cleared.generation)
+        .is_none());
+    drop(second);
+    let third = RuntimeCore::for_worker(&automation.shared).unwrap();
+    assert!(third.action_log.entries().is_empty());
+    assert!(third.action_log.summaries().is_empty());
 }
 
 #[test]
@@ -2631,6 +2638,7 @@ fn callbacks_deliver_events_for_either_profile_without_polling() {
             pending_auto_exclusions_revision: None,
             pending_auto_exclusions_retry_at: None,
             process_control_commands: VecDeque::new(),
+            idle_action_log: Some(ActionLog::default()),
             action_log_clear_requested: false,
             pending_events: AutomationWakeEvents::default(),
             pending_instance_limits_resets: instance_limits::PendingResets::default(),

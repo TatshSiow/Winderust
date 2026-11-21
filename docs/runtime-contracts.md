@@ -5,6 +5,7 @@ Read the relevant section before changing feature policy, ownership, restoration
 ## Application boundaries
 
 - Automation worker lifetime uses the complete AC/Battery configuration; policy application still uses only the active profile. An idle profile waits for events when the other profile requires automation.
+- Action Log entries and summaries remain in memory across automation worker restarts. Clear resets both without reusing sequence numbers.
 - Settings contain Plugged In policies and at most one On Battery profile. Nested
   On Battery profiles fail load, import, save, and export before normalization or
   writing can discard their settings.

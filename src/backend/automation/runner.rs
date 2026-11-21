@@ -90,6 +90,7 @@ pub(super) struct RuntimeCore {
     cpu_limiter_manager: CpuLimiterManager,
     pub(super) by_running_app_manager: ByRunningAppManager,
     pub(super) action_log: ActionLog,
+    action_log_session: Option<Arc<SharedAutomationState>>,
     adaptive_engine_process_manager: AdaptiveEngineProcessManager,
     focus_and_launch_profile_active: bool,
     cpu_pressure_restraint_active: bool,
@@ -200,6 +201,18 @@ impl WatchdogActionCycle {
 }
 
 impl RuntimeCore {
+    pub(super) fn for_worker(shared: &Arc<SharedAutomationState>) -> Result<Self, String> {
+        let action_log = lock_unpoisoned(&shared.state)
+            .idle_action_log
+            .take()
+            .ok_or_else(|| "Action Log is already owned by an automation worker.".to_owned())?;
+        let mut runner = Self::default();
+        runner.published_action_log_revision = action_log.revision();
+        runner.action_log = action_log;
+        runner.action_log_session = Some(Arc::clone(shared));
+        Ok(runner)
+    }
+
     pub(super) fn run_watchdog_update(
         &mut self,
         settings: &Settings,
@@ -1872,6 +1885,14 @@ pub(super) fn explicit_cpu_allocation_paths(settings: &Settings) -> Vec<String> 
 impl Drop for RuntimeCore {
     fn drop(&mut self) {
         let _ = self.shutdown();
+        if let Some(shared) = self.action_log_session.take() {
+            let mut state = lock_unpoisoned(&shared.state);
+            let mut log = std::mem::take(&mut self.action_log);
+            if std::mem::take(&mut state.action_log_clear_requested) {
+                log.clear();
+            }
+            state.idle_action_log = Some(log);
+        }
     }
 }
 

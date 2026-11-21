@@ -475,6 +475,9 @@ pub(super) fn update_action_log(
     summaries: ActionLogSummaries,
 ) {
     let mut state = lock_unpoisoned(&shared.state);
+    if state.action_log_clear_requested {
+        return;
+    }
     let entries = Arc::new(entries);
     let summaries = Arc::new(summaries);
     if state.status.action_log_entries == entries && state.status.action_log_summaries == summaries
