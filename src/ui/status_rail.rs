@@ -422,7 +422,9 @@ fn sidebar_state(
     if runtime.generation == 0 {
         return FeatureRunState::Unknown;
     }
-    if summary.last_error.is_some() {
+    if summary.last_error.is_some()
+        && (page != Page::InstanceLimits || settings.instance_limits.notify)
+    {
         return FeatureRunState::Error;
     }
     let plan = &runtime.power_plan_status;
@@ -471,18 +473,9 @@ fn sidebar_state(
         return FeatureRunState::Unknown;
     }
     if page == Page::InstanceLimits {
-        use crate::{
-            control::instance_limits::CountObservation,
-            features::advanced_controls::instance_limits::NotificationStatus,
-        };
+        use crate::control::instance_limits::CountObservation;
         let limits = &features.instance_limits;
-        return if limits
-            .rules
-            .iter()
-            .any(|rule| matches!(rule.notification, NotificationStatus::Failed(_)))
-        {
-            FeatureRunState::Error
-        } else if limits.rules.iter().filter(|rule| rule.enabled).any(|rule| {
+        return if limits.rules.iter().filter(|rule| rule.enabled).any(|rule| {
             !super::instance_limits::sample_fresh(rule.sampled_at)
                 || !matches!(rule.count, CountObservation::Complete(_))
         }) {

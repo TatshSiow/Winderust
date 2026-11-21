@@ -110,8 +110,10 @@ Read the relevant section before changing feature policy, ownership, restoration
   qualification while preserving an unresolved incident. Each incident allows one
   notification attempt, including failures. Acceptance confirms delivery to Windows.
 - Rule edits reset only that rule, while feature/master disable clears all state.
-  Notify-only edits and power-source changes preserve incidents. Pending reset
-  intents survive rapid edits and toggles between worker snapshots. Suspend/session
+  Notify-only edits and power-source changes preserve incidents. With Notify off,
+  live status follows count availability and retains notification failures in
+  Last Failed and the rule card. Pending reset intents survive rapid edits and
+  toggles between worker snapshots. Suspend/session
   events discard continuity and stale results while preserving attempted incidents.
   Results are accepted under the intake mutex before notification delivery outside
   it; a later intent cannot retract an already reserved notification attempt.
