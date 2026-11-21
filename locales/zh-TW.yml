@@ -456,6 +456,7 @@ settings:
   export_failed: "無法將設定匯出至 %{path}。%{error}"
   export_settings: "匯出設定（.toml）"
   import_settings: "匯入設定（.toml）"
+  import_unsaved: "請先儲存或捨棄設定變更，再匯入設定。"
 
 processor_power:
   invalid_percentage: "請輸入 0 到 100 的整數百分比。"

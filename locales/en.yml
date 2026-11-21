@@ -454,6 +454,7 @@ settings:
   export_settings: "Export settings (.toml)"
   export_failed: "Could not export settings to %{path}. %{error}"
   import_settings: "Import settings (.toml)"
+  import_unsaved: "Save or discard your settings changes before importing."
 
 processor_power:
   invalid_percentage: "Enter a whole percentage from 0 to 100."

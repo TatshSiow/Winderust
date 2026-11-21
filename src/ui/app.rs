@@ -2240,6 +2240,12 @@ impl WinderustApp {
             Message::SettingsFile(_) if self.blocking_editor_open() || self.invalid_inputs() => {
                 self.error_message = t!("unsaved.message").to_string();
             }
+            Message::SettingsFile(FileDialogMode::Open)
+            | Message::SettingsFileChosen(FileDialogMode::Open, Some(_))
+                if self.settings.has_unsaved_changes() =>
+            {
+                self.error_message = t!("settings.import_unsaved").to_string();
+            }
             Message::SettingsFile(mode) => {
                 let hwnd = self
                     .hwnd
