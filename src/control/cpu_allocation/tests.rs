@@ -405,6 +405,10 @@ fn multi_group_soft_selection_hands_off_and_restores_exact_baselines() {
     assert_eq!(process_state(&coordinator).cpu_sets, vec![100, 900, 963]);
     assert_eq!(process_state(&coordinator).affinity, 0b1111);
     assert_eq!(
+        coordinator.policy_managed_process_count(ControlOwner::CpuSetsSoft),
+        1
+    );
+    assert_eq!(
         coordinator
             .apply_policy_claim(
                 &mut CpuSetInventory::default(),
@@ -435,6 +439,14 @@ fn multi_group_soft_selection_hands_off_and_restores_exact_baselines() {
     assert_eq!(
         handoff.applications[0].owner,
         ControlOwner::ProcessorAffinityHard
+    );
+    assert_eq!(
+        coordinator.policy_managed_process_count(ControlOwner::CpuSetsSoft),
+        0
+    );
+    assert_eq!(
+        coordinator.policy_managed_process_count(ControlOwner::ProcessorAffinityHard),
+        1
     );
     assert_eq!(process_state(&coordinator).cpu_sets, vec![88, 89]);
     assert_eq!(process_state(&coordinator).affinity, 3);

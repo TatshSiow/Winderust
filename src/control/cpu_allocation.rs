@@ -1658,21 +1658,23 @@ impl<P: CpuAllocationPlatform> CpuAllocationCoordinator<P> {
     }
 
     pub(crate) fn policy_managed_process_count(&self, owner: ControlOwner) -> usize {
-        self.managed_identities(owner).len()
-    }
-
-    fn managed_identities(&self, owner: ControlOwner) -> BTreeSet<&ProcessIdentity> {
-        self.managed_affinity
+        let affinity = self
+            .managed_affinity
+            .values()
+            .filter(|managed| managed.owner == owner)
+            .count();
+        let cpu_sets_only = self
+            .managed_cpu_sets
             .iter()
-            .filter(|(_, managed)| managed.owner == owner)
-            .map(|(identity, _)| identity)
-            .chain(
-                self.managed_cpu_sets
-                    .iter()
-                    .filter(|(_, managed)| managed.owner == owner)
-                    .map(|(identity, _)| identity),
-            )
-            .collect()
+            .filter(|(identity, managed)| {
+                managed.owner == owner
+                    && self
+                        .managed_affinity
+                        .get(*identity)
+                        .is_none_or(|affinity| affinity.owner != owner)
+            })
+            .count();
+        affinity + cpu_sets_only
     }
 
     pub(crate) fn has_managed_state(&self) -> bool {
