@@ -473,6 +473,8 @@ Read the relevant section before changing feature policy, ownership, restoration
   have no finite limits, automation keeps a refresh scheduled until the timing worker releases its
   remaining targets and the cleanup status and Action Log can be published. CPU Limiter does not
   own CPU allocation or Windows CPU-rate state.
+  On Exit, the shared suspension controller's final Job cleanup determines the Job result.
+  CPU Limiter reports its own thread fallback and timing worker failures separately.
 
 ## Runtime observations
 

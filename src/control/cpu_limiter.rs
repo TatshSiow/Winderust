@@ -417,6 +417,9 @@ impl CpuLimiterController {
         let mut errors = Vec::new();
         if let Ok(mut state) = self.state.lock() {
             if !state.shutdown {
+                if let Some(error) = &state.fatal_error {
+                    errors.push(error.clone());
+                }
                 if let Ok(mut suspension) = self.suspension.lock() {
                     let keys = state.targets.keys().cloned().collect::<Vec<_>>();
                     for key in keys {
@@ -430,7 +433,8 @@ impl CpuLimiterController {
                             Ok(true) => {
                                 state.targets.remove(&key);
                             }
-                            Ok(false) => {}
+                            // Failed Job releases stay with the shared SuspensionController.
+                            Ok(false) | Err(CpuLimiterTargetError::Job(_)) => {}
                             Err(error) => errors.push(error.to_string()),
                         }
                     }

@@ -420,9 +420,9 @@ impl RuntimeCore {
         // Restore in the reverse order used by the automation loop. Several features can touch
         // the same process state, so relying on field drop order can restore an intermediate
         // Winderust-managed value instead of the value that preceded Winderust.
-        // Priority, allocation, and timer controllers retry any state left by the disabled
-        // feature update. Their final shutdown result is authoritative; keeping a transient
-        // update error would report failure even after that retry restored everything.
+        // Priority, allocation, timer, and limiter controllers retry state left by the disabled
+        // feature update. Use the final shutdown result so a transient error does not report
+        // failure after that retry restored everything.
         collect_restore_error(
             &mut errors,
             "Sleep Prevention",
@@ -435,12 +435,7 @@ impl RuntimeCore {
             errors.push(format!("Timer Resolution restoration failed: {error}"));
         }
         self.run_by_running_app_update(&settings, &mut observations);
-        collect_restore_error(
-            &mut errors,
-            "CPU Limiter",
-            self.run_cpu_limiter_update(&settings, &mut observations)
-                .last_error,
-        );
+        self.run_cpu_limiter_update(&settings, &mut observations);
         if let Some(mut controller) = self.cpu_limiter_controller.take() {
             if let Err(error) = controller.shutdown() {
                 errors.push(format!("CPU Limiter restoration failed: {error}"));
