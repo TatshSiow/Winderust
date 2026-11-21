@@ -1,5 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
+    path::{Path, PathBuf},
     time::{Duration, Instant},
 };
 
@@ -157,29 +158,32 @@ impl GpuPriorityManager {
                 continue;
             }
 
-            let Some(executable_path) = process_executable_path(process) else {
+            let Some(executable_path) = process_executable_path(process)
+                .and_then(|path| path.into_os_string().into_string().ok())
+            else {
                 continue;
             };
             let Some(creation_time) = process.creation_time else {
                 continue;
             };
+            let path = Path::new(&executable_path);
             let foreground = settings.foreground_detection_enabled
                 && super::foreground_for_owner(
                     owner,
                     process,
-                    &executable_path,
+                    path,
                     foreground_process_id,
                     foreground_executable_path.as_deref(),
                     adaptive_workload.as_deref(),
                 );
             let visible_window = !foreground
                 && settings.visible_window_detection_enabled
-                && visible_processes.contains(process.id, &executable_path);
+                && visible_processes.contains(process.id, path);
             let tier = PriorityProcessTier::from_flags(foreground, visible_window);
-            let path = executable_path.to_string_lossy();
-            let policy = priority_policy(settings, &path, tier);
+            let policy = priority_policy(settings, &executable_path, tier);
             if focus_unknown
-                && policy != priority_policy(settings, &path, PriorityProcessTier::Foreground)
+                && policy
+                    != priority_policy(settings, &executable_path, PriorityProcessTier::Foreground)
             {
                 return self.paused_snapshot(
                     controller,
@@ -204,7 +208,7 @@ impl GpuPriorityManager {
 
         let active_target_names = target_processes
             .values()
-            .map(|(_name, path, _, _, _)| process_failure_key(&path.to_string_lossy()))
+            .map(|(_, path, _, _, _)| process_failure_key(path))
             .collect::<BTreeSet<_>>();
         self.failure_suppression.retain_keys(&active_target_names);
         self.pending_context
@@ -212,7 +216,7 @@ impl GpuPriorityManager {
         let active_targets = target_processes
             .iter()
             .map(|(process_id, (_, executable_path, _, _, creation_time))| {
-                ProcessTargetKey::new(*process_id, *creation_time, executable_path)
+                ProcessTargetKey::new(*process_id, *creation_time, Path::new(executable_path))
             })
             .collect::<BTreeSet<ProcessTargetKey>>();
 
@@ -223,11 +227,10 @@ impl GpuPriorityManager {
         for (process_id, (process_name, executable_path, priority, preservation, creation_time)) in
             target_processes
         {
-            let executable_path_text = executable_path.to_string_lossy().into_owned();
             if self.is_process_suppressed(
                 process_id,
                 &process_name,
-                &executable_path_text,
+                &executable_path,
                 action_log,
                 &mut auto_excluded_processes,
             ) {
@@ -235,17 +238,20 @@ impl GpuPriorityManager {
                 suppressed_processes += 1;
                 continue;
             }
-            claims.push(GpuPriorityClaim {
-                target: ProcessControlTarget::automatic(
-                    process_id,
-                    process_name,
-                    executable_path,
-                    creation_time,
-                ),
-                owner,
-                priority,
-                preservation,
-            });
+            claims.push((
+                GpuPriorityClaim {
+                    target: ProcessControlTarget::automatic(
+                        process_id,
+                        process_name,
+                        PathBuf::from(executable_path.as_str()),
+                        creation_time,
+                    ),
+                    owner,
+                    priority,
+                    preservation,
+                },
+                executable_path,
+            ));
         }
 
         let release_failures = self.release_non_targets(
@@ -259,10 +265,9 @@ impl GpuPriorityManager {
         let mut applied_log_count = 0;
         let mut pending_context_log_count = 0;
         let mut access_denied_log_count = 0;
-        for claim in claims {
+        for (claim, executable_path) in claims {
             let process_id = claim.target.id;
             let process_name = claim.target.name.clone();
-            let executable_path = claim.target.executable_path.to_string_lossy().into_owned();
             match controller.apply_policy_claim(claim, allow_cross_session_process_control) {
                 Ok(GpuPriorityApplyOutcome::Applied) => {
                     applied_log_count += 1;
@@ -428,9 +433,11 @@ impl GpuPriorityManager {
             if failure.error == ProcessControlError::ProcessExited {
                 continue;
             }
-            if report_failures {
+            if let (true, Some(executable_path)) =
+                (report_failures, failure.executable_path.to_str())
+            {
                 self.failure_suppression
-                    .record_process_failure(&failure.executable_path);
+                    .record_process_failure(executable_path);
             }
             let skip_reason = match &failure.error {
                 ProcessControlError::AccessDenied(_) => Some("Windows denied access"),

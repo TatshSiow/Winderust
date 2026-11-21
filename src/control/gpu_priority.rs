@@ -1,5 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
+    path::PathBuf,
     time::{Duration, Instant},
 };
 
@@ -44,7 +45,7 @@ pub(crate) enum GpuPriorityApplyOutcome {
 pub(crate) struct GpuPriorityReleaseFailure {
     pub(crate) process_id: u32,
     pub(crate) process_name: String,
-    pub(crate) executable_path: String,
+    pub(crate) executable_path: PathBuf,
     pub(crate) error: ProcessControlError,
 }
 
@@ -423,7 +424,7 @@ impl<P: GpuPriorityPlatform> GpuPriorityController<P> {
                 Err(error) => summary.failures.push(GpuPriorityReleaseFailure {
                     process_id: identity.id,
                     process_name: identity.name.clone(),
-                    executable_path: identity.executable_path.to_string_lossy().into_owned(),
+                    executable_path: identity.executable_path.clone(),
                     error,
                 }),
             }
