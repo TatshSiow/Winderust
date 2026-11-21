@@ -1814,11 +1814,13 @@ fn run_background_automation(
         let wait_now = Instant::now();
         let mut wait_for = if power_plan_checks_required {
             run_scheduled_power_plan_check(&mut scheduler, wait_now, || {
+                let activity = runner.activity_snapshot(settings, wait_now);
                 let wall_time = Local::now();
                 if let Err(error) = runner.run_check(
                     &configured_settings,
                     plugged_in,
                     wall_time,
+                    activity.state,
                     &mut observations,
                 ) {
                     update_worker_error(&shared, Some(error));
@@ -1826,7 +1828,7 @@ fn run_background_automation(
                 let delay = power_plan_check_delay(
                     settings,
                     windows_event_watcher_active,
-                    runner.activity_snapshot(settings, Instant::now()).idle_for,
+                    activity.idle_for,
                     wall_time,
                 );
                 runner

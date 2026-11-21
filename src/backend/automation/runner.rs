@@ -1725,6 +1725,7 @@ impl RuntimeCore {
         configured_settings: &Arc<Settings>,
         plugged_in: Option<bool>,
         wall_time: DateTime<Local>,
+        activity_state: ActivityState,
         observations: &mut CycleObservations,
     ) -> Result<(), String> {
         let settings = active_power_source_settings(configured_settings, plugged_in);
@@ -1758,7 +1759,6 @@ impl RuntimeCore {
         self.by_cpu_load_scheduler
             .observe_active_plan(self.power_plan_controller.status().current_guid.as_deref());
 
-        let activity = self.activity_snapshot(settings, Instant::now());
         self.refresh_cpu_usage();
         let observe_foreground =
             foreground_lookup_required(settings) || self.power_plan_controller.has_focus_plan();
@@ -1793,7 +1793,7 @@ impl RuntimeCore {
             .as_ref()
             .map(|decision| decision.process_name.clone());
         let decision_input = DecisionInput {
-            activity_state: activity.state,
+            activity_state,
             foreground_executable_path,
             foreground_process_id,
             by_running_app_known: self.by_running_app_manager.observation_known(),
@@ -2016,6 +2016,7 @@ mod settings_tests {
                 &settings,
                 Some(true),
                 Local::now(),
+                ActivityState::Unknown,
                 &mut CycleObservations::default(),
             )
             .is_ok());

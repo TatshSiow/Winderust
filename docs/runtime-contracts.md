@@ -318,6 +318,8 @@ Read the relevant section before changing feature policy, ownership, restoration
   is disabled. The check is read-only.
 - By Running App Preview matches uses the same eligibility checks to report matches
   and the winning rule for the current draft.
+- By Activity uses the same activity sample to select a plan and schedule the idle
+  deadline. Time spent verifying a plan switch counts toward that deadline.
 - By Time rule clocks use parsed minute-precision local times and serialize as `HH:MM`.
   Rule selection and the next deadline use the same local time reading. Time
   spent verifying a plan switch counts toward the wait for that deadline.
