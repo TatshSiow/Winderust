@@ -448,7 +448,7 @@ impl Model {
             }
         }
         let tip = chart
-            .tooltip_content(self.hovered[kind as usize])
+            .tooltip_content(self, self.hovered[kind as usize])
             .unwrap_or_else(|| iced::widget::Space::new().into());
         // Chart tooltip content owns its inset background and cursor spacing.
         let plot = iced::widget::tooltip(
@@ -536,16 +536,16 @@ impl Model {
         .style(super::widgets::surface)
         .into()
     }
+    fn history_sample(&self, slot: usize) -> Option<&Sample> {
+        let first_slot = HISTORY_LEN - self.history.len();
+        self.history.get(slot.checked_sub(first_slot)?)
+    }
+
     fn chart(&self, kind: ChartKind) -> Chart {
-        let mut timeline: [Option<&Sample>; HISTORY_LEN] = [None; HISTORY_LEN];
-        for (slot, sample) in timeline.iter_mut().rev().zip(self.history.iter().rev()) {
-            *slot = Some(sample);
-        }
         let (base, peak) = if kind == ChartKind::Cpu {
             let frequencies = || {
-                timeline
+                self.history
                     .iter()
-                    .flatten()
                     .filter(|sample| sample.cpu.percent.is_some())
                     .filter_map(|sample| sample.cpu.frequency_mhz)
             };
@@ -560,62 +560,39 @@ impl Model {
             (0, None)
         };
         let samples: [Option<ChartSample>; HISTORY_LEN] = std::array::from_fn(|index| {
-            let sample = timeline[index]?;
+            let sample = self.history_sample(index)?;
             let seconds_ago = match (self.latest.captured_at, sample.captured_at) {
                 (Some(now), Some(captured_at)) => {
                     now.duration_since(captured_at).ok()?.as_secs_f64()
                 }
                 _ => (HISTORY_LEN - index - 1) as f64,
             };
-            let values_and_labels = match kind {
+            let reading = match kind {
                 ChartKind::Cpu => sample.cpu.percent.map(|percent| {
-                    (
-                        [
-                            percent as f64,
-                            normalize_cpu_frequency_percent(sample.cpu.frequency_mhz, base, peak)
-                                as f64,
-                        ],
-                        [
-                            cpu_usage_label(sample.cpu.percent),
-                            cpu_frequency_label(sample.cpu.frequency_mhz),
-                        ],
-                    )
+                    [
+                        percent as f64,
+                        normalize_cpu_frequency_percent(sample.cpu.frequency_mhz, base, peak)
+                            as f64,
+                    ]
                 }),
-                ChartKind::Memory => sample.memory.percent.map(|percent| {
-                    (
-                        [percent as f64, 0.0],
-                        [memory_usage_label(sample.memory.percent), String::new()],
-                    )
-                }),
+                ChartKind::Memory => sample.memory.percent.map(|percent| [percent as f64, 0.0]),
                 ChartKind::Io => sample.io.bytes_per_second.map(|_| {
-                    (
-                        [
-                            sample.io.read_bytes_per_second.unwrap_or(0.0),
-                            sample.io.write_bytes_per_second.unwrap_or(0.0),
-                        ],
-                        [
-                            io_usage_label(sample.io.read_bytes_per_second),
-                            io_usage_label(sample.io.write_bytes_per_second),
-                        ],
-                    )
+                    [
+                        sample.io.read_bytes_per_second.unwrap_or(0.0),
+                        sample.io.write_bytes_per_second.unwrap_or(0.0),
+                    ]
                 }),
                 ChartKind::Network => sample.network.bytes_per_second.map(|_| {
-                    (
-                        [
-                            sample.network.download_bytes_per_second.unwrap_or(0.0),
-                            sample.network.upload_bytes_per_second.unwrap_or(0.0),
-                        ],
-                        [
-                            network_usage_label(sample.network.download_bytes_per_second),
-                            network_usage_label(sample.network.upload_bytes_per_second),
-                        ],
-                    )
+                    [
+                        sample.network.download_bytes_per_second.unwrap_or(0.0),
+                        sample.network.upload_bytes_per_second.unwrap_or(0.0),
+                    ]
                 }),
             };
             Some(ChartSample {
                 captured_at: sample.captured_at,
                 seconds_ago,
-                reading: values_and_labels.map(|(values, labels)| ChartReading { values, labels }),
+                reading,
             })
         });
         let maximum = match kind {
@@ -623,8 +600,8 @@ impl Model {
             _ => samples
                 .iter()
                 .flatten()
-                .filter_map(|sample| sample.reading.as_ref())
-                .flat_map(|reading| reading.values)
+                .filter_map(|sample| sample.reading)
+                .flatten()
                 .fold(1.0, f64::max),
         };
         Chart {
@@ -750,16 +727,31 @@ pub(super) enum ChartKind {
     Io,
     Network,
 }
+impl ChartKind {
+    fn tooltip_labels(self, sample: &Sample) -> [String; 2] {
+        match self {
+            Self::Cpu => [
+                cpu_usage_label(sample.cpu.percent),
+                cpu_frequency_label(sample.cpu.frequency_mhz),
+            ],
+            Self::Memory => [memory_usage_label(sample.memory.percent), String::new()],
+            Self::Io => [
+                io_usage_label(sample.io.read_bytes_per_second),
+                io_usage_label(sample.io.write_bytes_per_second),
+            ],
+            Self::Network => [
+                network_usage_label(sample.network.download_bytes_per_second),
+                network_usage_label(sample.network.upload_bytes_per_second),
+            ],
+        }
+    }
+}
+
 #[derive(Clone, PartialEq)]
 struct ChartSample {
     captured_at: Option<std::time::SystemTime>,
     seconds_ago: f64,
-    reading: Option<ChartReading>,
-}
-#[derive(Clone, PartialEq)]
-struct ChartReading {
-    values: [f64; 2],
-    labels: [String; 2],
+    reading: Option<[f64; 2]>,
 }
 impl ChartSample {
     fn connects_to(&self, next: &Self) -> bool {
@@ -779,10 +771,10 @@ impl ChartSample {
     }
 
     fn point(&self, series: usize, width: f32, height: f32, maximum: f64) -> Option<Point> {
-        self.reading.as_ref().map(|reading| {
+        self.reading.map(|reading| {
             Point::new(
                 self.x(width),
-                height * (1.0 - (reading.values[series] / maximum).clamp(0.0, 1.0) as f32),
+                height * (1.0 - (reading[series] / maximum).clamp(0.0, 1.0) as f32),
             )
         })
     }
@@ -856,10 +848,14 @@ impl Chart {
             .map(|(slot, _, _)| slot)
     }
 
-    fn tooltip_content(&self, slot: Option<usize>) -> Option<Element<'static, Message>> {
+    fn tooltip_content(
+        &self,
+        model: &Model,
+        slot: Option<usize>,
+    ) -> Option<Element<'static, Message>> {
         let slot = slot?;
         let sample = self.sample_at(slot)?;
-        let reading = sample.reading.as_ref()?;
+        let labels = self.kind.tooltip_labels(model.history_sample(slot)?);
         let time = sample
             .captured_at
             .map(|time| {
@@ -884,7 +880,7 @@ impl Chart {
             .size(design::typography::CAPTION)
             .style(text::secondary)]
         .spacing(design::space::TIGHT);
-        for (series, name) in names.into_iter().enumerate() {
+        for (series, (name, label)) in names.into_iter().zip(labels).enumerate() {
             if !name.is_empty() {
                 content = content.push(
                     row![
@@ -896,8 +892,7 @@ impl Chart {
                                 border: iced::border::rounded(3),
                                 ..Default::default()
                             }),
-                        text(format!("{name}: {}", reading.labels[series]))
-                            .size(design::typography::SECONDARY),
+                        text(format!("{name}: {label}")).size(design::typography::SECONDARY),
                     ]
                     .spacing(design::space::SMALL)
                     .align_y(iced::Center),
@@ -1873,19 +1868,15 @@ mod tests {
             "the CPU observation must stay two seconds old when that channel is unavailable"
         );
         assert_eq!(
-            chart
-                .sample_at(HISTORY_LEN - 2)
-                .unwrap()
-                .reading
-                .as_ref()
-                .unwrap()
-                .labels[0],
+            ChartKind::Cpu.tooltip_labels(model.history_sample(HISTORY_LEN - 2).unwrap())[0],
             "32.5%"
         );
         assert_eq!(chart.sample_at(HISTORY_LEN - 2).unwrap().seconds_ago, 2.0);
         assert!(chart.sample_at(HISTORY_LEN - 1).is_none());
         assert!(chart.sample_at(HISTORY_LEN - 3).is_none());
-        assert!(chart.tooltip_content(Some(HISTORY_LEN - 3)).is_none());
+        assert!(chart
+            .tooltip_content(&model, Some(HISTORY_LEN - 3))
+            .is_none());
         assert_eq!(
             model
                 .chart(ChartKind::Memory)
@@ -1945,9 +1936,7 @@ mod tests {
                 .sample_at(HISTORY_LEN - 1)
                 .unwrap()
                 .reading
-                .as_ref()
-                .unwrap()
-                .values[1],
+                .unwrap()[1],
             100.0
         );
         assert_eq!(model.chart(ChartKind::Io).maximum, 20.0);
@@ -2042,9 +2031,7 @@ mod tests {
                 .sample_at(HISTORY_LEN - 2)
                 .unwrap()
                 .reading
-                .as_ref()
-                .unwrap()
-                .values[1],
+                .unwrap()[1],
             100.0,
             "an overwritten exact-timestamp frequency must not set the visible chart scale"
         );
@@ -2278,21 +2265,14 @@ mod tests {
             ..Default::default()
         });
         let chart = model.chart(ChartKind::Network);
-        let sample = chart
-            .sample_at(HISTORY_LEN - 1)
-            .unwrap()
-            .reading
-            .as_ref()
-            .unwrap();
         assert_eq!(chart.maximum, 1_000_000.0);
-        assert_eq!(sample.values, [1_000_000.0, 500_000.0]);
-        assert_eq!(sample.labels, ["1.0 MB/s", "500.0 KB/s"]);
         assert_eq!(
-            sample.labels,
-            [
-                network_usage_label(model.latest.network.download_bytes_per_second),
-                network_usage_label(model.latest.network.upload_bytes_per_second),
-            ]
+            chart.sample_at(HISTORY_LEN - 1).unwrap().reading,
+            Some([1_000_000.0, 500_000.0])
+        );
+        assert_eq!(
+            ChartKind::Network.tooltip_labels(model.history_sample(HISTORY_LEN - 1).unwrap()),
+            ["1.0 MB/s", "500.0 KB/s"]
         );
         assert_eq!(
             network_usage_label(model.latest.network.bytes_per_second),
@@ -2330,10 +2310,7 @@ mod tests {
             Some(ChartSample {
                 captured_at: None,
                 seconds_ago: (HISTORY_LEN - slot - 1) as f64,
-                reading: Some(ChartReading {
-                    values: [value, 0.0],
-                    labels: [String::new(), String::new()],
-                }),
+                reading: Some([value, 0.0]),
             })
         };
         let empty = std::array::from_fn(|_| None);
@@ -2475,10 +2452,7 @@ mod tests {
                     Some(ChartSample {
                         captured_at: None,
                         seconds_ago: (HISTORY_LEN - slot - 1) as f64,
-                        reading: Some(ChartReading {
-                            values: [value, 18.0],
-                            labels: ["RAM".into(), "Cache".into()],
-                        }),
+                        reading: Some([value, 18.0]),
                     })
                 }),
                 maximum,
@@ -2546,10 +2520,7 @@ mod tests {
                 (slot != 35).then(|| ChartSample {
                     captured_at: None,
                     seconds_ago: (HISTORY_LEN - slot - 1) as f64,
-                    reading: Some(ChartReading {
-                        values: [1.0, 2.0],
-                        labels: [String::new(), String::new()],
-                    }),
+                    reading: Some([1.0, 2.0]),
                 })
             }),
             maximum: 100.0,
