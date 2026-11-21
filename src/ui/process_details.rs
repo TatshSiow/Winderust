@@ -451,15 +451,16 @@ pub(super) fn view<'a>(
     }
     body = body.push(text(t!("processor_affinity_hard.warning").to_string()));
     for soft in [true, false] {
-        let settings = if soft {
-            &s.cpu_sets_soft
+        let (settings, other) = if soft {
+            (&s.cpu_sets_soft, &s.processor_affinity_hard)
         } else {
-            &s.processor_affinity_hard
+            (&s.processor_affinity_hard, &s.cpu_sets_soft)
         };
         let rule = settings
             .rules
             .iter()
             .find(|r| process_setting_matches(&r.executable_path, path));
+        let blocked = rule.is_none() && other.contains_rule_for(path);
         let catalog = rule.map(|_| {
             cpu_allocation::SelectionCatalog::capture(if soft {
                 cpu_allocation::Kind::Soft
@@ -473,7 +474,10 @@ pub(super) fn view<'a>(
             } else {
                 "nav.processor_affinity_hard"
             },
-            switch(rule.is_some(), Some(move |v| Message::CpuEnabled(soft, v))),
+            switch(
+                rule.is_some(),
+                (!blocked).then_some(move |v| Message::CpuEnabled(soft, v)),
+            ),
         )]
         .spacing(widgets::CARD_GAP);
         if let Some(rule) = rule {
@@ -494,6 +498,19 @@ pub(super) fn view<'a>(
                         move |v| Message::CpuMask(soft, tier, v),
                     ));
             }
+        } else if blocked {
+            let owner = t!(if soft {
+                "nav.processor_affinity_hard"
+            } else {
+                "nav.cpu_sets_soft"
+            });
+            card = card.push(
+                text(t!("cpu_allocation.ownership_conflict", owner = owner).to_string())
+                    .size(design::typography::SECONDARY)
+                    .style(text::secondary)
+                    .width(Fill)
+                    .wrapping(text::Wrapping::WordOrGlyph),
+            );
         }
         body = body.push(settings_card(card));
     }
