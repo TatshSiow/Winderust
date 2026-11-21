@@ -50,7 +50,7 @@ struct ProcessPriorityTarget {
     executable_path: String,
     creation_time: u64,
     priority: PriorityClassValue,
-    tier: PriorityProcessTier,
+    preservation: PriorityClassPreservation,
 }
 
 impl ProcessPriorityManager {
@@ -80,15 +80,10 @@ impl ProcessPriorityManager {
             );
         }
 
-        let foreground_sensitive = settings.foreground_detection_enabled
-            && settings.foreground_priority != settings.background_priority;
-        if foreground_sensitive && foreground_process_id.is_none() {
-            return self.paused_snapshot(
-                controller,
-                action_log,
-                "foreground app is unknown",
-                "Paused: foreground app is unknown.",
-            );
+        let focus_unknown =
+            settings.foreground_detection_enabled && foreground_process_id.is_none();
+        if focus_unknown && settings.foreground_priority != settings.background_priority {
+            return self.pause_for_unknown_focus(controller, action_log);
         }
 
         // SAFETY: GetCurrentProcessId takes no arguments and has no caller requirements.
@@ -137,58 +132,55 @@ impl ProcessPriorityManager {
         });
         let foreground_executable_path = foreground_executable_path.flatten();
 
-        let targets = processes
-            .iter()
-            .filter_map(|process| {
-                if process.id == 0
-                    || process.id == current_process_id
-                    || process.is_critical != Some(false)
-                    || !process.can_set_information
-                    || excluded_process_ids.contains(&process.id)
-                    || (!allow_cross_session_process_control
-                        && process_session_id(process.id) != Some(current_session_id))
-                    || is_builtin_excluded(&process.name)
-                {
-                    return None;
-                }
-                let executable_path = process_executable_path(process)?;
-                let creation_time = process.creation_time?;
-                let foreground = settings.foreground_detection_enabled
-                    && is_foreground_process(
-                        process.id,
-                        &executable_path,
-                        foreground_process_id,
-                        foreground_executable_path.as_deref(),
-                    );
-                let visible_window = !foreground
-                    && settings.visible_window_detection_enabled
-                    && visible_processes.contains(process.id, &executable_path);
-                let tier = PriorityProcessTier::from_flags(foreground, visible_window);
-                let default_priority = tier.select(
-                    settings.foreground_priority,
-                    settings.visible_window_priority,
-                    settings.background_priority,
+        let mut targets = Vec::new();
+        for process in processes.iter() {
+            if process.id == 0
+                || process.id == current_process_id
+                || process.is_critical != Some(false)
+                || !process.can_set_information
+                || excluded_process_ids.contains(&process.id)
+                || (!allow_cross_session_process_control
+                    && process_session_id(process.id) != Some(current_session_id))
+                || is_builtin_excluded(&process.name)
+            {
+                continue;
+            }
+            let (Some(executable_path), Some(creation_time)) =
+                (process_executable_path(process), process.creation_time)
+            else {
+                continue;
+            };
+            let foreground = settings.foreground_detection_enabled
+                && is_foreground_process(
+                    process.id,
+                    &executable_path,
+                    foreground_process_id,
+                    foreground_executable_path.as_deref(),
                 );
-                let configured_override = settings.override_for(
-                    executable_path.to_string_lossy().as_ref(),
-                    foreground,
-                    visible_window,
-                );
-                let priority = match configured_override {
-                    Some(Some(priority)) => priority,
-                    Some(None) => return None,
-                    None => default_priority,
-                };
-                PriorityClassValue::from_setting(priority).map(|priority| ProcessPriorityTarget {
-                    process_id: process.id,
-                    process_name: process.name.clone(),
-                    executable_path: executable_path.to_string_lossy().into_owned(),
-                    creation_time,
-                    priority,
-                    tier,
-                })
-            })
-            .collect::<Vec<_>>();
+            let visible_window = !foreground
+                && settings.visible_window_detection_enabled
+                && visible_processes.contains(process.id, &executable_path);
+            let tier = PriorityProcessTier::from_flags(foreground, visible_window);
+            let executable_path = executable_path.to_string_lossy();
+            let policy = priority_policy(settings, &executable_path, tier);
+            if focus_unknown
+                && policy
+                    != priority_policy(settings, &executable_path, PriorityProcessTier::Foreground)
+            {
+                return self.pause_for_unknown_focus(controller, action_log);
+            }
+            let Some((priority, preservation)) = policy else {
+                continue;
+            };
+            targets.push(ProcessPriorityTarget {
+                process_id: process.id,
+                process_name: process.name.clone(),
+                executable_path: executable_path.into_owned(),
+                creation_time,
+                priority,
+                preservation,
+            });
+        }
 
         let active_targets = targets
             .iter()
@@ -232,12 +224,7 @@ impl ProcessPriorityManager {
                 ),
                 owner: ControlOwner::ProcessPriority,
                 priority: target.priority,
-                preservation: priority_preservation(
-                    target.tier,
-                    settings.preserve_foreground_priority,
-                    settings.preserve_visible_window_priority,
-                    settings.preserve_background_priority,
-                ),
+                preservation: target.preservation,
             };
             match controller.apply_priority_claim(claim, allow_cross_session_process_control) {
                 Ok(ProcessPropertyApplyOutcome::Applied) => {
@@ -338,6 +325,19 @@ impl ProcessPriorityManager {
             last_error: failures.last_error,
             ..Default::default()
         }
+    }
+
+    fn pause_for_unknown_focus(
+        &mut self,
+        controller: &mut PriorityEfficiencyController,
+        action_log: &mut ActionLog,
+    ) -> ProcessPrioritySnapshot {
+        self.paused_snapshot(
+            controller,
+            action_log,
+            "foreground app is unknown",
+            "Paused: foreground app is unknown.",
+        )
     }
 
     fn paused_snapshot(
@@ -462,6 +462,34 @@ fn process_priority_target_key(target: &ProcessPriorityTarget) -> ProcessTargetK
         target.creation_time,
         Path::new(&target.executable_path),
     )
+}
+
+fn priority_policy(
+    settings: &ProcessPrioritySettings,
+    executable_path: &str,
+    tier: PriorityProcessTier,
+) -> Option<(PriorityClassValue, PriorityClassPreservation)> {
+    let priority = settings
+        .override_for(
+            executable_path,
+            tier == PriorityProcessTier::Foreground,
+            tier == PriorityProcessTier::VisibleWindow,
+        )
+        .unwrap_or_else(|| {
+            Some(tier.select(
+                settings.foreground_priority,
+                settings.visible_window_priority,
+                settings.background_priority,
+            ))
+        })?;
+    let priority = PriorityClassValue::from_setting(priority)?;
+    let preservation = priority_preservation(
+        tier,
+        settings.preserve_foreground_priority,
+        settings.preserve_visible_window_priority,
+        settings.preserve_background_priority,
+    );
+    Some((priority, preservation))
 }
 
 fn priority_preservation(

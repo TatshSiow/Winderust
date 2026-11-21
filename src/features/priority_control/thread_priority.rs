@@ -4,7 +4,7 @@ use windows_sys::Win32::System::Threading::GetCurrentProcessId;
 
 use crate::{
     action_log::{ActionLog, ActionLogFeature, ActionLogResult},
-    config::ThreadPrioritySettings,
+    config::{ProcessThreadPrioritySetting, ThreadPrioritySettings},
     control::{
         process::{ControlOwner, ProcessControlError, ProcessControlTarget, ProcessTargetKey},
         thread_priority::{
@@ -76,15 +76,10 @@ impl ThreadPriorityManager {
             return inactive_snapshot("Thread Priority disabled.", failures);
         }
 
-        let foreground_sensitive = settings.foreground_detection_enabled
-            && settings.foreground_priority != settings.background_priority;
-        if foreground_sensitive && foreground_process_id.is_none() {
-            let failures = record_release(
-                controller.release_all_policy(),
-                action_log,
-                "foreground app is unknown",
-            );
-            return paused_snapshot("Paused: foreground app is unknown.", failures);
+        let focus_unknown =
+            settings.foreground_detection_enabled && foreground_process_id.is_none();
+        if focus_unknown && settings.foreground_priority != settings.background_priority {
+            return pause_for_unknown_focus(controller, action_log);
         }
 
         // SAFETY: GetCurrentProcessId takes no arguments and has no caller requirements.
@@ -175,24 +170,16 @@ impl ThreadPriorityManager {
                 && settings.visible_window_detection_enabled
                 && visible_processes.contains(process.id, &executable_path);
             let tier = PriorityProcessTier::from_flags(foreground, visible_window);
-            let configured_override = settings.override_for(
-                executable_path.to_string_lossy().as_ref(),
-                foreground,
-                visible_window,
-            );
-            let default_priority = tier.select(
-                settings.foreground_priority,
-                settings.visible_window_priority,
-                settings.background_priority,
-            );
-            let priority = match configured_override {
-                Some(Some(priority)) => priority,
-                Some(None) => continue,
-                None => default_priority,
-            };
-            if !thread_priority_is_actionable(priority) {
-                continue;
+            let path = executable_path.to_string_lossy();
+            let policy = priority_policy(settings, &path, tier);
+            if focus_unknown
+                && policy != priority_policy(settings, &path, PriorityProcessTier::Foreground)
+            {
+                return pause_for_unknown_focus(controller, action_log);
             }
+            let Some((priority, preservation)) = policy else {
+                continue;
+            };
             let target = ProcessControlTarget::automatic(
                 process.id,
                 process.name.clone(),
@@ -206,10 +193,10 @@ impl ThreadPriorityManager {
                         target,
                         owner,
                         priority,
-                        preservation: preservation_for_tier(settings, tier),
+                        preservation,
                     },
                     process_name: process.name.clone(),
-                    executable_path: executable_path.to_string_lossy().into_owned(),
+                    executable_path: path.into_owned(),
                 },
             );
         }
@@ -384,6 +371,18 @@ fn inactive_snapshot(message: &str, failures: ThreadPriorityFailures) -> ThreadP
     }
 }
 
+fn pause_for_unknown_focus(
+    controller: &mut ThreadPriorityController,
+    action_log: &mut ActionLog,
+) -> ThreadPrioritySnapshot {
+    let failures = record_release(
+        controller.release_all_policy(),
+        action_log,
+        "foreground app is unknown",
+    );
+    paused_snapshot("Paused: foreground app is unknown.", failures)
+}
+
 fn paused_snapshot(message: &str, failures: ThreadPriorityFailures) -> ThreadPrioritySnapshot {
     ThreadPrioritySnapshot {
         enabled: true,
@@ -422,6 +421,28 @@ fn record_release(
         );
     }
     failures
+}
+
+fn priority_policy(
+    settings: &ThreadPrioritySettings,
+    executable_path: &str,
+    tier: PriorityProcessTier,
+) -> Option<(ProcessThreadPrioritySetting, ThreadPriorityPreservation)> {
+    let priority = settings
+        .override_for(
+            executable_path,
+            tier == PriorityProcessTier::Foreground,
+            tier == PriorityProcessTier::VisibleWindow,
+        )
+        .unwrap_or_else(|| {
+            Some(tier.select(
+                settings.foreground_priority,
+                settings.visible_window_priority,
+                settings.background_priority,
+            ))
+        })?;
+    thread_priority_is_actionable(priority)
+        .then(|| (priority, preservation_for_tier(settings, tier)))
 }
 
 fn preservation_for_tier(
