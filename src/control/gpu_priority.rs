@@ -483,12 +483,11 @@ impl<P: GpuPriorityPlatform> GpuPriorityController<P> {
         }
     }
 
-    pub(crate) fn policy_managed_process_names(&self) -> Vec<String> {
+    pub(crate) fn policy_managed_process_count(&self) -> usize {
         self.managed
-            .iter()
-            .filter(|(_, managed)| managed.owner.is_automatic())
-            .map(|(identity, _)| identity.name.clone())
-            .collect()
+            .values()
+            .filter(|managed| managed.owner.is_automatic())
+            .count()
     }
 
     pub(crate) fn has_managed_state(&self) -> bool {

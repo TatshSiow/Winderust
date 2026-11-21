@@ -18,7 +18,7 @@ use crate::{
     },
     foreground::{
         contains_process_name, process_count_label, process_executable_path, process_failure_key,
-        process_session_id, unique_app_names, ProtectedProcesses, CORE_BUILT_IN_PROCESS_EXCLUSIONS,
+        process_session_id, ProtectedProcesses, CORE_BUILT_IN_PROCESS_EXCLUSIONS,
     },
     rules::{execution_failure_suppression_threshold, ExecutionFailureTracker},
     runtime::observations::CycleObservations,
@@ -38,7 +38,6 @@ pub struct GpuPrioritySnapshot {
     pub denied_processes: usize,
     pub suppressed_processes: usize,
     pub failed_processes: usize,
-    pub adjusted_apps: Vec<String>,
     pub auto_excluded_processes: Vec<String>,
     pub(crate) observation_paused: bool,
     pub last_error: Option<String>,
@@ -331,17 +330,15 @@ impl GpuPriorityManager {
         );
 
         let failures = self.with_non_release_failures(release_failures);
-        let adjusted_apps = controller.policy_managed_process_names();
         GpuPrioritySnapshot {
             enabled: true,
             scanned_processes,
-            adjusted_processes: adjusted_apps.len(),
+            adjusted_processes: controller.policy_managed_process_count(),
             skipped_processes,
             pending_processes,
             denied_processes,
             suppressed_processes,
             failed_processes: failures.count,
-            adjusted_apps: unique_app_names(adjusted_apps.iter().map(String::as_str)),
             auto_excluded_processes: auto_excluded_processes.into_iter().collect(),
             observation_paused: false,
             last_error: failures.last_error,
@@ -381,9 +378,7 @@ impl GpuPriorityManager {
         status.failed_processes = failures.count;
         status.last_error = failures.last_error;
         if status.enabled && !status.observation_paused {
-            let adjusted_apps = controller.policy_managed_process_names();
-            status.adjusted_processes = adjusted_apps.len();
-            status.adjusted_apps = unique_app_names(adjusted_apps.iter().map(String::as_str));
+            status.adjusted_processes = controller.policy_managed_process_count();
         }
         status
     }
