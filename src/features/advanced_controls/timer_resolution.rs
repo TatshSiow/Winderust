@@ -23,6 +23,7 @@ pub struct TimerResolutionSnapshot {
 #[derive(Default)]
 pub struct TimerResolutionManager {
     active_rule_process: Option<String>,
+    last_release_error: Option<String>,
 }
 
 impl TimerResolutionManager {
@@ -109,6 +110,7 @@ impl TimerResolutionManager {
             .active_rule_process
             .clone()
             .unwrap_or_else(|| SYSTEM_TARGET_NAME.to_owned());
+        self.last_release_error = None;
         match controller.set_request(desired_100ns) {
             Ok(transition) => {
                 if let Some(previous_100ns) = transition.released_100ns {
@@ -236,6 +238,7 @@ impl TimerResolutionManager {
             match controller.release() {
                 Ok(_) => {
                     self.active_rule_process = None;
+                    self.last_release_error = None;
                     action_log.record(
                         ActionLogFeature::TimerResolution,
                         None,
@@ -249,14 +252,17 @@ impl TimerResolutionManager {
                 }
                 Err(message) => {
                     failures += 1;
-                    last_error = Some(message.clone());
-                    action_log.record(
-                        ActionLogFeature::TimerResolution,
-                        None,
-                        previous_target,
-                        ActionLogResult::Failed,
-                        message,
-                    );
+                    if self.last_release_error.as_ref() != Some(&message) {
+                        self.last_release_error = Some(message.clone());
+                        action_log.record(
+                            ActionLogFeature::TimerResolution,
+                            None,
+                            previous_target,
+                            ActionLogResult::Failed,
+                            message.clone(),
+                        );
+                    }
+                    last_error = Some(message);
                 }
             }
         }

@@ -1405,7 +1405,8 @@ fn run_background_automation(
             || memory_trim_command_requested
             || feature_refresh_required(settings, settings.memory_trim.enabled);
         let timer_resolution_refresh_required = settings_changed
-            || feature_refresh_required(settings, timer_resolution_required(settings));
+            || feature_refresh_required(settings, timer_resolution_required(settings))
+            || runner.timer_resolution_request_active();
         let sleep_power_source = plugged_in.or(runner.sleep_prevention_power_source());
         let sleep_settings = active_power_source_settings(&configured_settings, sleep_power_source);
         let sleep_prevention_refresh_required = settings_changed

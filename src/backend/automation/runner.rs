@@ -1642,16 +1642,23 @@ impl RuntimeCore {
         self.sleep_prevention_manager.last_known_power_source()
     }
 
+    pub(super) fn timer_resolution_request_active(&self) -> bool {
+        self.timer_resolution_controller
+            .active_request_100ns()
+            .is_some()
+    }
+
     pub(super) fn run_timer_resolution_update(
         &mut self,
         settings: &Settings,
         observations: &mut CycleObservations,
     ) -> TimerResolutionSnapshot {
-        let foreground_executable_path = timer_resolution_required(settings)
-            .then(|| observations.foreground_process())
-            .flatten()
-            .filter(|process| process_is_critical(process.id) == Some(false))
-            .map(|process| process.executable_path.to_string_lossy().into_owned());
+        let foreground_executable_path =
+            feature_refresh_required(settings, timer_resolution_required(settings))
+                .then(|| observations.foreground_process())
+                .flatten()
+                .filter(|process| process_is_critical(process.id) == Some(false))
+                .map(|process| process.executable_path.to_string_lossy().into_owned());
         self.timer_resolution_manager.update(
             &mut self.timer_resolution_controller,
             &settings.timer_resolution,
