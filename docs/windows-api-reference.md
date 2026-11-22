@@ -1289,8 +1289,10 @@ acquisition checks. The raw boundary is `src/platform/windows/keep_running.rs`.
   the private job; explicit breakaway children can escape it. Cleanup is not a
   descendant rollback guarantee. Kill-on-close protects the provisional root only
   while armed; it cannot make native disarm and result publication atomic.
-- Fresh Toolhelp enumeration inspects accessible candidates and treats plausible
-  same-name inspection failures as unknown. Resolved aliases use volume serial
+- Fresh Toolhelp enumeration inspects accessible candidates and uses
+  [CompareStringOrdinal](https://learn.microsoft.com/en-us/windows/win32/api/stringapiset/nf-stringapiset-comparestringordinal)
+  on the original UTF-16 filenames. Inspection failures for a possible match
+  leave absence unknown. Resolved aliases use volume serial
   plus [FILE_ID_INFO](https://learn.microsoft.com/en-us/windows/win32/api/winbase/ns-winbase-file_id_info)
   file ID. An inaccessible differently named alias cannot be ruled out, and a
   path's current file identity does not prove an unchanged loaded image section.

@@ -722,6 +722,7 @@ pub(crate) fn matching_processes(spec: &LaunchSpec) -> Result<Vec<ObservedProces
         .ok_or(KeepRunningError::Unsupported(
             "Missing executable filename.",
         ))?;
+    let expected_name: Vec<_> = name.encode_wide().collect();
     // SAFETY: this read-only snapshot owns only a process-list handle.
     let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
     if snapshot == INVALID_HANDLE_VALUE {
@@ -741,11 +742,9 @@ pub(crate) fn matching_processes(spec: &LaunchSpec) -> Result<Vec<ObservedProces
             .iter()
             .position(|value| *value == 0)
             .unwrap_or(entry.szExeFile.len());
-        let candidate_name = OsString::from_wide(&entry.szExeFile[..length]);
-        let plausible = candidate_name
-            .to_string_lossy()
-            .eq_ignore_ascii_case(&name.to_string_lossy());
         if entry.th32ProcessID != 0 {
+            let plausible =
+                || super::ordinal_equal(&entry.szExeFile[..length], &expected_name).unwrap_or(true);
             // SAFETY: snapshot PID is used only for a noninheritable query/synchronize handle.
             let raw = unsafe {
                 OpenProcess(
@@ -755,7 +754,7 @@ pub(crate) fn matching_processes(spec: &LaunchSpec) -> Result<Vec<ObservedProces
                 )
             };
             if raw.is_null() {
-                if plausible {
+                if plausible() {
                     return Err(KeepRunningError::Unsupported(
                         "A possible matching app could not be inspected; absence is unknown.",
                     ));
@@ -776,12 +775,12 @@ pub(crate) fn matching_processes(spec: &LaunchSpec) -> Result<Vec<ObservedProces
                                 .0;
                             matches.push(ObservedProcess {
                                 id: entry.th32ProcessID,
-                                name: candidate_name.to_string_lossy().into_owned(),
+                                name: String::from_utf16_lossy(&entry.szExeFile[..length]),
                                 path,
                                 creation_time,
                             });
                         }
-                        Err(_) if plausible => {
+                        Err(_) if plausible() => {
                             return Err(KeepRunningError::Unsupported(
                                 "A possible matching executable could not be verified; absence is unknown.",
                             ));

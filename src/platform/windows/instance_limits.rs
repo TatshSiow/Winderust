@@ -10,7 +10,6 @@ use windows_sys::Win32::{
         ERROR_INSUFFICIENT_BUFFER, ERROR_NO_MORE_FILES, FILETIME, HANDLE, INVALID_HANDLE_VALUE,
         WAIT_OBJECT_0, WAIT_TIMEOUT,
     },
-    Globalization::{CompareStringOrdinal, CSTR_EQUAL, CSTR_GREATER_THAN, CSTR_LESS_THAN},
     Security::{
         GetLengthSid, GetTokenInformation, IsValidSid, TokenSessionId, TokenUser, TOKEN_QUERY,
         TOKEN_USER,
@@ -34,7 +33,10 @@ use windows_sys::Win32::{
 
 use crate::win_util::{filetime_to_u64, last_error, WinHandle};
 
-use super::process::{self, ProcessAccess};
+use super::{
+    ordinal_equal,
+    process::{self, ProcessAccess},
+};
 
 type Result<T> = std::result::Result<T, String>;
 
@@ -97,17 +99,6 @@ impl MembershipObservation {
 fn failure(operation: &str) -> String {
     let code = last_error();
     format!("{operation} failed (Windows error {code}).")
-}
-
-fn ordinal_equal(left: &[u16], right: &[u16]) -> Result<bool> {
-    let left_len = i32::try_from(left.len()).map_err(|_| "The path is too long.")?;
-    let right_len = i32::try_from(right.len()).map_err(|_| "The path is too long.")?;
-    // SAFETY: both UTF-16 slices remain readable for their explicit lengths during the call.
-    match unsafe { CompareStringOrdinal(left.as_ptr(), left_len, right.as_ptr(), right_len, 1) } {
-        CSTR_EQUAL => Ok(true),
-        CSTR_LESS_THAN | CSTR_GREATER_THAN => Ok(false),
-        _ => Err(failure("CompareStringOrdinal")),
-    }
 }
 
 fn usable_basename(value: &[u16], terminated: bool) -> bool {
