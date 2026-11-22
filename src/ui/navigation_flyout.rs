@@ -332,6 +332,18 @@ impl iced::advanced::Overlay<Message, Theme, Renderer> for Panel<'_, '_> {
     ) {
         use keyboard::{key::Named, Key};
         if !self.keyboard && matches!(event, Event::Keyboard(_)) {
+            if matches!(
+                event,
+                Event::Keyboard(keyboard::Event::KeyPressed {
+                    key: Key::Named(Named::Escape),
+                    modifiers,
+                    repeat: false,
+                    ..
+                }) if modifiers.is_empty()
+            ) {
+                shell.publish(Message::Dismiss);
+                shell.capture_event();
+            }
             return;
         }
         if let Event::Keyboard(keyboard::Event::KeyPressed {
@@ -933,6 +945,7 @@ mod tests {
                 (Named::ArrowDown, true),
                 (Named::Tab, false),
                 (Named::Escape, false),
+                (Named::Escape, true),
                 (Named::Space, true),
                 (Named::Enter, true),
             ] {
@@ -946,8 +959,11 @@ mod tests {
                     &mut clipboard,
                     &mut shell,
                 );
-                assert_eq!(shell.is_event_captured(), keyboard);
-                if keyboard && !(repeat && matches!(named, Named::Enter | Named::Space)) {
+                let hover_escape = !keyboard && named == Named::Escape && !repeat;
+                assert_eq!(shell.is_event_captured(), keyboard || hover_escape);
+                if hover_escape {
+                    assert!(matches!(messages.as_slice(), [Message::Dismiss]));
+                } else if keyboard && !(repeat && matches!(named, Named::Enter | Named::Space)) {
                     assert!(
                         matches!(messages.as_slice(), [Message::Key(keyboard::Key::Named(key), false)] if *key == named)
                     );
