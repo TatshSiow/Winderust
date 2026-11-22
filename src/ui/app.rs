@@ -805,6 +805,9 @@ impl WinderustApp {
                             settings_pages::Message::CancelSearchHotkey,
                         ));
                     }
+                    if status != iced::event::Status::Ignored {
+                        return Task::none();
+                    }
                     if let Some(shortcut) = super::hotkeys::capture(&key, modifiers) {
                         return self.update(Message::Preferences(
                             settings_pages::Message::SetSearchHotkey(slot, Some(shortcut)),
