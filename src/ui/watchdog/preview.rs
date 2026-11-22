@@ -11,7 +11,30 @@ use crate::{
 pub(crate) enum MatchKind {
     Matched,
     SameName,
-    Unavailable,
+    Unavailable(UnavailableReason),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum UnavailableReason {
+    PathUnavailable,
+    NameUnverified,
+    StartTimeUnavailable,
+    CriticalityUnknown,
+    CriticalProcess,
+    WinderustProcess,
+}
+
+impl UnavailableReason {
+    pub(super) fn label_key(self) -> &'static str {
+        match self {
+            Self::PathUnavailable => "watchdog.preview_path_unavailable",
+            Self::NameUnverified => "watchdog.preview_name_unverified",
+            Self::StartTimeUnavailable => "watchdog.preview_start_time_unavailable",
+            Self::CriticalityUnknown => "watchdog.preview_criticality_unknown",
+            Self::CriticalProcess => "watchdog.preview_critical_process",
+            Self::WinderustProcess => "watchdog.preview_self_skipped",
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -31,6 +54,8 @@ fn classify(
     processes: &[ProcessInfo],
     current_pid: u32,
 ) -> Vec<MatchRow> {
+    use UnavailableReason::*;
+
     let (name, expected_path) = match selector {
         WatchdogSelector::ExactPath { executable_path } => {
             let path = Path::new(executable_path.trim());
@@ -53,15 +78,17 @@ fn classify(
             {
                 MatchKind::SameName
             }
-            Some(_)
-                if (expected_path.is_some() || observed_path_matches_name(process, name))
-                    && process.is_critical == Some(false)
-                    && process.creation_time.is_some()
-                    && process.id != current_pid =>
-            {
-                MatchKind::Matched
+            None => MatchKind::Unavailable(PathUnavailable),
+            Some(_) if expected_path.is_none() && !observed_path_matches_name(process, name) => {
+                MatchKind::Unavailable(NameUnverified)
             }
-            _ => MatchKind::Unavailable,
+            Some(_) if process.id == current_pid => MatchKind::Unavailable(WinderustProcess),
+            Some(_) if process.is_critical == Some(true) => MatchKind::Unavailable(CriticalProcess),
+            Some(_) if process.creation_time.is_none() => {
+                MatchKind::Unavailable(StartTimeUnavailable)
+            }
+            Some(_) if process.is_critical.is_none() => MatchKind::Unavailable(CriticalityUnknown),
+            Some(_) => MatchKind::Matched,
         };
         rows.push(MatchRow {
             pid: process.id,
@@ -75,7 +102,7 @@ fn classify(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{UnavailableReason::*, *};
 
     fn process(id: u32, name: &str, path: Option<&str>) -> ProcessInfo {
         ProcessInfo {
@@ -105,9 +132,11 @@ mod tests {
             process(1, "worker.exe", Some(path)),
             process(7, "worker.exe", Some(path)),
             process(8, "different.exe", Some(r"C:\Apps\different.exe")),
+            process(9, "worker.exe", Some(path)),
         ];
         processes[0].is_critical = Some(true);
         processes[4].creation_time = None;
+        processes[8].is_critical = None;
 
         let selector = WatchdogSelector::ExactPath {
             executable_path: path.into(),
@@ -121,10 +150,11 @@ mod tests {
                 (1, MatchKind::Matched),
                 (2, MatchKind::Matched),
                 (3, MatchKind::SameName),
-                (4, MatchKind::Unavailable),
-                (5, MatchKind::Unavailable),
-                (6, MatchKind::Unavailable),
-                (7, MatchKind::Unavailable),
+                (4, MatchKind::Unavailable(PathUnavailable)),
+                (5, MatchKind::Unavailable(StartTimeUnavailable)),
+                (6, MatchKind::Unavailable(CriticalProcess)),
+                (7, MatchKind::Unavailable(WinderustProcess)),
+                (9, MatchKind::Unavailable(CriticalityUnknown)),
             ]
         );
         assert_eq!(rows[2].path.as_deref(), Some(Path::new(other_path)));
@@ -156,9 +186,9 @@ mod tests {
             [
                 (1, MatchKind::Matched),
                 (2, MatchKind::Matched),
-                (3, MatchKind::Unavailable),
-                (4, MatchKind::Unavailable),
-                (5, MatchKind::Unavailable),
+                (3, MatchKind::Unavailable(PathUnavailable)),
+                (4, MatchKind::Unavailable(NameUnverified)),
+                (5, MatchKind::Unavailable(NameUnverified)),
             ]
         );
         assert_eq!(rows[0].path.as_deref(), Some(Path::new(path)));

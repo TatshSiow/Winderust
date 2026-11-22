@@ -665,7 +665,7 @@ impl Editor {
     }
 
     fn match_preview_details(draft: &Draft) -> Column<'_, Message> {
-        use preview::MatchKind;
+        use preview::{MatchKind, UnavailableReason};
 
         let mut details = column![widgets::action_button(t!("settings.refresh").to_string())
             .style(widgets::secondary_button)
@@ -689,37 +689,52 @@ impl Editor {
             MatchPreview::Loaded(Ok(matches)) => matches,
         };
 
-        for (kind, heading) in [
-            (MatchKind::Matched, "watchdog.preview_matches"),
-            (MatchKind::SameName, "watchdog.preview_same_name"),
-            (MatchKind::Unavailable, "watchdog.preview_unavailable"),
+        let mut matched = Vec::new();
+        let mut same_name = Vec::new();
+        let mut unavailable = Vec::new();
+        for entry in matches {
+            let (rows, reason) = match entry.kind {
+                MatchKind::Matched => (&mut matched, None),
+                MatchKind::SameName => (&mut same_name, None),
+                MatchKind::Unavailable(reason) => (&mut unavailable, Some(reason)),
+            };
+            let path = entry.path.as_ref().map_or_else(
+                || t!(UnavailableReason::PathUnavailable.label_key()).to_string(),
+                |path| path.display().to_string(),
+            );
+            let mut metadata = column![text(path)
+                .style(text::secondary)
+                .wrapping(text::Wrapping::WordOrGlyph)]
+            .spacing(design::space::TINY)
+            .width(Fill);
+            if let Some(reason) = reason.filter(|_| entry.path.is_some()) {
+                metadata = metadata.push(
+                    text(t!(reason.label_key()).to_string())
+                        .size(design::typography::CAPTION)
+                        .style(text::secondary)
+                        .wrapping(text::Wrapping::WordOrGlyph),
+                );
+            }
+            rows.push(
+                row![
+                    text(t!("watchdog.preview_pid", pid = entry.pid).to_string()).width(112),
+                    metadata,
+                ]
+                .spacing(design::space::MEDIUM)
+                .width(Fill)
+                .into(),
+            );
+        }
+        if matched.is_empty() {
+            details = details
+                .push(text(t!("watchdog.preview_no_matches").to_string()).style(text::secondary));
+        }
+        for (rows, heading) in [
+            (matched, "watchdog.preview_matches"),
+            (same_name, "watchdog.preview_same_name"),
+            (unavailable, "watchdog.preview_unavailable"),
         ] {
-            let rows: Vec<Element<'_, Message>> = matches
-                .iter()
-                .filter(|entry| entry.kind == kind)
-                .map(|entry| {
-                    let path = entry.path.as_ref().map_or_else(
-                        || t!("watchdog.preview_path_unavailable").to_string(),
-                        |path| path.display().to_string(),
-                    );
-                    row![
-                        text(t!("watchdog.preview_pid", pid = entry.pid).to_string()).width(112),
-                        text(path)
-                            .width(Fill)
-                            .style(text::secondary)
-                            .wrapping(text::Wrapping::WordOrGlyph),
-                    ]
-                    .spacing(design::space::MEDIUM)
-                    .width(Fill)
-                    .into()
-                })
-                .collect();
             if rows.is_empty() {
-                if kind == MatchKind::Matched {
-                    details = details.push(
-                        text(t!("watchdog.preview_no_matches").to_string()).style(text::secondary),
-                    );
-                }
                 continue;
             }
             details = details.push(widgets::settings_card(
