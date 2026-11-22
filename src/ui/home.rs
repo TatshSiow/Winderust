@@ -739,6 +739,15 @@ fn recent_log_row(entry: &crate::action_log::ActionLogEntry, width: f32) -> Elem
         super::action_log::action_log_result_label(entry.result),
         entry.reason
     );
+    let available = (width
+        - TIME_WIDTH
+        - LEVEL_WIDTH
+        - 2.0 * f32::from(PADDING[1])
+        - 2.0 * design::space::SMALL as f32)
+        .max(0.0);
+    let tooltip = (super::widgets::text_width(&description, design::typography::CAPTION)
+        > available)
+        .then(|| text(description.clone()));
     let row = button(
         row![
             text(super::action_log::action_log_time_label(
@@ -752,7 +761,7 @@ fn recent_log_row(entry: &crate::action_log::ActionLogEntry, width: f32) -> Elem
                 .style(move |theme| super::action_log::action_log_level_style(theme, level))
                 .width(LEVEL_WIDTH),
             container(
-                text(description.clone())
+                text(description)
                     .size(design::typography::CAPTION)
                     .wrapping(text::Wrapping::None)
                     .shaping(iced::advanced::text::Shaping::Advanced)
@@ -767,14 +776,8 @@ fn recent_log_row(entry: &crate::action_log::ActionLogEntry, width: f32) -> Elem
     .padding(PADDING)
     .style(super::widgets::quiet)
     .on_press(Message::Navigate(Page::ActionLog));
-    let available = (width
-        - TIME_WIDTH
-        - LEVEL_WIDTH
-        - 2.0 * f32::from(PADDING[1])
-        - 2.0 * design::space::SMALL as f32)
-        .max(0.0);
-    if super::widgets::text_width(&description, design::typography::CAPTION) > available {
-        super::widgets::tooltip(row, text(description), iced::widget::tooltip::Position::Top).into()
+    if let Some(tip) = tooltip {
+        super::widgets::tooltip(row, tip, iced::widget::tooltip::Position::Top).into()
     } else {
         row.into()
     }
