@@ -1157,7 +1157,7 @@ about:
   update_status: "Update status"
   checking: "Checking for updates..."
   not_checked: "Not checked yet"
-  download_update: "Update"
+  open_release_page: "Open release page"
   check_for_updates: "Check for updates"
   up_to_date: "Up to date"
   update_check_failed: "Could not check for updates."

@@ -862,7 +862,7 @@ impl Editor {
                 .spacing(super::widgets::CARD_GAP);
                 if let Some(url) = &self.download {
                     body = body.push(
-                        action_button(t!("about.download_update").to_string())
+                        action_button(t!("about.open_release_page").to_string())
                             .style(widgets::primary_button)
                             .on_press(Message::Open(url.clone())),
                     );

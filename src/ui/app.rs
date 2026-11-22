@@ -3003,7 +3003,7 @@ impl WinderustApp {
                         action_button(t!("common.cancel").to_string())
                             .style(widgets::tertiary_button)
                             .on_press(Message::Preferences(settings_pages::Message::DismissUpdate)),
-                        action_button(t!("about.download_update").to_string())
+                        action_button(t!("about.open_release_page").to_string())
                             .style(widgets::primary_button)
                             .on_press_maybe(self.preferences.download.clone().map(|url| {
                                 Message::Preferences(settings_pages::Message::OpenUpdate(url))

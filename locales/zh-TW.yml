@@ -1145,7 +1145,7 @@ cpu_limiter:
   no_rules: "尚未設定自訂規則。"
 
 about:
-  download_update: "更新"
+  open_release_page: "開啟發行頁面"
   check_for_updates: "檢查更新"
   up_to_date: "已是最新版本"
   update_check_failed: "無法檢查更新。"
