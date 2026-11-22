@@ -313,7 +313,6 @@ process_list:
   user: "使用者"
   multiple_users: "多個帳戶"
   user_unavailable: "\u7121\u6cd5\u53d6\u5f97"
-  user_unavailable_help: "Windows 不允許 Winderust 讀取此程序的帳戶。S0 表示工作階段 0。"
   search_placeholder: "搜尋處理程序..."
   hide_inaccessible_processes: "\u96b1\u85cf\u7121\u6cd5\u5b58\u53d6\u7684\u8655\u7406\u7a0b\u5e8f"
   app_name: "應用程式名稱"

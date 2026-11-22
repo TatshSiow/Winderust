@@ -351,7 +351,6 @@ process_list:
   user: "User"
   multiple_users: "Multiple accounts"
   user_unavailable: "Unavailable"
-  user_unavailable_help: "Windows did not allow Winderust to read this process account. S0 indicates session 0."
   no_path_specific_plan: "No path-specific plan"
   details_power: "Power plans"
   immediate_actions: "Immediate Action"
