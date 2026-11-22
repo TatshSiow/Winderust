@@ -327,14 +327,14 @@ impl Editor {
         if self.dirty || self.has_invalid_inputs() {
             return;
         }
-        if self.selected_plan(plans).is_none() {
-            let target = tuning_plans(plans)
+        let selected = self.selected_plan(plans);
+        if selected.is_none() {
+            let plan = tuning_plans(plans)
                 .find(|p| p.active)
-                .or_else(|| tuning_plans(plans).next())
-                .map(|p| p.guid.clone());
-            self.select_plan(target);
+                .or_else(|| tuning_plans(plans).next());
+            self.select_plan(plan);
         } else if self.values.is_none() {
-            self.read_selected_plan();
+            self.read_selected_plan(selected);
         }
     }
 
@@ -343,11 +343,11 @@ impl Editor {
         tuning_plans(plans).find(|plan| plan.guid.eq_ignore_ascii_case(guid))
     }
 
-    fn select_plan(&mut self, target: Option<String>) {
-        self.target = target;
+    fn select_plan(&mut self, plan: Option<&PowerPlan>) {
+        self.target = plan.map(|plan| plan.guid.clone());
         self.personality = None;
         self.selected_presets = [None, None];
-        self.read_selected_plan();
+        self.read_selected_plan(plan);
     }
 
     pub(super) fn discard_values(&mut self, plans: &[PowerPlan]) {
@@ -356,26 +356,28 @@ impl Editor {
     }
 
     pub(super) fn refresh(&mut self, plans: &[PowerPlan]) {
-        if self.unverified_apply.is_some() && self.selected_plan(plans).is_none() {
+        let selected = self.selected_plan(plans);
+        if self.unverified_apply.is_some() && selected.is_none() {
             self.set_failure(t!("common.selected_plan_unavailable").into_owned());
             return;
         }
         self.dirty = false;
         self.invalid_percentages = Default::default();
-        if self.selected_plan(plans).is_some() {
-            self.read_selected_plan();
+        if selected.is_some() {
+            self.read_selected_plan(selected);
         } else {
             self.ensure_plan(plans);
         }
     }
 
-    fn read_selected_plan(&mut self) {
+    fn read_selected_plan(&mut self, plan: Option<&PowerPlan>) {
         self.cancel_apply_review();
-        let Some(guid) = &self.target else {
+        let Some(plan) = plan else {
             self.set_readback(None);
             self.status = t!("processor_power.no_active_plan").to_string().into();
             return;
         };
+        let guid = &plan.guid;
         self.personality = match self.service.read_personality(guid) {
             Ok(v) => Some(v),
             Err(error) => {
@@ -385,7 +387,7 @@ impl Editor {
         };
         match self.service.read_values(guid) {
             Ok(v) => {
-                self.status = Feedback::Loaded(guid.clone());
+                self.status = Feedback::Loaded(plan.name.clone());
                 self.set_readback(Some(v));
                 if let Some(review) = self.unverified_apply.take() {
                     self.values = Some(review.recover_draft(v));
@@ -657,7 +659,7 @@ impl Editor {
         self.status = if restoring {
             Feedback::Restored(review.name)
         } else {
-            Feedback::Applied(review.guid)
+            Feedback::Applied(review.name)
         };
         true
     }
@@ -684,7 +686,7 @@ impl Editor {
                 } else if let Some(plan) =
                     tuning_plans(plans).find(|plan| plan.guid.eq_ignore_ascii_case(&guid))
                 {
-                    self.select_plan(Some(plan.guid.clone()));
+                    self.select_plan(Some(plan));
                 }
             }
             Message::Refresh => self.refresh(plans),
