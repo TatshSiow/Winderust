@@ -455,6 +455,33 @@ fn fresh_rule_opt_ins_do_not_inherit_pending_sleep_suppression() {
 }
 
 #[test]
+fn pending_sleep_takes_precedence_over_a_saved_opt_in() {
+    let mut configured = Settings {
+        sleep_prevention: settings(),
+        ..Settings::default()
+    };
+    let mut manager = SleepPreventionManager::default();
+    configured.sleep_prevention.rules[0].enabled = false;
+    manager.change_power_source(Some(true));
+    manager.note_configuration(&configured, Some(true));
+
+    configured.sleep_prevention.rules[0].enabled = true;
+    manager.suspend(
+        &mut SleepPreventionController::default(),
+        &configured,
+        &mut ActionLog::new(4),
+    );
+    manager.note_configuration(&configured, Some(true));
+    observe(
+        &mut manager,
+        &configured.sleep_prevention,
+        &[process(7, r"C:\Apps\worker.exe")],
+    );
+
+    assert_eq!(manager.desired_mode(), SleepPreventionMode::Off);
+}
+
+#[test]
 fn first_unknown_power_source_blocks_enabled_requests_without_suppressing_apps() {
     let configured = Settings {
         sleep_prevention: settings(),

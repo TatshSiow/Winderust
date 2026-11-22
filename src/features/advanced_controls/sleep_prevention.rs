@@ -164,8 +164,7 @@ impl SleepPreventionManager {
         }) {
             return;
         }
-        let current =
-            profiles.map(|profile| (profile.general.enabled, profile.sleep_prevention.clone()));
+        let current = capture_configuration(profiles);
         if let (Some(previous), Some(active_source)) =
             (self.configuration.take(), plugged_in.or(self.power_source))
         {
@@ -334,8 +333,14 @@ impl SleepPreventionManager {
     pub(crate) fn suspend(
         &mut self,
         controller: &mut SleepPreventionController,
+        configured_settings: &Settings,
         action_log: &mut ActionLog,
     ) -> SleepPreventionSnapshot {
+        // Settings observed alongside this event may have been saved before sleep.
+        self.configuration = Some(capture_configuration([
+            configured_settings,
+            configured_settings.battery_profile(),
+        ]));
         self.suppress_current();
         let mut snapshot = self.snapshot.clone();
         snapshot.suppressed_apps.clone_from(&snapshot.running_apps);
@@ -582,6 +587,10 @@ impl SleepPreventionManager {
         self.snapshot = snapshot.clone();
         snapshot
     }
+}
+
+fn capture_configuration(profiles: [&Settings; 2]) -> [(bool, SleepPreventionSettings); 2] {
+    profiles.map(|profile| (profile.general.enabled, profile.sleep_prevention.clone()))
 }
 
 fn matchable_target(executable: &str) -> Option<(&str, &str)> {

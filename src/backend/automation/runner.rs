@@ -591,8 +591,11 @@ impl RuntimeCore {
         if events.suspend_resume {
             self.adaptive_engine_process_manager
                 .reset_pressure_observations();
-            self.sleep_prevention_manager
-                .suspend(&mut self.sleep_prevention_controller, &mut self.action_log);
+            self.sleep_prevention_manager.suspend(
+                &mut self.sleep_prevention_controller,
+                configured,
+                &mut self.action_log,
+            );
         }
         let previous_settings = self.last_settings.as_ref().map(ObservedSettings::effective);
         let changed = previous_settings
