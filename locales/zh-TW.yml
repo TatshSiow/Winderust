@@ -977,7 +977,7 @@ sleep_prevention:
   not_running: "未執行"
   requests_paused: "要求已暫停"
   request_accepted: "已接受要求"
-  system_request_accepted: "已接受系統睡眠要求"
+  system_request_accepted: "已接受防止系統睡眠的要求"
   requests: "Windows 要求"
   matching_rules: "符合規則"
   matching_processes: "符合程序"
