@@ -1183,16 +1183,16 @@ fn run_background_automation(
             configured_settings.general.enabled,
             snapshot.instance_balancing_resets,
         );
-        let instance_balancing_context_changed = wake_events.suspend_resume
+        let instance_observation_context_changed = wake_events.suspend_resume
             || wake_events.session_changed
             || wake_events.windows_event_watcher_changed;
-        if instance_balancing_context_changed || !snapshot.windows_event_watcher_active {
+        if instance_observation_context_changed || !snapshot.windows_event_watcher_active {
             runner.instance_balancing.invalidate();
         }
-        if wake_events.suspend_resume || wake_events.session_changed {
-            runner.instance_limits.invalidate(
-                "Waiting for a fresh process count after a session or sleep transition.",
-            );
+        if instance_observation_context_changed {
+            runner
+                .instance_limits
+                .invalidate(&t!("instance_limits.waiting_context"));
         }
         if wake_events.suspend_resume {
             runner.keep_running.pause_all(PauseReason::Suspend);
@@ -1304,10 +1304,10 @@ fn run_background_automation(
             scheduler.invalidate(SchedulerEvent::SessionChanged, event_now);
             scheduler.schedule_now(RefreshDomain::KeepRunning, event_now);
         }
-        if wake_events.suspend_resume {
+        if instance_observation_context_changed {
             scheduler.schedule_now(RefreshDomain::InstanceLimits, event_now);
         }
-        if instance_balancing_reset || instance_balancing_context_changed {
+        if instance_balancing_reset || instance_observation_context_changed {
             scheduler.schedule_now(RefreshDomain::InstanceBalancing, event_now);
         }
         if keep_running_command_requested {
@@ -1413,7 +1413,7 @@ fn run_background_automation(
             settings_changed || instance_limits_required(configured_settings.as_ref());
         let instance_balancing_refresh_required = settings_changed
             || instance_balancing_reset
-            || instance_balancing_context_changed
+            || instance_observation_context_changed
             || instance_balancing_required(configured_settings.as_ref())
             || runner.instance_balancing.active();
         let memory_trim_refresh_required = settings_changed
