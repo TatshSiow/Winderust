@@ -108,6 +108,21 @@ impl Selection {
         self.processes.iter().map(snapshot_target).collect()
     }
 
+    fn has_departed_process(&self, processes: &[ProcessInfo]) -> bool {
+        self.processes.iter().any(|selected| {
+            selected.creation_time.is_some_and(|expected| {
+                processes
+                    .iter()
+                    .find(|current| current.id == selected.id)
+                    .is_none_or(|current| {
+                        current
+                            .creation_time
+                            .is_some_and(|actual| actual != expected)
+                    })
+            })
+        })
+    }
+
     fn shares_process_with(&self, other: &Self) -> bool {
         self.processes.iter().any(|process| {
             process.creation_time.is_some()
@@ -358,6 +373,13 @@ impl ProcessList {
                                     .map(|cpu| (*id, cpu))
                             })
                             .collect();
+                        if self.selected.as_ref().is_some_and(|selection| {
+                            selection.has_departed_process(&data.processes)
+                        }) {
+                            self.current_query_id = self.current_query_id.wrapping_add(1);
+                            self.current.clear();
+                            self.efficiency = None;
+                        }
                         self.processes = data.processes;
                         self.samples = data.samples;
                         self.total_memory_bytes = data.total_memory_bytes;
