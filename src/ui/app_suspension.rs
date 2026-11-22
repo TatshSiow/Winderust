@@ -352,7 +352,7 @@ impl Editor {
                 .iter()
                 .any(|p| process_setting_matches(p, &r.executable_path));
             let state = column![
-                text(indicator(status, &r.executable_path, blocked)),
+                text(indicator(status, r, blocked, live)),
                 action_button(
                     t!(if frozen {
                         "app_suspension.resume_temporarily"
@@ -508,7 +508,13 @@ fn can_suspend(
         && live.is_some_and(|settings| settings.suspendable_app_enabled_for(path))
 }
 
-fn indicator(s: &AppSuspensionSnapshot, p: &str, unavailable: bool) -> String {
+fn indicator(
+    s: &AppSuspensionSnapshot,
+    rule: &AppSuspensionRule,
+    unavailable: bool,
+    live: Option<&AppSuspensionSettings>,
+) -> String {
+    let p = &rule.executable_path;
     let key = if app_suspension::is_builtin_excluded(p) {
         "protected"
     } else if unavailable {
@@ -523,6 +529,8 @@ fn indicator(s: &AppSuspensionSnapshot, p: &str, unavailable: bool) -> String {
         "temporarily_resumed"
     } else if app_suspension::contains_process(&s.background_grace_apps, p) {
         "waiting"
+    } else if !rule.enabled {
+        "off"
     } else if s.status_unknown {
         "unknown"
     } else if app_suspension::contains_process(&s.running_apps, p) {
@@ -533,6 +541,7 @@ fn indicator(s: &AppSuspensionSnapshot, p: &str, unavailable: bool) -> String {
         .observed_rule_paths
         .as_deref()
         .is_some_and(|paths| app_suspension::contains_process(paths, p))
+        && live.is_some_and(|settings| settings.suspendable_app_enabled_for(p))
     {
         "not_running"
     } else {
@@ -555,6 +564,40 @@ impl std::fmt::Display for Unit {
 mod tests {
     use super::*;
     use crate::config::{PowerSourceProfile, Settings};
+
+    #[test]
+    fn absent_status_requires_an_enabled_saved_rule() {
+        let path = r"C:\Apps\test.exe";
+        let mut rule = new_app_suspension_rule(path);
+        let live = AppSuspensionSettings {
+            enabled: true,
+            suspendable_apps: vec![rule.clone()],
+            ..Default::default()
+        };
+        let mut status = AppSuspensionSnapshot {
+            enabled: true,
+            observed_rule_paths: Some([path.into()].into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            indicator(&status, &rule, false, Some(&live)),
+            t!("app_suspension.indicator.not_running")
+        );
+        assert_eq!(
+            indicator(&status, &rule, false, None),
+            t!("app_suspension.indicator.unknown")
+        );
+        rule.enabled = false;
+        assert_eq!(
+            indicator(&status, &rule, false, Some(&live)),
+            t!("app_suspension.indicator.off")
+        );
+        status.suspended_apps.push(path.into());
+        assert_eq!(
+            indicator(&status, &rule, false, Some(&live)),
+            t!("app_suspension.indicator.suspended")
+        );
+    }
 
     #[test]
     fn pending_delays_keep_independent_text_and_bounds() {
