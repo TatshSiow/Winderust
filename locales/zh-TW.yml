@@ -1114,6 +1114,8 @@ by_running_app:
   preview_loading: "正在檢查執行中的程序…"
   preview_failed: "無法檢查執行中的程序。%{error}"
   preview_scope: "即使自動化已關閉，預覽仍會使用目前編輯的規則。實際使用的電源計畫由電源計畫控制決定。"
+  preview_lower_priority: "較低優先順序的相符規則（%{plan}）"
+  preview_no_plan: "尚未選取電源計畫"
   preview_matches: "符合的程序"
   preview_same_name: "同名但路徑不同"
   preview_unavailable: "無法取得程序詳細資料"

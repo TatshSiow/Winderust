@@ -212,8 +212,9 @@ hover/press; background shading supplies feedback.
   any other eligible matches in rule order.
 - In By Running App, Preview matches lists the processes each rule covers,
   same-name copies outside path rules, and processes with unavailable details.
-  It reports the first eligible rule and its selected power plan using the
-  current editor values. Power Plan Control decides the active Windows plan.
+  The winner shows its selected plan using the same rule number and name as
+  its card. Lower-priority matching cards show their selected plans. Power Plan
+  Control decides the active Windows plan.
 - CPU Sets (Soft) and Processor Affinity (Hard) share that rail with compact Status and Presets
   tabs, alongside Info in the shared docked panel.
 - Instance Balancing lives under CPU Control and shares one configuration across

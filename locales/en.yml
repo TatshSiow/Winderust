@@ -1111,6 +1111,8 @@ by_running_app:
   preview_loading: "Checking running processes…"
   preview_failed: "Could not check running processes. %{error}"
   preview_scope: "Preview uses your current rule edits even when automation is off. Power Plan Control decides the active plan."
+  preview_lower_priority: "Lower-priority match (%{plan})"
+  preview_no_plan: "No power plan selected"
   preview_matches: "Matching processes"
   preview_same_name: "Same name, different path"
   preview_unavailable: "Unavailable process details"

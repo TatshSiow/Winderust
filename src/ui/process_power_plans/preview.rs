@@ -183,20 +183,33 @@ impl Preview {
             Some(Ok(preview)) => {
                 let summary = preview
                     .winner
-                    .and_then(|index| settings.rules.get(index))
+                    .and_then(|index| settings.rules.get(index).map(|rule| (index, rule)))
                     .map_or_else(
                         || t!("power_plan_control.preview_no_winner").to_string(),
-                        |rule| {
+                        |(index, rule)| {
                             winner_label(
-                                rule.selector.value(),
+                                &running_app_rule_label(index, rule),
                                 rule.power_plan_guid.as_deref(),
                                 plans,
                             )
                         },
                     );
                 body = body.push(text(summary).wrapping(text::Wrapping::WordOrGlyph));
-                for (rule, matches) in settings.rules.iter().zip(&preview.rules) {
-                    body = body.push(rule_matches(rule, matches));
+                for (index, (rule, matches)) in
+                    settings.rules.iter().zip(&preview.rules).enumerate()
+                {
+                    let alternate_plan = rule.configured_plan().filter(|_| {
+                        preview.winner.is_some_and(|winner| index > winner)
+                            && matches
+                                .iter()
+                                .any(|row| row.kind == ByRunningAppPreviewMatch::Match)
+                    });
+                    body = body.push(rule_matches(
+                        rule,
+                        matches,
+                        index,
+                        alternate_plan.map(|guid| preview_plan_label(Some(guid), plans)),
+                    ));
                 }
             }
         }
@@ -341,16 +354,26 @@ fn preview_plan_label(plan_guid: Option<&str>, plans: &[PowerPlan]) -> String {
         )
 }
 
+fn running_app_rule_label(index: usize, rule: &ByRunningAppRule) -> String {
+    let position = t!("common.rule", number = index + 1);
+    format!("{position} · {}", rule_name(rule))
+}
+
 fn rule_matches<'a>(
     rule: &ByRunningAppRule,
     matches: &[ByRunningAppPreviewRow],
+    index: usize,
+    alternate_plan: Option<String>,
 ) -> Element<'a, PreviewMessage> {
     use ByRunningAppPreviewMatch::{Match, SameNameDifferentPath, Unavailable};
 
     let target = rule.selector.value().trim();
     let name = rule_name(rule);
-    let mut details = column![widgets::heading(name.to_owned(), design::typography::BODY)
-        .wrapping(text::Wrapping::WordOrGlyph)]
+    let mut details = column![widgets::heading(
+        running_app_rule_label(index, rule),
+        design::typography::BODY
+    )
+    .wrapping(text::Wrapping::WordOrGlyph)]
     .spacing(design::space::SMALL);
     if rule.selector.exact_path().is_none() || target != name {
         let location = if rule.selector.exact_path().is_some() {
@@ -366,6 +389,15 @@ fn rule_matches<'a>(
     }
     if !rule.enabled {
         details = details.push(text(t!("common.disabled").to_string()).style(text::secondary));
+    } else if rule.power_plan_guid.is_none() {
+        details = details
+            .push(text(t!("by_running_app.preview_no_plan").to_string()).style(text::secondary));
+    } else if let Some(plan) = alternate_plan {
+        details = details.push(
+            text(t!("by_running_app.preview_lower_priority", plan = plan).to_string())
+                .style(text::secondary)
+                .wrapping(text::Wrapping::WordOrGlyph),
+        );
     }
     for (kind, heading) in [
         (Match, "by_running_app.preview_matches"),
@@ -394,7 +426,7 @@ fn rule_matches<'a>(
         if !rows.is_empty() {
             details = details.push(text(t!(heading).to_string()));
             details = details.push(Column::with_children(rows).spacing(design::space::SMALL));
-        } else if kind == Match {
+        } else if kind == Match && !matches.iter().any(|entry| entry.kind == Unavailable) {
             details = details.push(
                 text(t!("by_running_app.preview_no_matches").to_string()).style(text::secondary),
             );
