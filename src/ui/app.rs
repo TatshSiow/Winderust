@@ -1194,6 +1194,16 @@ impl WinderustApp {
                     self.error_message = error;
                 }
             }
+            Message::Preferences(settings_pages::Message::OpenUpdate(url)) => {
+                if self.preferences.show_update
+                    && self.preferences.download.as_deref() == Some(url.as_str())
+                {
+                    match crate::win_util::open_url(&url) {
+                        Ok(()) => self.preferences.show_update = false,
+                        Err(error) => self.error_message = error,
+                    }
+                }
+            }
             Message::Home(home::Message::Navigate(page)) => {
                 return self.update(Message::Page(page));
             }
@@ -2992,7 +3002,7 @@ impl WinderustApp {
                         action_button(t!("about.download_update").to_string())
                             .style(widgets::primary_button)
                             .on_press_maybe(self.preferences.download.clone().map(|url| {
-                                Message::Preferences(settings_pages::Message::Open(url))
+                                Message::Preferences(settings_pages::Message::OpenUpdate(url))
                             })),
                     ]
                     .spacing(design::space::SMALL),

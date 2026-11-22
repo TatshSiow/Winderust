@@ -92,6 +92,7 @@ pub(super) enum Message {
     CheckStartup,
     Checked(Arc<UpdateCheck>, Result<(String, Option<String>), ()>),
     Open(String),
+    OpenUpdate(String),
     Export,
     Import,
     ReplaceSettingsPrompt(bool),
@@ -352,6 +353,7 @@ impl Editor {
                 self.update_ui(s.general.update_channel, m);
             }
             Message::Open(_)
+            | Message::OpenUpdate(_)
             | Message::Export
             | Message::Import
             | Message::ReplaceSettingsPrompt(_)
