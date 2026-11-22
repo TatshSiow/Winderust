@@ -720,10 +720,17 @@ impl<P: MemoryPriorityPlatform> MemoryPriorityController<P> {
     }
 
     pub(crate) fn policy_managed_process_count(&self, owner: ControlOwner) -> usize {
+        self.policy_managed_processes(owner).count()
+    }
+
+    pub(crate) fn policy_managed_processes(
+        &self,
+        owner: ControlOwner,
+    ) -> impl Iterator<Item = &ProcessIdentity> {
         self.managed
-            .values()
-            .filter(|managed| managed.owner == owner)
-            .count()
+            .iter()
+            .filter(move |(_, managed)| managed.owner == owner)
+            .map(|(identity, _)| identity)
     }
 
     pub(crate) fn has_managed_state(&self) -> bool {

@@ -1658,23 +1658,30 @@ impl<P: CpuAllocationPlatform> CpuAllocationCoordinator<P> {
     }
 
     pub(crate) fn policy_managed_process_count(&self, owner: ControlOwner) -> usize {
+        self.policy_managed_processes(owner).count()
+    }
+
+    pub(crate) fn policy_managed_processes(
+        &self,
+        owner: ControlOwner,
+    ) -> impl Iterator<Item = &ProcessIdentity> {
         let affinity = self
             .managed_affinity
-            .values()
-            .filter(|managed| managed.owner == owner)
-            .count();
+            .iter()
+            .filter(move |(_, managed)| managed.owner == owner)
+            .map(|(identity, _)| identity);
         let cpu_sets_only = self
             .managed_cpu_sets
             .iter()
-            .filter(|(identity, managed)| {
+            .filter(move |(identity, managed)| {
                 managed.owner == owner
                     && self
                         .managed_affinity
                         .get(*identity)
                         .is_none_or(|affinity| affinity.owner != owner)
             })
-            .count();
-        affinity + cpu_sets_only
+            .map(|(identity, _)| identity);
+        affinity.chain(cpu_sets_only)
     }
 
     pub(crate) fn has_managed_state(&self) -> bool {

@@ -1339,9 +1339,7 @@ impl AdaptiveEngineProcessManager {
             enabled: true,
             observation_paused: false,
             scanned_processes,
-            adjusted_processes: priority_efficiency_controller
-                .policy_managed_process_count(ControlOwner::AdaptiveEngine)
-                .max(cpu_allocation_snapshot.adjusted_processes),
+            adjusted_processes: 0,
             focus_and_launch_profile_active,
             cpu_pressure_restraint_active: cpu_pressure_restraint_applies,
             foreground_cpu_usage_tenths,

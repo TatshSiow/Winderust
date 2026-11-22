@@ -6,7 +6,10 @@ use crate::{
     control::memory_priority::MemoryPriorityReleaseOwner,
     rules::decision_engine::ordinary_power_plan_stop,
 };
-use std::{collections::btree_map::Entry, path::PathBuf};
+use std::{
+    collections::{btree_map::Entry, BTreeSet},
+    path::PathBuf,
+};
 
 fn app_suspension_lock_failure(error: String) -> AppSuspensionSnapshot {
     AppSuspensionSnapshot {
@@ -1022,6 +1025,44 @@ impl RuntimeCore {
         self.adaptive_engine_process_foreground_cpu_usage_tenths =
             snapshot.foreground_cpu_usage_tenths;
         snapshot
+    }
+
+    pub(super) fn publish_adaptive_engine_process_status(
+        &self,
+        shared: &SharedAutomationState,
+        mut status: AdaptiveEngineProcessSnapshot,
+    ) {
+        if status.enabled && !status.observation_paused {
+            let owner = ControlOwner::AdaptiveEngine;
+            status.adjusted_processes = self
+                .priority_efficiency_controller
+                .policy_managed_processes(owner)
+                .chain(
+                    self.priority_efficiency_controller
+                        .policy_managed_processes(ControlOwner::AdaptiveEngineProcessFocusPriority),
+                )
+                .chain(
+                    self.cpu_allocation_coordinator
+                        .policy_managed_processes(owner),
+                )
+                .chain(
+                    self.memory_priority_controller
+                        .policy_managed_processes(owner),
+                )
+                .chain(self.io_priority_controller.policy_managed_processes(owner))
+                .chain(
+                    self.thread_priority_controller
+                        .policy_managed_processes(owner),
+                )
+                .chain(
+                    self.dynamic_priority_boost_controller
+                        .policy_managed_processes(owner),
+                )
+                .chain(self.gpu_priority_controller.policy_managed_processes(owner))
+                .collect::<BTreeSet<_>>()
+                .len();
+        }
+        update_adaptive_engine_process_status(shared, status);
     }
 
     pub(super) fn note_helper_dependencies(&mut self, pressure: bool, workload: Vec<(u32, u64)>) {

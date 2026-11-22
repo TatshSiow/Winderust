@@ -1484,12 +1484,10 @@ fn run_background_automation(
                 background_efficiency_refresh_interval,
             );
         }
-        if adaptive_engine_process_refresh_required
+        let adaptive_engine_process_status = if adaptive_engine_process_refresh_required
             && scheduler.is_due(RefreshDomain::AdaptiveEngineProcess, now)
         {
-            let adaptive_engine_process_status =
-                runner.run_adaptive_engine_process_update(settings, &mut observations);
-            update_adaptive_engine_process_status(&shared, adaptive_engine_process_status);
+            let status = runner.run_adaptive_engine_process_update(settings, &mut observations);
             if runner.take_helper_dependency_change() {
                 scheduler.invalidate(SchedulerEvent::AdaptiveWorkloadChanged, now);
             }
@@ -1498,7 +1496,10 @@ fn run_background_automation(
                 now,
                 adaptive_engine_process_refresh_interval,
             );
-        }
+            Some(status)
+        } else {
+            None
+        };
         if bottleneck_classifier_refresh_required
             && scheduler.is_due(RefreshDomain::BottleneckClassifier, now)
         {
@@ -1821,6 +1822,9 @@ fn run_background_automation(
 
         if let Some(error) = runner.retry_control_releases(&shared, Instant::now()) {
             update_worker_error(&shared, Some(error));
+        }
+        if let Some(status) = adaptive_engine_process_status {
+            runner.publish_adaptive_engine_process_status(&shared, status);
         }
         let wait_now = Instant::now();
         let mut wait_for = if power_plan_checks_required {

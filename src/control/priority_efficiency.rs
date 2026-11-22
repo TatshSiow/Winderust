@@ -1503,23 +1503,30 @@ impl<P: PriorityEfficiencyPlatform> PriorityEfficiencyController<P> {
     }
 
     pub(crate) fn policy_managed_process_count(&self, owner: ControlOwner) -> usize {
+        self.policy_managed_processes(owner).count()
+    }
+
+    pub(crate) fn policy_managed_processes(
+        &self,
+        owner: ControlOwner,
+    ) -> impl Iterator<Item = &ProcessIdentity> {
         let priorities = self
             .managed_priorities
-            .values()
-            .filter(|managed| managed.owner == owner)
-            .count();
+            .iter()
+            .filter(move |(_, managed)| managed.owner == owner)
+            .map(|(identity, _)| identity);
         let power_only = self
             .managed_power
             .iter()
-            .filter(|(identity, managed)| {
+            .filter(move |(identity, managed)| {
                 managed.owner == owner
                     && self
                         .managed_priorities
                         .get(*identity)
                         .is_none_or(|priority| priority.owner != owner)
             })
-            .count();
-        priorities + power_only
+            .map(|(identity, _)| identity);
+        priorities.chain(power_only)
     }
 
     pub(crate) fn release_retry_delay(&self, now: Instant) -> Option<Duration> {
