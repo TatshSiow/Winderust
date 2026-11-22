@@ -2,7 +2,9 @@ use super::design;
 use super::widgets::{checkbox, text_input};
 use crate::application::SettingsEditor;
 use crate::config::MemoryTrimSettings;
-use crate::ui::process_rules::{can_add_memory_trim_exclusion, new_process_exclusion_rule};
+use crate::ui::process_rules::{
+    can_add_memory_trim_exclusion, exact_path_input, new_process_exclusion_rule, picked_path_input,
+};
 use crate::ui::scrolling::scrollable;
 use iced::widget::column;
 use iced::{Element, Fill};
@@ -88,12 +90,15 @@ impl Editor {
                 settings.memory_trim.enabled = v;
             }
             Message::Path(v) => self.path = v,
-            Message::Add if can_add_memory_trim_exclusion(&settings.memory_trim, &self.path) => {
-                settings
-                    .memory_trim
-                    .exclusions
-                    .push(new_process_exclusion_rule(&self.path));
-                self.path.clear();
+            Message::Add => {
+                let path = exact_path_input(&self.path);
+                if can_add_memory_trim_exclusion(&settings.memory_trim, path) {
+                    settings
+                        .memory_trim
+                        .exclusions
+                        .push(new_process_exclusion_rule(path));
+                    self.path.clear();
+                }
             }
             Message::Threshold(field, raw) => {
                 if let Some(value) = field
@@ -122,7 +127,6 @@ impl Editor {
                 settings.memory_trim.exclusions.remove(i);
             }
             Message::Enabled(_)
-            | Message::Add
             | Message::RuleEnabled(..)
             | Message::Remove(_)
             | Message::TrimNow
@@ -179,13 +183,14 @@ impl Editor {
                 content,
             ));
         }
-        let mut safety = column![super::app_picker::view(
+        let mut safety = column![super::app_picker::view_with_path_selection(
             &self.path,
             candidates,
             true,
-            Message::Path,
+            (Message::Path, |path| Message::Path(picked_path_input(path))),
             Message::Browse,
-            (can_add_memory_trim_exclusion(settings, &self.path)).then_some(Message::Add),
+            can_add_memory_trim_exclusion(settings, exact_path_input(&self.path))
+                .then_some(Message::Add),
             |path| can_add_memory_trim_exclusion(settings, path).then_some(true)
         )]
         .spacing(design::space::MEDIUM);
@@ -230,6 +235,31 @@ impl Editor {
 mod tests {
     use super::*;
     use crate::config::{PowerSourceProfile, Settings};
+
+    #[test]
+    fn picked_memory_exclusion_preserves_a_distinct_executable_path_on_save() {
+        let mut editor = Editor::default();
+        let ordinary = r"C:\Apps\test.exe";
+        let literal = concat!(r"C:\Apps\test.exe", " ");
+        let mut settings = Settings::default();
+        settings
+            .memory_trim
+            .exclusions
+            .push(new_process_exclusion_rule(ordinary));
+        let mut settings = SettingsEditor::with_settings(settings);
+        editor.update(
+            &mut settings,
+            Message::Path(picked_path_input(literal.into())),
+        );
+        editor.update(&mut settings, Message::Add);
+
+        let saved = toml::to_string(&*settings).unwrap();
+        let reloaded: Settings = toml::from_str(&saved).unwrap();
+        let rules = &reloaded.memory_trim.exclusions;
+        assert_eq!(rules.len(), 2);
+        assert_eq!(rules[0].executable_path, ordinary);
+        assert_eq!(rules[1].executable_path, literal);
+    }
 
     #[test]
     fn groups_start_collapsed_and_toggle_without_changing_settings() {

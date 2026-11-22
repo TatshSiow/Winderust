@@ -8,6 +8,10 @@ use super::widgets::{self, action_button, button, checkbox, icon_button, pick_li
 use crate::application::SettingsEditor;
 use crate::config::*;
 use crate::power::{ProcessorBoostMode, ProcessorPowerValues};
+use crate::ui::process_rules::{
+    can_add_exact_process_candidate, exact_path_input, new_process_exclusion_rule,
+    picked_path_input,
+};
 use crate::ui::scrolling::scrollable;
 use iced::widget::{column, row, text};
 use iced::{Element, Fill};
@@ -49,6 +53,19 @@ impl TuningTab {
         }
     }
 }
+fn can_add_exclusion(settings: &AdaptiveEngineProcessSettings, path: &str) -> bool {
+    can_add_exact_process_candidate(
+        path,
+        |path| {
+            settings
+                .custom_rules
+                .iter()
+                .any(|rule| same_rule_executable_path(&rule.executable_path, path))
+        },
+        crate::adaptive_engine_process::is_builtin_excluded,
+    )
+}
+
 #[derive(Default)]
 pub(super) struct Editor {
     name: String,
@@ -276,23 +293,11 @@ impl Editor {
             Message::Path(v) => self.path = v,
             Message::Browse => {}
             Message::AddExclusion => {
-                if crate::ui::process_rules::can_add_process_candidate(
-                    &self.path,
-                    |p| {
-                        s.adaptive_engine_process.custom_rules.iter().any(|r| {
-                            crate::ui::process_rules::process_setting_matches(&r.executable_path, p)
-                        })
-                    },
-                    crate::adaptive_engine_process::is_builtin_excluded,
-                ) {
+                let path = exact_path_input(&self.path);
+                if can_add_exclusion(&s.adaptive_engine_process, path) {
                     s.adaptive_engine_process
                         .custom_rules
-                        .push(ProcessExclusionRule {
-                            executable_path: crate::foreground::executable_path_key(
-                                std::path::Path::new(&self.path),
-                            ),
-                            ..Default::default()
-                        });
+                        .push(new_process_exclusion_rule(path));
                     self.path.clear();
                 }
             }
@@ -2011,40 +2016,15 @@ impl Editor {
                 .push(super::widgets::setting_title(
                     "adaptive_engine_process.custom_rules",
                 ))
-                .push(super::app_picker::view(
+                .push(super::app_picker::view_with_path_selection(
                     &self.path,
                     candidates,
                     true,
-                    Message::Path,
+                    (Message::Path, |path| Message::Path(picked_path_input(path))),
                     Message::Browse,
-                    super::process_rules::can_add_process_candidate(
-                        &self.path,
-                        |path| {
-                            s.adaptive_engine_process.custom_rules.iter().any(|rule| {
-                                super::process_rules::process_setting_matches(
-                                    &rule.executable_path,
-                                    path,
-                                )
-                            })
-                        },
-                        crate::adaptive_engine_process::is_builtin_excluded,
-                    )
-                    .then_some(Message::AddExclusion),
-                    |path| {
-                        super::process_rules::can_add_process_candidate(
-                            path,
-                            |path| {
-                                s.adaptive_engine_process.custom_rules.iter().any(|rule| {
-                                    super::process_rules::process_setting_matches(
-                                        &rule.executable_path,
-                                        path,
-                                    )
-                                })
-                            },
-                            crate::adaptive_engine_process::is_builtin_excluded,
-                        )
-                        .then_some(true)
-                    },
+                    can_add_exclusion(&s.adaptive_engine_process, exact_path_input(&self.path))
+                        .then_some(Message::AddExclusion),
+                    |path| can_add_exclusion(&s.adaptive_engine_process, path).then_some(true),
                 ));
             let rules = s
                 .adaptive_engine_process

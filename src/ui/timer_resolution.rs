@@ -3,7 +3,10 @@ use super::widgets::{checkbox, text_input};
 use crate::application::SettingsEditor;
 use crate::config::TimerResolutionSettings;
 use crate::timer_resolution::TimerResolutionSnapshot;
-use crate::ui::process_rules::{can_add_timer_resolution_process, new_timer_resolution_rule};
+use crate::ui::process_rules::{
+    can_add_timer_resolution_process, exact_path_input, new_timer_resolution_rule,
+    picked_path_input,
+};
 use crate::ui::scrolling::scrollable;
 use iced::widget::{column, text};
 use iced::{Element, Fill};
@@ -51,12 +54,15 @@ impl Editor {
                 s.timer_resolution.enabled = v;
             }
             Message::Path(v) => self.path = v,
-            Message::Add if can_add_timer_resolution_process(&s.timer_resolution, &self.path) => {
-                let timer = &mut s.timer_resolution;
-                timer
-                    .rules
-                    .push(new_timer_resolution_rule(&self.path, timer.desired_100ns));
-                self.path.clear();
+            Message::Add => {
+                let path = exact_path_input(&self.path);
+                if can_add_timer_resolution_process(&s.timer_resolution, path) {
+                    let timer = &mut s.timer_resolution;
+                    timer
+                        .rules
+                        .push(new_timer_resolution_rule(path, timer.desired_100ns));
+                    self.path.clear();
+                }
             }
             Message::RuleEnabled(i, v)
                 if s.timer_resolution
@@ -95,7 +101,6 @@ impl Editor {
                 }
             }
             Message::Enabled(_)
-            | Message::Add
             | Message::RuleEnabled(..)
             | Message::Remove(_)
             | Message::Browse => {}
@@ -114,13 +119,14 @@ impl Editor {
                 Some(Message::Enabled)
             ),
             super::widgets::setting_title_with_help("common.rules", "", "timer_resolution.intro_2"),
-            super::app_picker::view(
+            super::app_picker::view_with_path_selection(
                 &self.path,
                 candidates,
                 true,
-                Message::Path,
+                (Message::Path, |path| Message::Path(picked_path_input(path))),
                 Message::Browse,
-                (can_add_timer_resolution_process(s, &self.path)).then_some(Message::Add),
+                can_add_timer_resolution_process(s, exact_path_input(&self.path))
+                    .then_some(Message::Add),
                 |path| can_add_timer_resolution_process(s, path).then_some(true)
             )
         ]
@@ -204,6 +210,33 @@ fn parse_resolution(value: &str, min: u32, max: u32) -> Option<u32> {
 mod tests {
     use super::*;
     use crate::config::{PowerSourceProfile, Settings};
+
+    #[test]
+    fn picked_timer_rule_preserves_a_distinct_executable_path_on_save() {
+        let mut editor = Editor::default();
+        let ordinary = r"C:\Apps\test.exe";
+        let literal = concat!(r"C:\Apps\test.exe", " ");
+        let mut settings = Settings::default();
+        settings
+            .timer_resolution
+            .rules
+            .push(new_timer_resolution_rule(ordinary, 10_000));
+        let mut settings = SettingsEditor::with_settings(settings);
+        let status = TimerResolutionSnapshot::default();
+        editor.update(
+            &mut settings,
+            &status,
+            Message::Path(picked_path_input(literal.into())),
+        );
+        editor.update(&mut settings, &status, Message::Add);
+
+        let saved = toml::to_string(&*settings).unwrap();
+        let reloaded: Settings = toml::from_str(&saved).unwrap();
+        let rules = &reloaded.timer_resolution.rules;
+        assert_eq!(rules.len(), 2);
+        assert_eq!(rules[0].executable_path, ordinary);
+        assert_eq!(rules[1].executable_path, literal);
+    }
 
     #[test]
     fn valid_edits_update_the_draft_without_an_apply_button() {

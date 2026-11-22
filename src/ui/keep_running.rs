@@ -1,9 +1,9 @@
-use std::path::Path;
-
+use super::process_rules::{can_add_exact_process_candidate, exact_path_input, picked_path_input};
 use super::{app_picker, design, widgets};
 use crate::{
     config::{KeepRunningRule, KeepRunningSettings},
     features::advanced_controls::keep_running::{KeepRunningSnapshot, KeepRunningState},
+    foreground::process_list::normalize_path_slashes,
 };
 use iced::{
     widget::{column, row, text},
@@ -34,22 +34,22 @@ pub(super) enum Message {
 }
 
 impl Editor {
-    fn can_add(settings: &KeepRunningSettings, path: &str) -> bool {
-        super::process_rules::can_add_process_candidate(
+    fn addable_rule(settings: &KeepRunningSettings, path: &str) -> Option<KeepRunningRule> {
+        if !can_add_exact_process_candidate(
             path,
             |path| {
-                let key =
-                    crate::foreground::executable_path_key(Path::new(path)).to_ascii_lowercase();
+                let key = normalize_path_slashes(path);
                 settings.rules.iter().any(|rule| {
-                    crate::foreground::executable_path_key(Path::new(&rule.executable_path))
-                        .to_ascii_lowercase()
-                        == key
+                    normalize_path_slashes(&rule.executable_path).eq_ignore_ascii_case(&key)
                 })
             },
             |name| name.eq_ignore_ascii_case("winderust.exe"),
-        ) && KeepRunningRule::new(path.trim().to_owned())
-            .validate()
-            .is_ok()
+        ) {
+            return None;
+        }
+        let rule = KeepRunningRule::new(normalize_path_slashes(path).into_owned());
+        rule.validate().ok()?;
+        Some(rule)
     }
 
     pub(super) fn has_pending_editor(&self) -> bool {
@@ -60,13 +60,10 @@ impl Editor {
         match message {
             Message::Enabled(value) => settings.enabled = value,
             Message::Path(path) => self.path = path,
-            Message::Add if Self::can_add(settings, &self.path) => {
-                self.draft = Some((
-                    None,
-                    KeepRunningRule::new(crate::foreground::executable_path_key(Path::new(
-                        self.path.trim(),
-                    ))),
-                ));
+            Message::Add => {
+                if let Some(rule) = Self::addable_rule(settings, exact_path_input(&self.path)) {
+                    self.draft = Some((None, rule));
+                }
             }
             Message::Edit(index) => {
                 self.draft = settings
@@ -110,7 +107,7 @@ impl Editor {
                 }
             }
             Message::CancelRule => self.draft = None,
-            Message::Add | Message::Remove(_) | Message::Browse | Message::Resume(_) => {}
+            Message::Remove(_) | Message::Browse | Message::Resume(_) => {}
         }
     }
 
@@ -200,14 +197,16 @@ impl Editor {
                 Some(Message::Enabled)
             ),
             widgets::setting_title("common.rules"),
-            app_picker::view(
+            app_picker::view_with_path_selection(
                 &self.path,
                 candidates,
                 true,
-                Message::Path,
+                (Message::Path, |path| Message::Path(picked_path_input(path))),
                 Message::Browse,
-                Self::can_add(settings, &self.path).then_some(Message::Add),
-                |path| Self::can_add(settings, path).then_some(true)
+                Self::addable_rule(settings, exact_path_input(&self.path))
+                    .is_some()
+                    .then_some(Message::Add),
+                |path| Self::addable_rule(settings, path).is_some().then_some(true)
             ),
             widgets::process_rules_table_with_actions(
                 [],
@@ -298,7 +297,15 @@ mod tests {
     fn drafts_prefill_explicit_cwd_preserve_literal_arguments_and_cancel_without_changes() {
         let mut editor = Editor::default();
         let mut settings = KeepRunningSettings::default();
-        editor.update(&mut settings, Message::Path(r"C:\Apps\app.exe".into()));
+        editor.update(
+            &mut settings,
+            Message::Path(picked_path_input(concat!(r"C:\Apps\app.exe", " ").into())),
+        );
+        editor.update(&mut settings, Message::Add);
+        assert!(!editor.has_pending_editor());
+        editor.update(&mut settings, Message::SaveRule);
+        assert!(settings.rules.is_empty());
+        editor.update(&mut settings, Message::Path(" C:\\Apps\\app.exe ".into()));
         editor.update(&mut settings, Message::Add);
         assert_eq!(
             editor.draft.as_ref().unwrap().1.working_directory,
@@ -310,7 +317,7 @@ mod tests {
         );
         editor.update(&mut settings, Message::SaveRule);
         assert_eq!(settings.rules[0].arguments, r#"--file "literal value""#);
-        assert!(!Editor::can_add(&settings, "c:/apps/APP.exe"));
+        assert!(Editor::addable_rule(&settings, "c:/apps/APP.exe").is_none());
         editor.update(&mut settings, Message::Edit(0));
         editor.update(&mut settings, Message::WorkingDirectory("relative".into()));
         editor.update(&mut settings, Message::SaveRule);

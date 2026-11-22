@@ -2,12 +2,15 @@ use super::design;
 use super::widgets::{checkbox, pick_list};
 use crate::application::SettingsEditor;
 use crate::config::*;
-use crate::ui::process_rules::can_add_process_candidate;
+use crate::ui::process_rules::{
+    can_add_exact_process_candidate, exact_path_input, new_process_exclusion_rule,
+    picked_path_input,
+};
 use crate::ui::scrolling::scrollable;
 use iced::widget::column;
 use iced::{Element, Fill};
 use rust_i18n::t;
-use std::{path::Path, rc::Rc};
+use std::rc::Rc;
 
 #[derive(Default)]
 pub(super) struct Editor {
@@ -289,7 +292,7 @@ impl Kind {
         }
     }
     pub(super) fn can_add(self, settings: &Settings, path: &str) -> bool {
-        can_add_process_candidate(
+        can_add_exact_process_candidate(
             path,
             |path| match self {
                 Self::Process => settings.process_priority.contains_exclusion(path),
@@ -319,13 +322,10 @@ impl Editor {
             Message::Path(path) => self.path = path,
             Message::Browse => {} // The application opens the native executable picker.
             Message::Add => {
-                if kind.can_add(settings, &self.path) {
-                    kind.rules_mut(settings).push(ProcessExclusionRule {
-                        executable_path: crate::foreground::executable_path_key(Path::new(
-                            self.path.trim(),
-                        )),
-                        ..Default::default()
-                    });
+                let path = exact_path_input(&self.path);
+                if kind.can_add(settings, path) {
+                    kind.rules_mut(settings)
+                        .push(new_process_exclusion_rule(path));
                     self.path.clear();
                 }
             }
@@ -590,13 +590,13 @@ impl Editor {
             ));
         }
         body = body.push(super::widgets::setting_title(&format!("{key}.exclusions")));
-        body = body.push(super::app_picker::view(
+        body = body.push(super::app_picker::view_with_path_selection(
             &self.path,
             candidates,
             true,
-            Message::Path,
+            (Message::Path, |path| Message::Path(picked_path_input(path))),
             Message::Browse,
-            (kind.can_add(settings, &self.path)).then_some(Message::Add),
+            (kind.can_add(settings, exact_path_input(&self.path))).then_some(Message::Add),
             |path| kind.can_add(settings, path).then_some(true),
         ));
         let mut rule_cards = Vec::new();
@@ -903,6 +903,17 @@ mod tests {
             editor.update(&mut settings, kind, Message::Enabled(true));
             editor.update(&mut settings, kind, Message::Path(settings_path()));
             editor.update(&mut settings, kind, Message::Add);
+            let literal = format!("{}\u{3000}", settings_path());
+            editor.update(
+                &mut settings,
+                kind,
+                Message::Path(picked_path_input(literal.clone())),
+            );
+            editor.update(&mut settings, kind, Message::Add);
+            assert_eq!(kind.rules(&settings)[0].executable_path, settings_path());
+            assert_eq!(kind.rules(&settings)[1].executable_path, literal);
+            assert!(!kind.can_add(&settings, &literal));
+            assert!(!kind.can_add(&settings, r"C:\Apps\csrss.exe"));
             let selected = kind.choices(false)[1];
             let background = kind.value(&settings, Tier::Background);
             editor.update(
@@ -990,6 +1001,6 @@ mod tests {
     }
 
     fn settings_path() -> String {
-        crate::foreground::executable_path_key(Path::new(r"C:\Apps\editor.exe"))
+        r"C:\Apps\editor.exe".into()
     }
 }

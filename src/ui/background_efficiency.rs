@@ -6,12 +6,14 @@ use crate::config::{
     BackgroundEfficiencyAggressiveness, BackgroundEfficiencyRule, BackgroundEfficiencySettings,
     ProcessRuleMode, Settings,
 };
-use crate::ui::process_rules::can_add_process_candidate;
+use crate::foreground::process_list::normalize_path_slashes;
+use crate::ui::process_rules::{
+    can_add_exact_process_candidate, exact_path_input, picked_path_input,
+};
 use crate::ui::scrolling::scrollable;
 use iced::widget::column;
 use iced::{Element, Fill};
 use rust_i18n::t;
-use std::path::Path;
 
 #[derive(Default)]
 pub(super) struct Editor {
@@ -73,15 +75,14 @@ impl Editor {
             Message::Path(value) => self.path = value,
             Message::Browse => {} // The application owns the native executable picker.
             Message::Add => {
-                if can_add(current, &self.path) {
+                let path = exact_path_input(&self.path);
+                if can_add(current, path) {
                     settings
                         .background_efficiency
                         .custom_rules
                         .push(BackgroundEfficiencyRule {
                             enabled: true,
-                            executable_path: crate::foreground::executable_path_key(Path::new(
-                                self.path.trim(),
-                            )),
+                            executable_path: normalize_path_slashes(path).into_owned(),
                             focus_efficiency_mode: ProcessRuleMode::Default,
                             visible_window_efficiency_mode: ProcessRuleMode::Default,
                             background_efficiency_mode: ProcessRuleMode::Default,
@@ -207,13 +208,13 @@ impl Editor {
         body = body.push(super::widgets::setting_title(
             "background_efficiency.custom_rules",
         ));
-        body = body.push(super::app_picker::view(
+        body = body.push(super::app_picker::view_with_path_selection(
             &self.path,
             candidates,
             true,
-            Message::Path,
+            (Message::Path, |path| Message::Path(picked_path_input(path))),
             Message::Browse,
-            (can_add(settings, &self.path)).then_some(Message::Add),
+            (can_add(settings, exact_path_input(&self.path))).then_some(Message::Add),
             |path| can_add(settings, path).then_some(true),
         ));
         let mut rule_cards = Vec::new();
@@ -260,7 +261,7 @@ fn rule_mode(rule: &BackgroundEfficiencyRule, tier: Tier) -> ProcessRuleMode {
     }
 }
 fn can_add(settings: &BackgroundEfficiencySettings, path: &str) -> bool {
-    can_add_process_candidate(
+    can_add_exact_process_candidate(
         path,
         |path| settings.contains_custom_rule(path),
         crate::background_efficiency::is_builtin_excluded,

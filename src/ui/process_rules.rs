@@ -11,7 +11,6 @@ use crate::config::{
 };
 use crate::control::instance_limits::validate_path;
 use crate::cpu_limiter;
-use crate::foreground::executable_path_key;
 use crate::foreground::{
     process_list::{normalize_path_slashes, same_executable_name},
     same_executable_path,
@@ -34,14 +33,6 @@ impl std::fmt::Display for MatchBy {
             Self::ExecutableName => "common.executable_name",
         }))
     }
-}
-
-pub(crate) fn can_add_process_candidate(
-    process: &str,
-    contains_process: impl FnOnce(&str) -> bool,
-    is_builtin_excluded: impl FnOnce(&str) -> bool,
-) -> bool {
-    can_add_exact_process_candidate(process.trim(), contains_process, is_builtin_excluded)
 }
 
 pub(super) fn can_add_exact_process_candidate(
@@ -81,15 +72,6 @@ pub(crate) fn new_cpu_limiter_rule(process: &str) -> CpuLimiterRule {
         visible_window_allowed_cpu_time_percent: 50,
         background_allowed_cpu_time_percent: 50,
     }
-}
-
-pub(crate) fn process_setting_matches(configured_process: &str, process_name: &str) -> bool {
-    let configured_process = configured_process.trim();
-    !configured_process.is_empty()
-        && same_executable_path(
-            Path::new(configured_process),
-            Path::new(process_name.trim()),
-        )
 }
 
 pub(super) fn exact_path_input(input: &str) -> &str {
@@ -209,13 +191,13 @@ pub(crate) fn new_by_running_app_rule(
 }
 
 pub(crate) fn can_add_memory_trim_exclusion(settings: &MemoryTrimSettings, process: &str) -> bool {
-    can_add_process_candidate(
+    can_add_exact_process_candidate(
         process,
         |process| {
             settings
                 .exclusions
                 .iter()
-                .any(|rule| process_setting_matches(&rule.executable_path, process))
+                .any(|rule| same_rule_executable_path(&rule.executable_path, process))
         },
         memory_trim::is_builtin_excluded,
     )
@@ -223,7 +205,7 @@ pub(crate) fn can_add_memory_trim_exclusion(settings: &MemoryTrimSettings, proce
 
 pub(crate) fn new_process_exclusion_rule(process: &str) -> ProcessExclusionRule {
     ProcessExclusionRule {
-        executable_path: executable_path_key(Path::new(process)),
+        executable_path: normalize_path_slashes(process).into_owned(),
         ..Default::default()
     }
 }
@@ -256,7 +238,7 @@ pub(crate) fn can_add_timer_resolution_process(
     settings: &TimerResolutionSettings,
     process: &str,
 ) -> bool {
-    can_add_process_candidate(
+    can_add_exact_process_candidate(
         process,
         |process| settings.contains_rule_for(process),
         |_| false,
@@ -266,7 +248,7 @@ pub(crate) fn can_add_timer_resolution_process(
 pub(crate) fn new_timer_resolution_rule(process: &str, desired_100ns: u32) -> TimerResolutionRule {
     TimerResolutionRule {
         enabled: true,
-        executable_path: executable_path_key(Path::new(process)),
+        executable_path: normalize_path_slashes(process).into_owned(),
         desired_100ns,
     }
 }

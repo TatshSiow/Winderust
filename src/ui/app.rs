@@ -1628,7 +1628,9 @@ impl WinderustApp {
                         if let Some(kind) = priority_kind(page) {
                             return self.update(Message::Priority(
                                 kind,
-                                priority_control::Message::Path(path),
+                                priority_control::Message::Path(
+                                    super::process_rules::picked_path_input(path),
+                                ),
                             ));
                         }
                         match page {
@@ -1658,16 +1660,22 @@ impl WinderustApp {
                             }
                             Page::KeepRunning => {
                                 return self.update(Message::KeepRunning(
-                                    keep_running::Message::Path(path),
+                                    keep_running::Message::Path(
+                                        super::process_rules::picked_path_input(path),
+                                    ),
                                 ));
                             }
                             Page::MemoryTrim => {
-                                return self
-                                    .update(Message::Trim(memory_trim::Message::Path(path)));
+                                return self.update(Message::Trim(memory_trim::Message::Path(
+                                    super::process_rules::picked_path_input(path),
+                                )));
                             }
                             Page::TimerResolution => {
-                                return self
-                                    .update(Message::Timer(timer_resolution::Message::Path(path)));
+                                return self.update(Message::Timer(
+                                    timer_resolution::Message::Path(
+                                        super::process_rules::picked_path_input(path),
+                                    ),
+                                ));
                             }
                             Page::CpuSetsSoft => {
                                 return self.update(Message::Allocation(
@@ -1687,12 +1695,16 @@ impl WinderustApp {
                             }
                             Page::BackgroundEfficiency => {
                                 return self.update(Message::Efficiency(
-                                    background_efficiency::Message::Path(path),
+                                    background_efficiency::Message::Path(
+                                        super::process_rules::picked_path_input(path),
+                                    ),
                                 ));
                             }
                             Page::AdaptiveEngine => {
                                 return self.update(Message::Adaptive(
-                                    adaptive_engine::Message::Path(path),
+                                    adaptive_engine::Message::Path(
+                                        super::process_rules::picked_path_input(path),
+                                    ),
                                 ));
                             }
                             Page::CpuLimiter => {

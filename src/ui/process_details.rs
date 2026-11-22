@@ -11,10 +11,10 @@ use super::PlanCatalog;
 use crate::application::SettingsEditor;
 use crate::config::*;
 use crate::features::power_plan_control::by_running_app;
-use crate::foreground::executable_path_key;
+use crate::foreground::process_list::normalize_path_slashes;
 use crate::ui::process_rules::{
     can_add_exact_process_candidate, new_by_focus_rule, new_by_running_app_rule,
-    new_cpu_limiter_rule, process_setting_matches, selector_path_matches,
+    new_cpu_limiter_rule, new_process_exclusion_rule, selector_path_matches,
 };
 use iced::widget::{column, container, row, text};
 use iced::{Element, Fill};
@@ -53,12 +53,10 @@ impl std::fmt::Display for Mode {
         .fmt(f)
     }
 }
-pub(super) fn update(s: &mut SettingsEditor, path: &str, m: Message) -> Option<String> {
-    if !std::path::Path::new(path).is_absolute() {
+pub(super) fn update(s: &mut SettingsEditor, image_path: &str, m: Message) -> Option<String> {
+    if !std::path::Path::new(image_path).is_absolute() {
         return None;
     }
-    let image_path = path;
-    let path = executable_path_key(std::path::Path::new(path));
     match m {
         Message::ReloadPlans => unreachable!("The application owns power-plan loading"),
         Message::Priority(kind, tier, value) => {
@@ -72,12 +70,9 @@ pub(super) fn update(s: &mut SettingsEditor, path: &str, m: Message) -> Option<S
                 .rules(s)
                 .iter()
                 .enumerate()
-                .find(|(_, rule)| process_setting_matches(&rule.executable_path, &path));
+                .find(|(_, rule)| same_rule_executable_path(&rule.executable_path, image_path));
             let mut rule = existing.map_or_else(
-                || ProcessExclusionRule {
-                    executable_path: path,
-                    ..Default::default()
-                },
+                || new_process_exclusion_rule(image_path),
                 |(_, rule)| rule.clone(),
             );
             rule.enabled = true;
@@ -89,15 +84,17 @@ pub(super) fn update(s: &mut SettingsEditor, path: &str, m: Message) -> Option<S
             }
         }
         Message::ResetPriority(kind) => {
-            let matches_path =
-                |rule: &ProcessExclusionRule| process_setting_matches(&rule.executable_path, &path);
+            let matches_path = |rule: &ProcessExclusionRule| {
+                same_rule_executable_path(&rule.executable_path, image_path)
+            };
             if kind.rules(s).iter().any(matches_path) {
                 kind.rules_mut(s).retain(|rule| !matches_path(rule));
             }
         }
         Message::Adaptive(included) => {
-            let matches_path =
-                |rule: &ProcessExclusionRule| process_setting_matches(&rule.executable_path, &path);
+            let matches_path = |rule: &ProcessExclusionRule| {
+                same_rule_executable_path(&rule.executable_path, image_path)
+            };
             let rules = &s.adaptive_engine_process.custom_rules;
             match (included, rules.iter().position(matches_path)) {
                 (true, Some(_)) => s
@@ -107,20 +104,16 @@ pub(super) fn update(s: &mut SettingsEditor, path: &str, m: Message) -> Option<S
                 (false, Some(index)) if !rules[index].enabled => {
                     s.adaptive_engine_process.custom_rules[index].enabled = true;
                 }
-                (false, None) => {
-                    s.adaptive_engine_process
-                        .custom_rules
-                        .push(ProcessExclusionRule {
-                            executable_path: path,
-                            ..Default::default()
-                        })
-                }
+                (false, None) => s
+                    .adaptive_engine_process
+                    .custom_rules
+                    .push(new_process_exclusion_rule(image_path)),
                 _ => {}
             }
         }
         Message::Efficiency(included) => {
             let matches_path = |rule: &BackgroundEfficiencyRule| {
-                process_setting_matches(&rule.executable_path, &path)
+                same_rule_executable_path(&rule.executable_path, image_path)
             };
             let mut matching = s
                 .background_efficiency
@@ -145,7 +138,7 @@ pub(super) fn update(s: &mut SettingsEditor, path: &str, m: Message) -> Option<S
             if !included {
                 rules.push(BackgroundEfficiencyRule {
                     enabled: true,
-                    executable_path: path,
+                    executable_path: normalize_path_slashes(image_path).into_owned(),
                     focus_efficiency_mode: ProcessRuleMode::Disabled,
                     visible_window_efficiency_mode: ProcessRuleMode::Disabled,
                     background_efficiency_mode: ProcessRuleMode::Disabled,
@@ -307,12 +300,12 @@ pub(super) fn view<'a>(
         .adaptive_engine_process
         .custom_rules
         .iter()
-        .any(|r| r.enabled && process_setting_matches(&r.executable_path, path));
+        .any(|r| r.enabled && same_rule_executable_path(&r.executable_path, path));
     let efficiency = s
         .background_efficiency
         .custom_rules
         .iter()
-        .find(|r| r.enabled && process_setting_matches(&r.executable_path, path))
+        .find(|r| r.enabled && same_rule_executable_path(&r.executable_path, path))
         .is_none_or(|r| {
             s.background_efficiency
                 .custom_rule_applies_efficiency_mode(r)
@@ -468,7 +461,7 @@ pub(super) fn view<'a>(
         let rule = kind
             .rules(s)
             .iter()
-            .find(|r| process_setting_matches(&r.executable_path, path));
+            .find(|r| same_rule_executable_path(&r.executable_path, path));
         let reset = rule.is_some().then_some(Message::ResetPriority(kind));
         let rule = rule.unwrap_or(&default_rule);
         let choices: Rc<[_]> = kind.choices(s.advanced.expose_all_priority_values).into();
@@ -760,6 +753,59 @@ mod tests {
             let _ = update(&mut s, path, message);
             assert!(s.global().on_battery.is_none());
         }
+    }
+
+    #[test]
+    fn priority_and_exclusion_details_keep_literal_executables_separate() {
+        let ordinary = r"C:\Apps\worker.exe";
+        let selected = "C:\\Apps\\worker.exe\u{3000}";
+        let mut settings = SettingsEditor::with_settings(Settings::default());
+        for path in [ordinary, selected] {
+            for message in [
+                Message::Priority(
+                    Kind::Process,
+                    Tier::Focus,
+                    Value::Process(ProcessPrioritySetting::AboveNormal),
+                ),
+                Message::Adaptive(false),
+                Message::Efficiency(false),
+            ] {
+                assert_eq!(update(&mut settings, path, message), None);
+            }
+        }
+        assert_eq!(
+            settings.process_priority.exclusions[1].executable_path,
+            selected
+        );
+        assert_eq!(
+            settings.adaptive_engine_process.custom_rules[1].executable_path,
+            selected
+        );
+        assert_eq!(
+            settings.background_efficiency.custom_rules[1].executable_path,
+            selected
+        );
+
+        for message in [
+            Message::ResetPriority(Kind::Process),
+            Message::Adaptive(true),
+            Message::Efficiency(true),
+        ] {
+            assert_eq!(update(&mut settings, selected, message), None);
+        }
+        let actual = [
+            settings.process_priority.exclusions.as_slice(),
+            settings.adaptive_engine_process.custom_rules.as_slice(),
+        ];
+        for rules in actual {
+            assert_eq!(rules.len(), 1);
+            assert_eq!(rules[0].executable_path, ordinary);
+        }
+        assert_eq!(settings.background_efficiency.custom_rules.len(), 1);
+        assert_eq!(
+            settings.background_efficiency.custom_rules[0].executable_path,
+            ordinary
+        );
     }
 
     #[test]
