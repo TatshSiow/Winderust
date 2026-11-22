@@ -2083,16 +2083,17 @@ impl RuntimeCore {
 
     pub(super) fn power_plan_status(&mut self) -> (PowerPlanStatus, Option<&PowerPlanRuleContext>) {
         let status = self.power_plan_controller.status();
-        if status.restoring_previous
-            || status.owner != Some(crate::control::power_plan::PowerPlanOwner::OrdinaryAutomation)
-        {
-            self.power_plan_rule_context = None;
-            return (status, None);
-        }
         let stop_state = self.last_settings.as_ref().and_then(|settings| {
             ordinary_power_plan_stop(settings.effective(), settings.plugged_in)
                 .map(|(state, _)| state)
         });
+        if status.owner != Some(crate::control::power_plan::PowerPlanOwner::OrdinaryAutomation)
+            || (status.restoring_previous
+                && (stop_state.is_none() || self.has_temporary_power_plan()))
+        {
+            self.power_plan_rule_context = None;
+            return (status, None);
+        }
         let context = self.power_plan_rule_context.as_ref();
         if let Some(decision_state) = stop_state.or_else(|| {
             context
