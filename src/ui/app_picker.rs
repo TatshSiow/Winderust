@@ -467,7 +467,12 @@ impl<M: Clone + 'static> Widget<M, Theme, Renderer> for Picker<'_, M> {
         translation: Vector,
     ) -> Option<overlay::Element<'b, M, Theme, Renderer>> {
         let state = tree.state.downcast_mut::<State>();
-        if !state.open || !self.enabled || !layout.bounds().intersects(viewport) {
+        if !state.open || !self.enabled {
+            return None;
+        }
+        let anchor = layout.bounds() + translation;
+        if !viewport.intersects(&anchor) {
+            state.open = false;
             return None;
         }
         // Keep native button status between overlay update and draw calls.
@@ -485,7 +490,7 @@ impl<M: Clone + 'static> Widget<M, Theme, Renderer> for Picker<'_, M> {
             content: menu,
             tree: &mut tree.children[1],
             state,
-            anchor: layout.bounds() + translation,
+            anchor,
             choices: &self.choices,
             select: self.select,
             browse: self.browse.clone(),
