@@ -1288,6 +1288,7 @@ impl WinderustApp {
                 let appearance_changed = matches!(
                     message,
                     settings_pages::Message::Theme(_)
+                        | settings_pages::Message::Animation(_)
                         | settings_pages::Message::AccentSource(_)
                         | settings_pages::Message::AccentHex(_)
                         | settings_pages::Message::Accent(_)
