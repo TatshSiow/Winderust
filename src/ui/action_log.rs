@@ -357,12 +357,17 @@ impl Editor {
                             .clip(true)
                             .into();
                             if truncated {
-                                super::widgets::tooltip(
-                                    content,
-                                    text(entry.reason.as_str()),
-                                    iced::widget::tooltip::Position::Top,
-                                )
-                                .into()
+                                popover::view(entry.sequence, content, move || {
+                                    container(super::scrolling::popup_scrollable(
+                                        text(entry.reason.as_str())
+                                            .font(design::typography::DEFAULT_FONT)
+                                            .size(design::typography::SECONDARY)
+                                            .wrapping(text::Wrapping::WordOrGlyph),
+                                    ))
+                                    .padding(design::space::SMALL as u16)
+                                    .style(super::widgets::tooltip_surface)
+                                    .into()
+                                })
                             } else {
                                 content
                             }
