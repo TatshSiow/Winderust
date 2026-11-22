@@ -287,6 +287,12 @@ impl CpuAllocationManager {
             }
         }
 
+        if targets.is_empty() && !coordinator.needs_topology_observation() {
+            return self
+                .reconcile_empty_generation(coordinator, owner, scanned_processes, action_log)
+                .snapshot;
+        }
+
         let topology = observations.cpu_topology();
         self.reconcile_targets(
             coordinator,
