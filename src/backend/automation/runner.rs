@@ -1599,6 +1599,13 @@ impl RuntimeCore {
         shared: &SharedAutomationState,
         now: Instant,
     ) -> Option<String> {
+        fn current_feature_status<T: Clone>(
+            shared: &SharedAutomationState,
+            select: impl FnOnce(&RuntimeFeatureStatus) -> &T,
+        ) -> T {
+            select(&lock_unpoisoned(&shared.state).status.feature_status).clone()
+        }
+
         let process_failure = |property, process_name, process_id, error| {
             format!("{property} restoration failed for {process_name} ({process_id}): {error}")
         };
@@ -1610,11 +1617,7 @@ impl RuntimeCore {
                 .process_priority_manager
                 .reported_release_is_resolved(&self.priority_efficiency_controller)
         {
-            let status = lock_unpoisoned(&shared.state)
-                .status
-                .feature_status
-                .process_priority
-                .clone();
+            let status = current_feature_status(shared, |features| &features.process_priority);
             update_process_priority_status(
                 shared,
                 self.process_priority_manager.report_release_retry(
@@ -1637,11 +1640,7 @@ impl RuntimeCore {
             );
         }
         if refresh_background_efficiency {
-            let status = lock_unpoisoned(&shared.state)
-                .status
-                .feature_status
-                .background_efficiency
-                .clone();
+            let status = current_feature_status(shared, |features| &features.background_efficiency);
             update_background_efficiency_status(
                 shared,
                 self.background_efficiency_manager
@@ -1653,19 +1652,17 @@ impl RuntimeCore {
             .failures
             .into_iter()
             .map(|failure| {
-                format!(
-                    "{} restoration failed for {} ({}): {}",
-                    failure.property, failure.process_name, failure.process_id, failure.error
+                process_failure(
+                    failure.property,
+                    failure.process_name,
+                    failure.process_id,
+                    failure.error,
                 )
             })
             .collect::<Vec<_>>();
         if self.thread_priority_controller.release_retry_delay(now) == Some(Duration::ZERO) {
             let summary = self.thread_priority_controller.retry_pending_releases(now);
-            let status = lock_unpoisoned(&shared.state)
-                .status
-                .feature_status
-                .thread_priority
-                .clone();
+            let status = current_feature_status(shared, |features| &features.thread_priority);
             update_thread_priority_status(
                 shared,
                 self.thread_priority_manager.report_release_retry(
@@ -1678,11 +1675,7 @@ impl RuntimeCore {
         }
         if self.io_priority_controller.release_retry_delay(now) == Some(Duration::ZERO) {
             let summary = self.io_priority_controller.retry_pending_releases(now);
-            let status = lock_unpoisoned(&shared.state)
-                .status
-                .feature_status
-                .io_priority
-                .clone();
+            let status = current_feature_status(shared, |features| &features.io_priority);
             update_io_priority_status(
                 shared,
                 self.io_priority_manager.report_release_retry(
@@ -1695,11 +1688,7 @@ impl RuntimeCore {
         }
         if self.gpu_priority_controller.release_retry_delay(now) == Some(Duration::ZERO) {
             let summary = self.gpu_priority_controller.retry_pending_releases(now);
-            let status = lock_unpoisoned(&shared.state)
-                .status
-                .feature_status
-                .gpu_priority
-                .clone();
+            let status = current_feature_status(shared, |features| &features.gpu_priority);
             update_gpu_priority_status(
                 shared,
                 self.gpu_priority_manager.report_release_retry(
@@ -1742,11 +1731,7 @@ impl RuntimeCore {
                 }),
         );
         if memory_retry_due {
-            let status = lock_unpoisoned(&shared.state)
-                .status
-                .feature_status
-                .memory_priority
-                .clone();
+            let status = current_feature_status(shared, |features| &features.memory_priority);
             update_feature_status(
                 shared,
                 self.memory_priority_manager
@@ -1763,11 +1748,8 @@ impl RuntimeCore {
             let summary = self
                 .dynamic_priority_boost_controller
                 .retry_pending_releases(now);
-            let status = lock_unpoisoned(&shared.state)
-                .status
-                .feature_status
-                .dynamic_priority_boost
-                .clone();
+            let status =
+                current_feature_status(shared, |features| &features.dynamic_priority_boost);
             update_dynamic_priority_boost_status(
                 shared,
                 self.dynamic_priority_boost_manager.report_release_retry(
