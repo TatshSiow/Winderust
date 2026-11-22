@@ -18,6 +18,7 @@ use crate::ui::process_rules::{
 use iced::widget::{column, container, row, text};
 use iced::{Element, Fill};
 use rust_i18n::t;
+use std::rc::Rc;
 #[derive(Debug, Clone)]
 pub(in crate::ui) enum Message {
     ReloadPlans,
@@ -437,6 +438,7 @@ pub(super) fn view<'a>(
             .find(|r| process_setting_matches(&r.executable_path, path));
         let reset = rule.is_some().then_some(Message::ResetPriority(kind));
         let rule = rule.unwrap_or(&default_rule);
+        let choices: Rc<[_]> = kind.choices(s.advanced.expose_all_priority_values).into();
         let mut controls = row![text(t!(&key).to_string()).width(Fill)]
             .spacing(design::space::SMALL)
             .align_y(iced::Center)
@@ -444,7 +446,7 @@ pub(super) fn view<'a>(
         for tier in Tier::ALL {
             controls = controls.push(
                 pick_list(
-                    kind.choices(s.advanced.expose_all_priority_values),
+                    Rc::clone(&choices),
                     Some(kind.rule_value(rule, tier)),
                     move |v| Message::Priority(kind, tier, v),
                 )
