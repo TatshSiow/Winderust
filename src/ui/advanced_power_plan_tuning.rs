@@ -360,13 +360,20 @@ impl Editor {
 
     pub(super) fn refresh(&mut self, plans: &[PowerPlan]) {
         let selected = self.selected_plan(plans);
+        let has_pending_values = self.dirty
+            || self.has_invalid_inputs()
+            || self.review.is_some()
+            || self.unverified_apply.is_some();
         if selected.is_some() {
-            let has_pending_values = self.dirty
-                || self.has_invalid_inputs()
-                || self.review.is_some()
-                || self.unverified_apply.is_some();
             self.read_selected_plan(selected, has_pending_values);
-        } else if self.unverified_apply.is_some() {
+        } else if self.unverified_apply.is_some()
+            || (has_pending_values
+                && self.target.as_deref().is_some_and(|guid| {
+                    !plans
+                        .iter()
+                        .any(|plan| plan.guid.eq_ignore_ascii_case(guid))
+                }))
+        {
             self.set_failure(t!("common.selected_plan_unavailable").into_owned());
         } else {
             self.dirty = false;
@@ -1721,6 +1728,12 @@ mod tests {
         assert!(!editor.has_invalid_inputs());
         invalidate(&mut editor);
         editor.refresh(&[]);
+        assert!(editor.has_invalid_inputs());
+        assert_eq!(editor.target.as_deref(), Some("missing-plan"));
+        assert_eq!(editor.readback, Some(current));
+        assert_eq!(editor.values, Some(current.writable()));
+        assert_eq!(editor.status(), t!("common.selected_plan_unavailable"));
+        editor.discard_values(&[]);
         assert!(!editor.has_invalid_inputs());
         assert!(editor.values.is_none());
         assert!(editor.target.is_none());
@@ -2323,6 +2336,58 @@ mod tests {
         editor.discard_values(&plans);
         assert!(editor.readback.is_none() && editor.values.is_none());
         assert!(!editor.dirty && !editor.has_invalid_inputs() && editor.review.is_none());
+    }
+
+    #[test]
+    fn refresh_preserves_pending_edits_when_the_target_plan_is_missing() {
+        let plans = [PowerPlan {
+            guid: "invalid-replacement-guid".into(),
+            name: "Replacement".into(),
+            active: true,
+            managed_adaptive: false,
+        }];
+        let current = AdvancedPowerPlanTuningSourceValues::same(
+            AdvancedPowerPlanTuningValues::for_preset(ProcessorPowerPreset::Balanced),
+        )
+        .into();
+        let mut settings = test_settings();
+        for (dirty, invalid) in [(true, false), (false, true), (false, false)] {
+            let mut editor = Editor {
+                target: Some("missing-plan".into()),
+                ..Default::default()
+            };
+            editor.set_readback(Some(current));
+            if dirty {
+                editor.update(
+                    &mut settings,
+                    &plans,
+                    Message::Value(Source::Ac, Field::Minimum, 33),
+                );
+            }
+            if invalid {
+                editor.update(
+                    &mut settings,
+                    &plans,
+                    Message::ValueText(Source::Battery, Field::Maximum, String::new()),
+                );
+            }
+            let draft = editor.values;
+
+            editor.update(&mut settings, &plans, Message::Refresh);
+
+            if dirty || invalid {
+                assert_eq!(editor.target.as_deref(), Some("missing-plan"));
+                assert_eq!(editor.readback, Some(current));
+                assert_eq!(editor.values, draft);
+                assert_eq!(editor.dirty, dirty);
+                assert_eq!(editor.has_invalid_inputs(), invalid);
+                assert_eq!(editor.status(), t!("common.selected_plan_unavailable"));
+                editor.discard_values(&plans);
+            }
+            assert_eq!(editor.target.as_deref(), Some(plans[0].guid.as_str()));
+            assert!(!editor.dirty && !editor.has_invalid_inputs());
+            assert!(editor.readback.is_none() && editor.values.is_none());
+        }
     }
 
     #[test]

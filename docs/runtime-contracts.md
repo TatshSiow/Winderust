@@ -441,7 +441,8 @@ Read the relevant section before changing feature policy, ownership, restoration
   policies.
   A stale review or failed preflight read preserves the draft. After a plan
   value changes externally, Refresh values reloads the plan for a new edit and
-  review. A failed read during refresh keeps pending edits for the selected plan.
+  review. A failed read or a missing plan during refresh keeps pending edits
+  tied to their original plan.
   Readback verifies the outcome. Each mismatch identifies the power
   source, setting, requested value, and actual value. When a write stage fails,
   the report includes the stage error and any differences from a successful readback.
