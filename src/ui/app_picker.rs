@@ -58,11 +58,33 @@ pub(super) fn path_readd_hint<'a, M: 'a>() -> iced::widget::Container<'a, M> {
     .padding(iced::Padding::new(widgets::CARD_PADDING as f32).top(0.0))
 }
 
+type PathCallback<M> = fn(String) -> M;
+
 pub(super) fn view<'a, M: Clone + 'static>(
     query: &str,
     candidates: &'a [Candidate],
     enabled: bool,
     select: fn(String) -> M,
+    browse: M,
+    add: Option<M>,
+    allowed: impl Fn(&str) -> Option<bool>,
+) -> Element<'a, M> {
+    view_with_path_selection(
+        query,
+        candidates,
+        enabled,
+        (select, select),
+        browse,
+        add,
+        allowed,
+    )
+}
+
+pub(super) fn view_with_path_selection<'a, M: Clone + 'static>(
+    query: &str,
+    candidates: &'a [Candidate],
+    enabled: bool,
+    (edit, select): (PathCallback<M>, PathCallback<M>),
     browse: M,
     add: Option<M>,
     allowed: impl Fn(&str) -> Option<bool>,
@@ -89,7 +111,7 @@ pub(super) fn view<'a, M: Clone + 'static>(
     });
     let input = widgets::text_input(&t!("common.search_running_apps"), query)
         .padding(widgets::SEARCH_INPUT_PADDING)
-        .on_input_maybe(enabled.then_some(select))
+        .on_input_maybe(enabled.then_some(edit))
         .width(Length::Fill)
         .into();
     row![
@@ -102,7 +124,7 @@ pub(super) fn view<'a, M: Clone + 'static>(
                 enabled,
                 menu: None,
             }),
-            (enabled && !query.is_empty()).then(|| select(String::new())),
+            (enabled && !query.is_empty()).then(|| edit(String::new())),
         ),
         widgets::action_button(t!("common.add").to_string())
             .style(crate::ui::widgets::primary_button)

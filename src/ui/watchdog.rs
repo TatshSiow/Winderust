@@ -1,12 +1,17 @@
 use std::{path::Path, sync::Arc};
 
-use super::{app_picker, design, process_rules::MatchBy, widgets};
+use super::{
+    app_picker, design,
+    process_rules::{exact_path_input, picked_path_input, MatchBy},
+    widgets,
+};
 use crate::config::{
     WatchdogAction, WatchdogComparison, WatchdogMemoryUnit, WatchdogMetric, WatchdogResource,
     WatchdogRule, WatchdogScope, WatchdogSelector, WatchdogSettings, WATCHDOG_DURATION_RANGE,
 };
 use crate::foreground::{
-    executable_path_key, process_list::same_executable_name, same_executable_path,
+    process_list::{normalize_path_slashes, same_executable_name},
+    same_executable_path,
 };
 use iced::{
     widget::{column, row, text, Column},
@@ -190,7 +195,7 @@ pub(super) enum Message {
 
 impl Editor {
     fn can_add_path(settings: &WatchdogSettings, path: &str) -> bool {
-        super::process_rules::can_add_process_candidate(
+        super::process_rules::can_add_exact_process_candidate(
             path,
             |path| {
                 settings.rules.iter().any(|rule| {
@@ -227,8 +232,11 @@ impl Editor {
 
     fn new_rule(&self, settings: &WatchdogSettings) -> Option<WatchdogRule> {
         match self.match_by {
-            MatchBy::ExecutablePath => Self::can_add_path(settings, &self.path)
-                .then(|| WatchdogRule::new(executable_path_key(Path::new(self.path.trim())))),
+            MatchBy::ExecutablePath => {
+                let path = exact_path_input(&self.path);
+                Self::can_add_path(settings, path)
+                    .then(|| WatchdogRule::new(normalize_path_slashes(path).into_owned()))
+            }
             MatchBy::ExecutableName => self
                 .new_name_selector(settings)
                 .map(WatchdogRule::with_selector),
@@ -539,13 +547,13 @@ impl Editor {
         candidates: &'a [app_picker::Candidate],
     ) -> Element<'a, Message> {
         let target = match self.match_by {
-            MatchBy::ExecutablePath => app_picker::view(
+            MatchBy::ExecutablePath => app_picker::view_with_path_selection(
                 &self.path,
                 candidates,
                 true,
-                Message::Path,
+                (Message::Path, |path| Message::Path(picked_path_input(path))),
                 Message::Browse,
-                Self::can_add_path(settings, &self.path).then_some(Message::Add),
+                Self::can_add_path(settings, exact_path_input(&self.path)).then_some(Message::Add),
                 |path| Self::can_add_path(settings, path).then_some(true),
             ),
             MatchBy::ExecutableName => {
@@ -960,6 +968,15 @@ mod tests {
         editor.update(&mut settings, Message::Add);
         editor.update(&mut settings, Message::SaveRule);
         assert_eq!(settings.rules[1], WatchdogRule::new(path.into()));
+        for (input, expected) in [
+            (picked_path_input(format!("{path} ")), format!("{path} ")),
+            (format!("{path}\u{3000}"), format!("{path}\u{3000}")),
+        ] {
+            editor.update(&mut settings, Message::Path(input));
+            editor.update(&mut settings, Message::Add);
+            editor.update(&mut settings, Message::SaveRule);
+            assert_eq!(settings.rules.last(), Some(&WatchdogRule::new(expected)));
+        }
     }
 
     #[test]

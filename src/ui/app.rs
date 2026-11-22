@@ -1646,8 +1646,9 @@ impl WinderustApp {
                                 ));
                             }
                             Page::Watchdog => {
-                                return self
-                                    .update(Message::Watchdog(watchdog::Message::Path(path)));
+                                return self.update(Message::Watchdog(watchdog::Message::Path(
+                                    super::process_rules::picked_path_input(path),
+                                )));
                             }
                             Page::InstanceLimits => {
                                 return self.update(Message::InstanceLimits(
@@ -1696,13 +1697,17 @@ impl WinderustApp {
                             Page::ByFocus => {
                                 return self.update(Message::ProcessPowerPlans(
                                     process_power_plans::Kind::Focus,
-                                    process_power_plans::Message::Path(path),
+                                    process_power_plans::Message::Path(
+                                        super::process_rules::picked_path_input(path),
+                                    ),
                                 ));
                             }
                             Page::ByRunningApp => {
                                 return self.update(Message::ProcessPowerPlans(
                                     process_power_plans::Kind::RunningApp,
-                                    process_power_plans::Message::Path(path),
+                                    process_power_plans::Message::Path(
+                                        super::process_rules::picked_path_input(path),
+                                    ),
                                 ));
                             }
                             _ => {}

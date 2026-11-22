@@ -56,6 +56,7 @@ pub(super) fn update(s: &mut SettingsEditor, path: &str, m: Message) -> Option<S
     if !std::path::Path::new(path).is_absolute() {
         return None;
     }
+    let image_path = path;
     let path = executable_path_key(std::path::Path::new(path));
     match m {
         Message::ReloadPlans => unreachable!("The application owns power-plan loading"),
@@ -157,15 +158,15 @@ pub(super) fn update(s: &mut SettingsEditor, path: &str, m: Message) -> Option<S
                         .$field
                         .rules
                         .iter()
-                        .position(|rule| selector_path_matches(&rule.selector, &path));
+                        .position(|rule| selector_path_matches(&rule.selector, image_path));
                     match (index, guid) {
                         (None, None) => {}
                         (Some(_), None) => s
                             .$field
                             .rules
-                            .retain(|rule| !selector_path_matches(&rule.selector, &path)),
+                            .retain(|rule| !selector_path_matches(&rule.selector, image_path)),
                         (None, Some(guid)) => {
-                            s.$field.rules.push($new_rule(&path, Some(guid)));
+                            s.$field.rules.push($new_rule(image_path, Some(guid)));
                         }
                         (Some(index), Some(guid)) => {
                             let rule = &s.$field.rules[index];
@@ -624,6 +625,16 @@ mod tests {
             &settings.by_focus.rules[1].selector,
             path
         ));
+        let literal_path = format!("{path}\u{3000}");
+        let _ = update(
+            &mut settings,
+            &literal_path,
+            Message::Power(false, Some("running-plan".into())),
+        );
+        assert_eq!(
+            settings.by_running_app.rules[0].selector.exact_path(),
+            Some(literal_path.as_str())
+        );
 
         let _ = update(&mut settings, path, Message::Power(true, None));
         assert_eq!(settings.by_focus.rules.len(), 1);

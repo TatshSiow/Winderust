@@ -99,7 +99,9 @@ impl Editor {
                     Message::Browse => {}
                     Message::Preview(_) => unreachable!("preview messages do not edit rules"),
                     Message::Add => {
-                        if let Some(path) = $addable_path(&settings.$field, &self.path) {
+                        if let Some(path) =
+                            $addable_path(&settings.$field, exact_path_input(&self.path))
+                        {
                             settings.$field.rules.push($new_rule(path, active_plan()));
                             self.path.clear();
                         }
@@ -209,12 +211,12 @@ impl Editor {
                 let input = if self.match_by == MatchBy::ExecutableName {
                     self.name_input($can_add_name(feature, &self.name))
                 } else {
-                    let can_add = $addable_path(feature, &self.path).is_some();
-                    let mut picker = column![app_picker::view(
+                    let can_add = $addable_path(feature, exact_path_input(&self.path)).is_some();
+                    let mut picker = column![app_picker::view_with_path_selection(
                         &self.path,
                         candidates,
                         true,
-                        Message::Path,
+                        (Message::Path, |path| Message::Path(picked_path_input(path))),
                         Message::Browse,
                         can_add.then_some(Message::Add),
                         |path| $addable_path(feature, path).map(|_| true),
@@ -353,6 +355,7 @@ mod tests {
                 r#""C:\Apps\worker.exe"#,
                 r#"C:\Apps\worker.exe""#,
                 r#""C:\Apps\old\..\worker.exe""#,
+                r#""C:\Apps\worker.exe ""#,
             ] {
                 editor.update(kind, &mut settings, &[], Message::Path(path.into()));
                 editor.update(kind, &mut settings, &[], Message::Add);
@@ -362,6 +365,7 @@ mod tests {
                 r#" "C:\Apps\worker.exe" "#,
                 r#""\\server\share\Worker.exe""#,
                 r" D:/Other/control.exe ",
+                "D:/Other/control.exe\u{3000}",
                 r#""c:/apps/WORKER.exe""#,
             ] {
                 editor.update(kind, &mut settings, &[], Message::Path(path.into()));
@@ -387,6 +391,7 @@ mod tests {
                     r"C:\Apps\worker.exe",
                     r"\\server\share\Worker.exe",
                     r"D:\Other\control.exe",
+                    "D:\\Other\\control.exe\u{3000}",
                 ]
             );
             assert!(settings.global().by_focus.rules.is_empty());

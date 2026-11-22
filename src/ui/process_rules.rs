@@ -10,7 +10,10 @@ use crate::config::{CpuLimiterRule, CpuLimiterSettings, ProcessRuleMode};
 use crate::control::instance_limits::validate_path;
 use crate::cpu_limiter;
 use crate::foreground::executable_path_key;
-use crate::foreground::{process_list::same_executable_name, same_executable_path};
+use crate::foreground::{
+    process_list::{normalize_path_slashes, same_executable_name},
+    same_executable_path,
+};
 use crate::{app_suspension, memory_trim};
 use rust_i18n::t;
 use std::path::Path;
@@ -36,7 +39,14 @@ pub(crate) fn can_add_process_candidate(
     contains_process: impl FnOnce(&str) -> bool,
     is_builtin_excluded: impl FnOnce(&str) -> bool,
 ) -> bool {
-    let process = process.trim();
+    can_add_exact_process_candidate(process.trim(), contains_process, is_builtin_excluded)
+}
+
+pub(super) fn can_add_exact_process_candidate(
+    process: &str,
+    contains_process: impl FnOnce(&str) -> bool,
+    is_builtin_excluded: impl FnOnce(&str) -> bool,
+) -> bool {
     let process_path = Path::new(process);
     let process_name = process_path
         .file_name()
@@ -80,20 +90,40 @@ pub(crate) fn process_setting_matches(configured_process: &str, process_name: &s
         )
 }
 
-pub(super) fn power_rule_path(input: &str) -> Option<&str> {
-    let input = input.trim();
-    let path = input
+pub(super) fn exact_path_input(input: &str) -> &str {
+    let input = input.trim_start();
+    if let Some(quoted) = input
+        .trim_end()
         .strip_prefix('"')
         .and_then(|path| path.strip_suffix('"'))
-        .unwrap_or(input);
+    {
+        return quoted;
+    }
+    if input.starts_with(r"\\?\") {
+        input
+    } else {
+        input.trim_ascii_end()
+    }
+}
+
+pub(super) fn picked_path_input(path: String) -> String {
+    if exact_path_input(&path) == path {
+        path
+    } else {
+        format!("\"{path}\"")
+    }
+}
+
+pub(super) fn power_rule_path(input: &str) -> Option<&str> {
+    let path = exact_path_input(input);
     validate_path(path).is_ok().then_some(path)
 }
 
 pub(super) fn addable_by_focus_path<'a>(
     settings: &ByFocusSettings,
-    input: &'a str,
+    path: &'a str,
 ) -> Option<&'a str> {
-    let path = power_rule_path(input)?;
+    validate_path(path).ok()?;
     (!settings
         .rules
         .iter()
@@ -106,7 +136,7 @@ pub(super) fn can_add_by_focus_name(settings: &ByFocusSettings, name: &str) -> b
 }
 
 pub(crate) fn new_by_focus_rule(process: &str, power_plan_guid: Option<String>) -> ByFocusRule {
-    let executable_path = executable_path_key(Path::new(process));
+    let executable_path = normalize_path_slashes(process).into_owned();
     ByFocusRule {
         enabled: true,
         name: Path::new(process)
@@ -121,10 +151,10 @@ pub(crate) fn new_by_focus_rule(process: &str, power_plan_guid: Option<String>) 
 
 pub(super) fn addable_by_running_app_path<'a>(
     settings: &ByRunningAppSettings,
-    input: &'a str,
+    path: &'a str,
 ) -> Option<&'a str> {
-    let path = power_rule_path(input)?;
-    can_add_process_candidate(
+    validate_path(path).ok()?;
+    can_add_exact_process_candidate(
         path,
         |path| {
             settings
@@ -140,7 +170,7 @@ pub(super) fn addable_by_running_app_path<'a>(
 pub(super) fn selector_path_matches(selector: &ExecutableSelector, path: &str) -> bool {
     selector
         .exact_path()
-        .is_some_and(|target| process_setting_matches(target, path))
+        .is_some_and(|target| same_executable_path(Path::new(target.trim_start()), Path::new(path)))
 }
 
 pub(super) fn can_add_by_running_app_name(settings: &ByRunningAppSettings, name: &str) -> bool {
@@ -163,7 +193,7 @@ pub(crate) fn new_by_running_app_rule(
     process: &str,
     power_plan_guid: Option<String>,
 ) -> ByRunningAppRule {
-    let executable_path = executable_path_key(Path::new(process));
+    let executable_path = normalize_path_slashes(process).into_owned();
     ByRunningAppRule {
         enabled: true,
         name: Path::new(process)
