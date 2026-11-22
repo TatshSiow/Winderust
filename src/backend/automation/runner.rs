@@ -980,7 +980,9 @@ impl RuntimeCore {
         settings: &Settings,
         observations: &mut CycleObservations,
     ) -> AdaptiveEngineProcessSnapshot {
-        self.refresh_cpu_usage();
+        if cpu_usage_required(settings) {
+            self.refresh_cpu_usage();
+        }
         let foreground_process_id = observations.foreground_process_id();
         let excluded_process_ids = self.by_running_app_manager.active_process_ids();
         let explicit_cpu_allocation_paths = explicit_cpu_allocation_paths(settings);
@@ -1093,7 +1095,9 @@ impl RuntimeCore {
         settings: &Settings,
         observations: &mut CycleObservations,
     ) -> Result<(), String> {
-        self.refresh_cpu_usage();
+        if cpu_usage_required(settings) {
+            self.refresh_cpu_usage();
+        }
         let foreground_process_id = observations.foreground_process_id();
         if adaptive_power_plan_required(settings) && settings.general.enabled {
             let foreground_changed = foreground_process_id.is_some()
