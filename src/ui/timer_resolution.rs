@@ -30,7 +30,7 @@ impl Editor {
         self.drafts
             .iter()
             .flatten()
-            .any(|value| parse_resolution(value, 1_000, 10_000_000).is_none())
+            .any(|value| draft_resolution_is_invalid(value))
     }
 
     pub(super) fn update(
@@ -128,7 +128,8 @@ impl Editor {
         let mut cards = Vec::new();
         for (i, r) in s.rules.iter().enumerate() {
             let formatted;
-            let value = if let Some(draft) = self.drafts.get(i).and_then(Option::as_deref) {
+            let draft = self.drafts.get(i).and_then(Option::as_deref);
+            let value = if let Some(draft) = draft {
                 draft
             } else {
                 formatted = crate::timer_resolution::format_resolution_ms(r.desired_100ns);
@@ -139,6 +140,14 @@ impl Editor {
                 .on_input(move |v| Message::Resolution(i, v))
                 .on_submit(Message::Commit(i))
                 .width(design::STANDALONE_NUMERIC_WIDTH);
+            let mut controls = column![controls].spacing(design::space::SMALL);
+            if draft.is_some_and(draft_resolution_is_invalid) {
+                controls = controls.push(
+                    text(t!("timer_resolution.invalid_request").to_string())
+                        .wrapping(text::Wrapping::WordOrGlyph)
+                        .style(text::danger),
+                );
+            }
             cards.push((
                 super::widgets::stable_key(&r.executable_path),
                 super::widgets::process_rule_row(
@@ -167,6 +176,10 @@ impl Editor {
         scrollable(body).height(Fill).into()
     }
 }
+fn draft_resolution_is_invalid(value: &str) -> bool {
+    parse_resolution(value, 1_000, 10_000_000).is_none()
+}
+
 fn parse_resolution(value: &str, min: u32, max: u32) -> Option<u32> {
     let value = value.trim();
     let value = value
