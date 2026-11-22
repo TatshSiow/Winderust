@@ -269,8 +269,9 @@ hover/press; background shading supplies feedback.
   choices or keep current. Re-read after every Apply attempt, including partial
   failure. Adaptive Engine does not own these persistent writes.
 - Apply and Save open the same review for pending tuning edits. Show the target
-  plan and only changed values, grouped by Plugged In and On Battery. Cancel
-  keeps the tuning draft.
+  plan and only changed values, grouped by Plugged In and On Battery. Identify
+  a known active plan when it differs from the target. Cancel keeps the tuning
+  draft.
 - Restore previous tuning values opens the same review for the selected plan's
   previous values. It is available for the current Winderust session after a
   verified change and requires applying or discarding any pending edits first.

@@ -1,18 +1,19 @@
-use super::design;
 use super::widgets::{
     action_button, button, icon_button, pick_list, power_plan_label, processor_boost_mode_label,
     slider, text_input,
 };
+use super::{design, power_plan_control};
 use crate::application::{
     AdvancedPowerPlanTuningApplyError, AdvancedPowerPlanTuningError,
     AdvancedPowerPlanTuningService, SettingsEditor,
 };
 use crate::config::AdvancedPowerPlanTuningPreset;
+use crate::control::power_plan::PowerPlanStatus;
 use crate::power::{
     AdvancedPowerPlanTuningReadback, AdvancedPowerPlanTuningSourceValues,
     AdvancedPowerPlanTuningValues, EditableTuningValues, EffectivePowerMode, PowerPlan,
     PowerPlanPersonality, PowerSettingReadback, ProcessorBoostMode, ProcessorPowerPreset,
-    ProcessorPowerValues, ProcessorSchedulingPolicy,
+    ProcessorPowerValues, ProcessorSchedulingPolicy, ADAPTIVE_PLAN_NAME,
 };
 use crate::ui::scrolling::scrollable;
 use iced::widget::{column, row, text};
@@ -1054,7 +1055,11 @@ impl Editor {
             .push(text(self.status()).wrapping(text::Wrapping::WordOrGlyph));
         scrollable(body).height(Fill).width(Fill).into()
     }
-    pub(super) fn apply_review_modal(&self) -> Option<Element<'_, Message>> {
+    pub(super) fn apply_review_modal(
+        &self,
+        plans: &[PowerPlan],
+        status: &PowerPlanStatus,
+    ) -> Option<Element<'_, Message>> {
         use super::widgets;
         let review = self.review.as_ref()?;
         let review_row = |label: &str, value: String| {
@@ -1068,11 +1073,23 @@ impl Editor {
             .spacing(design::space::MEDIUM)
             .align_y(iced::Center)
         };
-        let mut body = column![widgets::settings_card(review_row(
+        let mut target = column![review_row(
             "processor_power.target_plan",
             review.name.clone()
-        ))]
-        .spacing(widgets::CARD_GAP);
+        )]
+        .spacing(design::space::SMALL);
+        let active = power_plan_control::current_plan_guid(status, plans).filter(|guid| {
+            status.active_plan_read_error.is_none() && !guid.eq_ignore_ascii_case(&review.guid)
+        });
+        if let Some(guid) = active {
+            let plan = if power_plan_control::managed_by_adaptive(status, plans) {
+                ADAPTIVE_PLAN_NAME.to_owned()
+            } else {
+                power_plan_control::plan_name(plans, guid)
+            };
+            target = target.push(review_row("common.current_power_plan", plan));
+        }
+        let mut body = column![widgets::settings_card(target)].spacing(widgets::CARD_GAP);
         let mut has_changes = false;
         for source in [Source::Ac, Source::Battery] {
             let rows = review

@@ -2864,7 +2864,10 @@ impl WinderustApp {
 
     fn view_workspace(&self) -> Element<'_, Message> {
         let content = self.view_content();
-        if let Some(modal) = self.power_tuning.apply_review_modal() {
+        if let Some(modal) = self
+            .power_tuning
+            .apply_review_modal(&self.power_plans, &self.status.power_plan_status)
+        {
             return centered_modal(content, modal.map(Message::PowerTuning));
         }
         if self.closing || !self.error_message.is_empty() {
