@@ -1111,8 +1111,8 @@ impl ProcessList {
             if self.hide_inaccessible && inaccessible(p) {
                 continue;
             }
-            if !search.is_empty()
-                && !format!(
+            if !search.is_empty() {
+                let mut candidate = format!(
                     "{} {} {} {}",
                     p.name,
                     p.id,
@@ -1121,11 +1121,15 @@ impl ProcessList {
                         .map(|p| p.to_string_lossy())
                         .unwrap_or_default(),
                     p.user_name.as_deref().unwrap_or("")
-                )
-                .to_lowercase()
-                .contains(&search)
-            {
-                continue;
+                );
+                if candidate.is_ascii() {
+                    candidate.make_ascii_lowercase();
+                } else {
+                    candidate = candidate.to_lowercase();
+                }
+                if !candidate.contains(&search) {
+                    continue;
+                }
             }
             let path = p.image_path.as_deref().filter(|_| self.grouped);
             let key = path.map_or_else(
