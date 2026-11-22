@@ -297,29 +297,30 @@ impl SleepPreventionManager {
             observation_known: self.matches.known,
             ..Default::default()
         };
+        // Insert distinct paths directly into the sorted status lists.
         for (identity, app) in &self.matches.apps {
-            snapshot.running_apps.push(app.path.clone());
+            let path = &app.path;
+            if let Err(index) = snapshot.running_apps.binary_search(path) {
+                snapshot.running_apps.insert(index, path.clone());
+            }
             if self.suppressed.contains_key(identity) {
-                snapshot.suppressed_apps.push(app.path.clone());
+                if let Err(index) = snapshot.suppressed_apps.binary_search(path) {
+                    snapshot.suppressed_apps.insert(index, path.clone());
+                }
             } else {
-                snapshot.requesting_apps.push(RequestingApp {
-                    path: app.path.as_str().into(),
-                    keep_display_on: app.display,
-                });
+                let requests = &mut snapshot.requesting_apps;
+                match requests.binary_search_by(|entry| entry.path.as_ref().cmp(path.as_str())) {
+                    Ok(index) => requests[index].keep_display_on |= app.display,
+                    Err(index) => requests.insert(
+                        index,
+                        RequestingApp {
+                            path: path.as_str().into(),
+                            keep_display_on: app.display,
+                        },
+                    ),
+                }
             }
         }
-        for paths in [&mut snapshot.running_apps, &mut snapshot.suppressed_apps] {
-            paths.sort();
-            paths.dedup();
-        }
-        snapshot.requesting_apps.sort_unstable_by(|left, right| {
-            left.path
-                .cmp(&right.path)
-                .then(right.keep_display_on.cmp(&left.keep_display_on))
-        });
-        snapshot
-            .requesting_apps
-            .dedup_by(|left, right| left.path == right.path);
         // A fresh instance can request sleep prevention while an older instance stays suppressed.
         snapshot.suppressed_apps.retain(|path| {
             snapshot
