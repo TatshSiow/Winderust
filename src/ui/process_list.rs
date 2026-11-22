@@ -2281,15 +2281,10 @@ fn background<T: Send + 'static>(
 
 fn load_population() -> Result<Population, String> {
     let processes = foreground::list_processes_with_paths()?;
-    let mut samples = foreground::sample_process_resources(
+    let samples = foreground::sample_process_resources(
         &processes,
         foreground::ProcessResourceSampling::WithEfficiencyMode,
     );
-    let identities = processes
-        .iter()
-        .map(|p| (p.id, p.creation_time))
-        .collect::<HashMap<_, _>>();
-    samples.retain(|id, sample| identities.get(id) == Some(&Some(sample.creation_time)));
     Ok(Population {
         total_memory_bytes: crate::dashboard_metrics::sample_memory_usage().total_physical_bytes,
         processes,

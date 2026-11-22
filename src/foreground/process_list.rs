@@ -164,7 +164,9 @@ pub fn sample_process_resources(
     processes
         .iter()
         .filter_map(|process| {
-            sample_process_resource(process.id, sampling).map(|sample| (process.id, sample))
+            let creation_time = process.creation_time?;
+            let sample = sample_process_resource(process.id, sampling)?;
+            (sample.creation_time == creation_time).then_some((process.id, sample))
         })
         .collect()
 }
