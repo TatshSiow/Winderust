@@ -540,7 +540,6 @@ processor_power:
   saver: "Saver"
   saver_help: "Allow aggressive core parking, cap processor performance at 80%, and use efficient boost."
   boost_disabled: "Disabled"
-  boost_disabled_help: "Turns off processor turbo/boost behavior for lower heat and power use."
   boost_enabled: "Enabled"
   boost_enabled_help: "Allows normal processor boost behavior under Windows power policy."
   boost_aggressive: "Aggressive"

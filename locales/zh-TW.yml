@@ -542,7 +542,6 @@ processor_power:
   saver: "省電"
   saver_help: "允許積極的核心停駐，將處理器效能上限設為 80%，並使用效率優先提升。"
   boost_disabled: "停用"
-  boost_disabled_help: "關閉處理器渦輪／提升行為，以降低熱量與耗電。"
   boost_enabled: "啟用"
   boost_enabled_help: "允許 Windows 電源原則使用一般處理器提升行為。"
   boost_aggressive: "積極"
