@@ -119,7 +119,8 @@ migration or copying from the limiter is performed.
 - Adaptive Engine resets its pressure observations on a delivered Windows suspend/resume event.
 - Least-used selection samples its configured All, P-core, or E-core pool and changes the selected mask only after
   the existing rebalance interval or a meaningful load improvement. Fixed topology and custom
-  selections do not rebalance.
+  selections do not rebalance. Least-used selection requires a fresh load interval after sampling
+  pauses.
 - Existing throttling, priority, CPU Set, affinity, and power-plan state is restored when its
   claim is released or Winderust shuts down. The watchdog independently restores committed
   externally persistent state after an abnormal exit.

@@ -265,6 +265,15 @@ impl PerProcessorUsageMonitor {
         self.sample_counters(read_processor_cpu_times())
     }
 
+    #[cfg(test)]
+    pub(crate) fn sample_busy_processor_for_test(&mut self, user: u64) -> Option<Vec<f32>> {
+        self.sample_counters(Some(vec![CpuTimeCounters {
+            idle: 0,
+            kernel: 0,
+            user,
+        }]))
+    }
+
     fn sample_counters(&mut self, current: Option<Vec<CpuTimeCounters>>) -> Option<Vec<f32>> {
         let Some(current) = current.filter(|times| !times.is_empty()) else {
             self.previous_times = None;

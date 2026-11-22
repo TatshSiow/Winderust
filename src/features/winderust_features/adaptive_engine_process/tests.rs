@@ -765,7 +765,15 @@ fn reset_pressure_observations_requires_fresh_cpu_intervals() {
         .unwrap()
         .selected = true;
 
+    let monitor = &mut observations.manager.per_processor_usage;
+    assert!(monitor.sample_busy_processor_for_test(0).is_none());
+    assert!(monitor.sample_busy_processor_for_test(100).is_some());
+
     observations.manager.reset_pressure_observations();
+
+    let monitor = &mut observations.manager.per_processor_usage;
+    assert!(monitor.sample_busy_processor_for_test(200).is_none());
+    assert!(monitor.sample_busy_processor_for_test(300).is_some());
 
     assert!(observations.manager.foreground_cpu_sample.is_none());
     assert!(!observations

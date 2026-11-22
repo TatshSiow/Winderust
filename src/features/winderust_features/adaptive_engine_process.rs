@@ -245,6 +245,7 @@ impl AdaptiveEngineProcessManager {
         self.foreground_cpu_sample = None;
         self.tracked_processes.clear();
         self.background_pressure_active = false;
+        self.per_processor_usage = PerProcessorUsageMonitor::default();
     }
 
     pub fn update(
@@ -629,6 +630,16 @@ impl AdaptiveEngineProcessManager {
             .as_ref()
             .map(|value| value.as_deref().map_err(String::as_str));
         let mut allocation_error = None;
+        let needs_load = (cpu_allocation_applies
+            && settings.background_processor_selection.uses_percentage())
+            || (dynamic_resource_zones_apply
+                && settings
+                    .dynamic_resource_zone_settings
+                    .background_processor_selection
+                    .uses_percentage());
+        if !needs_load {
+            self.per_processor_usage = PerProcessorUsageMonitor::default();
+        }
         if background_pressure_applies || dynamic_resource_zones_apply {
             if cpu_pressure_restraint_applies {
                 for (process_id, (_, tier)) in &restrainable_processes {
@@ -698,13 +709,6 @@ impl AdaptiveEngineProcessManager {
                         )
                     });
             allocation_error = limiter_error.clone().or_else(|| zone_error.clone());
-            let needs_load = (cpu_allocation_applies
-                && settings.background_processor_selection.uses_percentage())
-                || (dynamic_resource_zones_apply
-                    && settings
-                        .dynamic_resource_zone_settings
-                        .background_processor_selection
-                        .uses_percentage());
             let usages = needs_load
                 .then(|| self.per_processor_usage.sample())
                 .flatten();
