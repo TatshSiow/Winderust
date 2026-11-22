@@ -1460,8 +1460,7 @@ impl WinderustApp {
                     return Task::none();
                 };
                 let Some(path) = path.to_str() else {
-                    self.error_message =
-                        t!("instance_balancing.unsupported_unicode_path").to_string();
+                    self.error_message = t!("common.unsupported_unicode_path").to_string();
                     return Task::none();
                 };
                 return self.update(Message::InstanceBalancing(
@@ -1622,12 +1621,10 @@ impl WinderustApp {
             Message::ExecutableChosen(page, profile, path) => {
                 if profile == self.power_source {
                     if let Some(path) = path {
-                        if page == Page::InstanceLimits && path.to_str().is_none() {
-                            self.error_message =
-                                t!("instance_limits.unsupported_unicode_path").to_string();
+                        let Ok(path) = path.into_os_string().into_string() else {
+                            self.error_message = t!("common.unsupported_unicode_path").to_string();
                             return Task::none();
-                        }
-                        let path = path.to_string_lossy().into_owned();
+                        };
                         if let Some(kind) = priority_kind(page) {
                             return self.update(Message::Priority(
                                 kind,

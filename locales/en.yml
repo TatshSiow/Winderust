@@ -9,7 +9,6 @@ instance_balancing:
   empty: "No Instance Balancing rules configured."
   edit_rule: "Edit Instance Balancing rule"
   invalid: "Choose a supported absolute executable path. Each path can have only one rule. Winderust and protected system apps cannot be selected."
-  unsupported_unicode_path: "The executable path contains invalid Unicode and cannot be selected."
   conflict: "Equivalent executable paths cannot have separate Instance Balancing rules."
   changed: "Instance Balancing withdrew the plan because its context or membership changed."
   missing_live: "A previously observed live instance is missing from the process catalog."
@@ -50,7 +49,6 @@ instance_limits:
   add_rule: "Add Instance Limits rule"
   edit_rule: "Edit Instance Limits rule"
   invalid: "Choose a supported absolute executable path and a maximum from 1 to 4294967295. Each path can have only one rule. Winderust and protected system apps cannot be selected."
-  unsupported_unicode_path: "The executable path contains invalid Unicode and cannot be selected."
   incomplete: "Count incomplete"
   at_least: "At least %{count} / %{maximum}"
   unknown: "Unknown"
@@ -143,6 +141,7 @@ nav:
   about: "About"
 
 common:
+  unsupported_unicode_path: "The executable path contains invalid Unicode and cannot be selected."
   export_active_settings: "Choose a different file. Winderust uses this file for its active settings."
   preset_details: "Preset details"
   rule_details: "Rule details"
