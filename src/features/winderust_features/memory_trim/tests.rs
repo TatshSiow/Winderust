@@ -155,6 +155,29 @@ fn automatic_trim_preserves_native_path_and_restarts_on_identity_change() {
 }
 
 #[test]
+fn low_pressure_during_manual_trim_restarts_automatic_idle_sampling() {
+    let mut manager = MemoryTrimManager::default();
+    let processes = batch_processes(1);
+    let start = Instant::now();
+    let mut run = |mode, elapsed_seconds, load| {
+        run_batch_pass(
+            &mut manager,
+            &processes,
+            mode,
+            BatchTestPlatform::new(start + Duration::from_secs(elapsed_seconds), 0),
+            load,
+        )
+    };
+
+    assert_eq!(run(MemoryTrimMode::Automatic, 0, 90).trimmed_processes, 0);
+    let manual = run(MemoryTrimMode::Manual, 1, 79);
+    assert_eq!(manual.status, MemoryTrimStatus::ManualCompleted);
+    assert_eq!(manual.trimmed_processes, 1);
+    assert_eq!(run(MemoryTrimMode::Automatic, 2, 90).trimmed_processes, 0);
+    assert_eq!(run(MemoryTrimMode::Automatic, 3, 90).trimmed_processes, 1);
+}
+
+#[test]
 fn automatic_trim_defers_after_failed_attempts_and_rechecks_pressure() {
     let mut manager = MemoryTrimManager::default();
     let limit = AUTOMATIC_TRIM_ATTEMPT_LIMIT;

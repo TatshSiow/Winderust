@@ -239,8 +239,11 @@ impl MemoryTrimManager {
         };
 
         let threshold = settings.system_memory_load_threshold_percent.min(100);
-        if mode == MemoryTrimMode::Automatic && memory_load_percent < threshold {
+        let below_threshold = memory_load_percent < threshold;
+        if below_threshold {
             self.break_idle_intervals();
+        }
+        if mode == MemoryTrimMode::Automatic && below_threshold {
             return MemoryTrimSnapshot {
                 enabled: true,
                 memory_load_percent: Some(memory_load_percent),
