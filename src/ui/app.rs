@@ -3476,7 +3476,11 @@ impl WinderustApp {
                 .map(|m| m.map(|m| Message::Allocation(cpu_allocation::Kind::Hard, m))),
             Page::CpuLimiter => self
                 .cpu_limiter
-                .modal(&self.candidates, self.cpu_limiter_rule_status())
+                .modal(
+                    &self.candidates,
+                    self.settings.global().general.enabled,
+                    self.cpu_limiter_rule_status(),
+                )
                 .map(|modal| modal.map(Message::CpuLimiter)),
             Page::AdvancedPowerPlanTuning => self
                 .power_tuning

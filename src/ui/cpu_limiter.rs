@@ -440,12 +440,13 @@ impl CpuLimiter {
     pub(super) fn modal<'a>(
         &'a self,
         candidates: &[super::app_picker::Candidate],
+        master_enabled: bool,
         status: Option<&CpuLimiterSnapshot>,
     ) -> Option<Element<'a, Message>> {
         let (index, settings) = self.draft.as_ref()?;
         let index = *index;
         let rule = settings.rules.get(index)?;
-        let key = rule_status(rule, settings.enabled, status);
+        let key = rule_status(rule, master_enabled && settings.enabled, status);
         let mut details = column![row![
             text(t!("common.status").to_string()).width(Fill),
             iced::widget::container(text(t!(key).to_string()))
