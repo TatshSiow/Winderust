@@ -21,7 +21,7 @@ use crate::{
     cpu::{process_cpu_usage_percent, ProcessCpuSample},
     foreground::{
         contains_process_name, executable_grouping_key, process_executable_path,
-        process_list::observed_process_executable_path, same_executable_path,
+        process_list::catalog_process_executable_path, same_executable_path,
         should_ignore_foreground_process, EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS,
     },
     rules::{execution_failure_suppression_threshold, ExecutionFailureTracker},
@@ -216,14 +216,14 @@ impl MemoryTrimManager {
             };
         }
 
-        if foreground_process_id.is_none() {
+        let Some(foreground_process_id) = foreground_process_id else {
             self.break_idle_intervals();
             return MemoryTrimSnapshot {
                 enabled: true,
                 status: MemoryTrimStatus::ForegroundUnknown,
                 ..Default::default()
             };
-        }
+        };
 
         let memory_load_percent = match read_memory_load() {
             Ok(percent) => percent,
@@ -272,17 +272,8 @@ impl MemoryTrimManager {
         };
 
         let scanned_processes = processes.len();
-        let Some(foreground_executable_path) = processes
-            .iter()
-            .find(|process| Some(process.id) == foreground_process_id)
-            .and_then(|process| {
-                process.creation_time?;
-                process
-                    .image_path
-                    .clone()
-                    .or_else(|| observed_process_executable_path(process))
-            })
-            .filter(|path| path.is_absolute())
+        let Some(foreground_executable_path) =
+            catalog_process_executable_path(&processes, foreground_process_id)
         else {
             self.break_idle_intervals();
             return MemoryTrimSnapshot {
@@ -321,7 +312,7 @@ impl MemoryTrimManager {
                 true,
                 process.id,
                 &executable_path,
-                foreground_process_id,
+                Some(foreground_process_id),
                 Some(&foreground_executable_path),
             ) || executable_path
                 .to_str()

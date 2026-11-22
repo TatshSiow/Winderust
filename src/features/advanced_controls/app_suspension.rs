@@ -28,7 +28,7 @@ use crate::audio_activity::active_audio_process_ids;
 use crate::config::AppSuspensionSettings;
 use crate::foreground::{
     contains_process_name, process_executable_path,
-    process_list::{normalize_path_slashes, unicode_case_match},
+    process_list::{catalog_process_executable_path, normalize_path_slashes, unicode_case_match},
     process_session_id, same_executable_path, same_process_name, ProcessActionTarget,
 };
 use crate::{
@@ -537,10 +537,18 @@ impl AppSuspensionManager {
             }
         };
 
-        let foreground_executable_path = processes
-            .iter()
-            .find(|process| process.id == foreground_process_id)
-            .and_then(process_executable_path);
+        let Some(foreground_executable_path) =
+            catalog_process_executable_path(&processes, foreground_process_id)
+        else {
+            return self.pause_for_unknown_observations(
+                controller,
+                settings,
+                AppSuspensionStatus::ForegroundUnknown,
+                failed_actions,
+                None,
+                action_log,
+            );
+        };
         let delay = Duration::from_secs(settings.background_delay_seconds);
         let mut target_processes = BTreeMap::new();
         let mut running_apps = BTreeSet::new();
@@ -605,7 +613,7 @@ impl AppSuspensionManager {
                 process.id,
                 Path::new(&executable_path),
                 foreground_process_id,
-                foreground_executable_path.as_deref(),
+                &foreground_executable_path,
             ) {
                 continue;
             }
@@ -2450,19 +2458,19 @@ mod tests {
             42,
             Path::new(r"C:\Other\helper.exe"),
             42,
-            Some(Path::new(r"C:\Apps\app.exe")),
+            Path::new(r"C:\Apps\app.exe"),
         ));
         assert!(should_skip_foreground_process(
             99,
             Path::new(r"c:/apps/APP.exe"),
             42,
-            Some(Path::new(r"C:\Apps\app.exe")),
+            Path::new(r"C:\Apps\app.exe"),
         ));
         assert!(!should_skip_foreground_process(
             99,
             Path::new(r"C:\Other\app.exe"),
             42,
-            Some(Path::new(r"C:\Apps\app.exe")),
+            Path::new(r"C:\Apps\app.exe"),
         ));
     }
 
@@ -3021,13 +3029,13 @@ mod tests {
             );
         }
 
-        let mut observations = CycleObservations::default();
+        let mut observations = CycleObservations::with_processes(Vec::new());
         let status = manager.update(
             &mut controller,
             &settings,
             true,
             false,
-            None,
+            Some(u32::MAX),
             &[],
             &mut observations,
             &mut log,

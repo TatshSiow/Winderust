@@ -524,6 +524,9 @@ Read the relevant section before changing feature policy, ownership, restoration
   Rulesets require an executable path representable in settings. Properties and
   Open process location use the original native path. Creation time is optional
   for these views and file commands.
+- Automatic rules and Suspend on the App Suspension page require an absolute
+  foreground image for the catalog process generation. An unavailable image pauses
+  new freezes and restarts background grace when observations return.
 - App Suspension releases a rule-owned freeze when its stored executable path
   no longer matches an enabled rule, even if focus, session, or process
   observations are unavailable. Process List freezes have separate ownership.
@@ -536,14 +539,15 @@ Read the relevant section before changing feature policy, ownership, restoration
   a matching enabled rule in the current saved power profile. Temporarily
   resume remains available for a matching
   known freeze regardless of the profile being edited.
-- App Suspension is a complete typed cutover through `src/control/suspension.rs`. Automatic rules,
-  App-page Freeze, and Process List Suspend/Resume share the RuntimeCore controller; feature code
-  owns grace/wake/reporting policy only. Automatic rules require executable paths representable
-  in settings. Foreground release and saved-rule Resume compare native paths held by the
-  controller. Process List freezes keep their exact process status. Only paths representable
-  in settings contribute to saved-rule indicators and grace intervals. The controller retains
-  failed thaw/finalization state for
-  bounded retry and explicit shutdown. The crash helper opens the exact named job before freeze and
+- Automatic rules, Suspend on the App Suspension page, and Process List
+  Suspend/Resume share the controller in `src/control/suspension.rs`. Feature
+  code owns grace, wake, and reporting policy. Automatic rules require executable
+  paths representable in settings. Foreground release and saved-rule Resume
+  compare native paths held by the controller. Process List freezes keep their
+  exact process status. Only paths representable in settings contribute to
+  saved-rule indicators and grace intervals. The controller retains failed
+  thaw/finalization state for bounded retry and explicit shutdown. The crash
+  helper opens the exact named job before freeze and
   thaws that retained job even if the recorded root exits while inherited children remain. Raw Job
   Object creation, assignment, and membership live in `src/platform/windows/job.rs`; freeze/thaw
   and the shared undocumented layout live in `src/platform/windows/suspension.rs`.

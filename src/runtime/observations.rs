@@ -821,7 +821,7 @@ mod tests {
         let _guard = TEST_LOCK.lock().unwrap();
 
         fn raw_processes() -> Result<Vec<ProcessInfo>, String> {
-            Ok(vec![ProcessInfo {
+            let background = ProcessInfo {
                 id: 42,
                 creation_time: Some(1),
                 parent_id: None,
@@ -832,13 +832,22 @@ mod tests {
                 can_set_information: true,
                 name: "test.exe".to_owned(),
                 image_path: None,
-            }])
+            };
+            let foreground = ProcessInfo {
+                id: 7,
+                name: "foreground.exe".to_owned(),
+                ..background.clone()
+            };
+            Ok(vec![background, foreground])
         }
 
         let path = r"C:\Apps\test.exe";
         let mut observations = CycleObservations::with_sources(ObservationSources {
             processes: raw_processes,
-            enrich_process_paths: enrich_paths,
+            enrich_process_paths: |processes| {
+                enrich_paths(processes);
+                processes[1].image_path = Some(PathBuf::from(r"C:\Apps\foreground.exe"));
+            },
             foreground_process_id: || Some(7),
             process_from_id: foreground_process,
             visible_window_process_ids: visible_windows,

@@ -869,9 +869,15 @@ Implementation paths:
 User-facing behavior:
 
 - Winderust finds selected background apps from `Suspendable Apps`.
+- Automatic rules and Suspend on the App Suspension page require a foreground
+  image for the catalog generation. `catalog_process_executable_path` in
+  `src/foreground/process_list.rs` uses the cached native path when available or
+  checks creation time and reads the image on one handle. If the image cannot be
+  established, new freezes pause.
+  [GetProcessTimes](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getprocesstimes), [QueryFullProcessImageNameW](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-queryfullprocessimagenamew)
 - After the configured background delay, Winderust opens and revalidates PID, creation time, executable path, session, service account, critical/PPL state, and job-assignment rights on the same target handle before assigning an instance-bound named Windows Job Object.
 - It freezes that job with `SetInformationJobObject` and thaws the same job when the focused or clicked app needs to recover, when the process is removed from the list, App Suspension is disabled, automation is disabled, Winderust exits, or the recovery watchdog observes abnormal termination.
-- Automatic rules, App-page Freeze, and Process List Suspend/Resume all use typed RuntimeCore commands and the same controller. New acquisition honors the current cross-session setting; restoration of an already-owned exact job does not reapply that acquisition gate.
+- Automatic rules, Suspend on the App Suspension page, and Process List Suspend/Resume all use typed RuntimeCore commands and the same controller. New acquisition honors the current cross-session setting; restoration of an already-owned exact job does not reapply that acquisition gate.
 - Process List Resume treats a group member without an App Suspension claim as already resumed after verifying its live identity and eligibility. That read-only check leaves other suspension owners and manual thaw timers alone.
 - Windows keeps a Job Object alive until both its last handle is closed and all associated processes exit. A released live process therefore remains in its exact named, thawed job. A later Suspend may reuse that existing name only after `IsProcessInJob` proves the exact target is already a member; an unrelated name collision fails closed.
 - A failed thaw retains the frozen job for bounded retry. If thaw succeeds but recovery-journal cleanup fails, status changes to thawed while a cleanup-only record remains; later App Suspension passes reconcile both pending states without another user action. The controller does not falsely report the process as frozen or reapply the OS mutation during cleanup retry, and the feature prunes its exact record once compensation removes controller ownership.

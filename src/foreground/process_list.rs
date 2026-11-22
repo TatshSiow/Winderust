@@ -995,6 +995,21 @@ fn is_system_process_name(name: &str) -> bool {
     name.trim().eq_ignore_ascii_case("[system process]")
 }
 
+/// Resolves an absolute image path for one generation in the process catalog.
+pub(crate) fn catalog_process_executable_path(
+    processes: &[ProcessInfo],
+    process_id: u32,
+) -> Option<Cow<'_, Path>> {
+    let process = processes.iter().find(|process| process.id == process_id)?;
+    process.creation_time?;
+    process
+        .image_path
+        .as_deref()
+        .map(Cow::Borrowed)
+        .or_else(|| observed_process_executable_path(process).map(Cow::Owned))
+        .filter(|path| path.is_absolute())
+}
+
 /// Reads the image only if the current handle still belongs to the observed process.
 pub(crate) fn observed_process_executable_path(process: &ProcessInfo) -> Option<PathBuf> {
     let expected_creation = process.creation_time?;

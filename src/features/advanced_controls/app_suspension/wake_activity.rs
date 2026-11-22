@@ -464,9 +464,8 @@ pub(super) fn should_skip_foreground_process(
     process_id: u32,
     executable_path: &Path,
     foreground_process_id: u32,
-    foreground_executable_path: Option<&Path>,
+    foreground_executable_path: &Path,
 ) -> bool {
     process_id == foreground_process_id
-        || foreground_executable_path
-            .is_some_and(|foreground_path| same_executable_path(executable_path, foreground_path))
+        || same_executable_path(executable_path, foreground_executable_path)
 }
