@@ -93,9 +93,42 @@ fn batch_processes(count: usize) -> Vec<ProcessInfo> {
         .collect()
 }
 
+fn batch_observations(processes: &[ProcessInfo], foreground_path: &str) -> CycleObservations {
+    let mut processes = processes.to_vec();
+    processes.push(ProcessInfo {
+        id: u32::MAX,
+        creation_time: Some(1),
+        parent_id: None,
+        session_id: None,
+        user_name: None,
+        is_service_account: None,
+        is_critical: Some(false),
+        can_set_information: true,
+        image_path: Some(foreground_path.into()),
+        name: "foreground.exe".to_owned(),
+    });
+    CycleObservations::with_processes(processes)
+}
+
 fn run_batch_pass(
     manager: &mut MemoryTrimManager,
     processes: &[ProcessInfo],
+    mode: MemoryTrimMode,
+    platform: BatchTestPlatform,
+    memory_load_percent: u8,
+) -> MemoryTrimSnapshot {
+    run_observed_batch_pass(
+        manager,
+        batch_observations(processes, r"C:\Foreground\foreground.exe"),
+        mode,
+        platform,
+        memory_load_percent,
+    )
+}
+
+fn run_observed_batch_pass(
+    manager: &mut MemoryTrimManager,
+    mut observations: CycleObservations,
     mode: MemoryTrimMode,
     platform: BatchTestPlatform,
     memory_load_percent: u8,
@@ -113,7 +146,7 @@ fn run_batch_pass(
         true,
         Some(u32::MAX),
         mode,
-        &mut CycleObservations::with_processes(processes.to_vec()),
+        &mut observations,
         &mut ActionLog::new(16),
         || Ok(memory_load_percent),
     )
@@ -152,6 +185,44 @@ fn automatic_trim_preserves_native_path_and_restarts_on_identity_change() {
     let new_generation = [run(&processes, 6), run(&processes, 7), run(&processes, 8)];
 
     assert_eq!([initial, changed_path, new_generation], [[0, 1, 0]; 3]);
+}
+
+#[test]
+fn unavailable_foreground_image_pauses_trim_and_breaks_idle_qualification() {
+    let mut manager = MemoryTrimManager::default();
+    let mut processes = batch_processes(1);
+    let background = r"C:\Apps\worker.exe";
+    let distinct_foreground = r"C:\Other\worker.exe";
+    processes[0].image_path = Some(background.into());
+    let start = Instant::now();
+    let mut run = |focus: Option<&str>, mode, seconds| {
+        let observations = focus.map_or_else(
+            || CycleObservations::with_processes(processes.clone()),
+            |path| batch_observations(&processes, path),
+        );
+        run_observed_batch_pass(
+            &mut manager,
+            observations,
+            mode,
+            BatchTestPlatform::new(start + Duration::from_secs(seconds), 0),
+            90,
+        )
+    };
+
+    let auto = MemoryTrimMode::Automatic;
+    let manual = MemoryTrimMode::Manual;
+    assert_eq!(run(Some(distinct_foreground), auto, 0).trimmed_processes, 0);
+
+    for (mode, seconds) in [(auto, 1), (manual, 2)] {
+        let paused = run(None, mode, seconds);
+        assert_eq!(paused.status, MemoryTrimStatus::ForegroundUnknown);
+        assert_eq!(paused.memory_load_percent, Some(90));
+        assert_eq!(paused.trimmed_processes, 0);
+    }
+
+    assert_eq!(run(Some(distinct_foreground), auto, 3).trimmed_processes, 0);
+    assert_eq!(run(Some(distinct_foreground), auto, 4).trimmed_processes, 1);
+    assert_eq!(run(Some(background), manual, 5).trimmed_processes, 0);
 }
 
 #[test]
@@ -425,7 +496,7 @@ fn trim_failure_suppression_preserves_native_executable_paths() {
             false,
             Some(u32::MAX),
             MemoryTrimMode::Manual,
-            &mut CycleObservations::with_processes(processes.to_vec()),
+            &mut batch_observations(processes, r"C:\Foreground\foreground.exe"),
             &mut log,
             || Ok(90),
         );

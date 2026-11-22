@@ -633,6 +633,7 @@ Implementation entry points:
 | API | Used for | Reference |
 | --- | --- | --- |
 | `GlobalMemoryStatusEx` | Reads overall physical-memory load and availability. | https://learn.microsoft.com/en-us/windows/win32/api/sysinfoapi/nf-sysinfoapi-globalmemorystatusex |
+| `GetProcessTimes`, `QueryFullProcessImageNameW` | Memory Trim uses the foreground image associated with the current catalog generation. When the catalog has no image, `src/foreground/process_list.rs::observed_process_executable_path` confirms the observed creation time and reads the image on one query handle. Trimming pauses if this image is unavailable. | [Times](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getprocesstimes) / [Image path](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-queryfullprocessimagenamew) |
 | `K32GetProcessMemoryInfo` | The typed command boundary measures before/after working-set reduction, not system RAM reclaimed; failed post-trim queries leave the reduction unknown. | https://learn.microsoft.com/en-us/windows/win32/api/psapi/nf-psapi-getprocessmemoryinfo |
 | `SetProcessWorkingSetSize` | `src/platform/windows/memory_trim.rs` alone passes `SIZE_T(-1)` for both bounds to remove as many pages as possible. `MemoryTrimController` supplies a handle with exact creation/path identity, critical/PPL, current-session policy, and `PROCESS_SET_QUOTA` validation immediately before the irreversible call. | https://learn.microsoft.com/en-us/windows/win32/api/memoryapi/nf-memoryapi-setprocessworkingsetsize |
 

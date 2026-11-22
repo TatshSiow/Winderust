@@ -21,8 +21,8 @@ use crate::{
     cpu::{process_cpu_usage_percent, ProcessCpuSample},
     foreground::{
         contains_process_name, executable_grouping_key, process_executable_path,
-        same_executable_path, should_ignore_foreground_process,
-        EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS,
+        process_list::observed_process_executable_path, same_executable_path,
+        should_ignore_foreground_process, EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS,
     },
     rules::{execution_failure_suppression_threshold, ExecutionFailureTracker},
     runtime::observations::CycleObservations,
@@ -272,12 +272,26 @@ impl MemoryTrimManager {
         };
 
         let scanned_processes = processes.len();
-        let foreground_executable_path = foreground_process_id.and_then(|id| {
-            processes
-                .iter()
-                .find(|process| process.id == id)
-                .and_then(process_executable_path)
-        });
+        let Some(foreground_executable_path) = processes
+            .iter()
+            .find(|process| Some(process.id) == foreground_process_id)
+            .and_then(|process| {
+                process.creation_time?;
+                process
+                    .image_path
+                    .clone()
+                    .or_else(|| observed_process_executable_path(process))
+            })
+            .filter(|path| path.is_absolute())
+        else {
+            self.break_idle_intervals();
+            return MemoryTrimSnapshot {
+                enabled: true,
+                memory_load_percent: Some(memory_load_percent),
+                status: MemoryTrimStatus::ForegroundUnknown,
+                ..Default::default()
+            };
+        };
 
         let mut target_processes = BTreeMap::new();
         let mut observed_tracked_processes = BTreeSet::new();
@@ -308,7 +322,7 @@ impl MemoryTrimManager {
                 process.id,
                 &executable_path,
                 foreground_process_id,
-                foreground_executable_path.as_deref(),
+                Some(&foreground_executable_path),
             ) || executable_path
                 .to_str()
                 .is_some_and(|path| settings.exclusion_enabled_for(path))

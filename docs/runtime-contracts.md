@@ -479,6 +479,10 @@ Read the relevant section before changing feature policy, ownership, restoration
 
 ## Memory Trim
 
+- Automatic and manual trimming require an observed foreground executable path
+  for the catalog process generation. They skip the foreground PID and other
+  instances of that executable. An unavailable foreground image pauses trimming
+  and breaks idle qualification without rearming already-trimmed processes.
 - Automatic trimming requires current pressure, working-set size, and sustained
   observed CPU idleness. Missing/invalid samples, low pressure, and a working set
   below the size threshold break idle qualification without rearming a process
