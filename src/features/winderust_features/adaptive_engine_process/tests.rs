@@ -311,11 +311,8 @@ fn adaptive_engine_process_selection_can_replace_cooler_selected_process() {
         tier: AdaptiveEngineProcessTier::Background,
         previous_cpu_time: None,
         last_usage_tenths: Some(100),
-        high_since: Some(now - Duration::from_secs(60)),
         below_since: None,
         active_since: Some(now - Duration::from_secs(60)),
-        decision: Some(AdaptiveEngineProcessDecision::LowerPriority),
-        active: true,
         selected: true,
     };
     let hotter = AdaptiveEngineProcessProcess {
@@ -325,11 +322,8 @@ fn adaptive_engine_process_selection_can_replace_cooler_selected_process() {
         tier: AdaptiveEngineProcessTier::Background,
         previous_cpu_time: None,
         last_usage_tenths: Some(900),
-        high_since: Some(now),
         below_since: None,
         active_since: Some(now),
-        decision: Some(AdaptiveEngineProcessDecision::LowerPriority),
-        active: true,
         selected: false,
     };
 
@@ -364,11 +358,8 @@ fn adaptive_engine_process_candidate_score_uses_only_cpu_and_selection_stickines
         tier: AdaptiveEngineProcessTier::Background,
         previous_cpu_time: None,
         last_usage_tenths: Some(100),
-        high_since: Some(now),
         below_since: None,
         active_since: Some(now),
-        decision: Some(AdaptiveEngineProcessDecision::LowerPriority),
-        active: true,
         selected,
     };
 
@@ -778,9 +769,13 @@ fn adaptive_cpu_sample_gap_discards_only_the_targets_baseline_and_recovery() {
         observations.manager.tracked_processes[&99].below_since,
         unrelated.below_since
     );
-    assert!(observations.manager.tracked_processes[&99].active);
+    assert!(observations.manager.tracked_processes[&99]
+        .active_since
+        .is_some());
     assert!(observations.sample(10, 90_000_000).is_none());
-    assert!(!observations.manager.tracked_processes[&42].active);
+    assert!(observations.manager.tracked_processes[&42]
+        .active_since
+        .is_none());
     assert!(observations.manager.tracked_processes[&42]
         .below_since
         .is_none());
@@ -811,12 +806,9 @@ fn adaptive_invalid_cpu_delta_restarts_the_incident_from_a_fresh_interval() {
             .sample(invalid_seconds, invalid_cpu_time)
             .is_none());
         let state = &observations.manager.tracked_processes[&42];
-        assert!(!state.active);
         assert!(!state.selected);
-        assert!(state.high_since.is_none());
         assert!(state.below_since.is_none());
         assert!(state.active_since.is_none());
-        assert!(state.decision.is_none());
         assert!(state.last_usage_tenths.is_none());
 
         assert!(observations
@@ -847,7 +839,9 @@ fn adaptive_replacement_identity_does_not_reuse_the_previous_cpu_incident() {
         observations.creation_time = creation;
         observations.path = path;
         assert!(observations.sample(2, 20_000_000).is_none());
-        assert!(!observations.manager.tracked_processes[&42].active);
+        assert!(observations.manager.tracked_processes[&42]
+            .active_since
+            .is_none());
         assert!(observations.sample(3, 30_000_000).is_some());
         assert_eq!(
             observations.manager.tracked_processes[&42].active_since,
@@ -936,7 +930,9 @@ fn adaptive_complete_cpu_intervals_preserve_hold_then_priority_only_recovery() {
             expected
         );
     }
-    assert!(!observations.manager.tracked_processes[&42].active);
+    assert!(observations.manager.tracked_processes[&42]
+        .active_since
+        .is_none());
 }
 
 #[test]

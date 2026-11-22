@@ -156,21 +156,15 @@ struct AdaptiveEngineProcessProcess {
     tier: AdaptiveEngineProcessTier,
     previous_cpu_time: Option<ProcessCpuSample>,
     last_usage_tenths: Option<u16>,
-    high_since: Option<Instant>,
     below_since: Option<Instant>,
     active_since: Option<Instant>,
-    decision: Option<AdaptiveEngineProcessDecision>,
-    active: bool,
     selected: bool,
 }
 
 impl AdaptiveEngineProcessProcess {
     fn clear_restraint(&mut self) {
-        self.high_since = None;
         self.below_since = None;
         self.active_since = None;
-        self.decision = None;
-        self.active = false;
         self.selected = false;
     }
 }
@@ -821,9 +815,8 @@ impl AdaptiveEngineProcessManager {
                 .map(|candidate| candidate.process_id)
                 .collect::<BTreeSet<_>>();
             for (process_id, process) in &mut self.tracked_processes {
-                if process.active && !selected_ids.contains(process_id) {
+                if process.active_since.is_some() && !selected_ids.contains(process_id) {
                     process.selected = false;
-                    process.decision = None;
                 }
             }
 
@@ -840,7 +833,6 @@ impl AdaptiveEngineProcessManager {
                 };
                 if let Some(process) = self.tracked_processes.get_mut(&candidate.process_id) {
                     process.selected = true;
-                    process.decision = Some(candidate.decision);
                 }
                 if settings.cpu_pressure_restraint_enabled && settings.memory_priority_enabled {
                     let (value, foreground, visible_window) = memory_priority_policy(
@@ -1876,11 +1868,8 @@ impl AdaptiveEngineProcessManager {
                 tier,
                 previous_cpu_time: None,
                 last_usage_tenths: None,
-                high_since: None,
                 below_since: None,
                 active_since: None,
-                decision: None,
-                active: false,
                 selected: false,
             }
         });
@@ -1901,28 +1890,21 @@ impl AdaptiveEngineProcessManager {
         state.last_usage_tenths = Some(percent_tenths(usage));
         if usage >= threshold {
             state.below_since = None;
-            state.high_since.get_or_insert(now);
-            if !state.active {
-                state.active = true;
-                state.active_since = Some(now);
-            }
+            state.active_since.get_or_insert(now);
             let decision = adaptive_engine_process_process_decision(settings, tier);
-            state.decision = Some(decision);
             return Some(adaptive_engine_process_candidate(
                 process_id, state, decision, tier,
             ));
         }
 
-        if !state.active || !state.selected {
+        let Some(active_since) = state.active_since.filter(|_| state.selected) else {
             state.clear_restraint();
             return None;
-        }
+        };
 
-        let active_since = state.active_since.unwrap_or(now);
         if usage > recovery_threshold || now.duration_since(active_since) < cpu_restraint_time {
             state.below_since = None;
             let decision = adaptive_engine_process_process_decision(settings, tier);
-            state.decision = Some(decision);
             return Some(adaptive_engine_process_candidate(
                 process_id, state, decision, tier,
             ));
@@ -1930,7 +1912,6 @@ impl AdaptiveEngineProcessManager {
 
         let below_since = *state.below_since.get_or_insert(now);
         if now.duration_since(below_since) < cpu_recovery_time {
-            state.decision = Some(AdaptiveEngineProcessDecision::LowerPriority);
             return Some(adaptive_engine_process_candidate(
                 process_id,
                 state,
