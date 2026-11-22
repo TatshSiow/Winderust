@@ -10,10 +10,11 @@ use super::super::widgets::{self, action_button, pick_list, setting_row, setting
 use super::PlanCatalog;
 use crate::application::SettingsEditor;
 use crate::config::*;
+use crate::features::power_plan_control::by_running_app;
 use crate::foreground::executable_path_key;
 use crate::ui::process_rules::{
-    new_by_focus_rule, new_by_running_app_rule, new_cpu_limiter_rule, process_setting_matches,
-    selector_path_matches,
+    can_add_exact_process_candidate, new_by_focus_rule, new_by_running_app_rule,
+    new_cpu_limiter_rule, process_setting_matches, selector_path_matches,
 };
 use iced::widget::{column, container, row, text};
 use iced::{Element, Fill};
@@ -152,6 +153,9 @@ pub(super) fn update(s: &mut SettingsEditor, path: &str, m: Message) -> Option<S
             }
         }
         Message::Power(focus, guid) => {
+            if !focus && guid.is_some() && !can_set_running_app_plan(image_path) {
+                return None;
+            }
             macro_rules! update_path_plan {
                 ($field:ident, $new_rule:ident) => {{
                     let index = s
@@ -280,6 +284,10 @@ pub(super) fn update(s: &mut SettingsEditor, path: &str, m: Message) -> Option<S
     }
     None
 }
+fn can_set_running_app_plan(path: &str) -> bool {
+    can_add_exact_process_candidate(path, |_| false, by_running_app::is_builtin_excluded)
+}
+
 fn limiter_tier(tier: Tier) -> cpu_limiter::Tier {
     match tier {
         Tier::Focus => cpu_limiter::Tier::Focus,
@@ -345,6 +353,7 @@ pub(super) fn view<'a>(
     if let PlanCatalog::Loaded(plans) = plans {
         let mut power = Vec::new();
         for focus in [true, false] {
+            let can_set = focus || can_set_running_app_plan(path);
             let selected = if focus {
                 s.by_focus
                     .rules
@@ -352,11 +361,13 @@ pub(super) fn view<'a>(
                     .find(|r| r.enabled && selector_path_matches(&r.selector, path))
                     .and_then(|r| r.power_plan_guid.clone())
             } else {
-                s.by_running_app
-                    .rules
-                    .iter()
-                    .find(|r| r.enabled && selector_path_matches(&r.selector, path))
-                    .and_then(|r| r.power_plan_guid.clone())
+                let saved = s.by_running_app.rules.iter().find(|rule| {
+                    (rule.enabled || !can_set) && selector_path_matches(&rule.selector, path)
+                });
+                if !can_set && saved.is_none() {
+                    continue;
+                }
+                saved.and_then(|rule| rule.power_plan_guid.clone())
             };
             let mut options = vec![Plan(
                 None,
@@ -380,6 +391,24 @@ pub(super) fn view<'a>(
                         )
                     })
                 });
+            if !can_set {
+                let label =
+                    selected.map_or_else(|| t!("common.unavailable").into_owned(), |plan| plan.1);
+                power.push(
+                    setting_row(
+                        "nav.by_running_app",
+                        row![
+                            text(label).wrapping(text::Wrapping::WordOrGlyph),
+                            action_button(t!("common.remove").to_string())
+                                .on_press(Message::Power(false, None)),
+                        ]
+                        .spacing(design::space::SMALL)
+                        .align_y(iced::Center),
+                    )
+                    .into(),
+                );
+                continue;
+            }
             power.push(
                 setting_row(
                     if focus {
@@ -642,6 +671,26 @@ mod tests {
             settings.by_focus.rules[0].power_plan_guid.as_deref(),
             Some("name-plan")
         );
+    }
+
+    #[test]
+    fn details_can_remove_but_not_set_a_plan_for_an_excluded_running_app() {
+        let path = r"C:\Apps\searchhost.exe";
+        let mut settings = Settings::default();
+        settings
+            .by_running_app
+            .rules
+            .push(new_by_running_app_rule(path, Some("old-plan".into())));
+        let mut editor = SettingsEditor::with_settings(settings);
+        let set_plan = Message::Power(false, Some("new-plan".into()));
+        let _ = update(&mut editor, path, set_plan.clone());
+        assert_eq!(
+            editor.by_running_app.rules[0].power_plan_guid.as_deref(),
+            Some("old-plan")
+        );
+        let _ = update(&mut editor, path, Message::Power(false, None));
+        let _ = update(&mut editor, path, set_plan);
+        assert!(editor.by_running_app.rules.is_empty());
     }
 
     #[test]
