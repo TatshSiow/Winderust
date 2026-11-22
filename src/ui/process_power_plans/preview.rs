@@ -9,14 +9,15 @@ use rust_i18n::t;
 
 use crate::{
     config::{ByRunningAppRule, ByRunningAppSettings, Settings},
-    control::instance_limits::validate_path,
     features::power_plan_control::by_running_app::{
         preview_matches, rule_name, ByRunningAppPreview, ByRunningAppPreviewMatch,
         ByRunningAppPreviewRow,
     },
     power::PowerPlan,
     rules::decision_engine::matching_by_focus_rule,
-    ui::{app_picker, design, scrolling::scrollable, tasks, widgets},
+    ui::{
+        app_picker, design, process_rules::power_rule_path, scrolling::scrollable, tasks, widgets,
+    },
 };
 
 #[derive(Debug, Clone)]
@@ -220,17 +221,14 @@ impl Preview {
 
 impl FocusPreview {
     fn checkable_path(&self) -> Option<&Path> {
-        let input = self.path.trim();
-        let input = input
-            .strip_prefix('"')
-            .and_then(|path| path.strip_suffix('"'))
-            .unwrap_or(input);
-        (self
+        if self
             .check
             .as_ref()
-            .is_none_or(|check| check.result.is_some())
-            && validate_path(input).is_ok())
-        .then(|| Path::new(input))
+            .is_some_and(|check| check.result.is_none())
+        {
+            return None;
+        }
+        power_rule_path(&self.path).map(Path::new)
     }
 
     fn view(&self, plans: &[PowerPlan]) -> Element<'_, PreviewMessage> {

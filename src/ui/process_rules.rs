@@ -80,12 +80,25 @@ pub(crate) fn process_setting_matches(configured_process: &str, process_name: &s
         )
 }
 
-pub(super) fn can_add_by_focus_process(settings: &ByFocusSettings, process: &str) -> bool {
-    validate_path(process.trim()).is_ok()
-        && !settings
-            .rules
-            .iter()
-            .any(|rule| selector_path_matches(&rule.selector, process))
+pub(super) fn power_rule_path(input: &str) -> Option<&str> {
+    let input = input.trim();
+    let path = input
+        .strip_prefix('"')
+        .and_then(|path| path.strip_suffix('"'))
+        .unwrap_or(input);
+    validate_path(path).is_ok().then_some(path)
+}
+
+pub(super) fn addable_by_focus_path<'a>(
+    settings: &ByFocusSettings,
+    input: &'a str,
+) -> Option<&'a str> {
+    let path = power_rule_path(input)?;
+    (!settings
+        .rules
+        .iter()
+        .any(|rule| selector_path_matches(&rule.selector, path)))
+    .then_some(path)
 }
 
 pub(super) fn can_add_by_focus_name(settings: &ByFocusSettings, name: &str) -> bool {
@@ -106,21 +119,22 @@ pub(crate) fn new_by_focus_rule(process: &str, power_plan_guid: Option<String>) 
     }
 }
 
-pub(super) fn can_add_by_running_app_process(
+pub(super) fn addable_by_running_app_path<'a>(
     settings: &ByRunningAppSettings,
-    process: &str,
-) -> bool {
-    validate_path(process.trim()).is_ok()
-        && can_add_process_candidate(
-            process,
-            |process| {
-                settings
-                    .rules
-                    .iter()
-                    .any(|rule| selector_path_matches(&rule.selector, process))
-            },
-            crate::features::power_plan_control::by_running_app::is_builtin_excluded,
-        )
+    input: &'a str,
+) -> Option<&'a str> {
+    let path = power_rule_path(input)?;
+    can_add_process_candidate(
+        path,
+        |path| {
+            settings
+                .rules
+                .iter()
+                .any(|rule| selector_path_matches(&rule.selector, path))
+        },
+        crate::features::power_plan_control::by_running_app::is_builtin_excluded,
+    )
+    .then_some(path)
 }
 
 pub(super) fn selector_path_matches(selector: &ExecutableSelector, path: &str) -> bool {

@@ -86,7 +86,7 @@ impl Editor {
         };
         // Both pages have the same rule editor, but keep their distinct typed settings and policies.
         macro_rules! update_rules {
-            ($field:ident, $can_add_path:ident, $can_add_name:ident, $new_rule:ident, $rule:ident) => {{
+            ($field:ident, $addable_path:ident, $can_add_name:ident, $new_rule:ident, $rule:ident) => {{
                 match message {
                     Message::Enabled(value) => {
                         if settings.$field.enabled != value {
@@ -99,11 +99,8 @@ impl Editor {
                     Message::Browse => {}
                     Message::Preview(_) => unreachable!("preview messages do not edit rules"),
                     Message::Add => {
-                        if $can_add_path(&settings.$field, &self.path) {
-                            settings
-                                .$field
-                                .rules
-                                .push($new_rule(self.path.trim(), active_plan()));
+                        if let Some(path) = $addable_path(&settings.$field, &self.path) {
+                            settings.$field.rules.push($new_rule(path, active_plan()));
                             self.path.clear();
                         }
                     }
@@ -150,14 +147,14 @@ impl Editor {
         match kind {
             Kind::Focus => update_rules!(
                 by_focus,
-                can_add_by_focus_process,
+                addable_by_focus_path,
                 can_add_by_focus_name,
                 new_by_focus_rule,
                 ByFocusRule
             ),
             Kind::RunningApp => update_rules!(
                 by_running_app,
-                can_add_by_running_app_process,
+                addable_by_running_app_path,
                 can_add_by_running_app_name,
                 new_by_running_app_rule,
                 ByRunningAppRule
@@ -196,7 +193,7 @@ impl Editor {
             Kind::RunningApp => crate::rules::DecisionState::ByRunningApp,
         };
         macro_rules! render_rules {
-            ($field:ident, $can_add_path:ident, $can_add_name:ident, $enable:literal) => {{
+            ($field:ident, $addable_path:ident, $can_add_name:ident, $enable:literal) => {{
                 let feature = &settings.$field;
                 let selected_index = super::power_rules::runtime_rule_index_in_draft(
                     runtime_settings.map(|settings| settings.$field.rules.as_slice()),
@@ -212,7 +209,7 @@ impl Editor {
                 let input = if self.match_by == MatchBy::ExecutableName {
                     self.name_input($can_add_name(feature, &self.name))
                 } else {
-                    let can_add = $can_add_path(feature, &self.path);
+                    let can_add = $addable_path(feature, &self.path).is_some();
                     let mut picker = column![app_picker::view(
                         &self.path,
                         candidates,
@@ -220,12 +217,12 @@ impl Editor {
                         Message::Path,
                         Message::Browse,
                         can_add.then_some(Message::Add),
-                        |path| $can_add_path(feature, path).then_some(true),
+                        |path| $addable_path(feature, path).map(|_| true),
                     )]
                     .spacing(design::space::SMALL);
                     if !can_add
                         && app_picker::is_path_query(&self.path)
-                        && validate_path(self.path.trim()).is_err()
+                        && power_rule_path(&self.path).is_none()
                     {
                         picker = picker.push(app_picker::path_format_hint());
                     }
@@ -322,13 +319,13 @@ impl Editor {
         match kind {
             Kind::Focus => render_rules!(
                 by_focus,
-                can_add_by_focus_process,
+                addable_by_focus_path,
                 can_add_by_focus_name,
                 "by_focus.enable"
             ),
             Kind::RunningApp => render_rules!(
                 by_running_app,
-                can_add_by_running_app_process,
+                addable_by_running_app_path,
                 can_add_by_running_app_name,
                 "by_running_app.enable"
             ),
@@ -353,12 +350,20 @@ mod tests {
                 r"C:\Apps\worker.exe.",
                 r"C:\Apps \worker.exe",
                 r"C:\Apps\",
+                r#""C:\Apps\worker.exe"#,
+                r#"C:\Apps\worker.exe""#,
+                r#""C:\Apps\old\..\worker.exe""#,
             ] {
                 editor.update(kind, &mut settings, &[], Message::Path(path.into()));
                 editor.update(kind, &mut settings, &[], Message::Add);
                 assert!(settings.global().on_battery.is_none());
             }
-            for path in [r" C:\Apps\worker.exe ", r" \\server\share\worker.exe "] {
+            for path in [
+                r#" "C:\Apps\worker.exe" "#,
+                r#""\\server\share\Worker.exe""#,
+                r" D:/Other/control.exe ",
+                r#""c:/apps/WORKER.exe""#,
+            ] {
                 editor.update(kind, &mut settings, &[], Message::Path(path.into()));
                 editor.update(kind, &mut settings, &[], Message::Add);
             }
@@ -376,7 +381,14 @@ mod tests {
                     .map(|rule| rule.selector.value())
                     .collect(),
             };
-            assert_eq!(paths, [r"C:\Apps\worker.exe", r"\\server\share\worker.exe"]);
+            assert_eq!(
+                paths,
+                [
+                    r"C:\Apps\worker.exe",
+                    r"\\server\share\Worker.exe",
+                    r"D:\Other\control.exe",
+                ]
+            );
             assert!(settings.global().by_focus.rules.is_empty());
             assert!(settings.global().by_running_app.rules.is_empty());
         }
