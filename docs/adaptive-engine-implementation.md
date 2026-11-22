@@ -116,6 +116,7 @@ migration or copying from the limiter is performed.
 - Missing per-process samples or invalid CPU deltas discard that target's old
   baseline and restraint/recovery episode. Re-entry requires a fresh valid interval;
   skipped/excluded targets cannot retain stale candidate tracking.
+- Adaptive Engine resets its pressure observations on a delivered Windows suspend/resume event.
 - Least-used selection samples its configured All, P-core, or E-core pool and changes the selected mask only after
   the existing rebalance interval or a meaningful load improvement. Fixed topology and custom
   selections do not rebalance.

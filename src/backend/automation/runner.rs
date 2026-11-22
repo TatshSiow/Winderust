@@ -589,6 +589,8 @@ impl RuntimeCore {
             .as_ref()
             .is_some_and(|previous| previous.plugged_in != plugged_in);
         if events.suspend_resume {
+            self.adaptive_engine_process_manager
+                .reset_pressure_observations();
             self.sleep_prevention_manager
                 .suspend(&mut self.sleep_prevention_controller, &mut self.action_log);
         }

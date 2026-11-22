@@ -735,6 +735,48 @@ impl AdaptiveCpuObservations {
 }
 
 #[test]
+fn reset_pressure_observations_requires_fresh_cpu_intervals() {
+    let mut observations = AdaptiveCpuObservations::new(AdaptiveEngineProcessSettings {
+        limit_background_processors_enabled: true,
+        foreground_or_system_cpu_threshold_percent: 70,
+        background_app_cpu_threshold_percent: 70,
+        cpu_restraint_time_seconds: 5,
+        ..Default::default()
+    });
+    let started_at = observations.started_at;
+    observations.manager.foreground_cpu_sample = Some((
+        vec![(21, 1)],
+        ProcessCpuSample {
+            cpu_time_100ns: 10_000_000,
+            sampled_at: started_at,
+        },
+    ));
+    assert!(observations.manager.update_background_pressure(
+        &observations.settings,
+        Some(80.0),
+        None
+    ));
+    assert!(observations.sample(0, 0).is_none());
+    assert!(observations.sample(1, 10_000_000).is_some());
+    observations
+        .manager
+        .tracked_processes
+        .get_mut(&42)
+        .unwrap()
+        .selected = true;
+
+    observations.manager.reset_pressure_observations();
+
+    assert!(observations.manager.foreground_cpu_sample.is_none());
+    assert!(!observations
+        .manager
+        .update_background_pressure(&observations.settings, None, None));
+    assert!(observations.manager.tracked_processes.is_empty());
+    assert!(observations.sample(2, 10_000_000).is_none());
+    assert!(observations.sample(3, 20_000_000).is_some());
+}
+
+#[test]
 fn adaptive_cpu_sample_gap_discards_only_the_targets_baseline_and_recovery() {
     let mut observations = AdaptiveCpuObservations::new(AdaptiveEngineProcessSettings {
         limit_background_processors_enabled: true,

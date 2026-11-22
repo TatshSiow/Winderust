@@ -241,6 +241,12 @@ impl AdaptiveEngineProcessManager {
         self.cpu_allocation.invalidate_zone_generation();
     }
 
+    pub(crate) fn reset_pressure_observations(&mut self) {
+        self.foreground_cpu_sample = None;
+        self.tracked_processes.clear();
+        self.background_pressure_active = false;
+    }
+
     pub fn update(
         &mut self,
         input: AdaptiveEngineProcessUpdate<'_>,
@@ -1449,9 +1455,7 @@ impl AdaptiveEngineProcessManager {
             &mut failures,
         );
         self.focus_process_candidate = None;
-        self.foreground_cpu_sample = None;
-        self.tracked_processes.clear();
-        self.background_pressure_active = false;
+        self.reset_pressure_observations();
         self.last_background_apply_summary_logged_at = None;
         self.unavailable_power_targets.clear();
         let cpu_allocation_snapshot = self.cpu_allocation.clear_discovered_targets(
