@@ -436,8 +436,9 @@ impl AdaptiveEngineProcessManager {
             .filter_map(|process| {
                 process
                     .image_path
-                    .as_ref()
-                    .map(|path| (process.id, path.to_string_lossy().into_owned()))
+                    .as_deref()
+                    .and_then(Path::to_str)
+                    .map(|path| (process.id, path.to_owned()))
             })
             .collect::<BTreeMap<_, _>>();
         let foreground_process_name = foreground_process_id
@@ -579,9 +580,10 @@ impl AdaptiveEngineProcessManager {
                 .filter(|process| !excluded_process_ids.contains(&process.id))
                 .filter(|process| {
                     !settings.custom_rules.iter().any(|rule| rule.enabled)
-                        || crate::foreground::process_executable_path(process).is_some_and(|path| {
-                            !settings.custom_rule_enabled_for(path.to_string_lossy().as_ref())
-                        })
+                        || process_executable_path(process)
+                            .as_deref()
+                            .and_then(Path::to_str)
+                            .is_some_and(|path| !settings.custom_rule_enabled_for(path))
                 })
                 .filter(|process| {
                     focus_process_priority_eligible(
@@ -2079,8 +2081,9 @@ fn cached_executable_path(
     }
 
     let path = process_executable_path(process)?
-        .to_string_lossy()
-        .into_owned();
+        .into_os_string()
+        .into_string()
+        .ok()?;
     executable_paths.insert(process.id, path.clone());
     Some(path)
 }
