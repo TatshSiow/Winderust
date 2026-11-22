@@ -345,17 +345,18 @@ impl CpuLimiterManager {
         }
 
         for rule in &settings.rules {
+            let executable_path = rule.executable_path.trim_start();
             if self
                 .failure_suppression
-                .has_key_failure(&process_failure_key(&rule.executable_path))
+                .has_key_failure(&process_failure_key(executable_path))
                 && !self.limited.values().any(|process| {
                     same_executable_path(
                         Path::new(&process.executable_path),
-                        Path::new(&rule.executable_path),
+                        Path::new(executable_path),
                     )
                 })
             {
-                failed_apps.insert(rule.executable_path.clone());
+                failed_apps.insert(executable_path.to_owned());
             }
         }
         CpuLimiterSnapshot {
@@ -484,7 +485,7 @@ fn limiter_activation_detail(activation: CpuLimiterActivation) -> String {
 
 fn valid_rule(rule: &CpuLimiterRule) -> bool {
     rule.enabled
-        && Path::new(rule.executable_path.trim()).is_absolute()
+        && Path::new(rule.executable_path.trim_start()).is_absolute()
         && rule.has_valid_allowed_cpu_time()
 }
 
@@ -494,7 +495,10 @@ fn matching_rule<'a>(
 ) -> Option<&'a CpuLimiterRule> {
     settings.rules.iter().find(|rule| {
         valid_rule(rule)
-            && same_executable_path(Path::new(rule.executable_path.trim()), executable_path)
+            && same_executable_path(
+                Path::new(rule.executable_path.trim_start()),
+                executable_path,
+            )
     })
 }
 
@@ -670,6 +674,24 @@ mod tests {
             visible_window_allowed_cpu_time_percent: 50,
             background_allowed_cpu_time_percent: 50,
         }
+    }
+
+    #[test]
+    fn matching_rule_preserves_literal_executable_path_suffix() {
+        let ordinary = r"C:\Apps\encoder.exe";
+        let distinct = concat!(r"C:\Apps\encoder.exe", "\u{3000}");
+        let mut rule = rule();
+        rule.executable_path = format!(" {distinct}");
+        let mut settings = CpuLimiterSettings {
+            rules: vec![rule],
+            ..Default::default()
+        };
+
+        assert!(matching_rule(&settings, Path::new(ordinary)).is_none());
+        assert!(matching_rule(&settings, Path::new(distinct)).is_some());
+        settings.rules[0].executable_path = ordinary.to_owned();
+        assert!(matching_rule(&settings, Path::new(ordinary)).is_some());
+        assert!(matching_rule(&settings, Path::new(distinct)).is_none());
     }
 
     #[test]

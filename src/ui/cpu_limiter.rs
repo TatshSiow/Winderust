@@ -555,13 +555,14 @@ fn rule_status(
     if !enabled || !rule.enabled {
         return "common.inactive";
     }
-    let Some(status) = status.filter(|_| !rule.executable_path.trim().is_empty()) else {
+    let rule_path = rule.executable_path.trim_start();
+    let Some(status) = status.filter(|_| !rule_path.is_empty()) else {
         return "common.unknown";
     };
     let matches_rule = |path: &String| {
         crate::foreground::same_executable_path(
             std::path::Path::new(path),
-            std::path::Path::new(&rule.executable_path),
+            std::path::Path::new(rule_path),
         )
     };
     if status.failed_apps.iter().any(matches_rule) {
@@ -607,11 +608,16 @@ mod tests {
     #[test]
     fn rule_status_uses_confirmed_limited_apps_and_enable_switches() {
         let mut rule = new_cpu_limiter_rule(r"C:\Apps\test.exe");
+        rule.executable_path.insert(0, ' ');
         rule.enabled = true;
         let mut status = CpuLimiterSnapshot {
             enabled: true,
             ..Default::default()
         };
+        assert_eq!(rule_status(&rule, true, Some(&status)), "common.waiting");
+        status
+            .limited_apps
+            .push(concat!(r"C:\Apps\test.exe", "\u{3000}").into());
         assert_eq!(rule_status(&rule, true, Some(&status)), "common.waiting");
         status.limited_apps.push(r"c:\apps\TEST.exe".into());
         assert_eq!(rule_status(&rule, true, Some(&status)), "common.applied");
@@ -622,7 +628,7 @@ mod tests {
         );
         assert_eq!(rule_status(&rule, false, Some(&status)), "common.inactive");
         status.observation_paused = true;
-        status.failed_apps.push(rule.executable_path.clone());
+        status.failed_apps.push(r"C:\Apps\test.exe".into());
         assert_eq!(rule_status(&rule, true, Some(&status)), "common.error");
         status.failed_apps.clear();
         assert_eq!(
