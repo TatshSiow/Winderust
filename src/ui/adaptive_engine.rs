@@ -661,7 +661,7 @@ impl Editor {
                     )
                     .into(),
                     number!(
-                        "adaptive_engine_process.maximum_restrained_apps",
+                        "adaptive_engine_process.restraint_candidate_limit",
                         1,
                         64,
                         adaptive_engine_process.maximum_restrained_apps

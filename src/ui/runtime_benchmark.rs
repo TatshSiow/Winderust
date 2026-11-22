@@ -63,7 +63,7 @@ impl BenchmarkRequest {
         }
         if let Some(value) = self.maximum_restrained_apps {
             if !(1..=32).contains(&value) {
-                return Err("Maximum restrained apps must be 1..=32".to_owned());
+                return Err("Restraint candidate limit must be 1..=32".to_owned());
             }
             process.maximum_restrained_apps = value;
         }

@@ -104,15 +104,16 @@ migration or copying from the limiter is performed.
   mutation.
 - Adaptive Engine checks CPU pressure at the configured reaction interval whenever any CPU
   Behaviour policy is enabled. Foreground and process
-  lifecycle events may schedule an immediate safety pass. Obsolete foreground roles are released;
-  eligible Visible Window and Background processes receive their configured soft pressure policy
-  only when CPU Pressure Restraint is enabled. Hot Background candidates are independently ranked
-  by current CPU demand with a small selection-stability bias for processor allocation.
-  Moving between Visible Window and Background restarts the process's CPU sampling and
-  restraint qualification under its new role.
-- When a selected process falls below its recovery threshold, Winderust removes processor
-  allocation first, keeps the softer restraint during the recovery period, and then restores the
-  original state. Renewed CPU demand cancels recovery.
+  lifecycle events may schedule an immediate safety pass and release obsolete foreground roles.
+  CPU Pressure Restraint adjusts eligible Visible Window and Background process priority and
+  efficiency according to shared CPU pressure. The restraint candidate limit bounds the separate
+  ranking for background CPU placement and Visible Window or Background memory priority. This
+  ranking uses each app's CPU demand with a small selection-stability bias. Foreground memory
+  priority has separate eligibility within CPU Pressure Restraint. Moving between Visible Window
+  and Background restarts CPU sampling and restraint qualification for the new role.
+- When a selected process enters recovery, Winderust withdraws its background processor limit.
+  The candidate can retain its memory priority adjustment until recovery completes. Renewed CPU
+  demand cancels recovery.
 - Missing per-process samples or invalid CPU deltas discard that target's old
   baseline and restraint/recovery episode. Re-entry requires a fresh valid interval;
   skipped/excluded targets cannot retain stale candidate tracking.
