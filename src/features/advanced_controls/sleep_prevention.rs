@@ -604,6 +604,9 @@ fn match_rules(
         known: allow_cross_session || current_session.is_some(),
         ..Default::default()
     };
+    if !matches.known {
+        return matches;
+    }
     for rule in settings.rules.iter().filter(|rule| rule.enabled) {
         let Some((executable, name)) = matchable_target(&rule.executable_path) else {
             continue;

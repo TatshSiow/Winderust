@@ -167,14 +167,27 @@ fn unknown_observations_retain_counts_without_adding_requests_and_rule_withdrawa
     let mut manager = SleepPreventionManager::default();
     let mut video = process(8, r"C:\Apps\video.exe");
     observe(&mut manager, &settings, std::slice::from_ref(&video));
-    video.image_path = None;
-    video.creation_time = None;
-    observe(&mut manager, &settings, &[video]);
-    assert!(!manager.matches.known);
     let both = SleepPreventionRequests {
         system: true,
         display: true,
     };
+    manager.observe(
+        &settings,
+        std::slice::from_ref(&video),
+        u32::MAX,
+        None,
+        false,
+    );
+    assert!(!manager.matches.known);
+    assert_eq!(
+        manager.permitted_mode(both),
+        SleepPreventionMode::SystemAndDisplay
+    );
+
+    video.image_path = None;
+    video.creation_time = None;
+    observe(&mut manager, &settings, &[video]);
+    assert!(!manager.matches.known);
     let system = SleepPreventionRequests {
         system: true,
         display: false,
