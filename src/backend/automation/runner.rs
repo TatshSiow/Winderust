@@ -1530,7 +1530,7 @@ impl RuntimeCore {
             BackgroundEfficiencyManager::record_release_summary(
                 summary,
                 &mut self.action_log,
-                "restoration retry completed",
+                "background_efficiency.release_reason_retry_completed",
             );
         }
         if refresh_background_efficiency {

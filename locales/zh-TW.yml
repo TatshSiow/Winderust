@@ -629,6 +629,15 @@ by_cpu_load:
   else_plan: "否則電源計畫"
 
 background_efficiency:
+  log_restored: "已還原 %{count} 個程序的背景效率設定：%{reason}。"
+  release_reason_automation_disabled: "自動化已停用"
+  release_reason_feature_disabled: "背景效率已停用"
+  release_reason_unknown_foreground: "無法判定前景應用程式"
+  release_reason_unavailable_windows: "無法取得可見視窗"
+  release_reason_unknown_session: "無法判定目前的 Windows 工作階段"
+  release_reason_unavailable_processes: "無法取得程序清單"
+  release_reason_no_longer_matches: "程序已不符合背景效率規則"
+  release_reason_retry_completed: "已完成還原重試"
   foreground_detection: "前景偵測"
   foreground_detection_help: "加入第二層，可對焦點應用程式套用不同的效率模式設定。"
   intro_1: "背景效率會對背景應用程式套用 Windows 效率模式，以降低 CPU 耗電。"

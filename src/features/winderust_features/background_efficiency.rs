@@ -133,19 +133,28 @@ impl BackgroundEfficiencyManager {
         action_log: &mut ActionLog,
     ) -> BackgroundEfficiencySnapshot {
         if !automation_enabled {
-            return self.disabled_snapshot(controller, action_log, "automation disabled");
+            return self.disabled_snapshot(
+                controller,
+                action_log,
+                "background_efficiency.release_reason_automation_disabled",
+            );
         }
         if !settings.enabled {
             return self.disabled_snapshot(
                 controller,
                 action_log,
-                "Background Efficiency disabled",
+                "background_efficiency.release_reason_feature_disabled",
             );
         }
         let needs_foreground = settings.foreground_detection_enabled;
         let needs_visible_windows = settings.visible_window_detection_enabled;
         if needs_foreground && foreground_process_id.is_none() {
-            return self.paused_snapshot(controller, action_log, "foreground app is unknown", None);
+            return self.paused_snapshot(
+                controller,
+                action_log,
+                "background_efficiency.release_reason_unknown_foreground",
+                None,
+            );
         }
 
         let visible_window_process_ids = if needs_visible_windows {
@@ -153,7 +162,7 @@ impl BackgroundEfficiencyManager {
                 return self.paused_snapshot(
                     controller,
                     action_log,
-                    "visible windows are unavailable",
+                    "background_efficiency.release_reason_unavailable_windows",
                     None,
                 );
             };
@@ -168,7 +177,7 @@ impl BackgroundEfficiencyManager {
             return self.paused_snapshot(
                 controller,
                 action_log,
-                "current Windows session is unknown",
+                "background_efficiency.release_reason_unknown_session",
                 None,
             );
         };
@@ -178,7 +187,7 @@ impl BackgroundEfficiencyManager {
                 return self.paused_snapshot(
                     controller,
                     action_log,
-                    "process list unavailable",
+                    "background_efficiency.release_reason_unavailable_processes",
                     Some(error),
                 );
             }
@@ -259,7 +268,7 @@ impl BackgroundEfficiencyManager {
                 &active_targets,
             ),
             action_log,
-            "process no longer matches Background Efficiency",
+            "background_efficiency.release_reason_no_longer_matches",
         );
 
         let mut skipped_processes = 0;
@@ -358,13 +367,13 @@ impl BackgroundEfficiencyManager {
         &mut self,
         controller: &mut PriorityEfficiencyController,
         action_log: &mut ActionLog,
-        reason: &str,
+        reason_key: &str,
     ) -> BackgroundEfficiencySnapshot {
         self.non_release_failures = BackgroundEfficiencyFailures::default();
         self.record_policy_release(
             controller.release_all_efficiency_policy(ControlOwner::BackgroundEfficiency),
             action_log,
-            reason,
+            reason_key,
         );
         self.failure_suppression.clear();
         self.with_release_status(controller, BackgroundEfficiencySnapshot::default())
@@ -374,7 +383,7 @@ impl BackgroundEfficiencyManager {
         &mut self,
         controller: &mut PriorityEfficiencyController,
         action_log: &mut ActionLog,
-        reason: &str,
+        reason_key: &str,
         observation_error: Option<String>,
     ) -> BackgroundEfficiencySnapshot {
         self.non_release_failures = BackgroundEfficiencyFailures {
@@ -384,7 +393,7 @@ impl BackgroundEfficiencyManager {
         self.record_policy_release(
             controller.release_all_efficiency_policy(ControlOwner::BackgroundEfficiency),
             action_log,
-            reason,
+            reason_key,
         );
         let status = BackgroundEfficiencySnapshot {
             enabled: true,
@@ -440,28 +449,31 @@ impl BackgroundEfficiencyManager {
         &mut self,
         summary: PriorityEfficiencyReleaseSummary,
         action_log: &mut ActionLog,
-        reason: &str,
+        reason_key: &str,
     ) {
         for failure in &summary.failures {
             self.record_process_failure(&failure.executable_path);
         }
-        Self::record_release_summary(summary, action_log, reason);
+        Self::record_release_summary(summary, action_log, reason_key);
     }
 
     pub(crate) fn record_release_summary(
         summary: PriorityEfficiencyReleaseSummary,
         action_log: &mut ActionLog,
-        reason: &str,
+        reason_key: &str,
     ) {
         if summary.restored_processes > 0 {
+            let locale = rust_i18n::locale();
             action_log.record(
                 ActionLogFeature::BackgroundEfficiency,
                 None,
                 "",
                 ActionLogResult::Restored,
-                format!(
-                    "Restored Background Efficiency for {} process(es): {reason}.",
-                    summary.restored_processes
+                rust_i18n::t!(
+                    "background_efficiency.log_restored",
+                    locale = &*locale,
+                    count = summary.restored_processes,
+                    reason = rust_i18n::t!(reason_key, locale = &*locale)
                 ),
             );
         }

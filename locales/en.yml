@@ -627,6 +627,15 @@ by_cpu_load:
   else_plan: "Else plan"
 
 background_efficiency:
+  log_restored: "Restored Background Efficiency for %{count} process(es): %{reason}."
+  release_reason_automation_disabled: "automation disabled"
+  release_reason_feature_disabled: "Background Efficiency disabled"
+  release_reason_unknown_foreground: "foreground app is unknown"
+  release_reason_unavailable_windows: "visible windows are unavailable"
+  release_reason_unknown_session: "current Windows session is unknown"
+  release_reason_unavailable_processes: "process list unavailable"
+  release_reason_no_longer_matches: "process no longer matches Background Efficiency"
+  release_reason_retry_completed: "restoration retry completed"
   foreground_detection: "Foreground Detection"
   foreground_detection_help: "Adds a second layer that can apply a separate Efficiency Mode setting to the focused app."
   intro_1: "Background Efficiency applies Windows Efficiency Mode to background apps to reduce CPU power use."
