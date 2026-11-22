@@ -889,15 +889,16 @@ impl RuntimeCore {
         settings: &Settings,
         observations: &mut CycleObservations,
     ) -> CpuLimiterSnapshot {
-        if self.cpu_limiter_controller.is_none()
-            && (!settings.general.enabled || !settings.cpu_limiter.enabled)
-        {
-            return CpuLimiterSnapshot::default();
+        let refresh_required = feature_refresh_required(settings, cpu_limiter_required(settings));
+        if self.cpu_limiter_controller.is_none() && !refresh_required {
+            return CpuLimiterSnapshot {
+                enabled: settings.general.enabled && settings.cpu_limiter.enabled,
+                ..Default::default()
+            };
         }
-        let foreground_process_id =
-            feature_refresh_required(settings, cpu_limiter_required(settings))
-                .then(|| observations.foreground_process_id())
-                .flatten();
+        let foreground_process_id = refresh_required
+            .then(|| observations.foreground_process_id())
+            .flatten();
         let controller = match self.cpu_limiter_controller.as_mut() {
             Some(controller) => controller,
             None => match CpuLimiterController::new(Arc::clone(&self.app_suspension_controller)) {
