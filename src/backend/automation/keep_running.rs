@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     sync::{
         mpsc::{self, Receiver, SyncSender},
         Arc,
@@ -18,6 +18,38 @@ use crate::{
     },
     foreground::{same_executable_path, ProcessActionTarget},
 };
+
+use super::{AutomationWorkerState, Settings};
+
+#[derive(Default)]
+pub(super) struct PendingResets {
+    all: bool,
+    paths: BTreeSet<String>,
+}
+
+impl PendingResets {
+    pub(super) fn is_empty(&self) -> bool {
+        !self.all && self.paths.is_empty()
+    }
+}
+
+pub(super) fn record_settings_changes(state: &mut AutomationWorkerState, settings: &Settings) {
+    let previous = &state.settings;
+    let pending = &mut state.pending_keep_running_resets;
+    pending.all |= previous.general.enabled != settings.general.enabled
+        || previous.keep_running.enabled != settings.keep_running.enabled;
+    if !pending.all {
+        // Only a previously saved rule can own state that must be invalidated.
+        pending.paths.extend(
+            previous
+                .keep_running
+                .rules
+                .iter()
+                .filter(|rule| !settings.keep_running.rules.contains(rule))
+                .map(|rule| rule.executable_path.clone()),
+        );
+    }
+}
 
 pub(super) struct Failure {
     message: String,
@@ -136,6 +168,7 @@ struct Owner<P: Platform> {
     active: bool,
     policy: KeepRunningManager,
     identity: Option<P::Identity>,
+    replacement_identity: Option<P::Identity>,
     members: BTreeMap<ProcessTargetKey, P::Member>,
     last_error: Option<RuleError>,
     retry_error: Option<String>,
@@ -227,6 +260,7 @@ impl<P: Platform> Coordinator<P> {
                     active: true,
                     policy: KeepRunningManager::default(),
                     identity: None,
+                    replacement_identity: None,
                     members: BTreeMap::new(),
                     last_error: None,
                     retry_error: None,
@@ -258,6 +292,7 @@ impl<P: Platform> Coordinator<P> {
                 owner.rule = Arc::new(rule.clone());
                 owner.members.clear();
                 owner.identity = None;
+                owner.replacement_identity = None;
                 owner.retry_error = None;
             }
             if general_enabled && settings.enabled && rule.enabled {
@@ -282,12 +317,19 @@ impl<P: Platform> Coordinator<P> {
         self.flight.is_some()
     }
 
-    pub(super) fn invalidate_settings(&mut self) {
+    pub(super) fn invalidate_settings(&mut self, resets: &PendingResets) {
+        if resets.is_empty() {
+            return;
+        }
         let flight_owner = self.flight.as_ref().map(|flight| &flight.owner);
         for owner in &mut self.owners {
+            if !resets.all && !resets.paths.contains(&owner.rule.executable_path) {
+                continue;
+            }
             owner.policy.launch_settings_changed();
             owner.members.clear();
             owner.identity = None;
+            owner.replacement_identity = None;
             // Retain an owned diagnostic until sync_settings can check the exact edit.
             if !flight_owner.is_some_and(|id| Arc::ptr_eq(id, &owner.id)) {
                 owner.retry_error = None;
@@ -591,9 +633,12 @@ impl<P: Platform> Coordinator<P> {
                 }
                 match P::identity(&owner.rule) {
                     Ok(identity) if owner.identity.as_ref().is_none_or(|old| old == &identity) => {
-                        owner.identity = Some(identity)
+                        owner.identity.get_or_insert(identity);
+                        owner.replacement_identity = None;
                     }
-                    Ok(_) => {
+                    Ok(identity) => {
+                        // Use the current file for conflicts while keeping the launch identity pinned.
+                        owner.replacement_identity = Some(identity);
                         owner.policy.pause(PauseReason::UnsupportedContext);
                         owner.last_error = Some(RuleError::Pending(
                             "The Keep Running executable changed; edit the rule before resuming."
@@ -659,19 +704,29 @@ impl<P: Platform> Coordinator<P> {
                         .get(&i)
                         .zip(evidence.get(&j))
                         .is_some_and(|(a, b)| a.iter().any(|key| b.contains(key)));
-                    if self.owners[i].active
-                        && self.owners[j].active
-                        && self.owners[i].rule.enabled
-                        && self.owners[j].rule.enabled
-                        && ((self.owners[i].identity.is_some()
-                            && self.owners[i].identity == self.owners[j].identity)
+                    let left = &self.owners[i];
+                    let right = &self.owners[j];
+                    let left_identity = left
+                        .replacement_identity
+                        .as_ref()
+                        .or(left.identity.as_ref());
+                    let right_identity = right
+                        .replacement_identity
+                        .as_ref()
+                        .or(right.identity.as_ref());
+                    if left.active
+                        && right.active
+                        && left.rule.enabled
+                        && right.rule.enabled
+                        && ((left_identity.is_some() && left_identity == right_identity)
                             || overlapping_members)
                     {
                         for index in [i, j] {
-                            self.owners[index]
-                                .policy
-                                .pause(PauseReason::UnsupportedContext);
-                            self.owners[index].last_error = Some(RuleError::Pending("Keep Running rules refer to the same executable; remove the duplicate rule.".into()));
+                            let owner = &mut self.owners[index];
+                            owner.policy.pause(PauseReason::UnsupportedContext);
+                            if owner.replacement_identity.is_none() {
+                                owner.last_error = Some(RuleError::Pending("Keep Running rules refer to the same executable; remove the duplicate rule.".into()));
+                            }
                             evidence.remove(&index);
                         }
                     }

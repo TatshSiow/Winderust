@@ -45,12 +45,15 @@ Read the relevant section before changing feature policy, ownership, restoration
   Keep Running records a successful action only after Windows confirms the relaunch.
   A failed post-launch verification remains in Action Log after a healthy member scan.
   Rule rows show Unknown until the current launch configuration has a matching
-  worker status. Editing a rule does not transfer its previous retry state.
+  worker status. Editing a rule resets its retry state and preserves the state
+  of unchanged rules. Rapid edits and reverts still reset affected rules.
 - This is a fresh launch, not crash diagnosis, saved-session recovery, or the
   Watchdog's restart operation. Winderust never reads another app's arguments or
   copies its environment. Unsupported/elevated/service/restricted app contexts
   pause the rule. File-identity aliases and overlapping live membership pause
   conflicting rules instead of selecting arguments by rule order.
+  A failed file lookup preserves the last verified alias until a successful
+  lookup or a rule change supersedes it.
 - One bounded worker owns all preparation, resume/acceptance, and disposal calls.
   The five-second preparation deadline bounds acceptance of results, not Windows
   call duration. A timed-out call or unconfirmed cleanup occupies the global slot;

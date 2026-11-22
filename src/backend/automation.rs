@@ -439,6 +439,7 @@ struct AutomationWorkerState {
     idle_action_log: Option<ActionLog>,
     action_log_clear_requested: bool,
     pending_events: AutomationWakeEvents,
+    pending_keep_running_resets: keep_running::PendingResets,
     pending_instance_limits_resets: instance_limits::PendingResets,
     pending_instance_balancing_resets: instance_balancing::PendingResets,
     input_activity: InputActivityTracker,
@@ -450,7 +451,6 @@ struct AutomationWorkerState {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct AutomationWakeEvents {
     settings_changed: bool,
-    keep_running_settings_changed: bool,
     windows_event_watcher_changed: bool,
     foreground_changed: bool,
     window_created: bool,
@@ -502,6 +502,7 @@ impl RuntimeHandle {
                 idle_action_log: Some(ActionLog::default()),
                 action_log_clear_requested: false,
                 pending_events: AutomationWakeEvents::default(),
+                pending_keep_running_resets: Default::default(),
                 pending_instance_limits_resets: instance_limits::PendingResets::default(),
                 pending_instance_balancing_resets: instance_balancing::PendingResets::default(),
                 input_activity: InputActivityTracker::default(),
@@ -566,10 +567,7 @@ impl RuntimeHandle {
             if state.runtime_revision == settings.runtime_revision {
                 false
             } else {
-                let keep_running_changed = state.settings.keep_running
-                    != settings.value.keep_running
-                    || state.settings.general.enabled != settings.value.general.enabled;
-                state.pending_events.keep_running_settings_changed |= keep_running_changed;
+                keep_running::record_settings_changes(&mut state, &settings.value);
                 if instance_limits::record_settings_changes(&mut state, &settings.value) {
                     bump_status_generation(&self.shared, &mut state);
                 }
@@ -1156,9 +1154,9 @@ fn run_background_automation(
             .iter()
             .any(|command| matches!(command, ProcessControlCommand::KeepRunningResume { .. }));
         let wake_events = snapshot.wake_events;
-        if wake_events.keep_running_settings_changed {
-            runner.keep_running.invalidate_settings();
-        }
+        runner
+            .keep_running
+            .invalidate_settings(&snapshot.keep_running_resets);
         runner.keep_running.sync_settings(
             &configured_settings.keep_running,
             configured_settings.general.enabled,
@@ -2076,7 +2074,7 @@ fn reserve_keep_running_commit(
         && state.settings.general.enabled == expected_settings.general.enabled
         && state.settings.keep_running == expected_settings.keep_running
         && !state.pending_events.settings_changed
-        && !state.pending_events.keep_running_settings_changed
+        && state.pending_keep_running_resets.is_empty()
         && !state.pending_events.suspend_resume
         && !state.pending_events.session_changed
         && !state
@@ -2194,6 +2192,7 @@ mod keep_running_intake_tests {
                 idle_action_log: Some(ActionLog::default()),
                 action_log_clear_requested: false,
                 pending_events: AutomationWakeEvents::default(),
+                pending_keep_running_resets: Default::default(),
                 pending_instance_limits_resets: instance_limits::PendingResets::default(),
                 pending_instance_balancing_resets: instance_balancing::PendingResets::default(),
                 input_activity: InputActivityTracker::default(),
@@ -2246,7 +2245,11 @@ mod keep_running_intake_tests {
             |state| state.stop_requested = true,
             |state| state.windows_event_watcher_active = false,
             |state| state.pending_events.settings_changed = true,
-            |state| state.pending_events.keep_running_settings_changed = true,
+            |state| {
+                let mut settings = (*state.settings).clone();
+                settings.keep_running.enabled = false;
+                keep_running::record_settings_changes(state, &settings);
+            },
             |state| state.pending_events.suspend_resume = true,
             |state| state.pending_events.session_changed = true,
             |state| Arc::make_mut(&mut state.settings).general.enabled = false,

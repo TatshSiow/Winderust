@@ -2656,6 +2656,7 @@ fn callbacks_deliver_events_for_either_profile_without_polling() {
             idle_action_log: Some(ActionLog::default()),
             action_log_clear_requested: false,
             pending_events: AutomationWakeEvents::default(),
+            pending_keep_running_resets: Default::default(),
             pending_instance_limits_resets: instance_limits::PendingResets::default(),
             pending_instance_balancing_resets: instance_balancing::PendingResets::default(),
             input_activity: InputActivityTracker::default(),

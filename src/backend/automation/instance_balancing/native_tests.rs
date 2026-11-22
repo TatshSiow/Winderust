@@ -96,6 +96,7 @@ fn shared(settings: &Arc<Settings>) -> Arc<SharedAutomationState> {
             idle_action_log: Some(Default::default()),
             action_log_clear_requested: false,
             pending_events: AutomationWakeEvents::default(),
+            pending_keep_running_resets: Default::default(),
             pending_instance_limits_resets: super::super::instance_limits::PendingResets::default(),
             pending_instance_balancing_resets: PendingResets::default(),
             input_activity: InputActivityTracker::default(),

@@ -1,4 +1,5 @@
 use std::{
+    cell::Cell,
     sync::{Condvar, Mutex, OnceLock},
     time::Duration,
 };
@@ -44,6 +45,10 @@ fn key(id: u32, path: &str) -> ProcessTargetKey {
     )
     .key()
 }
+thread_local! {
+    static IDENTITY_READS: Cell<&'static [(&'static str, Option<&'static str>)]> = const { Cell::new(&[]) };
+}
+
 struct Fake;
 struct Launch {
     key: ProcessTargetKey,
@@ -61,7 +66,18 @@ impl Platform for Fake {
         "desktop".into()
     }
     fn identity(rule: &KeepRunningRule) -> Result<String, Failure> {
-        Ok(rule.executable_path.clone())
+        match IDENTITY_READS
+            .get()
+            .iter()
+            .find(|(path, _)| *path == rule.executable_path)
+        {
+            Some((_, Some(identity))) => Ok((*identity).to_owned()),
+            Some((_, None)) => Err(Failure {
+                message: "temporary identity read failure".into(),
+                kind: FailureKind::Retryable,
+            }),
+            None => Ok(rule.executable_path.clone()),
+        }
     }
     fn scan(
         rule: &KeepRunningRule,
@@ -378,7 +394,10 @@ fn bounded_worker_routes_late_results_and_never_disposes_accepted_children() {
         KeepRunningState::Paused(PauseReason::CleanupUnconfirmed)
     );
     settings.rules[0].enabled = false;
-    coordinator.invalidate_settings();
+    coordinator.invalidate_settings(&PendingResets {
+        all: true,
+        ..PendingResets::default()
+    });
     coordinator.sync_settings(&settings, true);
     assert_eq!(
         coordinator.owners[0]
@@ -523,4 +542,100 @@ fn bounded_worker_routes_late_results_and_never_disposes_accepted_children() {
     );
     assert_eq!(state().0.lock().unwrap().committed, 0);
     assert_eq!(state().0.lock().unwrap().disposed, 1);
+}
+
+#[test]
+fn path_resets_preserve_the_other_rules_pending_retry() {
+    let settings = KeepRunningSettings {
+        enabled: true,
+        rules: [r"C:\Apps\first.exe", r"C:\Apps\second.exe"]
+            .map(|path| KeepRunningRule::new(path.into()))
+            .into(),
+    };
+    let mut coordinator = Coordinator::<Fake>::default();
+    coordinator.sync_settings(&settings, true);
+    let now = Instant::now();
+    let context = DesktopBindingKey::new("desktop".into());
+    for (index, owner) in coordinator.owners.iter_mut().enumerate() {
+        let member = key(index as u32 + 1, &owner.rule.executable_path);
+        owner.policy.observe(
+            now,
+            Observation::Complete {
+                observed_at: now,
+                context: &context,
+                members: std::slice::from_ref(&member),
+            },
+        );
+        owner.policy.exited(now, &member);
+    }
+    let second = coordinator.owners[1].policy.state();
+    assert!(matches!(second, KeepRunningState::Retrying { .. }));
+    coordinator.invalidate_settings(&PendingResets {
+        paths: [settings.rules[0].executable_path.clone()].into(),
+        ..PendingResets::default()
+    });
+    coordinator.sync_settings(&settings, true);
+    assert_eq!(
+        coordinator.owners[0].policy.state(),
+        KeepRunningState::WaitingForApp
+    );
+    assert_eq!(coordinator.owners[1].policy.state(), second);
+}
+
+#[test]
+fn resume_keeps_a_verified_alias_paused_after_a_failed_identity_read() {
+    const ORIGINAL: &str = r"C:\Keep Running Test\original.exe";
+    const ALIAS: &str = r"C:\Keep Running Test\alias.exe";
+    let settings = KeepRunningSettings {
+        enabled: true,
+        rules: [ORIGINAL, ALIAS]
+            .map(|path| KeepRunningRule::new(path.into()))
+            .into(),
+    };
+    let mut coordinator = Coordinator::<Fake>::default();
+    coordinator.sync_settings(&settings, true);
+    let now = Instant::now();
+    let context = DesktopBindingKey::new("desktop".into());
+    let member = key(31, ALIAS);
+    coordinator.owners[1].policy.observe(
+        now,
+        Observation::Complete {
+            observed_at: now,
+            context: &context,
+            members: std::slice::from_ref(&member),
+        },
+    );
+    coordinator.owners[1].policy.exited(now, &member);
+    let observe = |coordinator: &mut Coordinator<Fake>| {
+        coordinator.tick(
+            &settings,
+            true,
+            true,
+            |_, _, _, _, _| CommitDisposition::Deferred,
+            &mut ActionLog::default(),
+            || now,
+        )
+    };
+    IDENTITY_READS.set(&[(ORIGINAL, Some("original")), (ALIAS, Some("replacement"))]);
+    observe(&mut coordinator);
+    IDENTITY_READS.set(&[
+        (ORIGINAL, Some("replacement")),
+        (ALIAS, Some("replacement")),
+    ]);
+    let paused = KeepRunningState::Paused(PauseReason::UnsupportedContext);
+    assert!(observe(&mut coordinator)
+        .rules
+        .iter()
+        .all(|row| row.state == paused));
+    IDENTITY_READS.set(&[(ORIGINAL, None), (ALIAS, Some("replacement"))]);
+    coordinator.resume(ALIAS);
+    assert!(matches!(
+        coordinator.owners[1].policy.state(),
+        KeepRunningState::Retrying { .. }
+    ));
+    let status = observe(&mut coordinator);
+    IDENTITY_READS.set(&[]);
+    assert_eq!(status.rules[1].state, paused);
+    assert_eq!(coordinator.owners[0].identity.as_deref(), Some("original"));
+    assert!(!coordinator.has_pending());
 }
