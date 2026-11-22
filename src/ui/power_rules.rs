@@ -1170,7 +1170,7 @@ pub(super) fn power_rule_status(
     } else if selected
         && status.owner == Some(crate::control::power_plan::PowerPlanOwner::OrdinaryAutomation)
         && status.decision_state == Some(state)
-        && status.apply_failed
+        && (status.apply_failed || status.active_plan_read_error.is_some())
         && plans.iter().flatten().any(|guid| {
             status
                 .target_guid
