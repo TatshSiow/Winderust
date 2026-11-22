@@ -340,15 +340,17 @@ impl Editor {
                             .width(90),
                         process_group(group, candidates),
                         {
-                            let fitted = super::widgets::fitted_text(
+                            let fitted = super::widgets::fitted_text_with_font(
                                 &entry.reason,
                                 size.width.max(1024.0) - 672.0,
                                 design::typography::CAPTION,
+                                design::typography::DEFAULT_FONT,
                             );
                             let truncated = fitted != entry.reason;
                             let content: Element<'_, Message> = container(
                                 text(fitted)
                                     .size(design::typography::CAPTION)
+                                    .font(design::typography::DEFAULT_FONT)
                                     .wrapping(text::Wrapping::None),
                             )
                             .width(Fill)
@@ -493,11 +495,17 @@ fn process_group<'a>(
     let mut names_hidden = count > 1;
     if count == 1 {
         let label = action_log_process_label(first);
-        let fitted = super::widgets::fitted_text(&label, 134.0, design::typography::CAPTION);
+        let fitted = super::widgets::fitted_text_with_font(
+            &label,
+            134.0,
+            design::typography::CAPTION,
+            design::typography::DEFAULT_FONT,
+        );
         names_hidden = fitted != label;
         strip = strip.push(
             text(fitted)
                 .size(design::typography::CAPTION)
+                .font(design::typography::DEFAULT_FONT)
                 .wrapping(text::Wrapping::None),
         );
     } else if count > 5 {

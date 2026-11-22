@@ -2028,10 +2028,20 @@ pub(super) fn label_with_unit(label: &str, unit: &str) -> String {
 
 // Fit list cells before drawing: overflowing text requires a software clip mask per cell.
 pub(super) fn fitted_text(content: &str, width: f32, size: u32) -> String {
-    if text_width(content, size) <= width {
+    fitted_text_with_font(content, width, size, design::typography::FONT)
+}
+
+pub(super) fn fitted_text_with_font(
+    content: &str,
+    width: f32,
+    size: u32,
+    font: iced::Font,
+) -> String {
+    let measure = |content: &str| text_width_with_font(content, size, font);
+    if measure(content) <= width {
         return content.to_owned();
     }
-    if text_width("\u{2026}", size) > width {
+    if measure("\u{2026}") > width {
         return String::new();
     }
     let boundaries: Vec<_> = content.char_indices().map(|(index, _)| index).collect();
@@ -2040,7 +2050,7 @@ pub(super) fn fitted_text(content: &str, width: f32, size: u32) -> String {
     while low < high {
         let middle = (low + high).div_ceil(2);
         let candidate = format!("{}\u{2026}", &content[..boundaries[middle - 1]]);
-        if text_width(&candidate, size) <= width {
+        if measure(&candidate) <= width {
             low = middle;
         } else {
             high = middle - 1;
