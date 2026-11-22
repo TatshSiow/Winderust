@@ -776,7 +776,7 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
         {
             // A cached match cannot establish the plan that preceded this episode.
             // Rebase external changes before deciding whether acquisition needs a switch.
-            self.refresh_active_plan(now)?;
+            self.refresh_active_plan_for_status(now, true)?;
         }
         if self
             .current_guid
@@ -3390,6 +3390,42 @@ mod tests {
         assert_eq!(status.current_guid.as_deref(), Some("external"));
         assert!(status.active_plan_read_error.is_none());
         assert_eq!(controller.platform.query_count, 3);
+    }
+
+    #[test]
+    fn failed_restore_baseline_query_is_visible_for_same_and_different_targets() {
+        for target in ["original", "target"] {
+            let now = Instant::now();
+            let mut controller = PowerPlanController::with_platform(FakePlatform::new("original"));
+            controller
+                .refresh_active_plan_for_status(now, false)
+                .unwrap();
+            controller.platform.query_failures.insert(2);
+
+            assert!(controller
+                .reconcile_ordinary(focus_decision(target, 10), now)
+                .is_err());
+            let status = controller.status();
+            assert_eq!(status.current_guid.as_deref(), Some("original"));
+            assert_eq!(status.target_guid.as_deref(), Some(target));
+            assert!(!status.apply_failed);
+            assert_eq!(
+                status.active_plan_read_error.as_deref(),
+                Some("injected active query failure")
+            );
+            assert!(controller.temporary_plan.is_none());
+            assert!(controller.ordinary_original_guid.is_none());
+
+            controller
+                .refresh_active_plan_for_status(now, false)
+                .unwrap();
+            assert_eq!(controller.current_guid(), Some("original"));
+            assert!(controller.status().active_plan_read_error.is_none());
+            assert_eq!(
+                *controller.platform.events.borrow(),
+                ["query", "query", "query"]
+            );
+        }
     }
 
     #[test]
