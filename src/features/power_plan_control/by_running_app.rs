@@ -6,9 +6,10 @@ use std::{
 use crate::{
     config::{ByRunningAppRule, ByRunningAppSettings, ExecutableSelector},
     foreground::{
-        contains_process_name, process_executable_path,
-        process_list::executable_basename_may_match, process_session_id, same_executable_path,
-        same_process_name, ProcessInfo, EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS,
+        contains_process_name,
+        process_list::{executable_basename_may_match, observed_process_executable_path},
+        process_session_id, same_executable_path, same_process_name, ProcessInfo,
+        EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS,
     },
     runtime::observations::CycleObservations,
 };
@@ -101,7 +102,7 @@ impl ByRunningAppManager {
             current_process_id,
             current_session_id,
             process_session_id,
-            process_executable_path,
+            observed_process_executable_path,
         );
         let Some(matched) = matched else {
             return self.release(known);
@@ -192,7 +193,7 @@ pub(crate) fn preview_matches(
         current_process_id,
         current_session_id,
         process_session_id,
-        process_executable_path,
+        observed_process_executable_path,
     ))
 }
 

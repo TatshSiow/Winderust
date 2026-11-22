@@ -991,6 +991,16 @@ fn is_system_process_name(name: &str) -> bool {
     name.trim().eq_ignore_ascii_case("[system process]")
 }
 
+/// Reads the image only if the current handle still belongs to the observed process.
+pub(crate) fn observed_process_executable_path(process: &ProcessInfo) -> Option<PathBuf> {
+    let expected_creation = process.creation_time?;
+    let handle = open_process_for_query(process.id)?;
+    if handle.process_creation_time()? != expected_creation {
+        return None;
+    }
+    process_image_path_from_handle(&handle)
+}
+
 pub(crate) fn process_image_path(process_id: u32) -> Option<PathBuf> {
     let process = open_process_for_query(process_id)?;
     process_image_path_from_handle(&process)
@@ -1505,6 +1515,35 @@ mod tests {
             .expect("current process is present in its own snapshot");
 
         assert!(current.creation_time.is_some());
+    }
+
+    #[test]
+    fn observed_image_requires_the_captured_process_creation_time() {
+        let id = std::process::id();
+        let handle = open_process_for_query(id).expect("current process should be queryable");
+        let creation_time = handle
+            .process_creation_time()
+            .expect("current process creation time should be readable");
+        let path =
+            query_process_image_path(&handle).expect("current image path should be readable");
+        let mut observed = ProcessInfo {
+            id,
+            creation_time: Some(creation_time),
+            parent_id: None,
+            session_id: None,
+            user_name: None,
+            is_service_account: None,
+            is_critical: None,
+            can_set_information: false,
+            name: String::new(),
+            image_path: Some(PathBuf::from("cached.exe")),
+        };
+
+        assert_eq!(observed_process_executable_path(&observed), Some(path));
+        observed.creation_time = Some(creation_time ^ 1);
+        assert_eq!(observed_process_executable_path(&observed), None);
+        observed.creation_time = None;
+        assert_eq!(observed_process_executable_path(&observed), None);
     }
 
     #[test]
