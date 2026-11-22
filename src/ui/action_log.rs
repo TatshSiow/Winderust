@@ -9,7 +9,7 @@ use crate::config::ActionLogMode;
 use crate::ui::scrolling::scrollable;
 use chrono::{Local, TimeZone};
 use iced::widget::{column, container, row, text};
-use iced::{Element, Fill};
+use iced::{keyboard::key::Named, Element, Fill, Task};
 use rust_i18n::t;
 
 pub(super) struct Editor {
@@ -35,11 +35,70 @@ pub(super) enum Message {
     AllLevels(bool),
     AllFeatures(bool),
     Scrolled(f32),
+    KeyboardScroll(Scroll, f32),
     Clear,
     Export,
     LogMode(ActionLogMode),
 }
+#[derive(Debug, Clone, Copy)]
+pub(super) enum Scroll {
+    PageUp,
+    PageDown,
+    Start,
+    End,
+}
+
+impl Scroll {
+    fn from_key(key: Named, height: f32) -> Option<(Message, bool)> {
+        let (direction, repeatable) = match key {
+            Named::PageUp => (Self::PageUp, true),
+            Named::PageDown => (Self::PageDown, true),
+            Named::Home => (Self::Start, false),
+            Named::End => (Self::End, false),
+            _ => return None,
+        };
+        Some((Message::KeyboardScroll(direction, height), repeatable))
+    }
+}
+
+pub(super) fn scroll_to<M: Send + 'static>(offset: f32) -> Task<M> {
+    iced::widget::operation::scroll_to(
+        ACTION_LOG_SCROLL_ID,
+        iced::widget::scrollable::AbsoluteOffset {
+            x: None,
+            y: Some(offset),
+        },
+    )
+}
+
 impl Editor {
+    pub(super) fn keyboard_scroll<M: Send + 'static>(
+        &self,
+        entries: &[ActionLogEntry],
+        direction: Scroll,
+        height: f32,
+    ) -> Task<M> {
+        let count = group_entries(action_log_filtered_entries(
+            entries,
+            &self.level,
+            &self.feature,
+        ))
+        .len();
+        let max = (count as f32 * ACTION_LOG_ROW_HEIGHT - height).max(0.0);
+        let page = (height - ACTION_LOG_ROW_HEIGHT).max(ACTION_LOG_ROW_HEIGHT);
+        let previous = self.offset.get();
+        let offset = match direction {
+            Scroll::PageUp => previous - page,
+            Scroll::PageDown => previous + page,
+            Scroll::Start => 0.0,
+            Scroll::End => max,
+        }
+        .clamp(0.0, max);
+        // Rebuild the virtual rows before jumping the native scrollable.
+        self.offset.set(offset);
+        scroll_to(offset)
+    }
+
     pub(super) fn begin_export(&mut self, entries: &Arc<Vec<ActionLogEntry>>) -> bool {
         if entries.is_empty() || self.pending_export.is_some() {
             return false;
@@ -88,7 +147,8 @@ impl Editor {
             Message::Clear => {
                 self.offset.set(0.0);
             }
-            Message::Export | Message::LogMode(_) => {} // The application owns CSV export and persisted log settings.
+            // The application handles keyboard scrolling, CSV export and persisted settings.
+            Message::KeyboardScroll(..) | Message::Export | Message::LogMode(_) => {}
         }
     }
     pub(super) fn side_panel(
@@ -323,21 +383,26 @@ impl Editor {
                 .padding([0, design::space::MEDIUM as u16])
                 .center_y(32),
             iced::widget::rule::horizontal(1),
-            super::scrolling::buffered(
-                scrollable(entries_table)
-                    .id("action-log")
-                    .on_scroll(|viewport| Message::Scrolled(viewport.absolute_offset().y))
-                    .height(Fill)
-                    .into(),
-                &self.offset,
-                range.start as f32 * ACTION_LOG_ROW_HEIGHT,
-                range.end as f32 * ACTION_LOG_ROW_HEIGHT,
-                range.start == 0,
-                range.end == count,
-                |message| match message {
-                    Message::Scrolled(offset) => Some(*offset),
-                    _ => None,
-                }
+            super::motion::wrap_keys(
+                super::scrolling::buffered(
+                    scrollable(entries_table)
+                        .id(ACTION_LOG_SCROLL_ID)
+                        .on_scroll(|viewport| Message::Scrolled(viewport.absolute_offset().y))
+                        .height(Fill)
+                        .into(),
+                    &self.offset,
+                    range.start as f32 * ACTION_LOG_ROW_HEIGHT,
+                    range.end as f32 * ACTION_LOG_ROW_HEIGHT,
+                    range.start == 0,
+                    range.end == count,
+                    |message| match message {
+                        Message::Scrolled(offset) => Some(*offset),
+                        _ => None,
+                    }
+                ),
+                "action-log-table",
+                count != 0,
+                Scroll::from_key,
             ),
         ]
         .height(Fill);
@@ -594,6 +659,7 @@ const FEATURES: [ActionLogFeature; 24] = [
     ActionLogFeature::TimerResolution,
 ];
 
+const ACTION_LOG_SCROLL_ID: &str = "action-log";
 const ACTION_LOG_ROW_HEIGHT: f32 = 36.0;
 
 fn visible_log_range(count: usize, offset: f32, height: f32) -> std::ops::Range<usize> {

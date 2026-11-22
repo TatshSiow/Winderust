@@ -1325,13 +1325,7 @@ impl WinderustApp {
                 self.status.action_log_entries = Default::default();
                 self.status.action_log_summaries = Default::default();
                 self.action_log.update(action_log::Message::Clear);
-                return iced::widget::operation::scroll_to(
-                    "action-log",
-                    iced::widget::scrollable::AbsoluteOffset {
-                        x: None,
-                        y: Some(0.0),
-                    },
-                );
+                return action_log::scroll_to(0.0);
             }
             Message::ActionLog(action_log::Message::Export) => {
                 if !self
@@ -1347,6 +1341,13 @@ impl WinderustApp {
                     Message::ExportLog,
                 );
             }
+            Message::ActionLog(action_log::Message::KeyboardScroll(direction, height)) => {
+                return self.action_log.keyboard_scroll(
+                    &self.status.action_log_entries,
+                    direction,
+                    height,
+                );
+            }
             Message::ActionLog(message) => {
                 let reset = matches!(
                     message,
@@ -1357,13 +1358,7 @@ impl WinderustApp {
                 );
                 self.action_log.update(message);
                 if reset {
-                    return iced::widget::operation::scroll_to(
-                        "action-log",
-                        iced::widget::scrollable::AbsoluteOffset {
-                            x: None,
-                            y: Some(0.0),
-                        },
-                    );
+                    return action_log::scroll_to(0.0);
                 }
             }
             Message::ExportLog(path) => {
