@@ -273,20 +273,24 @@ impl Events {
         }
         self.image_records += 1;
         let history = self.images.entry(base).or_default();
-        match kind {
-            ImageKind::Initial => {
-                // DCStart describes the beginning of the trace even when the callback arrives later.
-                merge_mapping(&mut history.initial, image_mapping(base, payload)?);
-            }
-            ImageKind::Load if at > 0 => {
-                history
-                    .changes
-                    .push((at, Some(image_mapping(base, payload)?)));
-            }
-            ImageKind::Unload if at > 0 => history.changes.push((at, None)),
-            _ => return None,
+        let initial = matches!(kind, ImageKind::Initial);
+        if !initial && at <= 0 {
+            return None;
         }
-        Some(())
+        if matches!(kind, ImageKind::Unload) {
+            history.changes.push((at, None));
+            return Some(());
+        }
+        let mapping = image_mapping(base, payload)?;
+        let name_valid = mapping.name.is_some();
+        if initial {
+            // DCStart describes the beginning of the trace even when the callback arrives later.
+            merge_mapping(&mut history.initial, mapping);
+        } else {
+            history.changes.push((at, Some(mapping)));
+        }
+        // Retain the verified range and report the unreadable name as an invalid record.
+        name_valid.then_some(())
     }
 
     fn report(
@@ -509,7 +513,13 @@ fn interrupt(kind: InterruptKind, cpu: u16, end: i64, payload: &[u8]) -> Option<
 
 fn image_mapping(base: u64, payload: &[u8]) -> Option<Mapping> {
     let size = read_u64(payload, 8).filter(|&size| size != 0)?;
-    let end = base.checked_add(size)?;
+    Some(Mapping {
+        end: base.checked_add(size)?,
+        name: image_basename(payload),
+    })
+}
+
+fn image_basename(payload: &[u8]) -> Option<String> {
     // The x64 Image_Load filename starts at byte 56. Retain only its basename.
     let mut path = payload.get(56..)?.as_chunks::<2>().0.iter();
     let mut basename = Vec::new();
@@ -523,11 +533,7 @@ fn image_mapping(base: u64, payload: &[u8]) -> Option<Mapping> {
     if basename.is_empty() || basename.len() > 255 {
         return None;
     }
-    let name = String::from_utf16(&basename).ok()?.to_lowercase();
-    Some(Mapping {
-        end,
-        name: Some(name),
-    })
+    Some(String::from_utf16(&basename).ok()?.to_lowercase())
 }
 
 fn read_u64(bytes: &[u8], offset: usize) -> Option<u64> {
@@ -674,6 +680,30 @@ mod tests {
         assert_eq!(count("old.sys"), 1);
         assert_eq!(count("new.sys"), 1);
         assert_eq!(report.unresolved_attribution, 2);
+    }
+
+    #[test]
+    fn unreadable_image_load_does_not_reuse_the_old_driver_name() {
+        let base = KERNEL_ADDRESS;
+        let old = image(base, 128, "old.sys");
+        let mut unreadable = image(base, 128, "x");
+        unreadable[56..58].copy_from_slice(&0xd800_u16.to_le_bytes());
+        let mut events = Events {
+            interrupts: vec![sample(base + 8, 130, 134), sample(base + 8, 220, 225)],
+            ..Events::default()
+        };
+        events.add_image(ImageKind::Initial, 110, &old).unwrap();
+        assert!(events
+            .add_image(ImageKind::Load, 200, &unreadable)
+            .is_none());
+
+        let report = events.report(100, 300, 1_000, None).unwrap();
+        assert_eq!(report.unresolved_attribution, 1);
+        assert_eq!(report.modules.len(), 2);
+        assert_eq!(report.modules[0].module, None);
+        assert_eq!(report.modules[0].total_inclusive_ms, 5.0);
+        assert_eq!(report.modules[1].module.as_deref(), Some("old.sys"));
+        assert_eq!(report.modules[1].total_inclusive_ms, 4.0);
     }
 
     #[test]

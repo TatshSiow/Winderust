@@ -72,9 +72,11 @@ operations because ETW provides no documented atomic identity check for stop.
 The decoder accepts the x64 `PerfInfo` v2 and `Image_Load` v2/v3 layouts observed
 in live traces. It counts unsupported or invalid records separately. ISR opcode
 50 follows the [TraceEvent parser](https://github.com/microsoft/perfview/blob/main/src/TraceEvent/Parsers/KernelTraceEventParser.cs).
-Ambiguous image evidence leaves the routine unattributed. Per-CPU sums accepted,
-positive-duration regular and timer DPCs and ISRs, including events whose driver
-could not be resolved. Threaded DPC appears in driver totals as its own event
+An x64 `Image_Load` v2/v3 load or rundown record with a verified kernel address
+range and an unreadable basename retains an unattributed lifetime and counts
+as one invalid driver record. Ambiguous image evidence also leaves the routine
+unattributed. Per-CPU sums accepted, positive-duration regular and timer DPCs and
+ISRs, including events whose driver could not be resolved. Threaded DPC appears in driver totals as its own event
 type. An unverified CPU number or topology omits the CPU breakdown while
 preserving driver totals. The diagnostic changes no driver settings.
 
