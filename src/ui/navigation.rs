@@ -570,19 +570,20 @@ pub(super) fn section_enabled_feature_count(settings: &Settings, page: Page) -> 
 
 pub(super) fn dashboard_sections_in_nav_order(
     show_advanced_controls: bool,
-) -> Vec<&'static ui::PageSection> {
+) -> impl Iterator<Item = &'static ui::PageSection> {
     Page::sections()
         .iter()
         .filter(|section| {
             section.landing_page != Page::Home && !nav_section_in_footer(section.landing_page)
         })
-        .filter(|section| show_advanced_controls || section.landing_page != Page::AdvancedControls)
+        .filter(move |section| {
+            show_advanced_controls || section.landing_page != Page::AdvancedControls
+        })
         .chain(
             Page::sections()
                 .iter()
                 .filter(|section| nav_section_in_footer(section.landing_page)),
         )
-        .collect()
 }
 
 pub(super) fn dashboard_search_pages(query: &str, show_advanced_controls: bool) -> Vec<Page> {

@@ -469,7 +469,6 @@ impl std::fmt::Display for SearchScope {
 fn navigation_search_choices(query: &str, advanced: bool, scope: SearchScope) -> Vec<Page> {
     let mut pages = if query.trim().is_empty() {
         navigation::dashboard_sections_in_nav_order(advanced)
-            .into_iter()
             .filter(|section| scope.0 == Some(section.landing_page))
             .flat_map(|section| {
                 std::iter::once(section.landing_page).chain(section.pages.iter().copied())
@@ -3405,7 +3404,6 @@ impl WinderustApp {
                     navigation::dashboard_sections_in_nav_order(
                         self.settings.global().advanced.show_advanced_controls,
                     )
-                    .into_iter()
                     .map(|section| SearchScope(Some(section.landing_page))),
                 )
                 .collect();
