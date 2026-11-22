@@ -1,4 +1,4 @@
-use std::{collections::BTreeSet, sync::Arc};
+use std::{collections::BTreeSet, path::Path, sync::Arc};
 
 use crate::foreground::{
     active_window::{process_from_id, ForegroundProcess},
@@ -216,6 +216,15 @@ impl CycleObservations {
             Observation::Unavailable(_) | Observation::NotRequested => {
                 unreachable!("foreground process collection cannot report an error")
             }
+        }
+    }
+
+    pub(crate) fn cached_foreground_executable_path(&self) -> Option<&Path> {
+        match &self.foreground_process {
+            Observation::Available(Some(process)) if process.executable_path.is_absolute() => {
+                Some(&process.executable_path)
+            }
+            _ => None,
         }
     }
 
@@ -744,11 +753,17 @@ mod tests {
             }
         );
 
+        assert_eq!(observations.cached_foreground_executable_path(), None);
         assert_eq!(observations.foreground_process_id(), Some(42));
         assert_eq!(observations.foreground_process_id(), Some(42));
+        assert_eq!(observations.cached_foreground_executable_path(), None);
         assert_eq!(
             observations.foreground_process().map(|process| process.id),
             Some(42)
+        );
+        assert_eq!(
+            observations.cached_foreground_executable_path(),
+            Some(Path::new(r"C:\Apps\test.exe"))
         );
         assert_eq!(
             observations.foreground_process().map(|process| process.id),

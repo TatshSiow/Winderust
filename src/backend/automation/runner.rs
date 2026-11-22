@@ -4,7 +4,7 @@ use crate::runtime::observations::CycleObservations;
 use crate::{
     action_log::{ActionLogFeature, ActionLogResult},
     control::memory_priority::MemoryPriorityReleaseOwner,
-    rules::decision_engine::ordinary_power_plan_stop,
+    rules::decision_engine::{matching_by_focus_rules, ordinary_power_plan_stop},
 };
 use std::{
     collections::{btree_map::Entry, BTreeSet},
@@ -2007,7 +2007,23 @@ impl RuntimeCore {
                 .power_plan_rule_context
                 .as_ref()
                 .is_some_and(|context| {
+                    let focus_conflicts_with_choice = status.decision_state
+                        == Some(DecisionState::ByFocus)
+                        && observations
+                            .cached_foreground_executable_path()
+                            .is_some_and(|path| {
+                                !settings.by_focus.enabled
+                                    || !matching_by_focus_rules(&settings.by_focus, path)
+                                        .next()
+                                        .is_some_and(|(index, _, plan)| {
+                                            status.rule_index == Some(index)
+                                                && status.target_guid.as_deref().is_some_and(
+                                                    |target| target.eq_ignore_ascii_case(plan),
+                                                )
+                                        })
+                            });
                     activity_conflicts_with_choice
+                        || focus_conflicts_with_choice
                         || schedule_conflicts_with_choice
                         || (status.decision_state == Some(DecisionState::ByRunningApp)
                             && status.rule_index.is_some_and(|index| {

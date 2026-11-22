@@ -348,6 +348,10 @@ Read the relevant section before changing feature policy, ownership, restoration
   automation. It shows the first eligible match followed by other eligible
   matches in the same order. It evaluates the entered path against the draft,
   even when By Focus is disabled. The check is read-only.
+- If an active-plan read fails, By Focus Status clears the earlier selection
+  when an absolute image path already observed in the same pass rules it out.
+  If the path is unavailable, the worker keeps the earlier selection while the
+  saved profile still supports it.
 - By Running App Preview matches uses the same eligibility checks to report matches
   and the winning rule for the current draft.
 - If an active-plan read fails, a confirmed absence of matches or a verified
