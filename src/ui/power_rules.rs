@@ -732,34 +732,44 @@ impl Editor {
                     ));
                 }
                 let days = container(days).style(widgets::tab_bar);
+                let times = row![
+                    container(
+                        column![
+                            text(t!("by_time.start").to_string()),
+                            self.time_field(index, id, true, r.start_time)
+                        ]
+                        .spacing(design::space::SMALL)
+                    )
+                    .width(Fill),
+                    container(
+                        column![
+                            text(t!("by_time.end").to_string()),
+                            self.time_field(index, id, false, r.end_time)
+                        ]
+                        .spacing(design::space::SMALL)
+                    )
+                    .width(Fill)
+                ]
+                .spacing(design::space::MEDIUM);
+                let invalid_clock = [Field::Start, Field::End].into_iter().any(|field| {
+                    self.inputs
+                        .get(&(id, field))
+                        .is_some_and(|value| !valid_input(field, value))
+                });
+                let feedback = invalid_clock.then(|| {
+                    text(t!("by_time.invalid_time").to_string())
+                        .wrapping(text::Wrapping::WordOrGlyph)
+                        .style(text::danger)
+                        .into()
+                });
+                let schedule =
+                    widgets::settings_rows([days.into(), times.into()].into_iter().chain(feedback));
                 controls = controls
                     .push(widgets::heading(
                         t!("by_time.schedule").to_string(),
                         design::typography::BODY,
                     ))
-                    .push(widgets::settings_card(widgets::settings_rows([
-                        days.into(),
-                        row![
-                            container(
-                                column![
-                                    text(t!("by_time.start").to_string()),
-                                    self.time_field(index, id, true, r.start_time)
-                                ]
-                                .spacing(design::space::SMALL)
-                            )
-                            .width(Fill),
-                            container(
-                                column![
-                                    text(t!("by_time.end").to_string()),
-                                    self.time_field(index, id, false, r.end_time)
-                                ]
-                                .spacing(design::space::SMALL)
-                            )
-                            .width(Fill)
-                        ]
-                        .spacing(design::space::MEDIUM)
-                        .into(),
-                    ])));
+                    .push(widgets::settings_card(schedule));
             }
             RuleRef::Cpu(r) => {
                 let choices = vec![

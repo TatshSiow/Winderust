@@ -585,6 +585,7 @@ by_time:
   hour: "Hour (0-23)"
   minute: "Minute (0-59)"
   schedule: "Schedule"
+  invalid_time: "Enter a 24-hour time from 00:00 to 23:59."
   intro_1: "By Time switches power plans based on the current day and time."
   intro_2: "Each rule can use its own target plan; overnight ranges are supported."
   enable: "Enable By Time"
