@@ -5,7 +5,11 @@ use windows_sys::Win32::{
         SetLastError, ERROR_ACCESS_DENIED, ERROR_ALREADY_EXISTS, ERROR_INVALID_PARAMETER,
         ERROR_NOT_SUPPORTED, HANDLE,
     },
-    System::JobObjects::{AssignProcessToJobObject, CreateJobObjectW, IsProcessInJob},
+    System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, IsProcessInJob,
+        JobObjectBasicAccountingInformation, QueryInformationJobObject,
+        JOBOBJECT_BASIC_ACCOUNTING_INFORMATION,
+    },
 };
 
 use crate::win_util::{last_error, wide_null, WinHandle};
@@ -73,6 +77,21 @@ pub(crate) fn process_is_in_job(process: &WinHandle, job: Option<&JobHandle>) ->
     // in_job is writable.
     let ok = unsafe { IsProcessInJob(process.raw(), job_handle, &mut in_job) };
     (ok != 0).then_some(in_job != 0)
+}
+
+pub(crate) fn has_no_active_processes(job: &JobHandle) -> bool {
+    let mut accounting = JOBOBJECT_BASIC_ACCOUNTING_INFORMATION::default();
+    // SAFETY: job is live and accounting is writable for the selected information class.
+    let ok = unsafe {
+        QueryInformationJobObject(
+            job.raw(),
+            JobObjectBasicAccountingInformation,
+            (&raw mut accounting).cast(),
+            size_of::<JOBOBJECT_BASIC_ACCOUNTING_INFORMATION>() as u32,
+            null_mut(),
+        )
+    };
+    ok != 0 && accounting.ActiveProcesses == 0
 }
 
 fn assign_error(process_id: u32, error: u32) -> JobObjectError {

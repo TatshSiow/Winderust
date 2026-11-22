@@ -151,6 +151,7 @@ pub(crate) trait SuspensionPlatform {
         target: &SuspensionTarget,
         allow_cross_session_process_control: bool,
     ) -> Result<bool, SuspensionError>;
+    fn job_has_no_active_processes(&self, handle: &Self::Handle) -> bool;
     fn begin_freeze(
         &mut self,
         identity: &ProcessIdentity,
@@ -596,6 +597,20 @@ where
         })
     }
 
+    pub(crate) fn release_empty_app_suspension(&mut self, key: &ProcessTargetKey) {
+        let can_release = self.managed.get(key).is_some_and(|managed| {
+            managed.app_suspension_phase == Some(true)
+                && managed.cpu_limiter_phase.is_none()
+                && managed.state == SuspensionState::Frozen
+                && self.ensure_retry_due(key, false).is_ok()
+                && self.platform.job_has_no_active_processes(&managed.handle)
+        });
+        if can_release {
+            // Release failures stay attached to the exact Job for reporting and retry.
+            let _ = self.release_key(key, false);
+        }
+    }
+
     pub(crate) fn app_suspension_retry_error(&self) -> Option<&str> {
         self.managed.values().find_map(|managed| {
             let retry = managed.retry.as_ref()?;
@@ -997,6 +1012,13 @@ impl SuspensionPlatform for WindowsSuspensionPlatform {
         })
     }
 
+    fn job_has_no_active_processes(&self, handle: &Self::Handle) -> bool {
+        handle
+            .job_handle
+            .as_ref()
+            .is_some_and(windows_job::has_no_active_processes)
+    }
+
     fn begin_freeze(
         &mut self,
         _identity: &ProcessIdentity,
@@ -1120,6 +1142,7 @@ mod tests {
     struct FakeState {
         allow_cross_session: Vec<bool>,
         freeze_calls: Vec<bool>,
+        job_active_processes: Option<u32>,
         forget_calls: usize,
         begin_results: VecDeque<Result<(), SuspensionError>>,
         freeze_results: VecDeque<Result<(), SuspensionError>>,
@@ -1162,6 +1185,10 @@ mod tests {
             _allow_cross_session_process_control: bool,
         ) -> Result<bool, SuspensionError> {
             Ok(false)
+        }
+
+        fn job_has_no_active_processes(&self, _handle: &Self::Handle) -> bool {
+            self.0.borrow().job_active_processes == Some(0)
         }
 
         fn begin_freeze(
@@ -1366,6 +1393,26 @@ mod tests {
 
         controller.release_process(42, true).unwrap();
         assert!(!controller.contains_process(42));
+    }
+
+    #[test]
+    fn manual_suspension_releases_only_a_confirmed_empty_job() {
+        let (mut controller, state) = controller();
+        let target = target(7);
+        let key = target.key();
+        controller.freeze(&target, true).unwrap();
+
+        for count in [Some(1), None] {
+            state.borrow_mut().job_active_processes = count;
+            controller.release_empty_app_suspension(&key);
+            assert!(controller.is_frozen_target(&key));
+        }
+
+        state.borrow_mut().job_active_processes = Some(0);
+        controller.release_empty_app_suspension(&key);
+        assert!(!controller.contains_process(target.process.id));
+        assert_eq!(state.borrow().freeze_calls, vec![true, false]);
+        assert_eq!(state.borrow().forget_calls, 1);
     }
 
     #[test]

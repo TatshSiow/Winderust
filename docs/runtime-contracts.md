@@ -518,7 +518,9 @@ Read the relevant section before changing feature policy, ownership, restoration
   no longer matches an enabled rule, even if focus, session, or process
   observations are unavailable. Process List freezes have separate ownership.
   User-initiated recovery preserves the saved enablement mode and reports thaw
-  failures in the returned status.
+  failures in the returned status. Process List freezes release when accounting
+  confirms that their exact Job Object has no active processes. An absent root
+  or unavailable accounting cannot establish that inherited processes have exited.
 - App Suspension shows Not running only for an enabled saved rule covered by a
   successful scan with no unresolved candidate for that path. Suspend requires
   a matching enabled rule in the current saved power profile. Temporarily

@@ -874,6 +874,10 @@ mod tests {
             Ok(target.process.id == 2)
         }
 
+        fn job_has_no_active_processes(&self, _handle: &Self::Handle) -> bool {
+            false
+        }
+
         fn begin_freeze(
             &mut self,
             _identity: &ProcessIdentity,

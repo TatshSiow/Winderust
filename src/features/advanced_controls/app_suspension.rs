@@ -422,11 +422,12 @@ impl AppSuspensionManager {
         let now = Instant::now();
         controller.reconcile_pending(false);
         self.suspended.retain(|&process_id, process| {
-            controller.is_frozen_target(&ProcessTargetKey::new(
-                process_id,
-                process.creation_time,
-                &process.executable_path,
-            ))
+            let key =
+                ProcessTargetKey::new(process_id, process.creation_time, &process.executable_path);
+            if process.manual {
+                controller.release_empty_app_suspension(&key);
+            }
+            controller.is_frozen_target(&key)
         });
 
         if !automation_enabled {

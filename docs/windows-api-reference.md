@@ -853,7 +853,7 @@ Implementation paths:
 
 - `src/features/advanced_controls/app_suspension.rs`: rule, grace, wake, suppression, snapshot, and Action Log policy.
 - `src/control/suspension.rs`: shared exact-process assignment, owner-phase arbitration, Job Object freeze/thaw transaction, retry, and clean-release boundary.
-- `src/platform/windows/job.rs`: shared named Job Object creation, assignment, and membership primitives.
+- `src/platform/windows/job.rs`: shared named Job Object creation, assignment, membership, and accounting primitives.
 - `src/platform/windows/suspension.rs`: sole normal freeze/thaw writer and freeze-information layout boundary.
 - `src/features/advanced_controls/app_suspension/wake_activity.rs`: audio and IP Helper wake detection.
 - `src/backend/crash_recovery.rs`: independent helper-held recovery mirror.
@@ -878,6 +878,7 @@ User-facing behavior:
 | `AssignProcessToJobObject` | The adapter assigns the controller-validated exact target process to Winderust's private job object. | https://learn.microsoft.com/en-us/windows/win32/api/jobapi2/nf-jobapi2-assignprocesstojobobject |
 | `IsProcessInJob` | The adapter checks exact membership and whether an assignment failure reflects a process already constrained by another job; controller policy fails closed. | https://learn.microsoft.com/en-us/windows/win32/api/jobapi/nf-jobapi-isprocessinjob |
 | `SetInformationJobObject` | The adapter is the sole normal freeze/thaw writer for the controller; crash recovery retains an independent replay path using the same shared layout contract. | https://learn.microsoft.com/en-us/windows/win32/api/jobapi2/nf-jobapi2-setinformationjobobject |
+| `QueryInformationJobObject` | `src/platform/windows/job.rs` reads `JobObjectBasicAccountingInformation` on the owned Job. App Suspension uses a successful zero-active count to retire a Process List freeze whose members have exited. Shared CPU Limiter ownership keeps its own cleanup path. | https://learn.microsoft.com/en-us/windows/win32/api/jobapi2/nf-jobapi2-queryinformationjobobject |
 | Job Objects | Documents that children normally join their parent's job and that a job persists until its last handle closes and all associated processes terminate. This is why recovery thaws the helper-held job even after the recorded root exits. | https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects |
 
 Compatibility note: `SetInformationJobObject` is public, but Microsoft does
