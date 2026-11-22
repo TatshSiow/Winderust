@@ -96,8 +96,13 @@ impl CpuLimiterManager {
 
         // SAFETY: GetCurrentProcessId takes no arguments and has no caller requirements.
         let current_process_id = unsafe { GetCurrentProcessId() };
-        let Some(current_session_id) = process_session_id(current_process_id) else {
-            return self.paused(controller, action_log);
+        let current_session_id = if allow_cross_session_process_control {
+            None
+        } else {
+            let Some(session_id) = process_session_id(current_process_id) else {
+                return self.paused(controller, action_log);
+            };
+            Some(session_id)
         };
         let processes = match observations.processes_with_paths() {
             Ok(processes) => processes,
@@ -154,8 +159,7 @@ impl CpuLimiterManager {
                 || process.is_service_account != Some(false)
                 || process.session_id.is_none_or(|session_id| session_id == 0)
                 || suspension_control::is_builtin_excluded(&process.name)
-                || (!allow_cross_session_process_control
-                    && process.session_id != Some(current_session_id))
+                || current_session_id.is_some_and(|session| process.session_id != Some(session))
             {
                 skipped_processes += 1;
                 continue;
