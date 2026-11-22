@@ -62,7 +62,14 @@ pub(super) fn view(
     if managed {
         return widgets::settings_card(selector).into();
     }
-    let (detail, failed) = automation_detail(status, plans, current);
+    let (detail, failed) = if status.active_plan_read_error.is_some() {
+        (
+            t!("power_plan_control.active_plan_read_failed").into_owned(),
+            true,
+        )
+    } else {
+        automation_detail(status, plans, current)
+    };
     let status = text(detail)
         .width(Fill)
         .size(design::typography::SECONDARY)

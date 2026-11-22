@@ -1189,6 +1189,7 @@ power_plan_control:
   switch_runtime_unavailable: "Automation is unavailable. The power plan change could not be completed."
   switch_busy: "Too many control requests are waiting. Try again shortly."
   catalog_unavailable: "Could not load power plans."
+  active_plan_read_failed: "Could not read the current power plan."
   pause_plugged: "Pause power plan switching on A/C"
   restore_previous_plan: "Restore previous plan when no rule selects a plan"
   restore_previous_plan_help: "When all rules stop selecting a plan, return to the plan active before automatic switching began. Else and Active choices take priority; choose None there to allow restoration. External plan changes are kept. Applies to both power profiles."

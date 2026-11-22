@@ -189,8 +189,9 @@ hover/press; background shading supplies feedback.
 - The Power Plan Control landing page shows the active Windows plan in a compact
   selector with an automation summary. A different selection opens the shared
   Save and Discard notice. Keep the active plan visible while a different plan
-  is staged. When Adaptive Engine owns the active plan, show the disabled
-  selector and Processor Power settings shortcut on one row.
+  is staged. If a read fails, show the read failure in the automation summary.
+  When Adaptive Engine owns the active plan, show the disabled selector and
+  Processor Power settings shortcut on one row.
 - Power Plan Control exposes one Restore previous plan when no rule selects a
   plan switch beside the global A/C pause. It defaults off and applies to both
   power profiles. Help explains that every selected rule, including explicit
