@@ -12,6 +12,7 @@ use iced::widget::{column, container, image, mouse_area, responsive, row, text, 
 use iced::{keyboard::key::Named, Element, Fill, Task};
 use rust_i18n::t;
 use std::{
+    borrow::Cow,
     collections::{BTreeMap, HashMap, HashSet},
     ffi::OsString,
     ops::Range,
@@ -868,27 +869,36 @@ impl ProcessList {
         }
     }
 
-    fn cell_value(&self, entry: &Entry, col: Sort) -> String {
+    fn cell_value(&self, entry: &Entry, col: Sort) -> Cow<'_, str> {
         let p = &self.processes[entry.indices[0]];
         match col {
-            Sort::Name => p.name.clone(),
+            Sort::Name => Cow::Borrowed(&p.name),
             Sort::Pid => {
-                if entry.indices.len() > 1 {
+                let value = if entry.indices.len() > 1 {
                     format!("{} x", entry.indices.len())
                 } else {
                     p.id.to_string()
-                }
+                };
+                Cow::Owned(value)
             }
-            Sort::Cpu => self.cpu_total(entry).map_or_else(
-                || t!("common.unknown").into_owned(),
-                |usage| format!("{usage:.1}%"),
-            ),
-            Sort::Memory => self.memory_total(entry).map_or_else(
-                || t!("common.unknown").into_owned(),
-                |bytes| format_memory_usage(bytes, self.total_memory_bytes, self.memory_percentage),
-            ),
-            Sort::User => self.user(entry),
-            Sort::Status => self.status_key(entry).to_string(),
+            Sort::Cpu => self
+                .cpu_total(entry)
+                .map_or_else(
+                    || t!("common.unknown").into_owned(),
+                    |usage| format!("{usage:.1}%"),
+                )
+                .into(),
+            Sort::Memory => self
+                .memory_total(entry)
+                .map_or_else(
+                    || t!("common.unknown").into_owned(),
+                    |bytes| {
+                        format_memory_usage(bytes, self.total_memory_bytes, self.memory_percentage)
+                    },
+                )
+                .into(),
+            Sort::User => self.user(entry).into(),
+            Sort::Status => t!(self.status_key(entry)),
         }
     }
 
@@ -897,11 +907,6 @@ impl ProcessList {
         let mut measured = HashMap::new();
         for entry in &self.rows {
             let value = self.cell_value(entry, col);
-            let value = if col == Sort::Status {
-                t!(&value).to_string()
-            } else {
-                value
-            };
             let padding = match col {
                 Sort::Name => {
                     if entry.nested {
