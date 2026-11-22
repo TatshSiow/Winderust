@@ -27,6 +27,13 @@ pub(crate) struct WatchdogSnapshot {
     pub last_error: Option<String>,
 }
 
+#[derive(Default)]
+struct BatchActivity {
+    monitored: bool,
+    alerting: bool,
+    skipped: bool,
+}
+
 pub(crate) struct WatchdogEvent {
     pub name: String,
     pub process_count: usize,
@@ -262,6 +269,8 @@ impl WatchdogManager {
             observation_known: true,
             ..Default::default()
         };
+        // Count each process once per metric even if several rules match it.
+        let mut activity = BTreeMap::<u32, BatchActivity>::new();
         let mut events = Vec::new();
         let mut cpu_usage = process_cpu_usage_batch();
         let groups = settings
@@ -282,7 +291,7 @@ impl WatchdogManager {
             let mut complete = true;
             for process in group {
                 if process.is_critical == Some(true) || process.id == std::process::id() {
-                    snapshot.skipped_processes += 1;
+                    activity.entry(process.id).or_default().skipped = true;
                     continue;
                 }
                 let sample = samples.get(&process.id).filter(|sample| {
@@ -294,7 +303,7 @@ impl WatchdogManager {
                 }
                 let Some(sample) = sample else {
                     complete = false;
-                    snapshot.skipped_processes += 1;
+                    activity.entry(process.id).or_default().skipped = true;
                     continue;
                 };
                 matched.push((process, sample));
@@ -336,11 +345,12 @@ impl WatchdogManager {
                 for thresholds in &mut state.resources {
                     thresholds.interrupt();
                 }
-                snapshot.skipped_processes += matched.len();
+                for (process, _) in matched {
+                    activity.entry(process.id).or_default().skipped = true;
+                }
                 states.insert(key, state);
                 continue;
             };
-            snapshot.monitored_processes += matched.len();
             let delay =
                 Duration::from_secs(rule.sustained_seconds.unwrap_or(settings.sustained_seconds));
             let mut alerting = false;
@@ -453,9 +463,18 @@ impl WatchdogManager {
                     skipped = true;
                 }
             }
-            snapshot.alerting_processes += if alerting { matched.len() } else { 0 };
-            snapshot.skipped_processes += if skipped { matched.len() } else { 0 };
+            for (process, _) in matched {
+                let row = activity.entry(process.id).or_default();
+                row.monitored = true;
+                row.alerting |= alerting;
+                row.skipped |= skipped;
+            }
             states.insert(key, state);
+        }
+        for row in activity.into_values() {
+            snapshot.monitored_processes += usize::from(row.monitored);
+            snapshot.alerting_processes += usize::from(row.alerting);
+            snapshot.skipped_processes += usize::from(row.skipped);
         }
         self.states = states;
         (snapshot, events)
