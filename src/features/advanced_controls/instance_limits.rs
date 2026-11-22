@@ -77,6 +77,9 @@ impl InstanceLimitsManager {
         if enabled == self.enabled && settings == &self.settings {
             return;
         }
+        if settings.notify && !self.settings.notify {
+            self.requalify_notifications();
+        }
         let mut previous: Vec<_> = self
             .settings
             .rules
@@ -92,15 +95,7 @@ impl InstanceLimitsManager {
                         .iter()
                         .position(|(previous_rule, _)| *previous_rule == rule)
                     {
-                        let (_, mut state) = previous.swap_remove(index);
-                        // Notification opt-in needs fresh excess proof, without rearming an attempted incident.
-                        if settings.notify
-                            && !self.settings.notify
-                            && state.notification == NotificationStatus::NotAttempted
-                        {
-                            state.excess_since = None;
-                        }
-                        return state;
+                        return previous.swap_remove(index).1;
                     }
                 }
                 RuleState::default()
@@ -108,6 +103,14 @@ impl InstanceLimitsManager {
             .collect();
         self.enabled = enabled;
         self.settings = settings.clone();
+    }
+
+    pub(crate) fn requalify_notifications(&mut self) {
+        for state in &mut self.rules {
+            if state.notification == NotificationStatus::NotAttempted {
+                state.excess_since = None;
+            }
+        }
     }
 
     pub(crate) fn invalidate(&mut self, reason: &str) {

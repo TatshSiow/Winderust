@@ -1172,6 +1172,11 @@ fn run_background_automation(
                 .instance_limits
                 .reset_paths(&snapshot.instance_limits_resets.paths);
         }
+        if snapshot.instance_limits_resets.notification_opt_in
+            && configured_settings.instance_limits.notify
+        {
+            runner.instance_limits.requalify_notifications();
+        }
         runner.instance_limits.sync(
             &configured_settings.instance_limits,
             configured_settings.general.enabled,

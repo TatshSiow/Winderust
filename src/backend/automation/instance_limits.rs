@@ -9,6 +9,7 @@ use rust_i18n::t;
 #[derive(Default)]
 pub(super) struct PendingResets {
     pub(super) all: bool,
+    pub(super) notification_opt_in: bool,
     pub(super) paths: Vec<String>,
 }
 
@@ -20,6 +21,8 @@ pub(super) fn record_settings_changes(
     let pending = &mut state.pending_instance_limits_resets;
     pending.all |= previous.general.enabled != settings.general.enabled
         || previous.instance_limits.enabled != settings.instance_limits.enabled;
+    pending.notification_opt_in |=
+        !previous.instance_limits.notify && settings.instance_limits.notify;
     for (rules, other) in [
         (
             &previous.instance_limits.rules,
@@ -305,6 +308,46 @@ mod tests {
         settings.general.enabled = !settings.general.enabled;
         record_settings_changes(&mut state, &settings);
         assert!(state.pending_instance_limits_resets.all);
+    }
+
+    #[test]
+    fn notify_opt_in_between_worker_snapshots_restarts_qualification() {
+        let runtime = runtime();
+        let mut state = lock_unpoisoned(&runtime.shared.state);
+        let mut settings = (*state.settings).clone();
+        settings.instance_limits.enabled = true;
+        settings.instance_limits.notify = true;
+        settings.instance_limits.rules = vec![crate::config::InstanceLimitsRule::new(
+            r"C:\Apps\app.exe".into(),
+        )];
+        state.settings = Arc::new(settings.clone());
+        let mut manager = InstanceLimitsManager::default();
+        manager.sync(&settings.instance_limits, true);
+        let now = Instant::now();
+        let counts = [CountObservation::Complete(2)];
+        assert!(manager.observe(&counts, now).is_empty());
+
+        for notify in [false, true] {
+            settings.instance_limits.notify = notify;
+            record_settings_changes(&mut state, &settings);
+            state.settings = Arc::new(settings.clone());
+        }
+        let pending = std::mem::take(&mut state.pending_instance_limits_resets);
+        assert!(!pending.all && pending.paths.is_empty());
+        if pending.notification_opt_in {
+            manager.requalify_notifications();
+        }
+        manager.sync(&settings.instance_limits, true);
+        assert!(manager
+            .observe(&counts, now + Duration::from_secs(1))
+            .is_empty());
+        assert_eq!(
+            manager.observe(&counts, now + Duration::from_secs(2)),
+            [
+                InstanceLimitsEvent::Excess(0),
+                InstanceLimitsEvent::Notify(0)
+            ]
+        );
     }
 
     #[test]
