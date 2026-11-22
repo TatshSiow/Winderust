@@ -572,6 +572,7 @@ impl RuntimeCore {
                 continue;
             }
             let mut inventory = CpuSetInventory::default();
+            let mut observed_counts = None;
             let mut exclusions = Vec::new();
             let mut waiting = InstanceBalancingDetail::WaitingForStableCohort;
             let result = (|| -> Result<Option<Vec<Assignment>>, PlanRejection> {
@@ -587,9 +588,8 @@ impl RuntimeCore {
                     rule,
                     active,
                 )?;
-                observed_rules += 1;
-                snapshot.scanned_processes += rule.retained.len();
-                snapshot.skipped_processes += excluded.len();
+                let counts = (rule.retained.len(), excluded.len());
+                observed_counts = Some(counts);
                 exclusions = excluded;
                 let now = Instant::now();
                 let plan = match rule.policy.observe(topology, &cohort, now) {
@@ -606,6 +606,8 @@ impl RuntimeCore {
                 let Some(plan) = plan else {
                     return Ok(None);
                 };
+                // Report complete coverage only after the additional preflight agrees.
+                observed_counts = None;
                 // The second catalog and fresh allocation facts reserve only this exact observed cohort.
                 let mut fresh = membership::collect_members(std::slice::from_ref(
                     &rule.settings.executable_path,
@@ -629,6 +631,7 @@ impl RuntimeCore {
                 if fresh_cohort != cohort || fresh_excluded != exclusions {
                     return Err(t!("instance_balancing.changed").to_string().into());
                 }
+                observed_counts = Some(counts);
                 apply_plan(
                     &mut self.cpu_allocation_coordinator,
                     &mut final_inventory,
@@ -654,6 +657,11 @@ impl RuntimeCore {
                 rule.policy.accepted(plan.clone(), Instant::now());
                 Ok(Some(plan))
             })();
+            if let Some((scanned, skipped)) = observed_counts {
+                observed_rules += 1;
+                snapshot.scanned_processes += scanned;
+                snapshot.skipped_processes += skipped;
+            }
             rule.exited.retain(|_, target| {
                 !self
                     .cpu_allocation_coordinator
