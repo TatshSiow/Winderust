@@ -140,6 +140,15 @@ impl ByRunningAppManager {
         self.observation_known.unwrap_or(false)
     }
 
+    pub(crate) fn rules_out_selection(&self, rule_index: usize) -> bool {
+        // A later match can coexist with an unresolved candidate for an earlier rule.
+        self.observation_known()
+            && self
+                .active
+                .as_ref()
+                .is_none_or(|active| active.rule_index < rule_index)
+    }
+
     pub fn active_process_ids(&self) -> BTreeSet<u32> {
         self.active
             .as_ref()
@@ -844,6 +853,25 @@ mod tests {
             assert_eq!(manager.update(&settings, true, &mut observations), expected);
             assert!(manager.observation_known());
         }
+    }
+
+    #[test]
+    fn only_confirmed_absence_or_earlier_match_rules_out_selection() {
+        let mut manager = ByRunningAppManager::default();
+        assert!(!manager.rules_out_selection(1));
+
+        manager.observation_known = Some(true);
+        assert!(manager.rules_out_selection(1));
+        manager.active = Some(ActiveByRunningApp {
+            rule_index: 1,
+            rule_name: "Rule".into(),
+            process_id: 2,
+            process_name: "game.exe".into(),
+            target_guid: "plan".into(),
+        });
+        assert!(!manager.rules_out_selection(0));
+        assert!(!manager.rules_out_selection(1));
+        assert!(manager.rules_out_selection(2));
     }
 
     #[test]

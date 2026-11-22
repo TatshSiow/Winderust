@@ -350,6 +350,9 @@ Read the relevant section before changing feature policy, ownership, restoration
   even when By Focus is disabled. The check is read-only.
 - By Running App Preview matches uses the same eligibility checks to report matches
   and the winning rule for the current draft.
+- If an active-plan read fails, a confirmed absence of matches or a verified
+  earlier By Running App rule clears the previous selection. An unavailable
+  observation or a later match can leave the earlier rule unresolved.
 - By Activity uses the same activity sample to select a plan and schedule the idle
   deadline. Time spent verifying a plan switch counts toward that deadline.
   If an active-plan read fails, the earlier By Activity selection remains visible

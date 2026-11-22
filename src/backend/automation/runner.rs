@@ -1956,6 +1956,10 @@ impl RuntimeCore {
                 .is_some_and(|context| {
                     activity_conflicts_with_choice
                         || schedule_conflicts_with_choice
+                        || (status.decision_state == Some(DecisionState::ByRunningApp)
+                            && status.rule_index.is_some_and(|index| {
+                                self.by_running_app_manager.rules_out_selection(index)
+                            }))
                         || (!Arc::ptr_eq(&context.settings, configured_settings)
                             && !ordinary_power_plan_choice_matches(
                                 &status,
