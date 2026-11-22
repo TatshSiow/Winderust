@@ -64,6 +64,9 @@ Documentation-only changes require link/path, whitespace, and naming checks.
 
 ## Change Guidelines
 
+Follow the [Rust engineering practices](docs/development.md#rust-engineering-practices)
+for boundary parsing, code ownership, and maintainability review.
+
 - Keep code names, settings, tests, locale keys, scripts, and documentation
   aligned with the visible UI names.
 - Preserve protected-process filtering, conservative defaults, process-state

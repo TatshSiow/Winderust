@@ -367,6 +367,9 @@ hover/press; background shading supplies feedback.
   executable inside the menu. Keep the overlay inside the viewport with keyboard
   selection and outside-click dismissal. Each feature owns eligibility and duplicate
   checks; unavailable App Suspension targets stay visible and disabled.
+- Preserve the exact executable chosen through the running-app picker or Browse.
+  Apply input formatting to typed text and finish eligibility checks before
+  adding a rule to the settings draft.
 - Dropdowns use the shared Select: native Iced field and overlay, persistent accent
   selection marker, gentle accent hover, and base option text. Scroll to the selected
   option on opening; retain keyboard and outside-click behavior.

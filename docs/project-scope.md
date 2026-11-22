@@ -61,6 +61,11 @@ Not a goal by default:
 
 ## Future Goals
 
+Start with a named user workflow and the smallest change that fits an existing
+page or controller. Define who owns the effect, how the UI reports unavailable
+evidence, and how to verify the result and restoration. Verify read-only
+diagnostics before considering persistent machine-wide controls.
+
 Add only when a real workflow needs them:
 
 - Better telemetry/export if Action Log is not enough.

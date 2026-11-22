@@ -289,20 +289,20 @@ CI runs on pushes to `main` and `dev`, and on every pull request. Release automa
 
 ## Rust Engineering Practices
 
-Apply [Parse, don't validate](https://lexi-lambda.github.io/blog/2019/11/05/parse-don-t-validate/)
-and the [Pragmatic Rust Guidelines](https://microsoft.github.io/rust-guidelines/guidelines/index.html)
-at the boundaries that benefit from them:
+Use type-driven design and idiomatic Rust where they reduce failure paths or
+make ownership clearer. See [Parse, don't validate](https://lexi-lambda.github.io/blog/2019/11/05/parse-don-t-validate/)
+and the [Pragmatic Rust Guidelines](https://microsoft.github.io/rust-guidelines/guidelines/index.html).
 
 - Parse external values into domain types before side effects. Types carrying
   invariants keep their representation private and offer fallible construction,
   including through Serde; downstream code consumes the parsed result.
-- Keep incomplete UI text in editor drafts rather than weakening runtime types
-  or silently replacing malformed input with defaults.
+- Keep incomplete UI text in editor drafts. Handle formatting where the user
+  types the value. Preserve selected executable paths and use exact identity
+  for saved rules and runtime decisions.
 - Preserve typed external failures and test malformed input, unavailable
   observations, ownership changes, and restoration through the existing adapters.
 - Apply library-specific or performance advice only where it fits this desktop
   application; measure allocator, CPU-target, and hot-path changes before adopting them.
-
 - Trace every caller before changing a shared helper, enum, setting, or error
   contract. Fix a defect once at the shared boundary when all affected callers
   route through it.
@@ -330,7 +330,9 @@ Use this order for simplification and over-engineering reviews:
    that own timers, resources, restoration, or shutdown; replace stateless
    structs with functions when that makes callers simpler.
 4. Remove parallel representations, duplicate scans, unused status fields, and
-   one-use wrappers when one source of truth is sufficient.
+   one-use wrappers when one source of truth is sufficient. Use the same rule
+   list for duplicate checks and editing. Keep retry, wake, and restoration
+   logic explicit where the owners, timing, or order differ.
 5. Prefer the smallest coherent deletion-first change. Do not perform renames,
    file moves, or abstraction swaps that merely reshuffle working code.
 6. Review the exact diff for changed behavior and damaged tests, especially
@@ -339,6 +341,10 @@ Use this order for simplification and over-engineering reviews:
 7. Compile all targets, run the required checks and tests, then update Graphify.
    If no change clearly reduces maintenance cost, leave the code alone and say
    why.
+
+Use the existing tests to check refactors. Add a regression test when an
+important outcome lacks coverage. Check the user-visible result, persisted
+value, or restoration effect at the boundary the change affects.
 
 ## Releases
 
