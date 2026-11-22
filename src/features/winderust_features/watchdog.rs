@@ -235,14 +235,13 @@ impl WatchdogManager {
             .cloned()
             .collect();
         let samples = sample_process_resources(&matched, ProcessResourceSampling::UsageOnly);
-        let total_memory = settings
-            .rules
-            .iter()
-            .any(|rule| {
+        let total_memory_required = !matched.is_empty()
+            && settings.rules.iter().any(|rule| {
                 rule.enabled
                     && rule.memory.enabled
                     && rule.memory_unit.metric() == WatchdogMetric::MemoryPercent
-            })
+            });
+        let total_memory = total_memory_required
             .then(|| crate::backend::dashboard_metrics::sample_memory_usage().total_physical_bytes)
             .flatten();
         self.evaluate(settings, &matched, &samples, total_memory, Instant::now())
