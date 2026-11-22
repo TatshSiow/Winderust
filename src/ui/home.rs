@@ -745,9 +745,12 @@ fn recent_log_row(entry: &crate::action_log::ActionLogEntry, width: f32) -> Elem
         - 2.0 * f32::from(PADDING[1])
         - 2.0 * design::space::SMALL as f32)
         .max(0.0);
-    let tooltip = (super::widgets::text_width(&description, design::typography::CAPTION)
-        > available)
-        .then(|| text(description.clone()));
+    let description_width = super::widgets::text_width_with_font(
+        &description,
+        design::typography::CAPTION,
+        design::typography::DEFAULT_FONT,
+    );
+    let tooltip = (description_width > available).then(|| text(description.clone()));
     let row = button(
         row![
             text(super::action_log::action_log_time_label(
@@ -763,6 +766,7 @@ fn recent_log_row(entry: &crate::action_log::ActionLogEntry, width: f32) -> Elem
             container(
                 text(description)
                     .size(design::typography::CAPTION)
+                    .font(design::typography::DEFAULT_FONT)
                     .wrapping(text::Wrapping::None)
                     .shaping(iced::advanced::text::Shaping::Advanced)
             )

@@ -348,10 +348,7 @@ pub(crate) fn run(
     )
     .title("Winderust")
     .settings(iced::Settings {
-        default_font: iced::Font {
-            weight: iced::font::Weight::Normal,
-            ..design::typography::FONT
-        },
+        default_font: design::typography::DEFAULT_FONT,
         default_text_size: design::typography::BODY.into(),
         ..Default::default()
     })

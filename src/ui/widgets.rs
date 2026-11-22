@@ -2054,13 +2054,17 @@ pub(super) fn fitted_text(content: &str, width: f32, size: u32) -> String {
 }
 
 pub(super) fn text_width(content: &str, size: u32) -> f32 {
+    text_width_with_font(content, size, design::typography::FONT)
+}
+
+pub(super) fn text_width_with_font(content: &str, size: u32, font: iced::Font) -> f32 {
     use iced::advanced::text::{Paragraph, Renderer, Text};
     <iced::Renderer as Renderer>::Paragraph::with_text(Text {
         content,
         bounds: iced::Size::INFINITE,
         size: (size as f32).into(),
         line_height: Default::default(),
-        font: design::typography::FONT,
+        font,
         align_x: Default::default(),
         align_y: iced::alignment::Vertical::Center,
         shaping: iced::advanced::text::Shaping::Advanced,

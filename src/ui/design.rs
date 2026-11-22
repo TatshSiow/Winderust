@@ -16,6 +16,10 @@ pub(super) mod typography {
         weight: iced::font::Weight::Semibold,
         ..iced::Font::with_name("Segoe UI")
     };
+    pub const DEFAULT_FONT: iced::Font = iced::Font {
+        weight: iced::font::Weight::Normal,
+        ..FONT
+    };
     pub const BADGE: u32 = 11;
     pub const CAPTION: u32 = 12;
     pub const SECONDARY: u32 = 13;
