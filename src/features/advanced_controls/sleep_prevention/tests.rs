@@ -72,6 +72,19 @@ fn overlapping_rules_combine_requests_until_the_last_matching_app_exits() {
 }
 
 #[test]
+fn matching_accepts_a_unicode_basename_candidate_with_the_exact_image_path() {
+    let mut settings = settings();
+    let path = r"C:\Apps\Éditeur.exe";
+    settings.rules[0].executable_path = path.into();
+    let mut worker = process(7, path);
+    worker.name = "éditeur.exe".into();
+
+    let matches = match_rules(&settings, &[worker], u32::MAX, Some(1), false);
+    assert!(matches.known);
+    assert!(matches.apps.contains_key(&(7, 7)));
+}
+
+#[test]
 fn matching_rejects_wrong_paths_protected_apps_and_disallowed_sessions() {
     let settings = settings();
     let mut worker = process(7, r"C:\Apps\worker.exe");

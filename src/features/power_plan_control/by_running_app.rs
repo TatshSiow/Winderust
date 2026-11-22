@@ -6,7 +6,8 @@ use std::{
 use crate::{
     config::{ByRunningAppRule, ByRunningAppSettings, ExecutableSelector},
     foreground::{
-        contains_process_name, process_executable_path, process_session_id, same_executable_path,
+        contains_process_name, process_executable_path,
+        process_list::executable_basename_may_match, process_session_id, same_executable_path,
         same_process_name, ProcessInfo, EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS,
     },
     runtime::observations::CycleObservations,
@@ -311,12 +312,15 @@ fn classify_process(
     session_id: &mut impl FnMut(u32) -> Option<u32>,
     executable_path: &mut impl FnMut(&ProcessInfo) -> Option<PathBuf>,
 ) -> Option<ByRunningAppPreviewRow> {
-    if process.id == 0
-        || process.id == current_process_id
-        || process.is_critical == Some(true)
-        || !same_process_name(&process.name, file_name)
-        || is_builtin_excluded(&process.name)
-    {
+    if process.id == 0 || process.id == current_process_id || process.is_critical == Some(true) {
+        return None;
+    }
+    let name_matches = if configured_path.is_some() {
+        executable_basename_may_match(&process.name, file_name)
+    } else {
+        same_process_name(&process.name, file_name)
+    };
+    if !name_matches || is_builtin_excluded(&process.name) {
         return None;
     }
     let session = session_id(process.id);
@@ -543,45 +547,45 @@ mod tests {
                 enabled: true,
                 name: "Game".into(),
                 selector: ExecutableSelector::ExactPath {
-                    executable_path: r"C:\Games\game.exe".into(),
+                    executable_path: r"C:\Games\Éditeur.exe".into(),
                 },
                 power_plan_guid: Some("game-plan".into()),
             }],
         };
         for (name, critical, session, path, known, matched) in [
             (
-                "game.exe",
+                "éditeur.exe",
                 Some(false),
                 Some(1),
-                Some(r"C:\Games\game.exe"),
+                Some(r"C:\Games\Éditeur.exe"),
                 true,
                 true,
             ),
             (
-                "game.exe",
+                "éditeur.exe",
                 None,
                 Some(1),
-                Some(r"C:\Games\game.exe"),
+                Some(r"C:\Games\Éditeur.exe"),
                 false,
                 false,
             ),
             (
-                "game.exe",
+                "éditeur.exe",
                 Some(false),
                 None,
-                Some(r"C:\Games\game.exe"),
+                Some(r"C:\Games\Éditeur.exe"),
                 false,
                 false,
             ),
-            ("game.exe", Some(false), Some(1), None, false, false),
-            ("game.exe", Some(true), None, None, true, false),
-            ("game.exe", Some(false), Some(2), None, true, false),
+            ("éditeur.exe", Some(false), Some(1), None, false, false),
+            ("éditeur.exe", Some(true), None, None, true, false),
+            ("éditeur.exe", Some(false), Some(2), None, true, false),
             ("other.exe", None, None, None, true, false),
             (
-                "game.exe",
+                "éditeur.exe",
                 None,
                 None,
-                Some(r"C:\Other\game.exe"),
+                Some(r"C:\Other\Éditeur.exe"),
                 true,
                 false,
             ),

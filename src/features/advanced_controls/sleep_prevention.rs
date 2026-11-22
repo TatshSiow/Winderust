@@ -7,8 +7,8 @@ use crate::{
         SleepPreventionController, SleepPreventionMode, SleepPreventionRequests,
     },
     foreground::{
-        contains_process_name, process_session_id, same_executable_path, same_process_name,
-        ProcessInfo, EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS,
+        contains_process_name, process_list::executable_basename_may_match, process_session_id,
+        same_executable_path, ProcessInfo, EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS,
     },
     runtime::observations::CycleObservations,
 };
@@ -618,7 +618,7 @@ fn match_rules(
                 || process.id == own_pid
                 || crate::backend::is_helper_process(process.id)
                 || contains_process_name(EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS, &process.name)
-                || !same_process_name(&process.name, name)
+                || !executable_basename_may_match(&process.name, name)
                 || process.is_critical == Some(true)
                 || process.is_service_account == Some(true)
                 || process.session_id == Some(0)

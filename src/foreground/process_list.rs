@@ -918,6 +918,11 @@ pub(crate) fn unicode_case_match(left: &str, right: &str) -> bool {
     result == CSTR_EQUAL
 }
 
+pub(crate) fn executable_basename_may_match(process_name: &str, basename: &str) -> bool {
+    same_process_name(process_name, basename)
+        || unicode_case_match(process_name.trim(), basename.trim())
+}
+
 pub fn process_matches_executable_path(process: &ProcessInfo, executable_path: &str) -> bool {
     let executable_path = Path::new(executable_path.trim());
     let Some(file_name) = executable_path.file_name().and_then(|name| name.to_str()) else {
