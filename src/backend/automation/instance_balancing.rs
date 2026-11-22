@@ -719,16 +719,18 @@ impl RuntimeCore {
         if rule_count == 0 {
             runtime.remember_release_only_status(&snapshot);
         }
+        let assigned = snapshot.adjusted_processes;
         if let Some(error) = &snapshot.last_error {
             snapshot.detail = Some(InstanceBalancingDetail::Diagnostic(error.clone()));
-            snapshot.exclusions.clear();
-        } else if snapshot.adjusted_processes > 0 {
-            snapshot.detail = Some(InstanceBalancingDetail::Assigned(
-                snapshot.adjusted_processes,
-            ));
+        } else if assigned > 0 {
+            snapshot.detail = Some(InstanceBalancingDetail::Assigned(assigned));
+        }
+        if assigned > 0 {
             snapshot
                 .exclusions
                 .retain(InstanceBalancingExclusion::is_explicit_selection);
+        } else if snapshot.last_error.is_some() {
+            snapshot.exclusions.clear();
         }
         snapshot
     }
