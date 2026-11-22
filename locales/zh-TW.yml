@@ -1057,7 +1057,7 @@ cpu_allocation:
   custom: "自訂"
   core_presets: "核心預設"
   cache_domain: "快取網域 %{index}（%{groups}，%{size}）"
-  cache_domains_help: "快取網域依據已驗證的共用 L3 快取成員建立。選取時會複製完整的 CPU 清單。處理器親和性（硬性）與自適應引擎僅支援處理器群組 0。CPU 拓樸變更後，必須重新檢視已儲存的選取範圍。"
+  cache_domains_help: "快取網域依已驗證的共用 L3 分組。選取會複製完整 CPU 清單。以實際工作負載測試不同快取容量。處理器親和性（硬性）與自適應引擎僅支援群組 0。CPU 拓樸變更後請檢視已儲存的選取範圍。"
   use_this_selection: "在目前的 CPU 配置使用此選取範圍"
   selection_needs_review: "CPU 選取範圍需要檢視：%{reason}"
   selection_missing_topology: "此選取範圍沒有已儲存的 CPU 配置。"

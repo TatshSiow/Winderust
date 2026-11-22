@@ -1054,7 +1054,7 @@ cpu_allocation:
   custom: "Custom"
   core_presets: "Core presets"
   cache_domain: "Cache Domain %{index} (%{groups}, %{size})"
-  cache_domains_help: "Cache domains use verified shared L3 cache membership. Selecting one copies its complete CPU selection. Processor Affinity (Hard) and Adaptive Engine support processor group 0 only. Saved selections require review after CPU topology changes."
+  cache_domains_help: "Cache domains use verified shared L3. Each preset copies the full CPU selection. Test different cache sizes with your workload. Processor Affinity (Hard) and Adaptive Engine support group 0 only. Review saved selections after CPU topology changes."
   use_this_selection: "Use this selection on the current CPU layout"
   selection_needs_review: "CPU selection needs review: %{reason}"
   selection_missing_topology: "This selection has no saved CPU layout."
