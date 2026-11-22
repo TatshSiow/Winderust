@@ -1,7 +1,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     ops::Bound::{Excluded, Unbounded},
-    path::Path,
+    path::PathBuf,
     time::{Duration, Instant},
 };
 
@@ -71,7 +71,7 @@ pub struct MemoryTrimManager {
 
 #[derive(Clone)]
 struct TrackedProcess {
-    executable_path: String,
+    executable_path: PathBuf,
     creation_time: u64,
     previous_cpu_time: Option<ProcessCpuSample>,
     idle_since: Option<Instant>,
@@ -459,7 +459,7 @@ impl MemoryTrimManager {
         let process_id = target.id;
         if self.tracked.get(&process_id).is_some_and(|state| {
             state.creation_time != target.creation_time
-                || !same_executable_path(Path::new(&state.executable_path), &target.executable_path)
+                || !same_executable_path(&state.executable_path, &target.executable_path)
         }) {
             self.tracked.remove(&process_id);
         }
@@ -507,19 +507,17 @@ impl MemoryTrimManager {
                 "Memory Trim CPU sample is unavailable.".to_owned(),
             ));
         };
-        let executable_path = target.executable_path.to_string_lossy();
+        let executable_path = &target.executable_path;
         let state = self
             .tracked
             .entry(process_id)
             .and_modify(|state| {
-                if state.executable_path != executable_path.as_ref() {
-                    executable_path
-                        .as_ref()
-                        .clone_into(&mut state.executable_path);
+                if state.executable_path.as_os_str() != executable_path.as_os_str() {
+                    state.executable_path.clone_from(executable_path);
                 }
             })
             .or_insert_with(|| TrackedProcess {
-                executable_path: executable_path.into_owned(),
+                executable_path: executable_path.clone(),
                 creation_time: target.creation_time,
                 previous_cpu_time: None,
                 idle_since: None,

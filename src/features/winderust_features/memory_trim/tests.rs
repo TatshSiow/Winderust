@@ -1,4 +1,7 @@
-use std::{collections::VecDeque, path::PathBuf};
+use std::{
+    collections::VecDeque,
+    path::{Path, PathBuf},
+};
 
 use crate::{control::memory_trim::MemoryTrimPlatform, foreground::ProcessInfo};
 
@@ -6,7 +9,7 @@ use super::*;
 
 fn tracked_process() -> TrackedProcess {
     TrackedProcess {
-        executable_path: r"C:\Apps\app.exe".to_owned(),
+        executable_path: PathBuf::from(r"C:\Apps\app.exe"),
         creation_time: 1,
         previous_cpu_time: None,
         idle_since: None,
@@ -114,6 +117,41 @@ fn run_batch_pass(
         &mut ActionLog::new(16),
         || Ok(memory_load_percent),
     )
+}
+
+#[test]
+fn automatic_trim_preserves_native_path_and_restarts_on_identity_change() {
+    use std::{ffi::OsString, os::windows::ffi::OsStringExt};
+
+    let native_path = |unit| {
+        let mut path = r"C:\Apps\directory-".encode_utf16().collect::<Vec<_>>();
+        path.push(unit);
+        path.extend(r"\worker.exe".encode_utf16());
+        PathBuf::from(OsString::from_wide(&path))
+    };
+    let start = Instant::now();
+    let mut manager = MemoryTrimManager::default();
+    let mut processes = batch_processes(1);
+    processes[0].name = "worker.exe".to_owned();
+    let mut run = |processes: &[ProcessInfo], elapsed_seconds| {
+        run_batch_pass(
+            &mut manager,
+            processes,
+            MemoryTrimMode::Automatic,
+            BatchTestPlatform::new(start + Duration::from_secs(elapsed_seconds), 0),
+            90,
+        )
+        .trimmed_processes
+    };
+
+    processes[0].image_path = Some(native_path(0xd800));
+    let initial = [run(&processes, 0), run(&processes, 1), run(&processes, 2)];
+    processes[0].image_path = Some(native_path(0xd801));
+    let changed_path = [run(&processes, 3), run(&processes, 4), run(&processes, 5)];
+    processes[0].creation_time = Some(2);
+    let new_generation = [run(&processes, 6), run(&processes, 7), run(&processes, 8)];
+
+    assert_eq!([initial, changed_path, new_generation], [[0, 1, 0]; 3]);
 }
 
 #[test]
@@ -548,7 +586,7 @@ fn global_observation_gaps_preserve_identities_and_trimmed_episodes() {
     for (id, trimmed) in [(42, false), (43, true)] {
         let process = manager.tracked.get_mut(&id).unwrap();
         assert_eq!(process.creation_time, u64::from(id));
-        assert_eq!(process.executable_path, r"C:\Apps\app.exe");
+        assert_eq!(process.executable_path, Path::new(r"C:\Apps\app.exe"));
         assert!(process.previous_cpu_time.is_none());
         assert!(process.idle_since.is_none());
         assert_eq!(process.trimmed_while_idle, trimmed);
