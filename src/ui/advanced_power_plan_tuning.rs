@@ -18,7 +18,7 @@ use crate::ui::scrolling::scrollable;
 use iced::widget::{column, row, text};
 use iced::{Element, Fill};
 use rust_i18n::t;
-use std::{borrow::Cow, collections::BTreeMap};
+use std::{borrow::Cow, collections::BTreeMap, rc::Rc};
 
 fn tuning_plans(plans: &[PowerPlan]) -> impl Iterator<Item = &PowerPlan> {
     plans.iter().filter(|plan| !plan.managed_adaptive)
@@ -914,6 +914,20 @@ impl Editor {
             }
         }
         if let (Some(values), Some(readback)) = (self.values, self.readback) {
+            let options: Rc<[_]> = BUILT_INS
+                .into_iter()
+                .map(|p| {
+                    PresetChoice(
+                        preset_label(p),
+                        AdvancedPowerPlanTuningValues::for_preset(p),
+                    )
+                })
+                .chain(
+                    presets
+                        .iter()
+                        .map(|p| PresetChoice(p.name.clone(), p.values.normalized())),
+                )
+                .collect();
             for (source, title, values, readback) in [
                 (
                     Source::Ac,
@@ -928,24 +942,12 @@ impl Editor {
                     readback.battery,
                 ),
             ] {
-                let mut options = BUILT_INS
-                    .into_iter()
-                    .map(|p| {
-                        PresetChoice(
-                            preset_label(p),
-                            AdvancedPowerPlanTuningValues::for_preset(p),
-                        )
-                    })
-                    .collect::<Vec<_>>();
-                options.extend(
-                    presets
-                        .iter()
-                        .map(|p| PresetChoice(p.name.clone(), p.values.normalized())),
-                );
                 let selected = self.selected_preset(source, values, &options);
-                let action = pick_list(options, selected, move |p| Message::Load(source, p))
-                    .placeholder(t!("common.custom").to_string())
-                    .width(280);
+                let action = pick_list(Rc::clone(&options), selected, move |p| {
+                    Message::Load(source, p)
+                })
+                .placeholder(t!("common.custom").to_string())
+                .width(280);
                 let mut controls = Vec::new();
                 for (field, label, value) in fields(values.processor) {
                     controls.push(
