@@ -2268,7 +2268,16 @@ impl WinderustApp {
                         &self.power_plans,
                         advanced_power_plan_tuning::ApplyOrigin::Save,
                     ) {
-                        Ok(()) => self.error_message.clear(),
+                        Ok(()) => {
+                            self.error_message.clear();
+                            if !self.power_tuning.dirty {
+                                return if self.pending_settings_changes() {
+                                    self.save_settings()
+                                } else {
+                                    self.finish_save(self.closing, None)
+                                };
+                            }
+                        }
                         Err(error) => self.error_message = error,
                     }
                 } else {

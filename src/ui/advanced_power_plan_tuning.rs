@@ -47,6 +47,7 @@ enum Feedback {
     Message(String),
     ReadbackRequired(String),
     Loaded(String),
+    NoChanges,
     Applied(String),
     Restored(String),
 }
@@ -309,6 +310,7 @@ impl Editor {
                 error = error.as_str()
             ),
             Feedback::Loaded(plan) => t!("processor_power.loaded_values", plan = plan.as_str()),
+            Feedback::NoChanges => t!("processor_power.no_changes"),
             Feedback::Applied(plan) => t!("processor_power.applied_custom", plan = plan.as_str()),
             Feedback::Restored(plan) => {
                 t!("processor_power.restored_previous", plan = plan.as_str())
@@ -451,6 +453,12 @@ impl Editor {
     fn begin_apply_review(&mut self, review: ApplyReview) -> Result<(), String> {
         if self.readback != Some(review.current) {
             return Err(t!("processor_power.review_refresh_required").to_string());
+        }
+        if review.requested == review.current.writable() {
+            self.set_readback(Some(review.current));
+            self.update_dirty();
+            self.status = Feedback::NoChanges;
+            return Ok(());
         }
         self.review = Some(review);
         Ok(())
