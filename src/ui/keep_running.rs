@@ -125,10 +125,7 @@ impl Editor {
             .iter()
             .enumerate()
             .map(|(index, rule)| {
-                let runtime = status
-                    .rules
-                    .iter()
-                    .find(|entry| entry.rule.as_ref() == rule);
+                let runtime = status.rule_status(rule);
                 let state = if !settings.enabled || !rule.enabled {
                     Some(KeepRunningState::Disabled)
                 } else {

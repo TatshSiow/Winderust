@@ -613,21 +613,28 @@ fn sidebar_state(
     if page == Page::KeepRunning {
         use crate::features::advanced_controls::keep_running::KeepRunningState;
         let keep_running = &features.keep_running;
-        return if !keep_running.observation_known {
-            FeatureRunState::Unknown
-        } else if keep_running
+        if !keep_running.observation_known {
+            return FeatureRunState::Unknown;
+        }
+        let mut running = false;
+        let mut awaiting_observation = false;
+        for rule in settings
+            .keep_running
             .rules
             .iter()
-            .any(|rule| matches!(rule.state, KeepRunningState::Paused(_)))
+            .filter(|rule| rule.enabled)
         {
-            FeatureRunState::Paused
-        } else if keep_running.rules.iter().any(|rule| {
-            matches!(
-                rule.state,
-                KeepRunningState::Armed | KeepRunningState::Starting
-            )
-        }) {
+            match keep_running.rule_status(rule).map(|report| report.state) {
+                Some(KeepRunningState::Paused(_)) => return FeatureRunState::Paused,
+                Some(KeepRunningState::Armed | KeepRunningState::Starting) => running = true,
+                None | Some(KeepRunningState::Disabled) => awaiting_observation = true,
+                Some(KeepRunningState::WaitingForApp | KeepRunningState::Retrying { .. }) => {}
+            }
+        }
+        return if running {
             FeatureRunState::Running
+        } else if awaiting_observation {
+            FeatureRunState::Unknown
         } else {
             FeatureRunState::Waiting
         };

@@ -89,6 +89,12 @@ pub(crate) struct KeepRunningSnapshot {
     pub(crate) last_error: Option<String>,
 }
 
+impl KeepRunningSnapshot {
+    pub(crate) fn rule_status(&self, rule: &KeepRunningRule) -> Option<&KeepRunningRuleSnapshot> {
+        self.rules.iter().find(|entry| entry.rule.as_ref() == rule)
+    }
+}
+
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct KeepRunningRuleSnapshot {
     pub(crate) rule: Arc<KeepRunningRule>,
