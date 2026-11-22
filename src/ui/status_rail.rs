@@ -1001,11 +1001,14 @@ fn feature_status_summary(
         }
         Page::AppSuspension => {
             let status = &runtime.feature_status.app_suspension;
+            let observed = !status.status_unknown;
+            // A paused scan still reports freeze ownership from the locked controller.
+            let ownership_known = observed || status.enabled;
             FeatureStatusSummary {
                 scanned: None,
-                adjusted: Some(status.suspended_processes),
+                adjusted: ownership_known.then_some(status.suspended_processes),
                 protected_or_denied: None,
-                skipped: Some(status.skipped_processes),
+                skipped: observed.then_some(status.skipped_processes),
                 last_error: status.last_error.as_deref(),
                 action_log_feature: ActionLogFeature::AppSuspension,
             }
@@ -1431,6 +1434,23 @@ mod tests {
             assert_eq!(summary.scanned, expected);
             assert_eq!(summary.adjusted, expected);
             assert_eq!(summary.skipped, expected);
+        }
+
+        for (enabled, unknown, [frozen, skipped], expected) in [
+            (true, true, [2, 0], [Some(2), None]),
+            (true, true, [0, 0], [Some(0), None]),
+            (false, true, [0, 0], [None, None]),
+            (true, false, [0, 0], [Some(0); 2]),
+            (true, false, [1, 3], [Some(1), Some(3)]),
+        ] {
+            let suspension =
+                &mut std::sync::Arc::make_mut(&mut runtime.feature_status).app_suspension;
+            suspension.enabled = enabled;
+            suspension.status_unknown = unknown;
+            suspension.suspended_processes = frozen;
+            suspension.skipped_processes = skipped;
+            let summary = feature_status_summary(Page::AppSuspension, &runtime).unwrap();
+            assert_eq!([summary.adjusted, summary.skipped], expected);
         }
     }
 }
