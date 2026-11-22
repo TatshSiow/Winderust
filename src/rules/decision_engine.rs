@@ -124,7 +124,7 @@ pub(crate) fn matching_by_focus_rules<'a>(
             let matches = match &rule.selector {
                 ExecutableSelector::ExactPath {
                     executable_path: target,
-                } => same_executable_path(Path::new(target), executable_path),
+                } => same_executable_path(Path::new(target.trim_start()), executable_path),
                 ExecutableSelector::ExactName { executable_name } => {
                     path_has_executable_name(executable_path, executable_name)
                 }
