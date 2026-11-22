@@ -115,7 +115,7 @@ pub(super) fn processor_affinity_hard_required(settings: &Settings) -> bool {
                 && rule.has_cpu_selection()
                 && !settings
                     .cpu_sets_soft
-                    .contains_rule_for(&rule.executable_path)
+                    .contains_rule_for(rule.executable_path.trim_start())
         })
 }
 

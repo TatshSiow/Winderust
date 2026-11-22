@@ -487,6 +487,13 @@ Important behavior from Microsoft: enabling `PROCESS_POWER_THROTTLING_EXECUTION_
 
 Winderust does not enable debug privilege. Elevated process access continues to follow the target process's Windows access checks alongside Winderust's critical-process, built-in, identity, minimal-access, and protected-process barriers.
 
+Exact executable-path comparisons and Process List grouping in
+`src/foreground/process_list.rs` preserve whitespace in the native filename.
+Windows permits distinct filenames with trailing Unicode whitespace. The
+extended path namespace can also preserve trailing ASCII spaces.
+[Windows filename whitespace](https://learn.microsoft.com/en-us/troubleshoot/windows-client/shell-experience/file-folder-name-whitespace-characters)
+[Windows file namespaces](https://learn.microsoft.com/en-us/windows/win32/fileio/naming-a-file)
+
 Executable name rules in By Focus, By Running App, and Watchdog use
 `src/foreground/process_list.rs::same_executable_name` for whole-filename
 comparison. It uses `CompareStringOrdinal` with the Windows uppercase table

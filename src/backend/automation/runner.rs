@@ -2343,7 +2343,7 @@ pub(super) fn processor_affinity_hard_settings(settings: &Settings) -> CpuAlloca
     processor_affinity_hard.rules.retain(|rule| {
         !settings
             .cpu_sets_soft
-            .contains_rule_for(&rule.executable_path)
+            .contains_rule_for(rule.executable_path.trim_start())
     });
     processor_affinity_hard
 }
@@ -2358,7 +2358,7 @@ pub(super) fn explicit_cpu_allocation_paths(settings: &Settings) -> Vec<String> 
                 && rule.has_cpu_selection()
                 && Path::new(rule.executable_path.trim()).is_absolute()
         })
-        .map(|rule| rule.executable_path.clone())
+        .map(|rule| rule.executable_path.trim_start().to_owned())
         .collect()
 }
 

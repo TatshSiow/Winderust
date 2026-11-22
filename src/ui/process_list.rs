@@ -3393,22 +3393,33 @@ mod tests {
         let mut list = ProcessList {
             processes: vec![
                 process(10, 1, r"C:\A\app.exe"),
-                process(11, 2, r"C:\A\app.exe"),
-                process(12, 3, r"C:\B\app.exe"),
+                process(11, 2, "C:/A/app.exe"),
+                process(12, 3, "C:\\A\\app.exe\u{3000}"),
+                process(13, 4, r"C:\B\app.exe"),
             ],
             ..ProcessList::default()
         };
         list.rebuild();
-        assert_eq!(list.offsets, vec![0.0, ROW_HEIGHT, 2.0 * ROW_HEIGHT]);
+        assert_eq!(
+            list.offsets,
+            vec![0.0, ROW_HEIGHT, 2.0 * ROW_HEIGHT, 3.0 * ROW_HEIGHT]
+        );
         let revision = list.rows_revision;
-        assert_eq!(list.rows.len(), 2);
-        assert_eq!(list.rows[0].indices.len(), 2);
+        assert_eq!(list.rows.len(), 3);
+        let targets = list.selection(&list.rows[0]).targets();
+        assert_eq!(
+            targets
+                .into_iter()
+                .map(|target| target.unwrap().id)
+                .collect::<Vec<_>>(),
+            [10, 11]
+        );
         list.expanded.insert(list.rows[0].key.clone());
         list.rebuild();
-        assert_eq!(list.rows.len(), 4);
+        assert_eq!(list.rows.len(), 5);
         assert!(list.rows[1].nested);
         assert_ne!(list.rows_revision, revision);
-        assert_eq!(list.offsets.last(), Some(&(4.0 * ROW_HEIGHT)));
+        assert_eq!(list.offsets.last(), Some(&(5.0 * ROW_HEIGHT)));
         list.processes.clear();
         list.rebuild();
         assert_eq!(list.offsets, vec![0.0]);

@@ -1143,7 +1143,7 @@ fn enabled_rule_process_names(rules: &[CpuAllocationRule]) -> HashSet<String> {
     rules
         .iter()
         .filter(|rule| cpu_allocation_rule_is_active(rule))
-        .filter_map(|rule| Path::new(rule.executable_path.trim()).file_name())
+        .filter_map(|rule| Path::new(rule.executable_path.trim_start()).file_name())
         .filter_map(|name| name.to_str())
         .map(str::to_ascii_lowercase)
         .collect()
@@ -1154,8 +1154,6 @@ fn process_name_may_match(
     unicode_names: &[&str],
     process_name: &str,
 ) -> bool {
-    // The full path matcher trims the end of the path, including the basename.
-    let process_name = process_name.trim_end();
     if names.contains(&process_name.to_ascii_lowercase()) {
         return true;
     }
@@ -1176,12 +1174,17 @@ fn matching_rule<'a>(
 ) -> Option<&'a CpuAllocationRule> {
     rules.iter().find(|rule| {
         cpu_allocation_rule_is_active(rule)
-            && same_executable_path(Path::new(&rule.executable_path), executable_path)
+            && same_executable_path(
+                Path::new(rule.executable_path.trim_start()),
+                executable_path,
+            )
     })
 }
 
 fn cpu_allocation_rule_is_active(rule: &CpuAllocationRule) -> bool {
-    rule.enabled && rule.has_cpu_selection() && Path::new(rule.executable_path.trim()).is_absolute()
+    rule.enabled
+        && rule.has_cpu_selection()
+        && Path::new(rule.executable_path.trim_start()).is_absolute()
 }
 
 fn cpu_allocation_observation_requirements(rules: &[CpuAllocationRule]) -> (bool, bool) {
@@ -1254,7 +1257,7 @@ mod tests {
             },
             CpuAllocationRule {
                 enabled: true,
-                executable_path: r" C:\Apps\Worker\Worker.EXE ".to_owned(),
+                executable_path: r" C:\Apps\Worker\Worker.EXE".to_owned(),
                 focus_selection: crate::cpu_topology::test_selection(0b001),
                 visible_window_selection: crate::cpu_topology::test_selection(0b010),
                 background_selection: crate::cpu_topology::test_selection(0b100),
@@ -1265,6 +1268,15 @@ mod tests {
         assert!(matching_rule(&rules, Path::new(r"C:\Apps\Browser\browser.exe")).is_none());
         assert!(matching_rule(&rules, Path::new(r"C:\Apps\Backup\backup.exe")).is_none());
         assert!(matching_rule(&rules, Path::new(r"D:\Other\worker.exe")).is_none());
+
+        let literal_rules = [CpuAllocationRule {
+            executable_path: r"C:\Apps\Worker\Worker.EXE ".to_owned(),
+            ..rules[2].clone()
+        }];
+        assert!(matching_rule(&literal_rules, Path::new(r"c:\apps\worker\worker.exe")).is_none());
+        assert!(
+            matching_rule(&literal_rules, Path::new(&literal_rules[0].executable_path)).is_some()
+        );
     }
 
     #[test]
@@ -1277,7 +1289,8 @@ mod tests {
             background_selection: crate::cpu_topology::test_selection(1),
         };
         let rules = [
-            rule(r" C:\Apps\Worker.EXE "),
+            rule(r" C:\Apps\Worker.EXE"),
+            rule("C:\\Apps\\worker.exe\u{3000}"),
             rule(r"C:\Apps\éditeur.exe"),
             rule(r"C:\Apps\ leading.exe"),
         ];
@@ -1287,7 +1300,12 @@ mod tests {
             .map(String::as_str)
             .filter(|name| !name.is_ascii())
             .collect::<Vec<_>>();
-        for name in ["worker.exe", "Éditeur.exe", " leading.exe", "worker.exe "] {
+        for name in [
+            "worker.exe",
+            "Éditeur.exe",
+            " leading.exe",
+            "worker.exe\u{3000}",
+        ] {
             assert!(process_name_may_match(&names, &unicode_names, name));
         }
         assert!(!process_name_may_match(

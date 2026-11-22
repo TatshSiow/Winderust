@@ -137,7 +137,8 @@ Read the relevant section before changing feature policy, ownership, restoration
 
 - Never target Winderust itself or protected/system processes. Cross-session targeting
   still requires Windows access, built-in exclusions, and exact identity validation.
-  Treat access denied as skipped unless it exposes an implementation bug.
+  Executable-path comparisons preserve whitespace in native filenames. Treat
+  access denied as skipped unless it exposes an implementation bug.
 - Keep High/Realtime priority out of automatic paths; broad App Suspension stays
   narrow and opt-in. Restore owned state on disable, rule mismatch, observed exit,
   or shutdown without bypassing identity and external-state checks.

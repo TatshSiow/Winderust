@@ -61,7 +61,7 @@ fn classify(
 
     let (name, expected_path) = match selector {
         WatchdogSelector::ExactPath { executable_path } => {
-            let path = Path::new(executable_path.trim());
+            let path = Path::new(executable_path);
             let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
                 return Vec::new();
             };

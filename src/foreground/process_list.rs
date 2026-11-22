@@ -849,18 +849,18 @@ pub fn same_process_name(left: &str, right: &str) -> bool {
 }
 
 pub fn executable_path_key(path: &Path) -> String {
-    normalize_executable_path(&path.to_string_lossy()).into_owned()
+    let path = path.to_string_lossy();
+    normalize_path_slashes(path.trim()).into_owned()
 }
 
 pub(crate) fn executable_grouping_key(path: &Path) -> OsString {
     match path.to_str() {
-        Some(path) => normalize_executable_path(path).into_owned().into(),
+        Some(path) => normalize_path_slashes(path).into_owned().into(),
         None => path.as_os_str().to_owned(),
     }
 }
 
-fn normalize_executable_path(path: &str) -> Cow<'_, str> {
-    let path = path.trim();
+pub(crate) fn normalize_path_slashes(path: &str) -> Cow<'_, str> {
     if path.contains('/') {
         Cow::Owned(path.replace('/', std::path::MAIN_SEPARATOR_STR))
     } else {
@@ -868,6 +868,7 @@ fn normalize_executable_path(path: &str) -> Cow<'_, str> {
     }
 }
 
+// Native executable paths preserve literal filename whitespace.
 pub fn same_executable_path(left: &Path, right: &Path) -> bool {
     if left.as_os_str() == right.as_os_str() {
         return true;
@@ -876,8 +877,8 @@ pub fn same_executable_path(left: &Path, right: &Path) -> bool {
     let Some((left_text, right_text)) = left.to_str().zip(right.to_str()) else {
         return false;
     };
-    let left_key = normalize_executable_path(left_text);
-    let right_key = normalize_executable_path(right_text);
+    let left_key = normalize_path_slashes(left_text);
+    let right_key = normalize_path_slashes(right_text);
     if left_key == right_key {
         return true;
     }
@@ -893,7 +894,7 @@ pub fn same_executable_path(left: &Path, right: &Path) -> bool {
                     .to_str()
                     .zip(right.to_str())
                     .is_some_and(|(left, right)| {
-                        normalize_executable_path(left) == normalize_executable_path(right)
+                        normalize_path_slashes(left) == normalize_path_slashes(right)
                     })
         }
         (Err(_), Err(_)) => ascii_case_match,
@@ -935,7 +936,7 @@ pub(crate) fn executable_basename_may_match(process_name: &str, basename: &str) 
 }
 
 pub fn process_matches_executable_path(process: &ProcessInfo, executable_path: &str) -> bool {
-    let executable_path = Path::new(executable_path.trim());
+    let executable_path = Path::new(executable_path);
     let Some(file_name) = executable_path.file_name().and_then(|name| name.to_str()) else {
         return false;
     };
@@ -1741,7 +1742,9 @@ mod tests {
         let path = Path::new(r"C:\Games\game.exe");
         for (other, expected) in [
             (r"C:\Games\game.exe", true),
-            (" C:/Games/game.exe ", true),
+            ("C:/Games/game.exe", true),
+            ("C:\\Games\\game.exe\u{3000}", false),
+            ("C:\\Games\\game.exe ", false),
             (r"c:\games\GAME.exe", true),
             (r"C:\Other\game.exe", false),
             (r"C:\Games\other.exe", false),

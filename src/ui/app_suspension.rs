@@ -231,16 +231,12 @@ impl Editor {
             }
             Message::Toggle(i) => {
                 if let Some(r) = s.suspendable_apps.get(i) {
-                    let frozen = app_suspension::contains_process(
-                        &status.suspended_apps,
-                        &r.executable_path,
-                    );
-                    let blocked = unavailable
-                        .iter()
-                        .any(|p| process_setting_matches(p, &r.executable_path));
+                    let path = r.executable_path.trim_start();
+                    let frozen = app_suspension::contains_process(&status.suspended_apps, path);
+                    let blocked = app_suspension::contains_process(unavailable, path);
                     if frozen || can_suspend(r, status, blocked, live_suspension_settings(settings))
                     {
-                        return Some((r.executable_path.clone(), !frozen));
+                        return Some((path.to_owned(), !frozen));
                     }
                 }
             }
@@ -346,11 +342,9 @@ impl Editor {
         ));
         let mut cards = Vec::new();
         for (i, r) in s.suspendable_apps.iter().enumerate() {
-            let frozen =
-                app_suspension::contains_process(&status.suspended_apps, &r.executable_path);
-            let blocked = unavailable
-                .iter()
-                .any(|p| process_setting_matches(p, &r.executable_path));
+            let path = r.executable_path.trim_start();
+            let frozen = app_suspension::contains_process(&status.suspended_apps, path);
+            let blocked = app_suspension::contains_process(unavailable, path);
             let state = column![
                 text(indicator(status, r, blocked, live)),
                 action_button(
@@ -499,7 +493,7 @@ fn can_suspend(
     unavailable: bool,
     live: Option<&AppSuspensionSettings>,
 ) -> bool {
-    let path = rule.executable_path.trim();
+    let path = rule.executable_path.trim_start();
     status.enabled
         && !status.unsupported
         && rule.enabled
@@ -514,7 +508,7 @@ fn indicator(
     unavailable: bool,
     live: Option<&AppSuspensionSettings>,
 ) -> String {
-    let p = &rule.executable_path;
+    let p = rule.executable_path.trim_start();
     let key = if app_suspension::is_builtin_excluded(p) {
         "protected"
     } else if unavailable {

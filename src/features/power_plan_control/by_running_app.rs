@@ -306,13 +306,15 @@ fn matching_rule_process<'a>(
 }
 
 fn rule_executable(rule: &ByRunningAppRule) -> Option<(&str, Option<&Path>)> {
-    let value = rule.selector.value().trim();
     match &rule.selector {
-        ExecutableSelector::ExactPath { .. } => {
-            let path = Path::new(value);
+        ExecutableSelector::ExactPath { executable_path } => {
+            let path = Path::new(executable_path.trim_start());
             Some((path.file_name()?.to_str()?, Some(path)))
         }
-        ExecutableSelector::ExactName { .. } => (!value.is_empty()).then_some((value, None)),
+        ExecutableSelector::ExactName { executable_name } => {
+            let name = executable_name.trim();
+            (!name.is_empty()).then_some((name, None))
+        }
     }
 }
 

@@ -2755,10 +2755,11 @@ impl AdaptiveEngineProcessSettings {
     }
 }
 
-fn same_rule_executable_path(left: &str, right: &str) -> bool {
-    let left = left.trim();
-    let right = right.trim();
-    !left.is_empty() && !right.is_empty() && same_executable_path(Path::new(left), Path::new(right))
+fn same_rule_executable_path(configured_path: &str, observed_path: &str) -> bool {
+    let configured_path = configured_path.trim_start();
+    !configured_path.is_empty()
+        && !observed_path.is_empty()
+        && same_executable_path(Path::new(configured_path), Path::new(observed_path))
 }
 
 impl InputDetectionSettings {

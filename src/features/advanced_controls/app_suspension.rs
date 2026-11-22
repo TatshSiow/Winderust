@@ -27,9 +27,9 @@ use crate::audio_activity::active_audio_process_ids;
 
 use crate::config::AppSuspensionSettings;
 use crate::foreground::{
-    contains_process_name, executable_path_key, process_executable_path,
-    process_list::unicode_case_match, process_session_id, same_executable_path, same_process_name,
-    ProcessActionTarget,
+    contains_process_name, process_executable_path,
+    process_list::{normalize_path_slashes, unicode_case_match},
+    process_session_id, same_executable_path, same_process_name, ProcessActionTarget,
 };
 use crate::{
     action_log::{ActionLog, ActionLogFeature, ActionLogResult},
@@ -176,7 +176,7 @@ pub(super) struct TargetProcess {
 
 impl TargetProcess {
     fn key(&self) -> String {
-        executable_path_key(Path::new(&self.executable_path))
+        normalize_path_slashes(&self.executable_path).into_owned()
     }
 
     fn suspension_target(&self, process_id: u32) -> SuspensionTarget {
@@ -326,8 +326,7 @@ impl AppSuspensionManager {
     }
 
     pub fn manual_freeze_result(&self, executable_path: &str) -> Result<(), String> {
-        let key = executable_path_key(Path::new(executable_path));
-        let Some(outcome) = self.manual_freeze_outcomes.get(&key) else {
+        let Some(outcome) = self.manual_freeze_outcomes.get(executable_path) else {
             return Err(format!(
                 "No App Suspension result was produced for {executable_path}."
             ));
@@ -416,7 +415,7 @@ impl AppSuspensionManager {
         self.manual_freeze_outcomes.clear();
         for executable_path in manual_freeze_processes {
             self.manual_freeze_outcomes
-                .entry(executable_path_key(Path::new(executable_path)))
+                .entry(executable_path.clone())
                 .or_default();
         }
         let now = Instant::now();
@@ -464,7 +463,7 @@ impl AppSuspensionManager {
             .filter(|rule| rule.enabled && Path::new(rule.executable_path.trim()).is_absolute());
         let enabled_process_names = enabled_rules
             .clone()
-            .filter_map(|rule| Path::new(&rule.executable_path).file_name())
+            .filter_map(|rule| Path::new(rule.executable_path.trim_start()).file_name())
             .filter_map(|name| name.to_str())
             .collect::<Vec<_>>();
         if enabled_process_names.is_empty() {
@@ -601,7 +600,7 @@ impl AppSuspensionManager {
                 continue;
             }
 
-            running_apps.insert(executable_path_key(Path::new(&executable_path)));
+            running_apps.insert(normalize_path_slashes(&executable_path).into_owned());
             if should_skip_foreground_process(
                 process.id,
                 Path::new(&executable_path),
@@ -623,12 +622,12 @@ impl AppSuspensionManager {
         }
         self.running_apps = running_apps;
         let enabled_paths = enabled_rules
-            .map(|rule| rule.executable_path.as_str())
+            .map(|rule| rule.executable_path.trim_start())
             .filter(|executable_path| {
                 if unresolved.is_empty() {
                     return true;
                 }
-                let path = Path::new(executable_path.trim());
+                let path = Path::new(executable_path);
                 path.file_name()
                     .and_then(|name| name.to_str())
                     .is_none_or(|name| {
@@ -826,11 +825,12 @@ impl AppSuspensionManager {
         let mut suspended_app_names = BTreeSet::new();
         for (process_id, process) in target_processes {
             let process_name = process.process_name.clone();
-            let manual_freeze = contains_process(manual_freeze_processes, &process.executable_path);
+            let manual_freeze_path =
+                matching_process_path(manual_freeze_processes, &process.executable_path);
             if self.suspended.contains_key(&process_id) {
                 if controller.matches_target(&process.suspension_target(process_id)) {
-                    if manual_freeze {
-                        self.record_manual_freeze_result(&process.executable_path, Ok(()));
+                    if let Some(requested_path) = manual_freeze_path {
+                        self.record_manual_freeze_result(requested_path, Ok(()));
                     }
                     continue;
                 }
@@ -850,9 +850,9 @@ impl AppSuspensionManager {
                 &mut auto_excluded_processes,
             ) {
                 skipped_processes += 1;
-                if manual_freeze {
+                if let Some(requested_path) = manual_freeze_path {
                     self.record_manual_freeze_result(
-                        &process.executable_path,
+                        requested_path,
                         Err(
                             "The process is excluded after repeated suspension failures."
                                 .to_owned(),
@@ -868,7 +868,7 @@ impl AppSuspensionManager {
                 &process,
                 now,
                 delay,
-                manual_freeze,
+                manual_freeze_path.is_some(),
             );
             if !lifecycle.should_suspend() {
                 continue;
@@ -887,8 +887,8 @@ impl AppSuspensionManager {
                 allow_cross_session_process_control,
             ) {
                 Ok(()) => {
-                    if manual_freeze {
-                        self.record_manual_freeze_result(&process.executable_path, Ok(()));
+                    if let Some(requested_path) = manual_freeze_path {
+                        self.record_manual_freeze_result(requested_path, Ok(()));
                     }
                     self.failure_suppression
                         .clear_process_failure(&process.key());
@@ -906,11 +906,8 @@ impl AppSuspensionManager {
                     suspended_app_names.insert(process.key());
                 }
                 Err(error @ SuspensionError::ProcessExited) => {
-                    if manual_freeze {
-                        self.record_manual_freeze_result(
-                            &process.executable_path,
-                            Err(error.to_string()),
-                        );
+                    if let Some(requested_path) = manual_freeze_path {
+                        self.record_manual_freeze_result(requested_path, Err(error.to_string()));
                     }
                     skipped_processes += 1;
                     let _ = self.release_process_state(
@@ -921,11 +918,8 @@ impl AppSuspensionManager {
                     );
                 }
                 Err(error @ (SuspensionError::AccessDenied | SuspensionError::NotSupported)) => {
-                    if manual_freeze {
-                        self.record_manual_freeze_result(
-                            &process.executable_path,
-                            Err(error.to_string()),
-                        );
+                    if let Some(requested_path) = manual_freeze_path {
+                        self.record_manual_freeze_result(requested_path, Err(error.to_string()));
                     }
                     self.failure_suppression
                         .suppress_process_failure(&process.key());
@@ -939,11 +933,8 @@ impl AppSuspensionManager {
                     );
                 }
                 Err(error @ SuspensionError::Unsupported) => {
-                    if manual_freeze {
-                        self.record_manual_freeze_result(
-                            &process.executable_path,
-                            Err(error.to_string()),
-                        );
+                    if let Some(requested_path) = manual_freeze_path {
+                        self.record_manual_freeze_result(requested_path, Err(error.to_string()));
                     }
                     skipped_processes += 1;
                     unsupported = true;
@@ -963,11 +954,8 @@ impl AppSuspensionManager {
                     break;
                 }
                 Err(error @ (SuspensionError::Failed(_) | SuspensionError::RetryPending(_))) => {
-                    if manual_freeze {
-                        self.record_manual_freeze_result(
-                            &process.executable_path,
-                            Err(error.to_string()),
-                        );
+                    if let Some(requested_path) = manual_freeze_path {
+                        self.record_manual_freeze_result(requested_path, Err(error.to_string()));
                     }
                     if error.should_report() {
                         let error = error.to_string();
@@ -1490,7 +1478,8 @@ impl AppSuspensionManager {
 
     fn controlled_process_key(&self, process_id: u32) -> Option<String> {
         let (_process_name, path) = self.controlled_process(process_id)?;
-        path.to_str().map(|_| executable_path_key(path))
+        path.to_str()
+            .map(|path| normalize_path_slashes(path).into_owned())
     }
 
     fn window_owner_suspended_process_ids(
@@ -1862,14 +1851,14 @@ impl AppSuspensionManager {
     fn active_network_wake_until(&self, executable_path: &str, now: Instant) -> Option<Instant> {
         let window = self
             .network_wake_windows
-            .get(&executable_path_key(Path::new(executable_path)))?;
+            .get(normalize_path_slashes(executable_path).as_ref())?;
         (now < window.wake_until).then_some(window.wake_until)
     }
 
     fn active_audio_wake_until(&self, executable_path: &str, now: Instant) -> Option<Instant> {
         let window = self
             .audio_wake_windows
-            .get(&executable_path_key(Path::new(executable_path)))?;
+            .get(normalize_path_slashes(executable_path).as_ref())?;
         (now < window.wake_until).then_some(window.wake_until)
     }
 
@@ -1907,7 +1896,7 @@ impl AppSuspensionManager {
     fn record_manual_freeze_result(&mut self, executable_path: &str, result: Result<(), String>) {
         let outcome = self
             .manual_freeze_outcomes
-            .entry(executable_path_key(Path::new(executable_path)))
+            .entry(executable_path.to_owned())
             .or_default();
         outcome.attempts += 1;
         if let Err(error) = result {
@@ -1927,7 +1916,7 @@ impl AppSuspensionManager {
     ) -> SuspensionLifecycleState {
         let process_name = process.process_name.as_str();
         let executable_path = process.executable_path.as_str();
-        let app_key = executable_path_key(Path::new(executable_path));
+        let app_key = process.key();
         if manual_freeze {
             self.temporary_thawed.remove(&process_id);
             self.tracked.remove(&app_key);
@@ -2111,8 +2100,13 @@ pub fn process_is_suspendable(target: &ProcessActionTarget) -> bool {
 }
 
 pub fn contains_process(list: &[String], executable_path: &str) -> bool {
+    matching_process_path(list, executable_path).is_some()
+}
+
+fn matching_process_path<'a>(list: &'a [String], executable_path: &str) -> Option<&'a str> {
     list.iter()
-        .any(|path| same_executable_path(Path::new(path), Path::new(executable_path)))
+        .map(String::as_str)
+        .find(|path| same_executable_path(Path::new(path), Path::new(executable_path)))
 }
 
 #[cfg(test)]
@@ -2192,10 +2186,9 @@ mod tests {
     fn manual_freeze_result_reports_no_target_and_partial_failure() {
         let mut manager = AppSuspensionManager::default();
         let path = r"C:\Apps\chat.exe";
-        manager.manual_freeze_outcomes.insert(
-            executable_path_key(Path::new(path)),
-            ManualFreezeOutcome::default(),
-        );
+        manager
+            .manual_freeze_outcomes
+            .insert(path.to_owned(), ManualFreezeOutcome::default());
 
         assert!(manager
             .manual_freeze_result(path)

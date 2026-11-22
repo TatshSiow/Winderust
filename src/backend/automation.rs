@@ -778,15 +778,14 @@ impl RuntimeHandle {
         executable_path: &str,
         freeze: bool,
     ) -> Result<AppSuspensionPathActionReceiver, RuntimeCommandError> {
-        let executable_path = executable_path_key(Path::new(executable_path));
-        if !Path::new(&executable_path).is_absolute() {
+        if !Path::new(executable_path).is_absolute() {
             return Err(RuntimeCommandError::InvalidRequest(
                 "App Suspension requires an absolute executable path.".to_owned(),
             ));
         }
         let (result, receiver) = sync_channel(1);
         self.enqueue_process_control_command(ProcessControlCommand::AppSuspensionPathAction {
-            executable_path,
+            executable_path: executable_path.to_owned(),
             freeze,
             result,
         })?;
