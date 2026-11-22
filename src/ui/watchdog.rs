@@ -259,7 +259,7 @@ impl Editor {
         }
     }
 
-    pub(super) fn preview_matches(&mut self) -> iced::Task<Message> {
+    pub(super) fn preview_matches(&mut self, settings: &WatchdogSettings) -> iced::Task<Message> {
         let Some(draft) = &mut self.draft else {
             return iced::Task::none();
         };
@@ -270,7 +270,8 @@ impl Editor {
         let request = Arc::new(());
         draft.match_preview = MatchPreview::Loading(request.clone());
         let selector = draft.rule.selector.clone();
-        super::tasks::run(move || preview::load(&selector)).map(move |result| {
+        let others = preview::other_enabled_selectors(&settings.rules, draft.index);
+        super::tasks::run(move || preview::load(&selector, &others)).map(move |result| {
             Message::MatchPreviewLoaded(request.clone(), result.and_then(|result| result))
         })
     }
@@ -717,9 +718,17 @@ impl Editor {
                 .wrapping(text::Wrapping::WordOrGlyph)]
             .spacing(design::space::TINY)
             .width(Fill);
-            if let Some(reason) = reason.filter(|_| entry.path.is_some()) {
+            let detail = match reason.filter(|_| entry.path.is_some()) {
+                Some(reason) => Some(t!(reason.label_key())),
+                None if entry.other_matching_rules > 0 => Some(t!(
+                    "watchdog.preview_other_enabled_rules",
+                    count = entry.other_matching_rules
+                )),
+                None => None,
+            };
+            if let Some(detail) = detail {
                 metadata = metadata.push(
-                    text(t!(reason.label_key()).to_string())
+                    text(detail.to_string())
                         .size(design::typography::CAPTION)
                         .style(text::secondary)
                         .wrapping(text::Wrapping::WordOrGlyph),

@@ -138,7 +138,10 @@ pub(crate) fn observed_path_matches_name(process: &ProcessInfo, executable_name:
             .is_some_and(|path| path_has_executable_name(path, executable_name))
 }
 
-fn matching_path<'a>(selector: &'a WatchdogSelector, process: &'a ProcessInfo) -> Option<&'a Path> {
+pub(crate) fn matching_path<'a>(
+    selector: &'a WatchdogSelector,
+    process: &'a ProcessInfo,
+) -> Option<&'a Path> {
     match selector {
         WatchdogSelector::ExactPath { executable_path }
             if process_matches_executable_path(process, executable_path) =>

@@ -1502,7 +1502,10 @@ impl WinderustApp {
                 self.watchdog.select_tab(resource);
             }
             Message::Watchdog(watchdog::Message::PreviewMatches) => {
-                return self.watchdog.preview_matches().map(Message::Watchdog);
+                return self
+                    .watchdog
+                    .preview_matches(&self.settings.global().watchdog)
+                    .map(Message::Watchdog);
             }
             Message::Watchdog(watchdog::Message::MatchPreviewLoaded(request, result)) => {
                 self.watchdog.complete_match_preview(request, result);

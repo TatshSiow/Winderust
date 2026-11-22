@@ -1243,6 +1243,7 @@ watchdog:
   preview_criticality_unknown: "無法確認是否為系統關鍵程序"
   preview_critical_process: "Windows 關鍵程序"
   preview_self_skipped: "Winderust 會略過自己的程序"
+  preview_other_enabled_rules: "其他已啟用且相符的規則（%{count} 條）"
   preview_pid: "PID %{pid}"
   monitor_cpu: "啟用 CPU Watchdog"
   monitor_cpu_help: "以整台電腦的總處理能力為基準，計算 CPU 使用百分比。"

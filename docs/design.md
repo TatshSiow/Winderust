@@ -292,6 +292,8 @@ hover/press; background shading supplies feedback.
   monitor in a Combined by path rule with an executable path.
 - Match Preview reads a fresh process snapshot when opened or refreshed. It
   lists matches by PID and full path, and identifies unavailable instances.
+  Matching rows show how many other enabled rules in the current settings
+  draft also match.
   For an Executable path rule, it also lists same-named executables elsewhere.
 - Each resource tab starts with its Enable CPU Watchdog or Enable Memory Watchdog
   toggle. When enabled, the comparison appears by the tabs and the thresholds

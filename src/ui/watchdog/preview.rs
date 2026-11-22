@@ -1,8 +1,8 @@
 use std::path::{Path, PathBuf};
 
 use crate::{
-    config::WatchdogSelector,
-    features::winderust_features::watchdog::observed_path_matches_name,
+    config::{WatchdogRule, WatchdogSelector},
+    features::winderust_features::watchdog::{matching_path, observed_path_matches_name},
     foreground::{
         process_list::{executable_basename_may_match, same_executable_name},
         same_executable_path, ProcessInfo,
@@ -45,15 +45,37 @@ pub(crate) struct MatchRow {
     pub(crate) pid: u32,
     pub(crate) path: Option<PathBuf>,
     pub(crate) kind: MatchKind,
+    pub(super) other_matching_rules: usize,
 }
 
-pub(super) fn load(selector: &WatchdogSelector) -> Result<Vec<MatchRow>, String> {
+pub(super) fn other_enabled_selectors(
+    rules: &[WatchdogRule],
+    edited: Option<usize>,
+) -> Vec<WatchdogSelector> {
+    rules
+        .iter()
+        .enumerate()
+        .filter(|(index, rule)| Some(*index) != edited && rule.enabled)
+        .map(|(_, rule)| rule.selector.clone())
+        .collect()
+}
+
+pub(super) fn load(
+    selector: &WatchdogSelector,
+    other_selectors: &[WatchdogSelector],
+) -> Result<Vec<MatchRow>, String> {
     let processes = CycleObservations::default().processes_with_paths()?;
-    Ok(classify(selector, &processes, std::process::id()))
+    Ok(classify(
+        selector,
+        other_selectors,
+        &processes,
+        std::process::id(),
+    ))
 }
 
 fn classify(
     selector: &WatchdogSelector,
+    other_selectors: &[WatchdogSelector],
     processes: &[ProcessInfo],
     current_pid: u32,
 ) -> Vec<MatchRow> {
@@ -98,10 +120,19 @@ fn classify(
             Some(_) if process.is_critical.is_none() => MatchKind::Unavailable(CriticalityUnknown),
             Some(_) => MatchKind::Matched,
         };
+        let other_matching_rules = if kind == MatchKind::Matched {
+            other_selectors
+                .iter()
+                .filter(|selector| matching_path(selector, process).is_some())
+                .count()
+        } else {
+            0
+        };
         rows.push(MatchRow {
             pid: process.id,
             path: process.image_path.clone(),
             kind,
+            other_matching_rules,
         });
     }
     rows.sort_unstable_by_key(|row| row.pid);
@@ -149,7 +180,15 @@ mod tests {
         let selector = WatchdogSelector::ExactPath {
             executable_path: path.into(),
         };
-        let rows = classify(&selector, &processes, 7);
+        let enabled = WatchdogRule::with_selector(WatchdogSelector::ExactName {
+            executable_name: "worker.exe".into(),
+        });
+        let mut disabled = WatchdogRule::with_selector(selector.clone());
+        disabled.enabled = false;
+        let edited = WatchdogRule::with_selector(selector.clone());
+        let elsewhere = WatchdogRule::new(other_path.into());
+        let others = other_enabled_selectors(&[enabled, disabled, edited, elsewhere], Some(2));
+        let rows = classify(&selector, &others, &processes, 7);
         assert_eq!(
             rows.iter()
                 .map(|row| (row.pid, row.kind))
@@ -164,6 +203,12 @@ mod tests {
                 (7, MatchKind::Unavailable(WinderustProcess)),
                 (9, MatchKind::Unavailable(CriticalityUnknown)),
             ]
+        );
+        assert_eq!(
+            rows.iter()
+                .map(|row| row.other_matching_rules)
+                .collect::<Vec<_>>(),
+            [1, 1, 0, 0, 0, 0, 0, 0]
         );
         assert_eq!(rows[2].path.as_deref(), Some(Path::new(other_path)));
         assert_eq!(rows[3].path, None);
@@ -186,7 +231,8 @@ mod tests {
             executable_name: "worker.exe".into(),
         };
 
-        let rows = classify(&selector, &processes, 0);
+        let others = other_enabled_selectors(&[WatchdogRule::new(path.into())], None);
+        let rows = classify(&selector, &others, &processes, 0);
         assert_eq!(
             rows.iter()
                 .map(|row| (row.pid, row.kind))
@@ -198,6 +244,12 @@ mod tests {
                 (4, MatchKind::Unavailable(NameUnverified)),
                 (5, MatchKind::Unavailable(NameUnverified)),
             ]
+        );
+        assert_eq!(
+            rows.iter()
+                .map(|row| row.other_matching_rules)
+                .collect::<Vec<_>>(),
+            [1, 0, 0, 0, 0]
         );
         assert_eq!(rows[0].path.as_deref(), Some(Path::new(path)));
         assert_eq!(rows[1].path.as_deref(), Some(Path::new(other_path)));
