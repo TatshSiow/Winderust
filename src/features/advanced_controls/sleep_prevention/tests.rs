@@ -466,7 +466,7 @@ fn pending_sleep_takes_precedence_over_a_saved_opt_in() {
     manager.note_configuration(&configured, Some(true));
 
     configured.sleep_prevention.rules[0].enabled = true;
-    manager.suspend(
+    manager.suppress_and_release(
         &mut SleepPreventionController::default(),
         &configured,
         &mut ActionLog::new(4),

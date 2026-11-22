@@ -635,7 +635,13 @@ impl RuntimeCore {
         if events.suspend_resume {
             self.adaptive_engine_process_manager
                 .reset_pressure_observations();
-            self.sleep_prevention_manager.suspend(
+        }
+        // A watcher transition invalidates the coverage behind accepted requests.
+        if events.suspend_resume
+            || (events.windows_event_watcher_changed
+                && self.sleep_prevention_controller.requests().system)
+        {
+            self.sleep_prevention_manager.suppress_and_release(
                 &mut self.sleep_prevention_controller,
                 configured,
                 &mut self.action_log,

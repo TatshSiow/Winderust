@@ -855,7 +855,9 @@ Read the relevant section before changing feature policy, ownership, restoration
   User sleep, lid actions, critical-battery handling, and Windows policy remain
   authoritative.
   A missing or stopped Windows event watcher blocks new requests, releases owned
-  requests, and suppresses the current cohort until explicitly rearmed.
+  requests, and suppresses the current cohort until explicitly rearmed. A stop
+  and restart between worker passes also releases an accepted request and
+  suppresses its apps. Settings observed in the same pass keep that suppression.
 - Running-app reconciliation remains at one second in visible and tray modes;
   Windows sleep and power-source notifications wake it independently of the UI.
   Transient power-source read failures retain the last confirmed profile without

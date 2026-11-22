@@ -330,13 +330,13 @@ impl SleepPreventionManager {
         snapshot
     }
 
-    pub(crate) fn suspend(
+    pub(crate) fn suppress_and_release(
         &mut self,
         controller: &mut SleepPreventionController,
         configured_settings: &Settings,
         action_log: &mut ActionLog,
     ) -> SleepPreventionSnapshot {
-        // Settings observed alongside this event may have been saved before sleep.
+        // Settings observed with the interruption may have been saved before it.
         self.configuration = Some(capture_configuration([
             configured_settings,
             configured_settings.battery_profile(),
