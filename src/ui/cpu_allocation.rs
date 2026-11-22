@@ -941,13 +941,21 @@ pub(super) fn mask_selector<'a, M: Clone + 'a>(
     for preset in &catalog.presets {
         presets = presets.push(button(text(preset.1.clone())).on_press(message(preset.0.clone())));
     }
+    let mut unavailable = std::collections::BTreeMap::<_, Vec<&str>>::new();
     for preset in custom {
-        presets = presets.push(
-            button(text(preset.name.clone())).on_press_maybe(
-                (catalog.error(&preset.selection).is_none() && !preset.selection.is_empty())
-                    .then(|| message(preset.selection.clone())),
-            ),
-        );
+        let reason = catalog.error(&preset.selection).or_else(|| {
+            preset
+                .selection
+                .is_empty()
+                .then(|| t!("cpu_allocation.no_logical_cpus").into_owned())
+        });
+        if let Some(reason) = reason {
+            unavailable.entry(reason).or_default().push(&preset.name);
+        } else {
+            presets = presets.push(
+                button(text(preset.name.clone())).on_press(message(preset.selection.clone())),
+            );
+        }
     }
     let mut cpus = row![].spacing(design::space::CONTROL);
     for (id, cpu) in &catalog.processors {
@@ -968,7 +976,24 @@ pub(super) fn mask_selector<'a, M: Clone + 'a>(
                 .on_toggle_maybe(candidate.map(|candidate| move |_| msg(candidate.clone()))),
         );
     }
-    let mut selector = column![presets.wrap(), cpus.wrap(), text(selection_text(selection))]
+    let unavailable = unavailable.into_iter().map(|(reason, names)| {
+        column![
+            text(names.join(" \u{00b7} "))
+                .size(design::typography::SECONDARY)
+                .wrapping(text::Wrapping::WordOrGlyph),
+            text(reason)
+                .size(design::typography::SECONDARY)
+                .style(text::secondary)
+                .wrapping(text::Wrapping::WordOrGlyph),
+        ]
+        .spacing(design::space::TIGHT)
+        .width(Fill)
+        .into()
+    });
+    let mut selector = column![presets.wrap()]
+        .extend(unavailable)
+        .push(cpus.wrap())
+        .push(text(selection_text(selection)))
         .spacing(design::space::SMALL);
     if let Some(error) = catalog.error(selection) {
         selector = selector.push(text(error).style(text::danger));
