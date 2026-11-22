@@ -1138,6 +1138,7 @@ cpu_limiter:
   visible_window_allowed_cpu_time: "可見視窗允許的 CPU 時間"
   background_allowed_cpu_time: "背景程序允許的 CPU 時間"
   no_rules: "尚未設定自訂規則。"
+  restore_pending: "等待還原"
 
 about:
   open_release_page: "開啟發行頁面"

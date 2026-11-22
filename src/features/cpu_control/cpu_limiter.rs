@@ -9,7 +9,10 @@ use crate::{
     action_log::{ActionLog, ActionLogFeature, ActionLogResult},
     config::{CpuLimiterRule, CpuLimiterSettings, PowerSourceProfile, ProcessRuleMode},
     control::{
-        cpu_limiter::{CpuLimiterActivation, CpuLimiterController, CpuLimiterTarget},
+        cpu_limiter::{
+            CpuLimiterActivation, CpuLimiterController, CpuLimiterTarget,
+            CpuLimiterTargetObservation,
+        },
         process::ProcessTargetKey,
         suspension::{self as suspension_control, SuspensionTarget},
     },
@@ -32,6 +35,7 @@ pub struct CpuLimiterSnapshot {
     pub skipped_processes: usize,
     pub failed_processes: usize,
     pub limited_apps: Vec<String>,
+    pub(crate) restore_pending_apps: Vec<String>,
     pub failed_apps: Vec<String>,
     pub auto_excluded_processes: Vec<String>,
     pub last_error: Option<String>,
@@ -286,26 +290,41 @@ impl CpuLimiterManager {
 
         let tracked_processes = selected.len();
         selected.retain(|key, _| !failed_keys.contains(key));
-        let limited_processes = selected.len();
-        let managed_keys = controller
-            .managed_target_keys()
-            .unwrap_or_else(|_| self.limited.keys().cloned().collect());
-        retain_owned_limits(&mut self.limited, &selected, &managed_keys, action_log);
+        let mut by_key = match controller.target_observations() {
+            Ok(by_key) => {
+                retain_owned_limits(
+                    &mut self.limited,
+                    &selected,
+                    |key| by_key.contains_key(key),
+                    action_log,
+                );
+                by_key
+            }
+            Err(error) => {
+                last_error.get_or_insert(error);
+                BTreeMap::new()
+            }
+        };
+        let mut limited_apps = Vec::new();
+        let mut restore_pending_apps = BTreeSet::new();
         for (key, target) in selected {
-            if !self.limited.contains_key(&key) {
-                match controller.target_activation(&key) {
-                    Ok(Some(activation)) => action_log.record(
-                        ActionLogFeature::CpuLimiter,
-                        Some(target.control.suspension_target.process.id),
-                        target.process_name.clone(),
-                        ActionLogResult::Applied,
-                        limiter_activation_detail(activation),
-                    ),
-                    Ok(None) => {}
-                    Err(error) => {
-                        last_error.get_or_insert(error);
-                    }
+            let activation = match by_key.remove(&key) {
+                Some(CpuLimiterTargetObservation::Active(activation)) => activation,
+                Some(CpuLimiterTargetObservation::ReleasePending) => {
+                    restore_pending_apps.insert(target.executable_path);
+                    continue;
                 }
+                None => continue,
+            };
+            limited_apps.push(target.executable_path.clone());
+            if !self.limited.contains_key(&key) {
+                action_log.record(
+                    ActionLogFeature::CpuLimiter,
+                    Some(target.control.suspension_target.process.id),
+                    target.process_name.clone(),
+                    ActionLogResult::Applied,
+                    limiter_activation_detail(activation),
+                );
             }
             self.limited.insert(
                 key,
@@ -336,16 +355,13 @@ impl CpuLimiterManager {
             enabled: true,
             observation_paused: false,
             scanned_processes,
-            limited_processes,
+            limited_processes: limited_apps.len(),
             failed_apps: failed_apps.into_iter().collect(),
             tracked_processes,
             skipped_processes,
             failed_processes,
-            limited_apps: self
-                .limited
-                .values()
-                .map(|process| process.executable_path.clone())
-                .collect(),
+            limited_apps,
+            restore_pending_apps: restore_pending_apps.into_iter().collect(),
             auto_excluded_processes: auto_excluded_processes.into_iter().collect(),
             last_error,
         }
@@ -382,23 +398,21 @@ impl CpuLimiterManager {
                 release_error = Some(error);
             }
         }
-        let managed_keys = match controller.managed_target_keys() {
+        match controller.managed_target_keys() {
             Ok(keys) => {
                 self.release_pending = !keys.is_empty();
-                keys
+                retain_owned_limits(
+                    &mut self.limited,
+                    &BTreeMap::new(),
+                    |key| keys.contains(key),
+                    action_log,
+                );
             }
             Err(error) => {
                 last_error.get_or_insert(error);
                 self.release_pending = true;
-                self.limited.keys().cloned().collect()
             }
-        };
-        retain_owned_limits(
-            &mut self.limited,
-            &BTreeMap::new(),
-            &managed_keys,
-            action_log,
-        );
+        }
         CpuLimiterSnapshot {
             enabled,
             last_error: release_error
@@ -566,11 +580,11 @@ fn requires_visible_window_observation(settings: &CpuLimiterSettings) -> bool {
 fn retain_owned_limits(
     limited: &mut BTreeMap<ProcessTargetKey, LimitedProcess>,
     selected: &BTreeMap<ProcessTargetKey, SelectedTarget>,
-    managed_keys: &BTreeSet<ProcessTargetKey>,
+    has_managed_key: impl Fn(&ProcessTargetKey) -> bool,
     action_log: &mut ActionLog,
 ) {
     limited.retain(|key, process| {
-        if selected.contains_key(key) || managed_keys.contains(key) {
+        if selected.contains_key(key) || has_managed_key(key) {
             return true;
         }
         action_log.record(
@@ -849,19 +863,14 @@ mod tests {
         retain_owned_limits(
             &mut limited,
             &BTreeMap::new(),
-            &managed_keys,
+            |key| managed_keys.contains(key),
             &mut action_log,
         );
 
         assert!(limited.contains_key(&key));
         assert!(action_log.entries().is_empty());
 
-        retain_owned_limits(
-            &mut limited,
-            &BTreeMap::new(),
-            &BTreeSet::new(),
-            &mut action_log,
-        );
+        retain_owned_limits(&mut limited, &BTreeMap::new(), |_| false, &mut action_log);
 
         assert!(limited.is_empty());
         let entries = action_log.entries();

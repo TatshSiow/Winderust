@@ -558,26 +558,22 @@ fn rule_status(
     let Some(status) = status.filter(|_| !rule.executable_path.trim().is_empty()) else {
         return "common.unknown";
     };
-    if status.failed_apps.iter().any(|path| {
+    let matches_rule = |path: &String| {
         crate::foreground::same_executable_path(
             std::path::Path::new(path),
             std::path::Path::new(&rule.executable_path),
         )
-    }) {
+    };
+    if status.failed_apps.iter().any(matches_rule) {
         "common.error"
     } else if status.observation_paused {
         "sidebar_status.paused"
-    } else if status.enabled
-        && status.limited_apps.iter().any(|path| {
-            crate::foreground::same_executable_path(
-                std::path::Path::new(path),
-                std::path::Path::new(&rule.executable_path),
-            )
-        })
-    {
-        "common.applied"
     } else if !status.enabled {
         "common.unknown"
+    } else if status.restore_pending_apps.iter().any(matches_rule) {
+        "cpu_limiter.restore_pending"
+    } else if status.limited_apps.iter().any(matches_rule) {
+        "common.applied"
     } else {
         "common.waiting"
     }
@@ -619,6 +615,11 @@ mod tests {
         assert_eq!(rule_status(&rule, true, Some(&status)), "common.waiting");
         status.limited_apps.push(r"c:\apps\TEST.exe".into());
         assert_eq!(rule_status(&rule, true, Some(&status)), "common.applied");
+        status.restore_pending_apps.push(r"c:\apps\TEST.exe".into());
+        assert_eq!(
+            rule_status(&rule, true, Some(&status)),
+            "cpu_limiter.restore_pending"
+        );
         assert_eq!(rule_status(&rule, false, Some(&status)), "common.inactive");
         status.observation_paused = true;
         status.failed_apps.push(rule.executable_path.clone());

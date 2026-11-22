@@ -1135,6 +1135,7 @@ cpu_limiter:
   visible_window_allowed_cpu_time: "Visible Window Allowed CPU Time"
   background_allowed_cpu_time: "Background Allowed CPU Time"
   no_rules: "No custom rules are configured."
+  restore_pending: "Restore pending"
 
 about:
   intro_1: "Winderust is a local Windows power automation utility."
