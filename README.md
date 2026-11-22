@@ -70,7 +70,7 @@ Release build
 cargo build --release
 ```
 
-The release build is in `target\*`
+The release build is in `target\release\winderust.exe`.
 
 
 ## Bug Report
