@@ -708,7 +708,8 @@ Read the relevant section before changing feature policy, ownership, restoration
   the lease. The UI can report a timeout while cleanup continues, and another
   capture stays blocked until the pending exit or cleanup check completes.
   When the user cancels before the page receives the report, any queued report
-  is discarded and cleanup errors still reach the page.
+  is discarded and cleanup errors still reach the page. A failed or cancelled
+  retry leaves the previous report available. A successful retry replaces it.
 
 ## Priority and efficiency
 

@@ -35,27 +35,34 @@ impl ExportStatus {
 }
 
 #[derive(Default)]
-pub(super) enum State {
+pub(super) struct State {
+    capture: CaptureStatus,
+    completed: Option<CompletedReport>,
+}
+
+#[derive(Default)]
+enum CaptureStatus {
     #[default]
     Idle,
     Capturing {
         capture: InterruptTimingCapture,
         cancelling: bool,
     },
-    Finished {
-        report: InterruptTimingReport,
-        per_cpu_expanded: bool,
-        export: ExportStatus,
-    },
     Failed(InterruptTimingError),
+}
+
+struct CompletedReport {
+    report: InterruptTimingReport,
+    per_cpu_expanded: bool,
+    export: ExportStatus,
 }
 
 impl State {
     pub(super) fn update(&mut self, message: Message, hwnd: Option<HWND>) -> Task<Message> {
         match message {
             Message::Run if self.can_run() => {
-                *self = match InterruptTimingCapture::start() {
-                    Ok(capture) => Self::Capturing {
+                self.capture = match InterruptTimingCapture::start() {
+                    Ok(capture) => CaptureStatus::Capturing {
                         capture,
                         cancelling: false,
                     },
@@ -64,19 +71,18 @@ impl State {
             }
             Message::Run => {}
             Message::Cancel => self.cancel(),
-            Message::Export => {
-                if let Self::Finished { export, .. } = self {
-                    if !export.pending() {
-                        *export = ExportStatus::ChoosingDestination;
-                        return Task::perform(
-                            crate::file_dialog::choose_interrupt_timing_export_file(hwnd),
-                            Message::ExportChosen,
-                        );
-                    }
+            Message::Export if self.can_run() => {
+                if let Some(completed) = &mut self.completed {
+                    completed.export = ExportStatus::ChoosingDestination;
+                    return Task::perform(
+                        crate::file_dialog::choose_interrupt_timing_export_file(hwnd),
+                        Message::ExportChosen,
+                    );
                 }
             }
+            Message::Export => {}
             Message::ExportChosen(path) => {
-                if let Self::Finished { report, export, .. } = self {
+                if let Some(CompletedReport { report, export, .. }) = &mut self.completed {
                     if *export == ExportStatus::ChoosingDestination {
                         let Some(path) = path else {
                             *export = ExportStatus::Ready;
@@ -90,7 +96,7 @@ impl State {
                 }
             }
             Message::ExportFinished(result) => {
-                if let Self::Finished { export, .. } = self {
+                if let Some(CompletedReport { export, .. }) = &mut self.completed {
                     if *export == ExportStatus::Writing {
                         *export = match result {
                             Ok(()) => ExportStatus::Saved,
@@ -99,45 +105,43 @@ impl State {
                     }
                 }
             }
-            Message::TogglePerCpu => {
-                if let Self::Finished {
-                    per_cpu_expanded, ..
-                } = self
-                {
-                    *per_cpu_expanded = !*per_cpu_expanded;
+            Message::TogglePerCpu if !self.is_capturing() => {
+                if let Some(completed) = &mut self.completed {
+                    completed.per_cpu_expanded = !completed.per_cpu_expanded;
                 }
             }
+            Message::TogglePerCpu => {}
         }
         Task::none()
     }
 
+    fn is_capturing(&self) -> bool {
+        matches!(self.capture, CaptureStatus::Capturing { .. })
+    }
+
     fn can_run(&self) -> bool {
-        !matches!(self, Self::Capturing { .. })
-            && !matches!(self, Self::Finished { export, .. } if export.pending())
+        !self.is_capturing()
+            && self
+                .completed
+                .as_ref()
+                .is_none_or(|completed| !completed.export.pending())
     }
 
     pub(super) fn export_writing(&self) -> bool {
-        matches!(
-            self,
-            Self::Finished {
-                export: ExportStatus::Writing,
-                ..
-            }
-        )
+        self.completed
+            .as_ref()
+            .is_some_and(|completed| completed.export == ExportStatus::Writing)
     }
 
     pub(super) fn export_failure(&self) -> Option<String> {
-        match self {
-            Self::Finished {
-                export: ExportStatus::Failed(error),
-                ..
-            } => Some(export_failure_message(error)),
+        match &self.completed.as_ref()?.export {
+            ExportStatus::Failed(error) => Some(export_failure_message(error)),
             _ => None,
         }
     }
 
     pub(super) fn subscription(&self) -> Subscription<()> {
-        if matches!(self, Self::Capturing { .. }) {
+        if self.is_capturing() {
             iced::time::every(Duration::from_millis(100)).map(|_| ())
         } else {
             Subscription::none()
@@ -145,10 +149,10 @@ impl State {
     }
 
     fn cancel(&mut self) {
-        let Self::Capturing {
+        let CaptureStatus::Capturing {
             capture,
             cancelling,
-        } = self
+        } = &mut self.capture
         else {
             return;
         };
@@ -160,33 +164,36 @@ impl State {
 
     pub(super) fn cancel_for_exit(&mut self) -> Option<InterruptTimingCapture> {
         self.cancel();
-        match std::mem::take(self) {
-            Self::Capturing { capture, .. } => Some(capture),
+        match std::mem::take(self).capture {
+            CaptureStatus::Capturing { capture, .. } => Some(capture),
             _ => None,
         }
     }
 
     pub(super) fn poll(&mut self) {
-        if let Self::Capturing {
+        if let CaptureStatus::Capturing {
             capture,
             cancelling,
-        } = self
+        } = &mut self.capture
         {
             if let Some(result) = capture.poll() {
-                *self = match result {
+                self.capture = match result {
                     Ok(_) if *cancelling => Self::failed(InterruptTimingError::Cancelled),
-                    Ok(report) => Self::Finished {
-                        report,
-                        per_cpu_expanded: false,
-                        export: ExportStatus::Ready,
-                    },
+                    Ok(report) => {
+                        self.completed = Some(CompletedReport {
+                            report,
+                            per_cpu_expanded: false,
+                            export: ExportStatus::Ready,
+                        });
+                        CaptureStatus::Idle
+                    }
                     Err(error) => Self::failed(error),
                 };
             }
         }
     }
 
-    fn failed(error: InterruptTimingError) -> Self {
+    fn failed(error: InterruptTimingError) -> CaptureStatus {
         if matches!(
             error,
             InterruptTimingError::Worker(_)
@@ -195,57 +202,28 @@ impl State {
         ) {
             crate::backend::diagnostics::error(&format!("Interrupt Timing failed with {error}"));
         }
-        Self::Failed(error)
+        CaptureStatus::Failed(error)
     }
 
     pub(super) fn view(&self) -> Element<'_, Message> {
-        let button = match self {
-            Self::Capturing { cancelling, .. } => widgets::action_button(t!("common.cancel"))
-                .on_press_maybe((!*cancelling).then_some(Message::Cancel)),
+        let button = match &self.capture {
+            CaptureStatus::Capturing { cancelling, .. } => {
+                widgets::action_button(t!("common.cancel"))
+                    .on_press_maybe((!*cancelling).then_some(Message::Cancel))
+            }
             _ => widgets::action_button(t!("interrupt_timing.run"))
                 .on_press_maybe(self.can_run().then_some(Message::Run)),
         };
         let mut body = column![widgets::setting_row("interrupt_timing.title", button)]
             .spacing(design::space::SMALL);
-        let status = match self {
-            Self::Idle => None,
-            Self::Capturing { cancelling, .. } => Some(if *cancelling {
+        let status = match &self.capture {
+            CaptureStatus::Idle => None,
+            CaptureStatus::Capturing { cancelling, .. } => Some(if *cancelling {
                 "interrupt_timing.cancelling"
             } else {
                 "interrupt_timing.capturing"
             }),
-            Self::Finished {
-                report,
-                per_cpu_expanded,
-                export,
-            } => {
-                let feedback = match export {
-                    ExportStatus::Ready | ExportStatus::ChoosingDestination => None,
-                    ExportStatus::Writing => {
-                        Some(text(t!("interrupt_timing.export_saving")).style(text::secondary))
-                    }
-                    ExportStatus::Saved => {
-                        Some(text(t!("interrupt_timing.export_saved")).style(text::secondary))
-                    }
-                    ExportStatus::Failed(error) => {
-                        Some(text(export_failure_message(error)).style(text::danger))
-                    }
-                };
-                if let Some(feedback) = feedback {
-                    body = body.push(
-                        feedback
-                            .size(design::typography::SECONDARY)
-                            .wrapping(text::Wrapping::WordOrGlyph),
-                    );
-                }
-                body = body.push(widgets::settings_divider()).push(report_view(
-                    report,
-                    *per_cpu_expanded,
-                    export,
-                ));
-                None
-            }
-            Self::Failed(error) => Some(match error {
+            CaptureStatus::Failed(error) => Some(match error {
                 InterruptTimingError::AccessDenied => "interrupt_timing.access_denied",
                 InterruptTimingError::InUse => "interrupt_timing.in_use",
                 InterruptTimingError::Cancelled => "interrupt_timing.cancelled",
@@ -255,8 +233,46 @@ impl State {
                 }
             }),
         };
+        let completed = self.completed.as_ref().filter(|_| !self.is_capturing());
         if let Some(status) = status {
-            body = body.push(text(t!(status)).style(text::secondary));
+            let status = t!(status);
+            let status = if completed.is_some() {
+                t!("interrupt_timing.previous_report_status", status = status)
+            } else {
+                status
+            };
+            body = body.push(text(status).style(text::secondary));
+        }
+        if let Some(CompletedReport {
+            report,
+            per_cpu_expanded,
+            export,
+        }) = completed
+        {
+            let feedback = match export {
+                ExportStatus::Ready | ExportStatus::ChoosingDestination => None,
+                ExportStatus::Writing => {
+                    Some(text(t!("interrupt_timing.export_saving")).style(text::secondary))
+                }
+                ExportStatus::Saved => {
+                    Some(text(t!("interrupt_timing.export_saved")).style(text::secondary))
+                }
+                ExportStatus::Failed(error) => {
+                    Some(text(export_failure_message(error)).style(text::danger))
+                }
+            };
+            if let Some(feedback) = feedback {
+                body = body.push(
+                    feedback
+                        .size(design::typography::SECONDARY)
+                        .wrapping(text::Wrapping::WordOrGlyph),
+                );
+            }
+            body = body.push(widgets::settings_divider()).push(report_view(
+                report,
+                *per_cpu_expanded,
+                export,
+            ));
         }
         widgets::settings_card(body).into()
     }
@@ -453,7 +469,7 @@ mod tests {
 
     #[test]
     fn report_export_is_single_flight_and_keeps_the_capture() {
-        assert_eq!(State::Idle.update(Message::Export, None).units(), 0);
+        assert_eq!(State::default().update(Message::Export, None).units(), 0);
         let report = InterruptTimingReport {
             events_lost: 1,
             buffers_lost: 0,
@@ -464,10 +480,13 @@ mod tests {
             modules: Vec::new(),
             per_cpu: None,
         };
-        let mut state = State::Finished {
-            report: report.clone(),
-            per_cpu_expanded: true,
-            export: ExportStatus::Ready,
+        let mut state = State {
+            completed: Some(CompletedReport {
+                report: report.clone(),
+                per_cpu_expanded: true,
+                export: ExportStatus::Ready,
+            }),
+            ..State::default()
         };
         assert!(state.update(Message::Export, None).units() > 0);
         assert!(!state.can_run());
@@ -476,8 +495,8 @@ mod tests {
         drop(state.update(Message::ExportChosen(None), None));
         assert!(state.can_run());
         assert!(matches!(
-            &state,
-            State::Finished { report: current, per_cpu_expanded: true, export: ExportStatus::Ready }
+            &state.completed,
+            Some(CompletedReport { report: current, per_cpu_expanded: true, export: ExportStatus::Ready })
                 if current == &report
         ));
 
@@ -488,7 +507,7 @@ mod tests {
                 ExportStatus::Failed("Read-only destination".into()),
             ),
         ] {
-            let State::Finished { export, .. } = &mut state else {
+            let Some(CompletedReport { export, .. }) = &mut state.completed else {
                 unreachable!();
             };
             *export = ExportStatus::Writing;
@@ -498,8 +517,8 @@ mod tests {
             drop(state.update(Message::ExportFinished(result), None));
             assert!(state.can_run());
             assert!(matches!(
-                &state,
-                State::Finished { report: current, per_cpu_expanded: true, export }
+                &state.completed,
+                Some(CompletedReport { report: current, per_cpu_expanded: true, export })
                     if current == &report && export == &expected
             ));
         }

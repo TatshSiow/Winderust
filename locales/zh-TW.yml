@@ -673,6 +673,7 @@ interrupt_timing:
   in_use: "中斷計時目前忙碌，請稍後再試。"
   failed: "Windows 無法擷取中斷計時。"
   timed_out: "中斷計時逾時，清理工作可能仍在進行。"
+  previous_report_status: "%{status} 目前顯示先前的報告。"
   no_samples: "未擷取到已完成的中斷樣本。"
   top_drivers: "總耗時最高的驅動程式"
   driver: "驅動程式"
