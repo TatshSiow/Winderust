@@ -216,20 +216,28 @@ impl CpuLimiterManager {
             .values()
             .map(|target| target.control.clone())
             .collect();
-        if let Err(error) = controller.replace_targets(controls) {
-            self.limited.clear();
-            return CpuLimiterSnapshot {
-                enabled: true,
-                scanned_processes,
-                tracked_processes: selected.len(),
-                failed_apps: selected
-                    .values()
-                    .map(|target| target.executable_path.clone())
-                    .collect(),
-                skipped_processes,
-                last_error: Some(error),
-                ..Default::default()
-            };
+        match controller.replace_targets_with_inventory(controls, Some(&processes_by_id)) {
+            Ok(expired) => {
+                // Exited children need no restore operation.
+                for key in expired {
+                    self.limited.remove(&key);
+                }
+            }
+            Err(error) => {
+                self.limited.clear();
+                return CpuLimiterSnapshot {
+                    enabled: true,
+                    scanned_processes,
+                    tracked_processes: selected.len(),
+                    failed_apps: selected
+                        .values()
+                        .map(|target| target.executable_path.clone())
+                        .collect(),
+                    skipped_processes,
+                    last_error: Some(error),
+                    ..Default::default()
+                };
+            }
         }
 
         let mut failed_apps = BTreeSet::new();

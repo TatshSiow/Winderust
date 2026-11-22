@@ -11,6 +11,7 @@ use crate::{
         process::{ProcessControlError, ProcessTargetKey},
         suspension::{SuspensionController, SuspensionError, SuspensionTarget},
     },
+    foreground::ProcessInfo,
     platform::windows::{
         cpu_limiter::{CommandEvent, HighResolutionTimer},
         thread_suspension::{self, ThreadSuspensionError},
@@ -148,6 +149,36 @@ struct WorkerState {
     shutdown: bool,
 }
 
+impl WorkerState {
+    fn prune_covered_targets(
+        &mut self,
+        observed_processes: Option<&BTreeMap<u32, &ProcessInfo>>,
+    ) -> Vec<ProcessTargetKey> {
+        let mut expired = Vec::new();
+        self.covered_targets.retain(|child, owner| {
+            if !self
+                .targets
+                .get(owner)
+                .is_some_and(|target| target.backend.is_job())
+            {
+                return false;
+            }
+            let possibly_live = observed_processes.is_none_or(|processes| {
+                processes.get(&child.id).is_some_and(|process| {
+                    process
+                        .creation_time
+                        .is_none_or(|time| time == child.creation_time)
+                })
+            });
+            if !possibly_live && !self.targets.contains_key(child) {
+                expired.push(child.clone());
+            }
+            possibly_live
+        });
+        expired
+    }
+}
+
 fn should_use_thread_fallback(error: &SuspensionError) -> bool {
     matches!(error, SuspensionError::NotSupported)
 }
@@ -209,6 +240,15 @@ impl CpuLimiterController {
     }
 
     pub(crate) fn replace_targets(&mut self, targets: Vec<CpuLimiterTarget>) -> Result<(), String> {
+        self.replace_targets_with_inventory(targets, None)
+            .map(|_| ())
+    }
+
+    pub(crate) fn replace_targets_with_inventory(
+        &mut self,
+        targets: Vec<CpuLimiterTarget>,
+        observed_processes: Option<&BTreeMap<u32, &ProcessInfo>>,
+    ) -> Result<Vec<ProcessTargetKey>, String> {
         let now = Instant::now();
         let requested_keys = targets
             .iter()
@@ -264,15 +304,7 @@ impl CpuLimiterController {
                 }
             }
         }
-        let managed_job_keys = state
-            .targets
-            .iter()
-            .filter(|(_key, target)| target.backend.is_job())
-            .map(|(key, _target)| key.clone())
-            .collect::<BTreeSet<_>>();
-        state
-            .covered_targets
-            .retain(|_target, owner| managed_job_keys.contains(owner));
+        let expired = state.prune_covered_targets(observed_processes);
         for target in targets {
             let key = target.suspension_target.key();
             if retained_covered_owner(&state, &key).is_some() {
@@ -373,7 +405,8 @@ impl CpuLimiterController {
         }
         drop(suspension);
         drop(state);
-        self.command_event.signal()
+        self.command_event.signal()?;
+        Ok(expired)
     }
 
     pub(crate) fn drain_failures(&mut self) -> Result<Vec<CpuLimiterFailure>, String> {
@@ -981,7 +1014,7 @@ mod tests {
         let owner = target(1, Vec::new());
         let owner_key = owner.suspension_target.key();
         let child_key = target(2, vec![1]).suspension_target.key();
-        let state = WorkerState {
+        let mut state = WorkerState {
             targets: BTreeMap::from([(
                 owner_key.clone(),
                 WorkerTarget {
@@ -1010,7 +1043,19 @@ mod tests {
             })
             .map(|(key, _, _)| key.clone())
             .collect::<BTreeSet<_>>();
-        assert_eq!(pending_keys, BTreeSet::from([owner_key, child_key]));
+        assert!(state.prune_covered_targets(None).is_empty());
+        assert_eq!(
+            pending_keys,
+            BTreeSet::from([owner_key.clone(), child_key.clone()])
+        );
+        assert_eq!(retained_covered_owner(&state, &child_key), Some(&owner_key));
+        assert_eq!(
+            state
+                .prune_covered_targets(Some(&BTreeMap::new()))
+                .as_slice(),
+            std::slice::from_ref(&child_key)
+        );
+        assert!(retained_covered_owner(&state, &child_key).is_none());
     }
 
     #[test]

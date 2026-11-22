@@ -547,6 +547,8 @@ Read the relevant section before changing feature policy, ownership, restoration
   own CPU allocation or Windows CPU-rate state.
   On Exit, the shared suspension controller's final Job cleanup determines the Job result.
   CPU Limiter reports its own thread fallback and timing worker failures separately.
+  Inherited Job coverage retains a child while the matching Job is owned and the child
+  may still be live. A complete process census drops absent or replaced child generations.
   Required observations that are unavailable pause CPU Limiter and its eligible rule status.
   Process inventory and retained cleanup errors remain visible in the status rail.
 

@@ -79,7 +79,7 @@ impl ProcessControlTarget {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct ProcessTargetKey {
     pub(crate) id: u32,
-    creation_time: u64,
+    pub(super) creation_time: u64,
     executable_path: String,
 }
 
