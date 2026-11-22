@@ -939,7 +939,7 @@ pub fn process_matches_executable_path(process: &ProcessInfo, executable_path: &
     let Some(file_name) = executable_path.file_name().and_then(|name| name.to_str()) else {
         return false;
     };
-    if !same_process_name(&process.name, file_name) {
+    if !executable_basename_may_match(&process.name, file_name) {
         return false;
     }
 
@@ -1812,6 +1812,14 @@ mod tests {
             &process,
             r"C:\Games\game.exe"
         ));
+
+        let unicode_path = r"C:\Games\éditeur.exe";
+        let process = ProcessInfo {
+            name: "Éditeur.exe".into(),
+            image_path: Some(unicode_path.into()),
+            ..process
+        };
+        assert!(process_matches_executable_path(&process, unicode_path));
     }
 
     #[test]

@@ -4,7 +4,8 @@ use crate::{
     config::WatchdogSelector,
     features::winderust_features::watchdog::observed_path_matches_name,
     foreground::{
-        process_list::same_executable_name, same_executable_path, same_process_name, ProcessInfo,
+        process_list::{executable_basename_may_match, same_executable_name},
+        same_executable_path, ProcessInfo,
     },
     runtime::observations::CycleObservations,
 };
@@ -72,7 +73,7 @@ fn classify(
     let mut rows = Vec::new();
     for process in processes {
         let name_matches = if expected_path.is_some() {
-            same_process_name(&process.name, name)
+            executable_basename_may_match(&process.name, name)
         } else {
             same_executable_name(&process.name, name)
         };
