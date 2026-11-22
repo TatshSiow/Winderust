@@ -384,18 +384,12 @@ Assert-NoSourceMatch `
 Assert-NoUnexpectedWriter `
     -Mechanism 'Job Object information' `
     -ApiPattern 'SetInformationJobObject' `
-    -AllowedLocationPattern '^src\\(?:backend\\crash_recovery(?:\\tests)?|platform\\windows\\(?:job|suspension|keep_running))\.rs:'
+    -AllowedLocationPattern '^src\\(?:backend\\crash_recovery(?:\\tests)?|platform\\windows\\(?:suspension|keep_running))\.rs:'
 
 Assert-SourceMatchCount `
     -Boundary 'single App Suspension production adapter call' `
     -Pattern 'SetInformationJobObject\s*\(' `
     -Paths @('src/platform/windows/suspension.rs') `
-    -ExpectedCount 1
-
-Assert-SourceMatchCount `
-    -Boundary 'single foreign-job test UI restriction adapter call' `
-    -Pattern 'SetInformationJobObject\s*\(' `
-    -Paths @('src/platform/windows/job.rs') `
     -ExpectedCount 1
 
 Assert-NoSourceMatch `

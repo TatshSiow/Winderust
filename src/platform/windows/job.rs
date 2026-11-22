@@ -8,12 +8,6 @@ use windows_sys::Win32::{
     System::JobObjects::{AssignProcessToJobObject, CreateJobObjectW, IsProcessInJob},
 };
 
-#[cfg(test)]
-use windows_sys::Win32::System::JobObjects::{
-    JobObjectBasicUIRestrictions, SetInformationJobObject, JOBOBJECT_BASIC_UI_RESTRICTIONS,
-    JOB_OBJECT_UILIMIT_HANDLES,
-};
-
 use crate::win_util::{last_error, wide_null, WinHandle};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -79,31 +73,6 @@ pub(crate) fn process_is_in_job(process: &WinHandle, job: Option<&JobHandle>) ->
     // in_job is writable.
     let ok = unsafe { IsProcessInJob(process.raw(), job_handle, &mut in_job) };
     (ok != 0).then_some(in_job != 0)
-}
-
-#[cfg(test)]
-pub(crate) fn set_ui_restriction_for_test(job: &JobHandle) -> Result<(), JobObjectError> {
-    let restriction = JOBOBJECT_BASIC_UI_RESTRICTIONS {
-        UIRestrictionsClass: JOB_OBJECT_UILIMIT_HANDLES,
-    };
-    // SAFETY: job is live and restriction is a readable buffer with the exact information-class
-    // layout. This test-only restriction makes a disposable foreign job incompatible with nesting.
-    let ok = unsafe {
-        SetInformationJobObject(
-            job.raw(),
-            JobObjectBasicUIRestrictions,
-            (&restriction as *const JOBOBJECT_BASIC_UI_RESTRICTIONS).cast(),
-            std::mem::size_of::<JOBOBJECT_BASIC_UI_RESTRICTIONS>() as u32,
-        )
-    };
-    if ok == 0 {
-        Err(JobObjectError::Failed(format!(
-            "Foreign job UI restriction failed with error {}.",
-            last_error()
-        )))
-    } else {
-        Ok(())
-    }
 }
 
 fn assign_error(process_id: u32, error: u32) -> JobObjectError {

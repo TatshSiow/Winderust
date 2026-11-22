@@ -1004,8 +1004,8 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "creates and restores a disposable process in an incompatible foreign Job Object"]
-    fn foreign_job_uses_thread_fallback_and_restores() -> Result<(), String> {
+    #[ignore = "suspends and restores only an owned disposable process; run in Windows integration QA"]
+    fn named_job_mismatch_uses_thread_fallback_and_restores() -> Result<(), String> {
         use std::{
             os::windows::process::CommandExt,
             path::PathBuf,
@@ -1013,11 +1013,11 @@ mod tests {
         };
 
         use crate::{
+            backend::crash_recovery::suspension_job_name,
             foreground::capture_process_action_target,
             platform::windows::{job, thread_suspension},
         };
 
-        const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
         struct DisposableProcess(Child);
@@ -1033,17 +1033,13 @@ mod tests {
             .map(PathBuf::from)
             .ok_or_else(|| "SystemRoot is unavailable.".to_owned())?
             .join(r"System32\PING.EXE");
-        let spawn = |creation_flags| {
-            Command::new(&executable_path)
-                .args(["-t", "127.0.0.1"])
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .creation_flags(creation_flags)
-                .spawn()
-        };
-        let child = spawn(CREATE_BREAKAWAY_FROM_JOB | CREATE_NO_WINDOW)
-            .or_else(|_| spawn(CREATE_NO_WINDOW))
+        let child = Command::new(&executable_path)
+            .args(["-n", "15", "127.0.0.1"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn()
             .map_err(|error| format!("Could not start the disposable process: {error}"))?;
         let child = DisposableProcess(child);
         let deadline = Instant::now() + Duration::from_secs(2);
@@ -1069,27 +1065,19 @@ mod tests {
             allow_cross_session_process_control: true,
             ancestor_process_ids: Vec::new(),
         };
-        let (_identity, process) = crate::control::process::open_process_for_thread_snapshot(
+        let (identity, process) = crate::control::process::open_process_for_thread_snapshot(
             &suspension_target.process,
             true,
         )
         .map_err(|error| error.to_string())?;
-        if job::process_is_in_job(&process, None) != Some(false) {
-            return Err(
-                "The test host prevents a disposable child from breaking away; run this ignored test outside that Job Object."
-                    .to_owned(),
-            );
+        // Keep the exact suspension job name occupied by an empty job for this test.
+        let name = suspension_job_name(identity.id, identity.creation_time);
+        let reserved_job = job::create_job(&name).map_err(|error| format!("{error:?}"))?;
+        if reserved_job.already_existed
+            || job::process_is_in_job(&process, Some(&reserved_job.handle)) != Some(false)
+        {
+            return Err("Could not reserve an empty suspension job for the test.".to_owned());
         }
-        let foreign_job = job::create_job(&format!(
-            "Local\\Winderust.CpuLimiter.ForeignTest.{}.{}",
-            std::process::id(),
-            child.0.id()
-        ))
-        .map_err(|error| format!("{error:?}"))?;
-        job::set_ui_restriction_for_test(&foreign_job.handle)
-            .map_err(|error| format!("{error:?}"))?;
-        job::assign_process(&foreign_job.handle, &process, child.0.id())
-            .map_err(|error| format!("Could not assign the foreign test job: {error:?}"))?;
 
         let baseline = thread_suspension::capture_threads(process.raw())
             .map_err(|error| format!("{error:?}"))?
