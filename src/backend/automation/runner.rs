@@ -2124,9 +2124,20 @@ impl RuntimeCore {
         if self.cpu_usage_sampled_at.is_none_or(|sampled_at| {
             Instant::now().saturating_duration_since(sampled_at) >= CPU_USAGE_REFRESH_INTERVAL
         }) {
-            self.cpu_usage = self.cpu_monitor.sample_usage();
-            self.cpu_usage_sampled_at = Some(Instant::now());
+            let sample = self.cpu_monitor.sample_usage();
+            self.record_cpu_usage(sample, Instant::now());
         }
+    }
+
+    fn record_cpu_usage(&mut self, sample: CpuUsageSnapshot, sampled_at: Instant) {
+        if !sample
+            .percent
+            .is_some_and(|usage| usage.is_finite() && (0.0..=100.0).contains(&usage))
+        {
+            self.by_cpu_load_scheduler.reset();
+        }
+        self.cpu_usage = sample;
+        self.cpu_usage_sampled_at = Some(sampled_at);
     }
 
     pub(super) fn power_plan_status(&mut self) -> (PowerPlanStatus, Option<&PowerPlanRuleContext>) {
@@ -2743,6 +2754,40 @@ mod settings_tests {
                 adaptive_enabled.then_some(sampled_at)
             );
         }
+    }
+
+    #[test]
+    fn incidental_cpu_usage_gaps_reset_by_cpu_load_qualification() {
+        use crate::config::{ByCpuLoadRule, CpuLoadPercent, CpuUsageComparison};
+
+        let mut settings = Settings::default().by_cpu_load;
+        settings.enabled = true;
+        settings.rules = vec![ByCpuLoadRule {
+            comparison: CpuUsageComparison::AtOrAbove,
+            threshold_percent: CpuLoadPercent::new(75).unwrap(),
+            duration_seconds: 8,
+            power_plan_guid: Some("target".into()),
+            ..Default::default()
+        }];
+        let mut runner = RuntimeCore::default();
+        let start = Instant::now();
+        let hot = CpuUsageSnapshot {
+            percent: Some(85.0),
+            ..Default::default()
+        };
+        let check = |runner: &mut RuntimeCore, now| {
+            runner.by_cpu_load_scheduler.current_decision_for_sample_at(
+                &settings,
+                runner.cpu_usage.percent.zip(runner.cpu_usage_sampled_at),
+                now,
+            )
+        };
+        runner.record_cpu_usage(hot, start);
+        assert!(check(&mut runner, start).is_none());
+        runner.record_cpu_usage(CpuUsageSnapshot::default(), start + Duration::from_secs(5));
+        let next_check = start + Duration::from_secs(10);
+        runner.record_cpu_usage(hot, next_check);
+        assert!(check(&mut runner, next_check).is_none());
     }
 
     #[test]
