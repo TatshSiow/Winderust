@@ -14,7 +14,7 @@ use crate::{
         ByRunningAppPreviewRow,
     },
     power::PowerPlan,
-    rules::decision_engine::matching_by_focus_rule,
+    rules::decision_engine::matching_by_focus_rules,
     ui::{
         app_picker, design, process_rules::power_rule_path, scrolling::scrollable, tasks, widgets,
     },
@@ -30,7 +30,7 @@ pub(crate) enum PreviewMessage {
     OpenFocus,
     FocusPath(String),
     CheckFocus,
-    FocusChecked(Arc<PathBuf>, Result<Option<FocusMatch>, String>),
+    FocusChecked(Arc<PathBuf>, Result<Vec<FocusMatch>, String>),
     Close,
 }
 
@@ -55,11 +55,12 @@ struct FocusPreview {
 
 struct FocusCheck {
     path: Arc<PathBuf>,
-    result: Option<Result<Option<FocusMatch>, String>>,
+    result: Option<Result<Vec<FocusMatch>, String>>,
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct FocusMatch {
+    rule_index: usize,
     rule: String,
     plan_guid: String,
 }
@@ -136,12 +137,13 @@ impl Preview {
                 let path = Arc::clone(&request);
                 let settings = settings.by_focus.clone();
                 return tasks::run(move || {
-                    matching_by_focus_rule(&settings, &path).map(|(_, rule, plan_guid)| {
-                        FocusMatch {
+                    matching_by_focus_rules(&settings, &path)
+                        .map(|(rule_index, rule, plan_guid)| FocusMatch {
+                            rule_index,
                             rule: rule.selector.value().to_owned(),
                             plan_guid: plan_guid.to_owned(),
-                        }
-                    })
+                        })
+                        .collect()
                 })
                 .map(move |result| PreviewMessage::FocusChecked(Arc::clone(&request), result));
             }
@@ -245,17 +247,26 @@ impl FocusPreview {
         if check.is_none() && self.check.is_none() && !self.path.trim().is_empty() {
             body = body.push(app_picker::path_format_hint());
         }
+        let mut max_height = 280;
         if let Some(pending) = &self.check {
-            let result = match &pending.result {
-                None => text(t!("common.loading").to_string()).style(text::secondary),
-                Some(Err(error)) => text(t!("by_focus.preview_failed", error = error).to_string())
-                    .style(text::danger),
-                Some(Ok(None)) => text(t!("power_plan_control.preview_no_winner").to_string()),
-                Some(Ok(Some(matched))) => {
-                    text(winner_label(&matched.rule, Some(&matched.plan_guid), plans))
+            body = match &pending.result {
+                None => body.push(
+                    text(t!("common.loading").to_string())
+                        .style(text::secondary)
+                        .wrapping(text::Wrapping::WordOrGlyph),
+                ),
+                Some(Err(error)) => body.push(
+                    text(t!("by_focus.preview_failed", error = error).to_string())
+                        .style(text::danger)
+                        .wrapping(text::Wrapping::WordOrGlyph),
+                ),
+                Some(Ok(matches)) => {
+                    if matches.len() > 1 {
+                        max_height = 460;
+                    }
+                    body.push(focus_matches(matches, plans))
                 }
             };
-            body = body.push(result.wrapping(text::Wrapping::WordOrGlyph));
         }
         widgets::modal_frame(
             widgets::heading(
@@ -272,13 +283,53 @@ impl FocusPreview {
                     .on_press(PreviewMessage::Close),
             ]
             .spacing(design::space::SMALL),
-            (640, 280),
+            (640, max_height),
         )
     }
 }
 
+fn focus_matches(matches: &[FocusMatch], plans: &[PowerPlan]) -> Element<'static, PreviewMessage> {
+    let Some((winner, others)) = matches.split_first() else {
+        return text(t!("power_plan_control.preview_no_winner").to_string())
+            .wrapping(text::Wrapping::WordOrGlyph)
+            .into();
+    };
+    let featured = text(winner_label(&winner.rule, Some(&winner.plan_guid), plans))
+        .wrapping(text::Wrapping::WordOrGlyph);
+    if others.is_empty() {
+        return featured.into();
+    }
+    column![
+        featured,
+        widgets::heading(
+            t!("by_focus.preview_other_matches").to_string(),
+            design::typography::BODY
+        ),
+        Column::with_children(others.iter().map(|matched| {
+            let rule_number = t!("common.rule", number = matched.rule_index + 1);
+            let plan = preview_plan_label(Some(&matched.plan_guid), plans);
+            text(format!("{rule_number} · {} ({plan})", matched.rule.trim()))
+                .wrapping(text::Wrapping::WordOrGlyph)
+                .into()
+        }))
+        .spacing(design::space::SMALL),
+    ]
+    .spacing(widgets::CARD_GAP)
+    .into()
+}
+
 fn winner_label(rule: &str, plan_guid: Option<&str>, plans: &[PowerPlan]) -> String {
-    let plan = plan_guid
+    let plan = preview_plan_label(plan_guid, plans);
+    t!(
+        "power_plan_control.preview_winner",
+        rule = rule.trim(),
+        plan = plan
+    )
+    .to_string()
+}
+
+fn preview_plan_label(plan_guid: Option<&str>, plans: &[PowerPlan]) -> String {
+    plan_guid
         .and_then(|guid| {
             plans
                 .iter()
@@ -287,13 +338,7 @@ fn winner_label(rule: &str, plan_guid: Option<&str>, plans: &[PowerPlan]) -> Str
         .map_or_else(
             || t!("common.selected_plan_unavailable").to_string(),
             |plan| plan.name.clone(),
-        );
-    t!(
-        "power_plan_control.preview_winner",
-        rule = rule.trim(),
-        plan = plan
-    )
-    .to_string()
+        )
 }
 
 fn rule_matches<'a>(
@@ -439,7 +484,7 @@ fn a_focus_check_cannot_finish_after_editing_or_reopening() {
     );
     let _ = preview.update(
         &settings,
-        PreviewMessage::FocusChecked(Arc::clone(&first), Ok(None)),
+        PreviewMessage::FocusChecked(Arc::clone(&first), Ok(Vec::new())),
     );
     assert!(matches!(
         preview.open,
@@ -458,7 +503,10 @@ fn a_focus_check_cannot_finish_after_editing_or_reopening() {
         path: Arc::clone(&second),
         result: None,
     });
-    let _ = preview.update(&settings, PreviewMessage::FocusChecked(first, Ok(None)));
+    let _ = preview.update(
+        &settings,
+        PreviewMessage::FocusChecked(first, Ok(Vec::new())),
+    );
     assert!(matches!(
         preview.open,
         Some(OpenPreview::Focus(FocusPreview {
@@ -466,15 +514,18 @@ fn a_focus_check_cannot_finish_after_editing_or_reopening() {
             ..
         }))
     ));
-    let _ = preview.update(&settings, PreviewMessage::FocusChecked(second, Ok(None)));
+    let _ = preview.update(
+        &settings,
+        PreviewMessage::FocusChecked(second, Ok(Vec::new())),
+    );
     assert!(matches!(
         preview.open,
         Some(OpenPreview::Focus(FocusPreview {
             check: Some(FocusCheck {
-                result: Some(Ok(None)),
+                result: Some(Ok(matches)),
                 ..
             }),
             ..
-        }))
+        })) if matches.is_empty()
     ));
 }

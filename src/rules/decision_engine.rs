@@ -111,26 +111,30 @@ pub fn decide(settings: &Settings, input: DecisionInput) -> DecisionOutcome {
     outcome
 }
 
-pub(crate) fn matching_by_focus_rule<'a>(
+pub(crate) fn matching_by_focus_rules<'a>(
     settings: &'a ByFocusSettings,
-    executable_path: &Path,
-) -> Option<(usize, &'a ByFocusRule, &'a str)> {
-    settings.rules.iter().enumerate().find_map(|(index, rule)| {
-        let plan = rule.configured_plan()?;
-        let matches = match &rule.selector {
-            ExecutableSelector::ExactPath {
-                executable_path: target,
-            } => same_executable_path(Path::new(target), executable_path),
-            ExecutableSelector::ExactName { executable_name } => {
-                executable_path.is_absolute()
-                    && executable_path
-                        .file_name()
-                        .and_then(|name| name.to_str())
-                        .is_some_and(|name| name.eq_ignore_ascii_case(executable_name))
-            }
-        };
-        matches.then_some((index, rule, plan))
-    })
+    executable_path: &'a Path,
+) -> impl Iterator<Item = (usize, &'a ByFocusRule, &'a str)> + 'a {
+    settings
+        .rules
+        .iter()
+        .enumerate()
+        .filter_map(move |(index, rule)| {
+            let plan = rule.configured_plan()?;
+            let matches = match &rule.selector {
+                ExecutableSelector::ExactPath {
+                    executable_path: target,
+                } => same_executable_path(Path::new(target), executable_path),
+                ExecutableSelector::ExactName { executable_name } => {
+                    executable_path.is_absolute()
+                        && executable_path
+                            .file_name()
+                            .and_then(|name| name.to_str())
+                            .is_some_and(|name| name.eq_ignore_ascii_case(executable_name))
+                }
+            };
+            matches.then_some((index, rule, plan))
+        })
 }
 
 pub(crate) fn ordinary_power_plan_stop(
@@ -161,7 +165,11 @@ fn decide_plan(settings: &Settings, input: DecisionInput) -> DecisionOutcome {
         .foreground_executable_path
         .as_deref()
         .filter(|_| settings.by_focus.enabled)
-        .and_then(|path| matching_by_focus_rule(&settings.by_focus, path).map(|rule| (path, rule)));
+        .and_then(|path| {
+            matching_by_focus_rules(&settings.by_focus, path)
+                .next()
+                .map(|rule| (path, rule))
+        });
     if let Some((path, (rule_index, rule, power_plan_guid))) = focus_match {
         consider_plan(
             &mut winner,
@@ -586,13 +594,20 @@ mod tests {
         let decision = decide(&settings, input.clone());
         assert_eq!(decision.rule_index, Some(0));
         assert_eq!(decision.power_plan_guid.as_deref(), Some("name-plan"));
+        assert_eq!(
+            matching_by_focus_rules(&settings.by_focus, Path::new(path))
+                .map(|(index, _, plan)| (index, plan))
+                .collect::<Vec<_>>(),
+            [(0, "name-plan"), (1, "path-plan")]
+        );
 
         settings.by_focus.rules[0].enabled = false;
         assert_eq!(decide(&settings, input.clone()).rule_index, Some(1));
 
         settings.by_focus.enabled = false;
-        let (rule_index, rule, plan) =
-            matching_by_focus_rule(&settings.by_focus, Path::new(path)).unwrap();
+        let (rule_index, rule, plan) = matching_by_focus_rules(&settings.by_focus, Path::new(path))
+            .next()
+            .unwrap();
         assert_eq!(rule_index, 1);
         assert_eq!(rule.name, "Path rule");
         assert_eq!(plan, "path-plan");

@@ -208,7 +208,8 @@ hover/press; background shading supplies feedback.
   input focus. Process List edits individual path rules. The rule editors accept
   full drive or network paths and show guidance for unsupported path formats.
 - In By Focus, Preview matches checks a full executable path against the draft
-  rules and shows the first eligible rule and its selected plan.
+  rules. It shows the first eligible rule and its selected plan, followed by
+  any other eligible matches in rule order.
 - In By Running App, Preview matches lists the processes each rule covers,
   same-name copies outside path rules, and processes with unavailable details.
   It reports the first eligible rule and its selected power plan using the

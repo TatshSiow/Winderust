@@ -338,8 +338,9 @@ Read the relevant section before changing feature policy, ownership, restoration
   each mode. By Focus checks the protected state of the focused process. By Running
   App retains its current-session and protected-process checks.
 - By Focus Preview matches uses the same rule order and selector matching as
-  automation. It evaluates the entered path against the draft, even when By Focus
-  is disabled. The check is read-only.
+  automation. It shows the first eligible match followed by other eligible
+  matches in the same order. It evaluates the entered path against the draft,
+  even when By Focus is disabled. The check is read-only.
 - By Running App Preview matches uses the same eligibility checks to report matches
   and the winning rule for the current draft.
 - By Activity uses the same activity sample to select a plan and schedule the idle
