@@ -182,8 +182,7 @@ impl ExecutionSuppression {
 }
 
 fn process_failure_key(process_identity: &str) -> Option<String> {
-    let key = normalize_process_failure_key(process_identity);
-    (!key.is_empty()).then_some(key)
+    (!process_identity.trim().is_empty()).then(|| normalize_process_failure_key(process_identity))
 }
 
 #[cfg(test)]

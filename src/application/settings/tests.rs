@@ -636,7 +636,7 @@ fn patch_merge_keeps_unrelated_changes() {
         .apply_auto_exclusion_patch(&mut draft, &patch)
         .expect("apply"));
     assert_eq!(draft.general.check_interval_ms, 1_337);
-    let expected_path = executable_path_key(Path::new(r"C:\Apps\worker.exe"));
+    let expected_path = r"C:\Apps\worker.exe";
     assert!(draft
         .process_priority
         .exclusions
@@ -708,6 +708,37 @@ fn auto_exclusion_patch_matches_paths_case_insensitively_and_ignores_relative_pa
     assert!(draft.process_priority.exclusions[0].enabled);
     assert!(draft.battery_profile().process_priority.exclusions[0].enabled);
     assert_eq!(storage.saved_payloads().len(), 2);
+}
+
+#[test]
+fn auto_exclusion_patch_preserves_literal_executable_path_suffix() {
+    let (mut coordinator, mut draft, _) = load_ok_with_fixtures();
+    let ordinary = r"C:\Apps\worker.exe";
+    let distinct = concat!(r"C:\Apps\worker.exe", "\u{3000}");
+    let mut existing = process_exclusion_rule(ordinary);
+    existing.enabled = false;
+    draft.process_priority.exclusions = vec![existing.clone()];
+    draft.battery_profile_mut().process_priority.exclusions = vec![existing];
+    coordinator.save(&mut draft).expect("save fixture rule");
+    let patch = AutoExclusionPatch {
+        base_revision: draft.base_revision,
+        process_priority: vec![distinct.to_owned()],
+        ..AutoExclusionPatch::default()
+    };
+
+    assert!(coordinator
+        .apply_auto_exclusion_patch(&mut draft, &patch)
+        .expect("apply patch"));
+    for exclusions in [
+        &draft.process_priority.exclusions,
+        &draft.battery_profile().process_priority.exclusions,
+    ] {
+        assert_eq!(exclusions.len(), 2);
+        assert_eq!(exclusions[0].executable_path, ordinary);
+        assert!(!exclusions[0].enabled);
+        assert_eq!(exclusions[1].executable_path, distinct);
+        assert!(exclusions[1].enabled);
+    }
 }
 
 #[test]

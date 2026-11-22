@@ -964,7 +964,7 @@ pub fn contains_process_name<T: AsRef<str>>(list: &[T], process_name: &str) -> b
 }
 
 pub fn process_failure_key(process_identity: &str) -> String {
-    executable_path_key(Path::new(process_identity))
+    normalize_path_slashes(process_identity).into_owned()
 }
 
 pub fn process_count_label(count: usize) -> String {

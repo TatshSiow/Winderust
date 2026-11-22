@@ -1,4 +1,5 @@
 use super::*;
+use crate::foreground::process_list::normalize_path_slashes;
 
 pub(super) struct AutomationSnapshot {
     pub(super) settings: Arc<Settings>,
@@ -166,13 +167,14 @@ pub(super) fn update_processor_affinity_hard_status(
 fn append_unique_executable_paths(executable_paths: &[String], target: &mut Vec<String>) -> bool {
     let old_len = target.len();
     for executable_path in executable_paths {
-        let executable_path = executable_path_key(Path::new(executable_path));
-        if Path::new(&executable_path).is_absolute()
-            && !target.iter().any(|existing| {
-                same_executable_path(Path::new(existing), Path::new(&executable_path))
-            })
+        let executable_path = normalize_path_slashes(executable_path);
+        let path = Path::new(executable_path.as_ref());
+        if path.is_absolute()
+            && !target
+                .iter()
+                .any(|existing| same_executable_path(Path::new(existing), path))
         {
-            target.push(executable_path);
+            target.push(executable_path.into_owned());
         }
     }
     target.len() != old_len

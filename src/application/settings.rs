@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use crate::backend::startup::{self, StartupRegistrationError};
 use crate::config::{self, PowerSourceProfile, Settings};
-use crate::foreground::{executable_path_key, same_executable_path};
+use crate::foreground::{process_list::normalize_path_slashes, same_executable_path};
 
 pub(crate) type SettingsResult<T> = Result<T, SettingsCoordinatorError>;
 
@@ -716,19 +716,19 @@ fn apply_auto_exclusion_paths<T>(
     let mut changed = false;
 
     for incoming_path in incoming {
-        let path = executable_path_key(Path::new(incoming_path));
-        if !Path::new(&path).is_absolute() {
+        let path = normalize_path_slashes(incoming_path);
+        let candidate = Path::new(path.as_ref());
+        if !candidate.is_absolute() {
             continue;
         }
-        if let Some(rule) = rules
-            .iter_mut()
-            .find(|rule| same_executable_path(Path::new(executable_path(*rule)), Path::new(&path)))
-        {
+        if let Some(rule) = rules.iter_mut().find(|rule| {
+            same_executable_path(Path::new(executable_path(*rule).trim_start()), candidate)
+        }) {
             changed |= set_enabled(rule, enabled_value);
             continue;
         }
 
-        let mut created = new_rule(&path);
+        let mut created = new_rule(path.as_ref());
         let _ = set_enabled(&mut created, enabled_value);
         rules.push(created);
         changed = true;
