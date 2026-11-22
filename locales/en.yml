@@ -609,6 +609,8 @@ by_cpu_load:
   new_rule: "New By CPU Load Rule"
   threshold: "Threshold"
   upper_threshold: "Upper threshold"
+  invalid_threshold: "Enter a whole-number threshold from 0% to 100%."
+  invalid_duration: "Enter a whole-number duration from 0 to %{maximum} seconds."
   invalid_range: "The threshold must not exceed the upper threshold."
   duration: "Duration"
   stability: "Switching stability"

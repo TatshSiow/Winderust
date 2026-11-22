@@ -186,6 +186,18 @@ impl ByCpuLoadRule {
     }
 
     pub fn validate_stability(&self) -> Result<(), String> {
+        self.validate_stability_for_entry(
+            Some(self.threshold_percent),
+            Some(self.upper_threshold_percent.unwrap_or(CpuLoadPercent::MAX)),
+        )
+    }
+
+    // An invalid editor field leaves that entry boundary unknown until corrected.
+    pub(crate) fn validate_stability_for_entry(
+        &self,
+        lower: Option<CpuLoadPercent>,
+        upper: Option<CpuLoadPercent>,
+    ) -> Result<(), String> {
         let Some(stability) = &self.stability else {
             return Ok(());
         };
@@ -197,18 +209,18 @@ impl ByCpuLoadRule {
         }
         let valid_thresholds = match self.comparison {
             CpuUsageComparison::AtOrAbove => {
-                stability.exit_threshold_percent <= self.threshold_percent
+                lower.is_none_or(|entry| stability.exit_threshold_percent <= entry)
                     && stability.exit_upper_threshold_percent.is_none()
             }
             CpuUsageComparison::AtOrBelow => {
-                stability.exit_threshold_percent >= self.threshold_percent
+                lower.is_none_or(|entry| stability.exit_threshold_percent >= entry)
                     && stability.exit_upper_threshold_percent.is_none()
             }
             CpuUsageComparison::Between => {
-                stability.exit_threshold_percent <= self.threshold_percent
-                    && stability.exit_upper_threshold_percent.is_some_and(|upper| {
-                        upper >= self.upper_threshold_percent.unwrap_or(CpuLoadPercent::MAX)
-                    })
+                lower.is_none_or(|entry| stability.exit_threshold_percent <= entry)
+                    && stability
+                        .exit_upper_threshold_percent
+                        .is_some_and(|release| upper.is_none_or(|entry| release >= entry))
             }
             CpuUsageComparison::Else => false,
         };

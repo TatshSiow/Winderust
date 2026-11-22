@@ -611,6 +611,8 @@ by_cpu_load:
   new_rule: "新增 CPU 負載偵測規則"
   threshold: "門檻"
   upper_threshold: "上限門檻"
+  invalid_threshold: "請輸入 0% 到 100% 之間的整數門檻。"
+  invalid_duration: "請輸入 0 到 %{maximum} 秒之間的整數持續時間。"
   invalid_range: "門檻不得超過上限門檻。"
   duration: "持續時間"
   stability: "切換穩定性"

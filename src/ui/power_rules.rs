@@ -909,6 +909,26 @@ impl Editor {
                     .spacing(design::space::MEDIUM),
                     r.else_enabled,
                 ));
+                let invalid_input = |field| {
+                    self.inputs
+                        .get(&(id, field))
+                        .is_some_and(|value| !valid_input(field, value))
+                };
+                let between = r.comparison == CpuUsageComparison::Between;
+                let lower = (!invalid_input(Field::Threshold)).then_some(r.threshold_percent);
+                let upper = (!(between && invalid_input(Field::Upper)))
+                    .then_some(r.upper_threshold_percent.unwrap_or(CpuLoadPercent::MAX));
+                let invalid_range = between && lower.zip(upper).is_some_and(|(lo, hi)| lo > hi);
+                let invalid_stability =
+                    [Field::ExitThreshold, Field::ExitUpper, Field::MinimumHold]
+                        .into_iter()
+                        .any(invalid_input)
+                        || r.validate_stability_for_entry(lower, upper).is_err();
+                let feedback = |message| {
+                    text(message)
+                        .wrapping(text::Wrapping::WordOrGlyph)
+                        .style(text::danger)
+                };
                 controls = controls
                     .push(widgets::heading(
                         t!("by_cpu_load.condition").to_string(),
@@ -916,24 +936,26 @@ impl Editor {
                     ))
                     .push(widgets::settings_card(condition))
                     .push(widgets::optional_content(
-                        text(t!("by_cpu_load.invalid_range").to_string()).style(text::danger),
-                        r.comparison == CpuUsageComparison::Between
-                            && r.threshold_percent
-                                > r.upper_threshold_percent.unwrap_or(CpuLoadPercent::MAX),
+                        feedback(t!("by_cpu_load.invalid_threshold").to_string()),
+                        lower.is_none() || upper.is_none(),
                     ))
                     .push(widgets::optional_content(
-                        text(t!("by_cpu_load.invalid_stability").to_string()).style(text::danger),
-                        r.validate_stability().is_err()
-                            || self.inputs.iter().any(|((key, field), value)| {
-                                *key == id
-                                    && matches!(
-                                        field,
-                                        Field::ExitThreshold
-                                            | Field::ExitUpper
-                                            | Field::MinimumHold
-                                    )
-                                    && !valid_input(*field, value)
-                            }),
+                        feedback(
+                            t!(
+                                "by_cpu_load.invalid_duration",
+                                maximum = ByCpuLoadRule::MAX_DURATION_SECONDS
+                            )
+                            .to_string(),
+                        ),
+                        invalid_input(Field::Duration),
+                    ))
+                    .push(widgets::optional_content(
+                        feedback(t!("by_cpu_load.invalid_range").to_string()),
+                        invalid_range,
+                    ))
+                    .push(widgets::optional_content(
+                        feedback(t!("by_cpu_load.invalid_stability").to_string()),
+                        invalid_stability,
                     ))
                     .push(widgets::heading(
                         t!("common.power_plan_selection").to_string(),
