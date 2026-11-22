@@ -1940,11 +1940,22 @@ impl RuntimeCore {
                 (Some(DecisionState::ByActivityIdle), ActivityState::Active)
                     | (Some(DecisionState::ByActivityActive), ActivityState::Idle)
             );
+            let schedule_conflicts_with_choice = status.decision_state
+                == Some(DecisionState::ByTime)
+                && !current_by_time_decision(&settings.by_time, wall_time).is_some_and(
+                    |decision| {
+                        status.rule_index == Some(decision.rule_index)
+                            && status.target_guid.as_deref().is_some_and(|target| {
+                                target.eq_ignore_ascii_case(&decision.power_plan_guid)
+                            })
+                    },
+                );
             if self
                 .power_plan_rule_context
                 .as_ref()
                 .is_some_and(|context| {
                     activity_conflicts_with_choice
+                        || schedule_conflicts_with_choice
                         || (!Arc::ptr_eq(&context.settings, configured_settings)
                             && !ordinary_power_plan_choice_matches(
                                 &status,

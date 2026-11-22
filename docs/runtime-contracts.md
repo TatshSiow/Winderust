@@ -360,6 +360,8 @@ Read the relevant section before changing feature policy, ownership, restoration
   Invalid clock values fail settings load or import; raw incomplete edits stay in the UI editor.
   Repeated local clock boundaries retain both occurrences. A maximum 60-second
   scheduled recheck also covers local offset changes between rule endpoints.
+  If an active-plan read fails, Status retains the earlier By Time selection
+  only while the sampled time and saved profile still select that rule and plan.
 - By CPU Load thresholds use bounded percentages from 0% to 100%. Between ranges
   include both bounds and require the threshold to be no greater than the upper
   threshold. Invalid values fail load, import, and save; incomplete or reversed
