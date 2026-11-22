@@ -34,9 +34,7 @@ pub struct GpuPrioritySnapshot {
     pub scanned_processes: usize,
     pub adjusted_processes: usize,
     pub skipped_processes: usize,
-    pub pending_processes: usize,
     pub denied_processes: usize,
-    pub suppressed_processes: usize,
     pub failed_processes: usize,
     pub auto_excluded_processes: Vec<String>,
     pub(crate) observation_paused: bool,
@@ -220,7 +218,6 @@ impl GpuPriorityManager {
             .collect::<BTreeSet<ProcessTargetKey>>();
 
         let mut skipped_processes = 0;
-        let mut suppressed_processes = 0;
         let mut auto_excluded_processes = BTreeSet::new();
         let mut claims = Vec::new();
         for (process_id, (process_name, executable_path, priority, preservation, creation_time)) in
@@ -234,7 +231,6 @@ impl GpuPriorityManager {
                 &mut auto_excluded_processes,
             ) {
                 skipped_processes += 1;
-                suppressed_processes += 1;
                 continue;
             }
             claims.push((
@@ -259,7 +255,6 @@ impl GpuPriorityManager {
             action_log,
             "process is excluded or no longer matches GPU priority defaults",
         );
-        let mut pending_processes = 0;
         let mut denied_processes = 0;
         let mut applied_log_count = 0;
         let mut pending_context_log_count = 0;
@@ -302,7 +297,6 @@ impl GpuPriorityManager {
                 }
                 Err(ProcessControlError::Unavailable(_)) => {
                     skipped_processes += 1;
-                    pending_processes += 1;
                     if self.record_process_pending_context(&executable_path) {
                         pending_context_log_count += 1;
                     }
@@ -335,9 +329,7 @@ impl GpuPriorityManager {
             scanned_processes,
             adjusted_processes: controller.policy_managed_process_count(),
             skipped_processes,
-            pending_processes,
             denied_processes,
-            suppressed_processes,
             failed_processes: failures.count,
             auto_excluded_processes: auto_excluded_processes.into_iter().collect(),
             observation_paused: false,
