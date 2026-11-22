@@ -1,8 +1,8 @@
 use super::design;
-use crate::power::PowerPlan;
+use crate::power::{PowerPlan, ProcessorBoostMode};
 use iced::widget::{row, text};
 use iced::{Element, Fill};
-use std::rc::Rc;
+use std::{borrow::Cow, rc::Rc};
 
 pub(super) fn tooltip<'a, M: 'a>(
     content: impl Into<Element<'a, M>>,
@@ -1603,6 +1603,21 @@ impl<T> std::fmt::Display for Choice<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.1)
     }
+}
+
+pub(super) fn processor_boost_mode_label(mode: ProcessorBoostMode) -> Cow<'static, str> {
+    rust_i18n::t!(match mode {
+        ProcessorBoostMode::Disabled => "processor_power.boost_disabled",
+        ProcessorBoostMode::Enabled => "processor_power.boost_enabled",
+        ProcessorBoostMode::Aggressive => "processor_power.boost_aggressive",
+        ProcessorBoostMode::EfficientEnabled => "processor_power.boost_efficient_enabled",
+        ProcessorBoostMode::EfficientAggressive => "processor_power.boost_efficient_aggressive",
+        ProcessorBoostMode::AggressiveAtGuaranteed =>
+            "processor_power.boost_aggressive_at_guaranteed",
+        ProcessorBoostMode::EfficientAggressiveAtGuaranteed => {
+            "processor_power.boost_efficient_aggressive_at_guaranteed"
+        }
+    })
 }
 
 pub(super) fn power_plan_label(plan: &PowerPlan) -> String {

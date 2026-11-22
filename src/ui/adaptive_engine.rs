@@ -4,7 +4,7 @@ use super::priority_control::{
     process_io_priority_setting_label, process_memory_priority_setting_label,
     process_priority_setting_label, process_thread_priority_setting_label,
 };
-use super::widgets::{action_button, button, checkbox, icon_button, pick_list, text_input};
+use super::widgets::{self, action_button, button, checkbox, icon_button, pick_list, text_input};
 use crate::application::SettingsEditor;
 use crate::config::*;
 use crate::power::{ProcessorBoostMode, ProcessorPowerValues};
@@ -881,6 +881,7 @@ impl Editor {
                 ));
             }
             TuningTab::ProcessorPower => {
+                let boost_label = |mode| widgets::processor_boost_mode_label(mode).into_owned();
                 body = body.push(super::widgets::toggle_card(
                     "adaptive_engine.processor_power_policy",
                     s.adaptive_engine.processor_power_policy_enabled,
@@ -2207,25 +2208,6 @@ fn allocation_label(v: CpuAllocationMethod) -> String {
         CpuAllocationMethod::ProcessorAffinityHard => "nav.processor_affinity_hard",
     })
     .to_string()
-}
-fn boost_label(boost_mode: ProcessorBoostMode) -> String {
-    match boost_mode {
-        ProcessorBoostMode::Disabled => t!("processor_power.boost_disabled").to_string(),
-        ProcessorBoostMode::Enabled => t!("processor_power.boost_enabled").to_string(),
-        ProcessorBoostMode::Aggressive => t!("processor_power.boost_aggressive").to_string(),
-        ProcessorBoostMode::EfficientEnabled => {
-            t!("processor_power.boost_efficient_enabled").to_string()
-        }
-        ProcessorBoostMode::EfficientAggressive => {
-            t!("processor_power.boost_efficient_aggressive").to_string()
-        }
-        ProcessorBoostMode::AggressiveAtGuaranteed => {
-            t!("processor_power.boost_aggressive_at_guaranteed").to_string()
-        }
-        ProcessorBoostMode::EfficientAggressiveAtGuaranteed => {
-            t!("processor_power.boost_efficient_aggressive_at_guaranteed").to_string()
-        }
-    }
 }
 
 #[cfg(test)]

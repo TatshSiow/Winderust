@@ -1,6 +1,7 @@
 use super::design;
 use super::widgets::{
-    action_button, button, icon_button, pick_list, power_plan_label, slider, text_input,
+    action_button, button, icon_button, pick_list, power_plan_label, processor_boost_mode_label,
+    slider, text_input,
 };
 use crate::application::{
     AdvancedPowerPlanTuningApplyError, AdvancedPowerPlanTuningError,
@@ -1585,18 +1586,7 @@ impl std::fmt::Display for PresetChoice {
 struct BoostChoice(ProcessorBoostMode);
 impl std::fmt::Display for BoostChoice {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&t!(match self.0 {
-            ProcessorBoostMode::Disabled => "processor_power.boost_disabled",
-            ProcessorBoostMode::Enabled => "processor_power.boost_enabled",
-            ProcessorBoostMode::Aggressive => "processor_power.boost_aggressive",
-            ProcessorBoostMode::EfficientEnabled => "processor_power.boost_efficient_enabled",
-            ProcessorBoostMode::EfficientAggressive => "processor_power.boost_efficient_aggressive",
-            ProcessorBoostMode::AggressiveAtGuaranteed =>
-                "processor_power.boost_aggressive_at_guaranteed",
-            ProcessorBoostMode::EfficientAggressiveAtGuaranteed => {
-                "processor_power.boost_efficient_aggressive_at_guaranteed"
-            }
-        }))
+        f.write_str(&processor_boost_mode_label(self.0))
     }
 }
 fn preset_label(p: ProcessorPowerPreset) -> String {
