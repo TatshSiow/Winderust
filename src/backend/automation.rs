@@ -570,7 +570,9 @@ impl RuntimeHandle {
                     != settings.value.keep_running
                     || state.settings.general.enabled != settings.value.general.enabled;
                 state.pending_events.keep_running_settings_changed |= keep_running_changed;
-                instance_limits::record_settings_changes(&mut state, &settings.value);
+                if instance_limits::record_settings_changes(&mut state, &settings.value) {
+                    bump_status_generation(&self.shared, &mut state);
+                }
                 instance_balancing::record_settings_changes(&mut state, &settings.value);
                 state.settings = Arc::clone(&settings.value);
                 state.runtime_revision = settings.runtime_revision;
@@ -1775,11 +1777,11 @@ fn run_background_automation(
                 &configured_settings,
                 windows_event_watcher_active,
             );
-            update_feature_status(
+            instance_limits::publish_status(
                 &shared,
+                &configured_settings,
+                windows_event_watcher_active,
                 status,
-                |status| &status.instance_limits,
-                |status| &mut status.instance_limits,
             );
             scheduler.schedule_after(
                 RefreshDomain::InstanceLimits,

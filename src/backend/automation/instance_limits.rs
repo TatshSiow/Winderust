@@ -2,6 +2,7 @@ use super::*;
 use crate::{
     action_log::{ActionLogFeature, ActionLogResult},
     control::instance_limits::{self, CountObservation},
+    features::advanced_controls::instance_limits::InstanceLimitsRuleSnapshot,
 };
 use rust_i18n::t;
 
@@ -11,10 +12,13 @@ pub(super) struct PendingResets {
     pub(super) paths: Vec<String>,
 }
 
-pub(super) fn record_settings_changes(state: &mut AutomationWorkerState, settings: &Settings) {
+pub(super) fn record_settings_changes(
+    state: &mut AutomationWorkerState,
+    settings: &Settings,
+) -> bool {
     let previous = &state.settings;
-    state.pending_instance_limits_resets.all |= previous.general.enabled
-        != settings.general.enabled
+    let pending = &mut state.pending_instance_limits_resets;
+    pending.all |= previous.general.enabled != settings.general.enabled
         || previous.instance_limits.enabled != settings.instance_limits.enabled;
     for (rules, other) in [
         (
@@ -27,18 +31,50 @@ pub(super) fn record_settings_changes(state: &mut AutomationWorkerState, setting
         ),
     ] {
         for rule in rules.iter().filter(|rule| !other.contains(rule)) {
-            if !state
-                .pending_instance_limits_resets
-                .paths
-                .contains(&rule.executable_path)
-            {
-                state
-                    .pending_instance_limits_resets
-                    .paths
-                    .push(rule.executable_path.clone());
+            if !pending.paths.contains(&rule.executable_path) {
+                pending.paths.push(rule.executable_path.clone());
             }
         }
     }
+
+    let affected = |rule: &InstanceLimitsRuleSnapshot| {
+        pending.all || pending.paths.contains(&rule.executable_path)
+    };
+    if !state
+        .status
+        .feature_status
+        .instance_limits
+        .rules
+        .iter()
+        .any(affected)
+    {
+        return false;
+    }
+    Arc::make_mut(&mut state.status.feature_status)
+        .instance_limits
+        .rules
+        .retain(|rule| !affected(rule));
+    true
+}
+
+pub(super) fn publish_status(
+    shared: &SharedAutomationState,
+    settings: &Arc<Settings>,
+    watcher_active: bool,
+    status: InstanceLimitsSnapshot,
+) {
+    let mut state = lock_unpoisoned(&shared.state);
+    let current = if status.enabled {
+        sample_is_current(&state, settings, watcher_active)
+    } else {
+        // Disabling clears observations before snapshotting. The watcher can stop independently.
+        !state.stop_requested && Arc::ptr_eq(&state.settings, settings)
+    };
+    if !current || state.status.feature_status.instance_limits == status {
+        return;
+    }
+    Arc::make_mut(&mut state.status.feature_status).instance_limits = status;
+    bump_status_generation(shared, &mut state);
 }
 
 impl RuntimeCore {
