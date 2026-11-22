@@ -334,7 +334,7 @@ impl Editor {
                 .or_else(|| tuning_plans(plans).next());
             self.select_plan(plan);
         } else if self.values.is_none() {
-            self.read_selected_plan(selected);
+            self.read_selected_plan(selected, false);
         }
     }
 
@@ -347,45 +347,51 @@ impl Editor {
         self.target = plan.map(|plan| plan.guid.clone());
         self.personality = None;
         self.selected_presets = [None, None];
-        self.read_selected_plan(plan);
+        self.read_selected_plan(plan, false);
     }
 
     pub(super) fn discard_values(&mut self, plans: &[PowerPlan]) {
         self.unverified_apply = None;
-        self.refresh(plans);
+        self.dirty = false;
+        self.set_readback(None);
+        self.ensure_plan(plans);
     }
 
     pub(super) fn refresh(&mut self, plans: &[PowerPlan]) {
         let selected = self.selected_plan(plans);
-        if self.unverified_apply.is_some() && selected.is_none() {
-            self.set_failure(t!("common.selected_plan_unavailable").into_owned());
-            return;
-        }
-        self.dirty = false;
-        self.invalid_percentages = Default::default();
         if selected.is_some() {
-            self.read_selected_plan(selected);
+            let has_pending_values = self.dirty
+                || self.has_invalid_inputs()
+                || self.review.is_some()
+                || self.unverified_apply.is_some();
+            self.read_selected_plan(selected, has_pending_values);
+        } else if self.unverified_apply.is_some() {
+            self.set_failure(t!("common.selected_plan_unavailable").into_owned());
         } else {
+            self.dirty = false;
+            self.invalid_percentages = Default::default();
             self.ensure_plan(plans);
         }
     }
 
-    fn read_selected_plan(&mut self, plan: Option<&PowerPlan>) {
-        self.cancel_apply_review();
+    fn read_selected_plan(&mut self, plan: Option<&PowerPlan>, retain_draft_on_error: bool) {
         let Some(plan) = plan else {
+            self.cancel_apply_review();
             self.set_readback(None);
             self.status = t!("processor_power.no_active_plan").to_string().into();
             return;
         };
         let guid = &plan.guid;
-        self.personality = match self.service.read_personality(guid) {
-            Ok(v) => Some(v),
-            Err(error) => {
-                self.status = error.to_string().into();
-                None
-            }
-        };
-        match self.service.read_values(guid) {
+        let personality = self.service.read_personality(guid).ok();
+        let readback = self.service.read_values(guid);
+        if let (true, Err(error)) = (retain_draft_on_error, &readback) {
+            self.set_failure(error.to_string());
+            return;
+        }
+
+        self.cancel_apply_review();
+        self.personality = personality;
+        match readback {
             Ok(v) => {
                 self.status = Feedback::Loaded(plan.name.clone());
                 self.set_readback(Some(v));
@@ -2242,6 +2248,64 @@ mod tests {
             editor.preset.as_ref().unwrap().values.scheduling_policy,
             None
         );
+    }
+
+    #[test]
+    fn failed_refresh_keeps_same_plan_edits_until_discarded() {
+        let plan = PowerPlan {
+            guid: "invalid-refresh-guid".into(),
+            name: "Selected Plan".into(),
+            active: true,
+            managed_adaptive: false,
+        };
+        let plans = [plan.clone()];
+        let current: AdvancedPowerPlanTuningReadback = AdvancedPowerPlanTuningSourceValues::same(
+            AdvancedPowerPlanTuningValues::for_preset(ProcessorPowerPreset::Balanced),
+        )
+        .into();
+        let mut editor = Editor {
+            target: Some(plan.guid.clone()),
+            ..Default::default()
+        };
+        editor.set_readback(Some(current));
+        let mut settings = test_settings();
+        editor.update(
+            &mut settings,
+            &plans,
+            Message::Value(Source::Ac, Field::Minimum, 33),
+        );
+        editor.update(
+            &mut settings,
+            &plans,
+            Message::ValueText(Source::Battery, Field::Maximum, String::new()),
+        );
+        let draft = editor.values.unwrap();
+        editor.review = Some(ApplyReview {
+            guid: plan.guid,
+            name: plan.name,
+            current,
+            requested: draft,
+            origin: ApplyOrigin::Page,
+        });
+
+        editor.update(&mut settings, &plans, Message::Refresh);
+
+        assert_eq!(editor.readback, Some(current));
+        assert_eq!(editor.values, Some(draft));
+        assert!(editor.dirty);
+        assert_eq!(
+            editor.invalid_percentages[Source::Battery as usize].0[Field::Maximum as usize]
+                .as_deref(),
+            Some("")
+        );
+        assert_eq!(editor.review_origin(), Some(ApplyOrigin::Page));
+        assert!(editor
+            .status()
+            .contains("Failed to read processor power values"));
+
+        editor.discard_values(&plans);
+        assert!(editor.readback.is_none() && editor.values.is_none());
+        assert!(!editor.dirty && !editor.has_invalid_inputs() && editor.review.is_none());
     }
 
     #[test]
