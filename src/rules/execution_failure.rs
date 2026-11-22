@@ -1,5 +1,7 @@
 use std::{
+    borrow::Borrow,
     collections::{BTreeMap, BTreeSet},
+    ffi::OsStr,
     sync::atomic::{AtomicU8, Ordering},
 };
 
@@ -61,20 +63,23 @@ impl ExecutionFailureState {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct ExecutionFailureTracker {
-    states: BTreeMap<String, ExecutionFailureState>,
+pub struct ExecutionFailureTracker<K = String> {
+    states: BTreeMap<K, ExecutionFailureState>,
 }
 
-impl ExecutionFailureTracker {
+impl<K: Ord> ExecutionFailureTracker<K> {
     pub fn clear(&mut self) {
         self.states.clear();
     }
 
-    pub fn retain_keys(&mut self, active_keys: &BTreeSet<String>) {
+    pub fn retain_keys(&mut self, active_keys: &BTreeSet<K>) {
         self.states.retain(|key, _| active_keys.contains(key));
     }
 
-    pub fn key_suppression(&mut self, key: &str) -> ExecutionSuppression {
+    pub fn key_suppression<Q: Ord + ?Sized>(&mut self, key: &Q) -> ExecutionSuppression
+    where
+        K: Borrow<Q>,
+    {
         let Some(state) = self.states.get_mut(key) else {
             return ExecutionSuppression::default();
         };
@@ -85,16 +90,60 @@ impl ExecutionFailureTracker {
         ExecutionSuppression::active(state.mark_suppression_logged())
     }
 
-    pub fn has_key_failure(&self, key: &str) -> bool {
+    pub fn has_key_failure<Q: Ord + ?Sized>(&self, key: &Q) -> bool
+    where
+        K: Borrow<Q>,
+    {
         self.states.contains_key(key)
     }
 
-    pub fn is_key_suppressed(&self, key: &str) -> bool {
+    pub fn is_key_suppressed<Q: Ord + ?Sized>(&self, key: &Q) -> bool
+    where
+        K: Borrow<Q>,
+    {
         self.states
             .get(key)
             .is_some_and(ExecutionFailureState::is_suppressed)
     }
 
+    pub fn record_key_failure<Q>(&mut self, key: &Q) -> bool
+    where
+        Q: Ord + AsRef<OsStr> + ToOwned<Owned = K> + ?Sized,
+        K: Borrow<Q>,
+    {
+        self.update_key_failure(key, ExecutionFailureState::record_failure)
+    }
+
+    pub fn suppress_key_failure<Q>(&mut self, key: &Q) -> bool
+    where
+        Q: Ord + AsRef<OsStr> + ToOwned<Owned = K> + ?Sized,
+        K: Borrow<Q>,
+    {
+        self.update_key_failure(key, ExecutionFailureState::suppress_permanently)
+    }
+
+    fn update_key_failure<Q>(&mut self, key: &Q, update: fn(&mut ExecutionFailureState)) -> bool
+    where
+        Q: Ord + AsRef<OsStr> + ToOwned<Owned = K> + ?Sized,
+        K: Borrow<Q>,
+    {
+        if key.as_ref().is_empty() {
+            return false;
+        }
+        let is_new = !self.states.contains_key(key);
+        update(self.states.entry(key.to_owned()).or_default());
+        is_new
+    }
+
+    pub fn clear_key_failure<Q: Ord + ?Sized>(&mut self, key: &Q)
+    where
+        K: Borrow<Q>,
+    {
+        self.states.remove(key);
+    }
+}
+
+impl ExecutionFailureTracker {
     pub fn process_suppression(&mut self, process_name: &str) -> ExecutionSuppression {
         let Some(key) = process_failure_key(process_name) else {
             return ExecutionSuppression::default();
@@ -102,36 +151,12 @@ impl ExecutionFailureTracker {
         self.key_suppression(&key)
     }
 
-    pub fn record_key_failure(&mut self, key: &str) -> bool {
-        if key.is_empty() {
-            return false;
-        }
-        let is_new = !self.states.contains_key(key);
-        self.states
-            .entry(key.to_owned())
-            .or_default()
-            .record_failure();
-        is_new
-    }
-
     pub fn record_process_failure(&mut self, process_name: &str) -> bool {
-        let Some(key) = process_failure_key(process_name) else {
-            return false;
-        };
-        self.record_key_failure(&key)
+        process_failure_key(process_name).is_some_and(|key| self.record_key_failure(&key))
     }
 
     pub fn suppress_process_failure(&mut self, process_name: &str) -> bool {
-        let Some(key) = process_failure_key(process_name) else {
-            return false;
-        };
-        let is_new = !self.states.contains_key(&key);
-        self.states.entry(key).or_default().suppress_permanently();
-        is_new
-    }
-
-    pub fn clear_key_failure(&mut self, key: &str) {
-        self.states.remove(key);
+        process_failure_key(process_name).is_some_and(|key| self.suppress_key_failure(&key))
     }
 
     pub fn clear_process_failure(&mut self, process_name: &str) {

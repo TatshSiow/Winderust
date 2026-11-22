@@ -1,5 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
+    ffi::{OsStr, OsString},
     ops::Bound::{Excluded, Unbounded},
     path::PathBuf,
     time::{Duration, Instant},
@@ -19,8 +20,9 @@ use crate::{
     },
     cpu::{process_cpu_usage_percent, ProcessCpuSample},
     foreground::{
-        contains_process_name, process_executable_path, process_failure_key, same_executable_path,
-        should_ignore_foreground_process, EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS,
+        contains_process_name, executable_grouping_key, process_executable_path,
+        same_executable_path, should_ignore_foreground_process,
+        EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS,
     },
     rules::{execution_failure_suppression_threshold, ExecutionFailureTracker},
     runtime::observations::CycleObservations,
@@ -65,7 +67,7 @@ pub enum MemoryTrimStatus {
 #[derive(Default)]
 pub struct MemoryTrimManager {
     tracked: BTreeMap<u32, TrackedProcess>,
-    failure_suppression: ExecutionFailureTracker,
+    failure_suppression: ExecutionFailureTracker<OsString>,
     last_automatic_trim_pid: u32,
 }
 
@@ -304,7 +306,9 @@ impl MemoryTrimManager {
                 &executable_path,
                 foreground_process_id,
                 foreground_executable_path.as_deref(),
-            ) || settings.exclusion_enabled_for(executable_path.to_string_lossy().as_ref())
+            ) || executable_path
+                .to_str()
+                .is_some_and(|path| settings.exclusion_enabled_for(path))
             {
                 continue;
             }
@@ -330,11 +334,11 @@ impl MemoryTrimManager {
             }
             true
         });
-        let active_target_names = target_processes
+        let active_target_paths = target_processes
             .values()
-            .map(|target| process_failure_key(target.executable_path.to_string_lossy().as_ref()))
+            .map(|target| executable_grouping_key(&target.executable_path))
             .collect::<BTreeSet<_>>();
-        self.failure_suppression.retain_keys(&active_target_names);
+        self.failure_suppression.retain_keys(&active_target_paths);
 
         let mut candidate_processes = 0;
         let mut has_deferred_candidates = false;
@@ -358,11 +362,10 @@ impl MemoryTrimManager {
         {
             let process_id = target.id;
             let process_name = target.name.as_str();
-            let executable_path = target.executable_path.to_string_lossy();
+            let path_key = executable_grouping_key(&target.executable_path);
             if self.is_process_suppressed(
-                process_id,
-                process_name,
-                &executable_path,
+                target,
+                &path_key,
                 action_log,
                 &mut auto_excluded_processes,
             ) {
@@ -383,14 +386,14 @@ impl MemoryTrimManager {
                 Ok(ProcessUpdate::Deferred) => {
                     candidate_processes += 1;
                     has_deferred_candidates = true;
-                    unresolved_trim_paths.insert(process_failure_key(&executable_path));
+                    unresolved_trim_paths.insert(path_key);
                 }
                 Ok(ProcessUpdate::Trimmed {
                     working_set_reduction_bytes,
                 }) => {
                     candidate_processes += 1;
                     trimmed_processes += 1;
-                    successful_trim_paths.insert(process_failure_key(&executable_path));
+                    successful_trim_paths.insert(path_key);
                     action_log.record(
                         ActionLogFeature::MemoryTrim,
                         Some(process_id),
@@ -405,9 +408,8 @@ impl MemoryTrimManager {
                 }
                 Err(ProcessControlError::AccessDenied(_)) => {
                     skipped_processes += 1;
-                    unresolved_trim_paths.insert(process_failure_key(&executable_path));
-                    self.failure_suppression
-                        .suppress_process_failure(&executable_path);
+                    self.failure_suppression.suppress_key_failure(&path_key);
+                    unresolved_trim_paths.insert(path_key);
                     action_log.record(
                         ActionLogFeature::MemoryTrim,
                         Some(process_id),
@@ -417,9 +419,8 @@ impl MemoryTrimManager {
                     );
                 }
                 Err(err) => {
-                    let key = process_failure_key(&executable_path);
-                    self.failure_suppression.record_key_failure(&key);
-                    unresolved_trim_paths.insert(key);
+                    self.failure_suppression.record_key_failure(&path_key);
+                    unresolved_trim_paths.insert(path_key);
                     failures.record(process_id, process_name, err, action_log);
                 }
             }
@@ -567,25 +568,24 @@ impl MemoryTrimManager {
 
     fn is_process_suppressed(
         &mut self,
-        process_id: u32,
-        process_name: &str,
-        executable_path: &str,
+        target: &ProcessControlTarget,
+        path_key: &OsStr,
         action_log: &mut ActionLog,
         auto_excluded_processes: &mut BTreeSet<String>,
     ) -> bool {
-        let suppression = self
-            .failure_suppression
-            .process_suppression(executable_path);
+        let suppression = self.failure_suppression.key_suppression(path_key);
         if !suppression.suppressed {
             return false;
         }
 
         if suppression.newly_suppressed {
-            auto_excluded_processes.insert(executable_path.to_owned());
+            if let Some(path) = target.executable_path.to_str() {
+                auto_excluded_processes.insert(path.to_owned());
+            }
             action_log.record(
                 ActionLogFeature::MemoryTrim,
-                Some(process_id),
-                process_name,
+                Some(target.id),
+                &target.name,
                 ActionLogResult::Skipped,
                 format!(
                     "Stopped retrying Memory Trim after {} failed attempts.",

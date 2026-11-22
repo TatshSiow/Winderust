@@ -237,7 +237,7 @@ fn sibling_success_and_pressure_gaps_preserve_trim_failures() {
     assert_eq!(suppressed.skipped_processes, 2);
     assert_eq!(suppressed.auto_excluded_processes.len(), 1);
     assert_eq!(
-        process_failure_key(&suppressed.auto_excluded_processes[0]),
+        executable_grouping_key(Path::new(&suppressed.auto_excluded_processes[0])),
         r"C:\Apps\worker.exe"
     );
     assert!(run(&mut manager, 4 + limit, 90)
@@ -359,48 +359,124 @@ fn working_set_reduction_uses_decimal_byte_units() {
 }
 
 #[test]
-fn repeated_process_failures_suppress_memory_trim_retries() {
+fn trim_failure_suppression_preserves_native_executable_paths() {
+    use std::{ffi::OsString, os::windows::ffi::OsStringExt};
+
+    let mut native = r"C:\Apps\directory-".encode_utf16().collect::<Vec<_>>();
+    native.push(0xd800);
+    native.extend(r"\worker.exe".encode_utf16());
+    let native = PathBuf::from(OsString::from_wide(&native));
+    let replacement = r"C:\Apps\directory-�\worker.exe";
+    let normal = r"C:\Apps\worker.exe";
+    assert!(native.to_str().is_none());
+    assert_eq!(native.to_string_lossy(), replacement);
+    let mut processes = batch_processes(5);
+    for (process, path) in processes.iter_mut().zip([
+        native.clone(),
+        replacement.into(),
+        native,
+        normal.into(),
+        "C:/Apps/worker.exe".into(),
+    ]) {
+        process.name = "worker.exe".into();
+        process.image_path = Some(path);
+    }
+
+    let settings = MemoryTrimSettings {
+        enabled: true,
+        process_working_set_threshold_mb: 1,
+        ..Default::default()
+    };
+    let run = |manager: &mut MemoryTrimManager,
+               settings: &MemoryTrimSettings,
+               processes: &[ProcessInfo],
+               fail_before_pid| {
+        let mut log = ActionLog::new(16);
+        let snapshot = manager.update_with_mode(
+            &mut MemoryTrimController::with_platform(BatchTestPlatform::new(
+                Instant::now(),
+                fail_before_pid,
+            )),
+            settings,
+            true,
+            false,
+            Some(u32::MAX),
+            MemoryTrimMode::Manual,
+            &mut CycleObservations::with_processes(processes.to_vec()),
+            &mut log,
+            || Ok(90),
+        );
+        (snapshot, log)
+    };
+
     let mut manager = MemoryTrimManager::default();
-    let mut log = ActionLog::new(8);
-    let executable_path = r"C:\Apps\app.exe";
+    let threshold = execution_failure_suppression_threshold();
+    for _ in 0..threshold {
+        let (failed, _) = run(
+            &mut manager,
+            &settings,
+            &processes[..1],
+            processes[0].id + 1,
+        );
+        assert_eq!(failed.failed_processes, 1);
+    }
+    let (mixed, log) = run(&mut manager, &settings, &processes[..3], 0);
+    let (_, repeated_log) = run(&mut manager, &settings, &processes[..3], 0);
+    let outcomes = |log: &ActionLog| {
+        log.entries()
+            .iter()
+            .map(|entry| (entry.process_id, entry.result))
+            .collect::<Vec<_>>()
+    };
 
-    manager
-        .failure_suppression
-        .record_process_failure(executable_path);
-    manager
-        .failure_suppression
-        .record_process_failure(r"C:/Apps/app.exe");
-    assert!(!manager.is_process_suppressed(
-        42,
-        "app.exe",
-        executable_path,
-        &mut log,
-        &mut BTreeSet::new()
-    ));
+    let configured = MemoryTrimSettings {
+        exclusions: vec![crate::config::ProcessExclusionRule {
+            executable_path: replacement.to_owned(),
+            ..Default::default()
+        }],
+        ..settings
+    };
+    let (configured, configured_log) = run(
+        &mut MemoryTrimManager::default(),
+        &configured,
+        &processes[..2],
+        0,
+    );
 
-    manager
-        .failure_suppression
-        .record_process_failure(executable_path);
-    assert!(manager.is_process_suppressed(
-        42,
-        "app.exe",
-        executable_path,
-        &mut log,
-        &mut BTreeSet::new()
-    ));
-    assert!(manager.is_process_suppressed(
-        43,
-        "app.exe",
-        r"C:/Apps/app.exe",
-        &mut log,
-        &mut BTreeSet::new()
-    ));
-
-    let entries = log.entries();
-    assert_eq!(entries.len(), 1);
-    assert_eq!(entries[0].feature, ActionLogFeature::MemoryTrim);
-    assert_eq!(entries[0].result, ActionLogResult::Skipped);
-    assert!(entries[0].reason.contains("Stopped retrying Memory Trim"));
+    for _ in 0..threshold {
+        let (failed, _) = run(
+            &mut manager,
+            &settings,
+            &processes[3..4],
+            processes[3].id + 1,
+        );
+        assert_eq!(failed.failed_processes, 1);
+    }
+    let (valid, valid_log) = run(&mut manager, &settings, &processes[3..], 0);
+    assert_eq!((mixed.trimmed_processes, mixed.skipped_processes), (1, 2));
+    assert!(mixed.auto_excluded_processes.is_empty());
+    assert_eq!(
+        outcomes(&log),
+        [
+            (Some(processes[0].id), ActionLogResult::Skipped),
+            (Some(processes[1].id), ActionLogResult::Applied),
+        ]
+    );
+    assert_eq!(
+        outcomes(&repeated_log),
+        [(Some(processes[1].id), ActionLogResult::Applied)]
+    );
+    assert_eq!(configured.trimmed_processes, 1);
+    assert_eq!(
+        outcomes(&configured_log),
+        [(Some(processes[0].id), ActionLogResult::Applied)]
+    );
+    assert_eq!(valid.skipped_processes, 2);
+    assert_eq!(valid.auto_excluded_processes, [normal]);
+    assert_eq!(
+        outcomes(&valid_log),
+        [(Some(processes[3].id), ActionLogResult::Skipped)]
+    );
 }
 
 #[test]
@@ -410,7 +486,7 @@ fn successful_trim_clears_failures_after_deferred_sibling_is_attempted() {
     let mut processes = batch_processes(limit + 1);
     processes[0].image_path = Some(r"C:\Apps\worker.exe".into());
     processes[limit].image_path = Some("C:/Apps/worker.exe".into());
-    let key = r"C:\Apps\worker.exe";
+    let key = OsStr::new(r"C:\Apps\worker.exe");
     let start = Instant::now();
 
     let failed = run_batch_pass(
