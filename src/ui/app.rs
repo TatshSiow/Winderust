@@ -2348,7 +2348,10 @@ impl WinderustApp {
                                         self.error_message = warning;
                                     }
                                 }
-                                Err(error) => self.error_message = error.to_string(),
+                                Err(error) => {
+                                    self.error_message =
+                                        t!("settings.import_failed", error = error).into_owned();
+                                }
                             }
                         }
                         FileDialogMode::Save => {
