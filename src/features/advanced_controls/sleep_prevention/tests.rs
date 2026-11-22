@@ -85,6 +85,33 @@ fn matching_accepts_a_unicode_basename_candidate_with_the_exact_image_path() {
 }
 
 #[test]
+fn literal_filename_whitespace_keeps_sleep_requests_and_rearms_separate() {
+    let worker = r"C:\Apps\worker.exe";
+    let other = "C:\\Apps\\worker.exe\u{3000}";
+    let mut configured = Settings {
+        sleep_prevention: settings(),
+        ..Settings::default()
+    };
+    configured.sleep_prevention.rules[1].executable_path = format!(" {other}");
+    let apps = [process(7, worker), process(8, other)];
+    let mut manager = SleepPreventionManager::default();
+    manager.note_configuration(&configured, Some(true));
+    observe(&mut manager, &configured.sleep_prevention, &apps[..1]);
+    assert_eq!(manager.desired_mode(), SleepPreventionMode::System);
+    observe(&mut manager, &configured.sleep_prevention, &apps);
+    assert_eq!(manager.matches.apps.len(), 2);
+    manager.suppress_current();
+
+    configured.sleep_prevention.rules[0].enabled = false;
+    manager.note_configuration(&configured, Some(true));
+    configured.sleep_prevention.rules[0].enabled = true;
+    manager.note_configuration(&configured, Some(true));
+    observe(&mut manager, &configured.sleep_prevention, &apps);
+    assert_eq!(manager.desired_mode(), SleepPreventionMode::System);
+    assert!(manager.suppressed.contains_key(&(8, 8)));
+}
+
+#[test]
 fn matching_rejects_wrong_paths_protected_apps_and_disallowed_sessions() {
     let settings = settings();
     let mut worker = process(7, r"C:\Apps\worker.exe");

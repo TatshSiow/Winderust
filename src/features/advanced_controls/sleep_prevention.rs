@@ -89,7 +89,7 @@ impl SleepPreventionManager {
                 profile.general.enabled
                     && profile.sleep_prevention.enabled
                     && profile.sleep_prevention.rules.iter().any(|rule| {
-                        rule.enabled && Path::new(rule.executable_path.trim()).is_absolute()
+                        rule.enabled && Path::new(rule.executable_path.trim_start()).is_absolute()
                     })
             }) {
                 self.matches = Matches::default();
@@ -196,7 +196,7 @@ impl SleepPreventionManager {
             return;
         }
         for rule in previous.1.rules.iter().filter(|rule| rule.enabled) {
-            let path = Path::new(rule.executable_path.trim());
+            let path = Path::new(rule.executable_path.trim_start());
             if std::iter::once(current)
                 .chain(protected)
                 .any(|(enabled, settings)| {
@@ -205,7 +205,7 @@ impl SleepPreventionManager {
                         && settings.rules.iter().any(|rule| {
                             rule.enabled
                                 && same_executable_path(
-                                    Path::new(rule.executable_path.trim()),
+                                    Path::new(rule.executable_path.trim_start()),
                                     path,
                                 )
                         })
@@ -237,7 +237,7 @@ impl SleepPreventionManager {
         if !settings
             .rules
             .iter()
-            .any(|rule| rule.enabled && Path::new(rule.executable_path.trim()).is_absolute())
+            .any(|rule| rule.enabled && Path::new(rule.executable_path.trim_start()).is_absolute())
         {
             self.matches = Matches {
                 known: true,
@@ -436,7 +436,7 @@ impl SleepPreventionManager {
                     .iter()
                     .filter(|(_, app)| {
                         !self.rearmed_paths.iter().any(|path| {
-                            same_executable_path(Path::new(path.trim()), Path::new(&app.path))
+                            same_executable_path(Path::new(path.trim_start()), Path::new(&app.path))
                         })
                     })
                     .map(|(identity, app)| (*identity, app.path.clone())),
@@ -460,7 +460,7 @@ impl SleepPreventionManager {
             let mut rules = settings.rules.iter().filter(|rule| {
                 rule.enabled
                     && same_executable_path(
-                        Path::new(rule.executable_path.trim()),
+                        Path::new(rule.executable_path.trim_start()),
                         Path::new(&app.path),
                     )
             });
@@ -477,7 +477,7 @@ impl SleepPreventionManager {
                 rule.enabled
                     && self.matches.apps.values().any(|app| {
                         same_executable_path(
-                            Path::new(rule.executable_path.trim()),
+                            Path::new(rule.executable_path.trim_start()),
                             Path::new(&app.path),
                         )
                     })
@@ -594,7 +594,7 @@ fn capture_configuration(profiles: [&Settings; 2]) -> [(bool, SleepPreventionSet
 }
 
 fn matchable_target(executable: &str) -> Option<(&str, &str)> {
-    let executable = executable.trim();
+    let executable = executable.trim_start();
     let path = Path::new(executable);
     if !path.is_absolute() {
         return None;
