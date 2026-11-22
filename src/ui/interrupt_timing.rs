@@ -6,7 +6,7 @@ use crate::backend::interrupt_timing::{
 use iced::widget::{column, row, text, Column, Row, Text};
 use iced::{Element, Fill, Length, Subscription, Task};
 use rust_i18n::t;
-use std::{path::PathBuf, time::Duration};
+use std::{borrow::Cow, path::PathBuf, time::Duration};
 use windows_sys::Win32::Foundation::HWND;
 
 #[derive(Debug, Clone)]
@@ -290,11 +290,11 @@ fn report_view<'a>(
     if !report.modules.is_empty() {
         body = body.push(result_row(
             [
-                t!("interrupt_timing.driver").into_owned(),
-                t!("interrupt_timing.kind").into_owned(),
-                t!("interrupt_timing.count").into_owned(),
-                t!("interrupt_timing.longest").into_owned(),
-                t!("interrupt_timing.total").into_owned(),
+                t!("interrupt_timing.driver"),
+                t!("interrupt_timing.kind"),
+                t!("interrupt_timing.count"),
+                t!("interrupt_timing.longest"),
+                t!("interrupt_timing.total"),
             ],
             true,
         ));
@@ -308,12 +308,12 @@ fn report_view<'a>(
                 [
                     driver
                         .module
-                        .clone()
-                        .unwrap_or_else(|| t!("interrupt_timing.unknown_driver").into_owned()),
-                    t!(kind).into_owned(),
-                    driver.count.to_string(),
-                    format!("{:.3}", driver.max_inclusive_ms),
-                    format!("{:.3}", driver.total_inclusive_ms),
+                        .as_deref()
+                        .map_or_else(|| t!("interrupt_timing.unknown_driver"), Cow::Borrowed),
+                    t!(kind),
+                    driver.count.to_string().into(),
+                    format!("{:.3}", driver.max_inclusive_ms).into(),
+                    format!("{:.3}", driver.total_inclusive_ms).into(),
                 ],
                 false,
             ));
@@ -380,18 +380,18 @@ fn report_view<'a>(
         if per_cpu_expanded {
             body = body.push(per_cpu_row(
                 [
-                    t!("interrupt_timing.logical_cpu").into_owned(),
-                    t!("interrupt_timing.dpc_ms").into_owned(),
-                    t!("interrupt_timing.isr_ms").into_owned(),
+                    t!("interrupt_timing.logical_cpu"),
+                    t!("interrupt_timing.dpc_ms"),
+                    t!("interrupt_timing.isr_ms"),
                 ],
                 true,
             ));
             for row in rows {
                 body = body.push(per_cpu_row(
                     [
-                        row.cpu.to_string(),
-                        format!("{:.3}", row.dpc_ms),
-                        format!("{:.3}", row.isr_ms),
+                        row.cpu.to_string().into(),
+                        format!("{:.3}", row.dpc_ms).into(),
+                        format!("{:.3}", row.isr_ms).into(),
                     ],
                     false,
                 ));
@@ -410,7 +410,7 @@ fn report_view<'a>(
     body
 }
 
-fn result_row<'a>(cells: [String; 5], header: bool) -> Row<'a, Message> {
+fn result_row<'a>(cells: [Cow<'a, str>; 5], header: bool) -> Row<'a, Message> {
     let [driver, kind, count, longest, total] = cells;
     let cell = |label| result_cell(label, header);
     row![
@@ -424,7 +424,7 @@ fn result_row<'a>(cells: [String; 5], header: bool) -> Row<'a, Message> {
     .align_y(iced::Center)
 }
 
-fn per_cpu_row<'a>(cells: [String; 3], header: bool) -> Row<'a, Message> {
+fn per_cpu_row<'a>(cells: [Cow<'a, str>; 3], header: bool) -> Row<'a, Message> {
     let [cpu, dpc, isr] = cells;
     let cell = |label| result_cell(label, header);
     row![
@@ -436,7 +436,7 @@ fn per_cpu_row<'a>(cells: [String; 3], header: bool) -> Row<'a, Message> {
     .align_y(iced::Center)
 }
 
-fn result_cell<'a>(label: String, header: bool) -> Text<'a> {
+fn result_cell<'a>(label: Cow<'a, str>, header: bool) -> Text<'a> {
     let cell = text(label)
         .size(design::typography::CAPTION)
         .wrapping(text::Wrapping::WordOrGlyph);
