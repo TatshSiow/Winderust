@@ -22,6 +22,7 @@ pub struct TimerResolutionSnapshot {
 pub struct TimerResolutionManager {
     active_rule_process: Option<String>,
     last_release_error: Option<String>,
+    last_query_error: Option<String>,
 }
 
 impl TimerResolutionManager {
@@ -89,9 +90,12 @@ impl TimerResolutionManager {
         };
 
         let info = match controller.query() {
-            Ok(info) => info,
+            Ok(info) => {
+                self.last_query_error = None;
+                info
+            }
             Err(error) => {
-                record_query_failure(action_log, &error);
+                record_query_failure(&mut self.last_query_error, action_log, &error);
                 return TimerResolutionSnapshot {
                     enabled: true,
                     requested_100ns: controller.active_request_100ns(),
@@ -148,7 +152,7 @@ impl TimerResolutionManager {
             Err(error) => {
                 let failure = match error.stage {
                     TimerResolutionTransitionStage::ReleasePrevious
-                        if remember_release_error(&mut self.last_release_error, &error.message) =>
+                        if remember_error(&mut self.last_release_error, &error.message) =>
                     {
                         Some((
                             previous_target,
@@ -199,6 +203,7 @@ impl TimerResolutionManager {
         action_log: &mut ActionLog,
         reason_key: &str,
     ) -> TimerResolutionSnapshot {
+        self.last_query_error = None;
         self.release_inactive(controller, false, true, action_log, reason_key, false)
     }
 
@@ -233,7 +238,7 @@ impl TimerResolutionManager {
                     );
                 }
                 Err(message) => {
-                    if remember_release_error(&mut self.last_release_error, &message) {
+                    if remember_error(&mut self.last_release_error, &message) {
                         action_log.record(
                             ActionLogFeature::TimerResolution,
                             None,
@@ -252,9 +257,12 @@ impl TimerResolutionManager {
         // Releasing the exact owned request does not depend on current device capabilities.
         let info = if refresh_bounds {
             match controller.query() {
-                Ok(info) => Some(info),
+                Ok(info) => {
+                    self.last_query_error = None;
+                    Some(info)
+                }
                 Err(error) if enabled && last_error.is_none() => {
-                    record_query_failure(action_log, &error);
+                    record_query_failure(&mut self.last_query_error, action_log, &error);
                     last_error = Some(error);
                     None
                 }
@@ -273,7 +281,7 @@ impl TimerResolutionManager {
     }
 }
 
-fn remember_release_error(last_error: &mut Option<String>, error: &str) -> bool {
+fn remember_error(last_error: &mut Option<String>, error: &str) -> bool {
     if last_error.as_deref() == Some(error) {
         return false;
     }
@@ -281,7 +289,10 @@ fn remember_release_error(last_error: &mut Option<String>, error: &str) -> bool 
     true
 }
 
-fn record_query_failure(action_log: &mut ActionLog, error: &str) {
+fn record_query_failure(last_error: &mut Option<String>, action_log: &mut ActionLog, error: &str) {
+    if !remember_error(last_error, error) {
+        return;
+    }
     action_log.record(
         ActionLogFeature::TimerResolution,
         None,
