@@ -152,17 +152,17 @@ impl<P: Platform> Owner<P> {
     ) {
         let was_starting = self.policy.state() == KeepRunningState::Starting;
         self.policy.failed(now, ticket, failure.kind);
+        log.record(
+            ActionLogFeature::KeepRunning,
+            None,
+            &self.rule.executable_path,
+            ActionLogResult::Failed,
+            &failure.message,
+        );
         if was_starting && matches!(self.policy.state(), KeepRunningState::Retrying { .. }) {
-            log.record(
-                ActionLogFeature::KeepRunning,
-                None,
-                &self.rule.executable_path,
-                ActionLogResult::Failed,
-                failure.message.clone(),
-            );
             self.retry_error = Some(failure.message);
         } else {
-            self.last_error = Some(RuleError::Pending(failure.message));
+            self.last_error = Some(RuleError::Recorded(failure.message));
         }
     }
 }

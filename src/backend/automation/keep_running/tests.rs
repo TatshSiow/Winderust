@@ -177,6 +177,58 @@ fn drain(
 }
 
 #[test]
+fn terminal_launch_failure_is_logged_before_another_observation() {
+    let path = r"C:\Apps\app.exe";
+    let settings = KeepRunningSettings {
+        enabled: true,
+        rules: vec![KeepRunningRule::new(path.into())],
+    };
+    let mut coordinator = Coordinator::<Fake>::default();
+    coordinator.sync_settings(&settings, true);
+    let owner = &mut coordinator.owners[0];
+    let context = DesktopBindingKey::new("desktop".into());
+    let member = key(1, path);
+    let start = Instant::now();
+    owner.policy.observe(
+        start,
+        Observation::Complete {
+            observed_at: start,
+            context: &context,
+            members: std::slice::from_ref(&member),
+        },
+    );
+    owner.policy.exited(start, &member);
+    let now = start + Duration::from_secs(1);
+    let PrepareDisposition::Prepare(ticket) = owner.policy.try_prepare(
+        now,
+        Observation::Complete {
+            observed_at: now,
+            context: &context,
+            members: &[],
+        },
+    ) else {
+        panic!("expected a launch attempt");
+    };
+
+    let mut log = ActionLog::default();
+    let message = "unsupported launch";
+    owner.launch_failed(
+        now,
+        &ticket,
+        Failure {
+            message: message.into(),
+            kind: FailureKind::UnsupportedContext,
+        },
+        &mut log,
+    );
+    let entries = log.entries();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].reason, message);
+    assert_eq!(entries[0].result, ActionLogResult::Failed);
+    assert!(matches!(owner.last_error, Some(RuleError::Recorded(_))));
+}
+
+#[test]
 fn bounded_worker_routes_late_results_and_never_disposes_accepted_children() {
     let mut settings = KeepRunningSettings {
         enabled: true,
