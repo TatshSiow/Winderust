@@ -918,9 +918,20 @@ pub(crate) fn unicode_case_match(left: &str, right: &str) -> bool {
     result == CSTR_EQUAL
 }
 
+pub(crate) fn same_executable_name(left: &str, right: &str) -> bool {
+    left.eq_ignore_ascii_case(right) || unicode_case_match(left, right)
+}
+
+pub(crate) fn path_has_executable_name(path: &Path, executable_name: &str) -> bool {
+    path.is_absolute()
+        && path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| same_executable_name(name, executable_name))
+}
+
 pub(crate) fn executable_basename_may_match(process_name: &str, basename: &str) -> bool {
-    same_process_name(process_name, basename)
-        || unicode_case_match(process_name.trim(), basename.trim())
+    same_executable_name(process_name.trim(), basename.trim())
 }
 
 pub fn process_matches_executable_path(process: &ProcessInfo, executable_path: &str) -> bool {

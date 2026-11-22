@@ -11,9 +11,9 @@ use crate::{
     },
     cpu::{process_cpu_usage_batch, ProcessCpuSample},
     foreground::{
-        process_matches_executable_path, same_executable_path, same_process_name,
-        sample_process_resources, ProcessActionTarget, ProcessInfo, ProcessResourceSample,
-        ProcessResourceSampling,
+        process_list::{path_has_executable_name, same_executable_name},
+        process_matches_executable_path, same_executable_path, sample_process_resources,
+        ProcessActionTarget, ProcessInfo, ProcessResourceSample, ProcessResourceSampling,
     },
     runtime::observations::CycleObservations,
 };
@@ -131,14 +131,11 @@ pub(crate) struct WatchdogManager {
 }
 
 pub(crate) fn observed_path_matches_name(process: &ProcessInfo, executable_name: &str) -> bool {
-    same_process_name(&process.name, executable_name)
-        && process.image_path.as_deref().is_some_and(|path| {
-            path.is_absolute()
-                && path
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .is_some_and(|name| name.eq_ignore_ascii_case(executable_name))
-        })
+    same_executable_name(&process.name, executable_name)
+        && process
+            .image_path
+            .as_deref()
+            .is_some_and(|path| path_has_executable_name(path, executable_name))
 }
 
 fn matching_path<'a>(selector: &'a WatchdogSelector, process: &'a ProcessInfo) -> Option<&'a Path> {

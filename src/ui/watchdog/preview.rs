@@ -3,7 +3,9 @@ use std::path::{Path, PathBuf};
 use crate::{
     config::WatchdogSelector,
     features::winderust_features::watchdog::observed_path_matches_name,
-    foreground::{same_executable_path, same_process_name, ProcessInfo},
+    foreground::{
+        process_list::same_executable_name, same_executable_path, same_process_name, ProcessInfo,
+    },
     runtime::observations::CycleObservations,
 };
 
@@ -69,7 +71,12 @@ fn classify(
 
     let mut rows = Vec::new();
     for process in processes {
-        if !same_process_name(&process.name, name) {
+        let name_matches = if expected_path.is_some() {
+            same_process_name(&process.name, name)
+        } else {
+            same_executable_name(&process.name, name)
+        };
+        if !name_matches {
             continue;
         }
         let kind = match process.image_path.as_deref() {

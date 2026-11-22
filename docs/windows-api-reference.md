@@ -482,6 +482,12 @@ Important behavior from Microsoft: enabling `PROCESS_POWER_THROTTLING_EXECUTION_
 
 Winderust does not enable debug privilege. Elevated process access continues to follow the target process's Windows access checks alongside Winderust's critical-process, built-in, identity, minimal-access, and protected-process barriers.
 
+Executable name rules in By Focus, By Running App, and Watchdog use
+`src/foreground/process_list.rs::same_executable_name` for whole-filename
+comparison. It uses `CompareStringOrdinal` with the Windows uppercase table
+for Unicode casing and preserves whitespace and the original Unicode spelling.
+Positive matches still require an observed absolute executable path.
+
 ## Advanced Power Plan Tuning
 
 Winderust can apply separate AC and battery processor-power percentages, processor boost modes, and long/short-running thread scheduling policies to a selected Windows power plan, with presets available as quick-fill values. This is system-wide power-plan tuning, not per-process CPU allocation.

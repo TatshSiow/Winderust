@@ -10,7 +10,7 @@ use crate::config::{CpuLimiterRule, CpuLimiterSettings, ProcessRuleMode};
 use crate::control::instance_limits::validate_path;
 use crate::cpu_limiter;
 use crate::foreground::executable_path_key;
-use crate::foreground::{same_executable_path, same_process_name};
+use crate::foreground::{process_list::same_executable_name, same_executable_path};
 use crate::{app_suspension, memory_trim};
 use rust_i18n::t;
 use std::path::Path;
@@ -155,7 +155,7 @@ fn can_add_executable_name<'a>(
     is_valid_executable_name(name)
         && !selectors.any(|selector| {
             matches!(selector, ExecutableSelector::ExactName { executable_name }
-                if same_process_name(executable_name, name))
+                if same_executable_name(executable_name, name))
         })
 }
 

@@ -2,7 +2,7 @@ use crate::{
     activity::ActivityState,
     config::{ByFocusRule, ByFocusSettings, ExecutableSelector, Settings},
     features::power_plan_control::{ByCpuLoadDecision, ByCpuLoadMatch, ByTimeDecision},
-    foreground::same_executable_path,
+    foreground::{process_list::path_has_executable_name, same_executable_path},
 };
 use std::path::{Path, PathBuf};
 
@@ -126,11 +126,7 @@ pub(crate) fn matching_by_focus_rules<'a>(
                     executable_path: target,
                 } => same_executable_path(Path::new(target), executable_path),
                 ExecutableSelector::ExactName { executable_name } => {
-                    executable_path.is_absolute()
-                        && executable_path
-                            .file_name()
-                            .and_then(|name| name.to_str())
-                            .is_some_and(|name| name.eq_ignore_ascii_case(executable_name))
+                    path_has_executable_name(executable_path, executable_name)
                 }
             };
             matches.then_some((index, rule, plan))

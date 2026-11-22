@@ -5,7 +5,9 @@ use crate::config::{
     WatchdogAction, WatchdogComparison, WatchdogMemoryUnit, WatchdogMetric, WatchdogResource,
     WatchdogRule, WatchdogScope, WatchdogSelector, WatchdogSettings, WATCHDOG_DURATION_RANGE,
 };
-use crate::foreground::{executable_path_key, same_executable_path, same_process_name};
+use crate::foreground::{
+    executable_path_key, process_list::same_executable_name, same_executable_path,
+};
 use iced::{
     widget::{column, row, text, Column},
     Element, Fill,
@@ -210,7 +212,7 @@ impl Editor {
                 matches!(
                     &rule.selector,
                     WatchdogSelector::ExactName { executable_name }
-                        if same_process_name(executable_name, name)
+                        if same_executable_name(executable_name, name)
                 )
             })
         {

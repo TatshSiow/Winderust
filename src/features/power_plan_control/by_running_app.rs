@@ -7,7 +7,10 @@ use crate::{
     config::{ByRunningAppRule, ByRunningAppSettings, ExecutableSelector},
     foreground::{
         contains_process_name,
-        process_list::{executable_basename_may_match, observed_process_executable_path},
+        process_list::{
+            executable_basename_may_match, observed_process_executable_path,
+            path_has_executable_name, same_executable_name,
+        },
         process_session_id, same_executable_path, same_process_name, ProcessInfo,
         EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS,
     },
@@ -319,7 +322,7 @@ fn classify_process(
     let name_matches = if configured_path.is_some() {
         executable_basename_may_match(&process.name, file_name)
     } else {
-        same_process_name(&process.name, file_name)
+        same_executable_name(&process.name, file_name)
     };
     if !name_matches || is_builtin_excluded(&process.name) {
         return None;
@@ -346,14 +349,6 @@ fn classify_process(
         path,
         kind,
     })
-}
-
-fn path_has_executable_name(path: &Path, executable_name: &str) -> bool {
-    path.is_absolute()
-        && path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .is_some_and(|name| same_process_name(name, executable_name))
 }
 
 pub(crate) fn rule_name(rule: &ByRunningAppRule) -> &str {
@@ -783,6 +778,48 @@ mod tests {
         assert_eq!(preview.winner, Some(selected.rule_index));
         assert_eq!(selected.target_guid, "name-plan");
         assert_eq!(selected.process_id, 9);
+        assert!(known);
+    }
+
+    #[test]
+    fn name_rule_matches_unicode_case_and_preserves_observed_basename_whitespace() {
+        use ByRunningAppPreviewMatch::{Match, Unavailable};
+
+        let settings = ByRunningAppSettings {
+            enabled: true,
+            rules: vec![ByRunningAppRule {
+                enabled: true,
+                name: String::new(),
+                selector: ExecutableSelector::ExactName {
+                    executable_name: "éclair.exe".into(),
+                },
+                power_plan_guid: Some("name-plan".into()),
+            }],
+        };
+        let spaced_path = "C:\\Games\\\u{3000}éclair.exe";
+        let processes = [
+            observed_process(2, "\u{3000}éclair.exe", Some(spaced_path), Some(false)),
+            observed_process(3, "éclair.exe", Some(spaced_path), Some(false)),
+            observed_process(4, "Éclair.exe", Some(r"C:\Games\Éclair.exe"), Some(false)),
+        ];
+        let preview = preview_rule_processes(
+            &settings,
+            &processes,
+            1,
+            1,
+            |_| Some(1),
+            |process| process.image_path.clone(),
+        );
+        let rows: Vec<_> = preview.rules[0]
+            .iter()
+            .map(|row| (row.pid, row.kind))
+            .collect();
+        let (selected, known) = match_processes(&settings, &processes);
+        let selected = selected.expect("verified Unicode case match should select the rule");
+
+        assert_eq!(rows, [(3, Unavailable), (4, Match)]);
+        assert_eq!(preview.winner, Some(selected.rule_index));
+        assert_eq!(selected.process_id, 4);
         assert!(known);
     }
 

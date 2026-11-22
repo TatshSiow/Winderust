@@ -339,10 +339,11 @@ Read the relevant section before changing feature policy, ownership, restoration
   Status views. A fresh successful read clears the error even if the plan GUID
   stays the same.
 - By Focus and By Running App rules choose one executable path or exact executable
-  filename. A name rule confirms the filename against the observed absolute image
-  path. The first enabled rule with a matching target and selected plan wins within
-  each mode. By Focus checks the protected state of the focused process. By Running
-  App retains its current-session and protected-process checks.
+  filename. A name rule compares the whole basename of the observed absolute image
+  path using Windows ordinal case-insensitive matching. The first enabled rule
+  with a matching target and selected plan wins within each mode. By Focus checks
+  the protected state of the focused process. By Running App retains its current
+  session and protected-process checks.
 - By Focus Preview matches uses the same rule order and selector matching as
   automation. It shows the first eligible match followed by other eligible
   matches in the same order. It evaluates the entered path against the draft,
