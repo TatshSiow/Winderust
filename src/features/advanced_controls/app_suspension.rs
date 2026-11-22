@@ -27,8 +27,9 @@ use crate::audio_activity::active_audio_process_ids;
 
 use crate::config::AppSuspensionSettings;
 use crate::foreground::{
-    contains_process_name, executable_path_key, process_executable_path, process_session_id,
-    same_executable_path, ProcessActionTarget,
+    contains_process_name, executable_path_key, process_executable_path,
+    process_list::unicode_case_match, process_session_id, same_executable_path, same_process_name,
+    ProcessActionTarget,
 };
 use crate::{
     action_log::{ActionLog, ActionLogFeature, ActionLogResult},
@@ -543,26 +544,53 @@ impl AppSuspensionManager {
         let delay = Duration::from_secs(settings.background_delay_seconds);
         let mut target_processes = BTreeMap::new();
         let mut running_apps = BTreeSet::new();
+        let mut unresolved = Vec::new();
+        let has_unicode_rule_name = enabled_process_names.iter().any(|name| !name.is_ascii());
 
         for process in processes.iter() {
             if process.id == 0
-                || process.is_critical != Some(false)
                 || process.id == current_process_id
                 || is_builtin_excluded(&process.name)
-                || !contains_process_name(&enabled_process_names, &process.name)
-                || process.creation_time.is_none()
-                || process.session_id.is_none_or(|session_id| session_id == 0)
-                || process.is_service_account != Some(false)
+                || process.is_critical == Some(true)
+                || process.session_id == Some(0)
+                || process.is_service_account == Some(true)
             {
                 continue;
             }
 
-            if !allow_cross_session_process_control
-                && process_session_id(process.id) != Some(current_session_id)
+            let name = process.name.trim();
+            let matches_name = contains_process_name(&enabled_process_names, name);
+            if !matches_name
+                || process.is_critical.is_none()
+                || process.creation_time.is_none()
+                || process.session_id.is_none()
+                || process.is_service_account.is_none()
             {
+                if (allow_cross_session_process_control
+                    || process.session_id.is_none_or(|id| id == current_session_id))
+                    && (matches_name
+                        || ((has_unicode_rule_name || !name.is_ascii())
+                            && enabled_process_names
+                                .iter()
+                                .any(|configured| unicode_case_match(configured.trim(), name))))
+                {
+                    unresolved.push((name, process.image_path.as_deref()));
+                }
                 continue;
             }
+
+            if !allow_cross_session_process_control {
+                match process_session_id(process.id) {
+                    Some(id) if id == current_session_id => {}
+                    Some(_) => continue,
+                    None => {
+                        unresolved.push((name, process.image_path.as_deref()));
+                        continue;
+                    }
+                }
+            }
             let Some(executable_path) = process_executable_path(process) else {
+                unresolved.push((name, None));
                 continue;
             };
             let Ok(executable_path) = executable_path.into_os_string().into_string() else {
@@ -593,7 +621,25 @@ impl AppSuspensionManager {
             );
         }
         self.running_apps = running_apps;
-        let enabled_paths = enabled_rules.map(|rule| rule.executable_path.as_str());
+        let enabled_paths = enabled_rules
+            .map(|rule| rule.executable_path.as_str())
+            .filter(|executable_path| {
+                if unresolved.is_empty() {
+                    return true;
+                }
+                let path = Path::new(executable_path.trim());
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_none_or(|name| {
+                        let name = name.trim();
+                        !unresolved.iter().any(|(candidate, observed_path)| {
+                            (same_process_name(name, candidate)
+                                || unicode_case_match(name, candidate))
+                                && observed_path
+                                    .is_none_or(|observed| same_executable_path(observed, path))
+                        })
+                    })
+            });
         if !self
             .observed_rule_paths
             .as_ref()

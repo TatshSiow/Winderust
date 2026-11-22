@@ -503,8 +503,9 @@ Read the relevant section before changing feature policy, ownership, restoration
   User-initiated recovery preserves the saved enablement mode and reports thaw
   failures in the returned status.
 - App Suspension shows Not running only for an enabled saved rule covered by a
-  successful scan. Suspend requires a matching enabled rule in the current
-  saved power profile. Temporarily resume remains available for a matching
+  successful scan with no unresolved candidate for that path. Suspend requires
+  a matching enabled rule in the current saved power profile. Temporarily
+  resume remains available for a matching
   known freeze regardless of the profile being edited.
 - App Suspension is a complete typed cutover through `src/control/suspension.rs`. Automatic rules,
   App-page Freeze, and Process List Suspend/Resume share the RuntimeCore controller; feature code
