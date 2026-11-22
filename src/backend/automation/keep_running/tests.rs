@@ -373,8 +373,23 @@ fn bounded_worker_routes_late_results_and_never_disposes_accepted_children() {
         );
         std::thread::yield_now();
     }
+    assert_eq!(
+        coordinator.owners[0].policy.state(),
+        KeepRunningState::Paused(PauseReason::CleanupUnconfirmed)
+    );
+    settings.rules[0].enabled = false;
+    coordinator.invalidate_settings();
+    coordinator.sync_settings(&settings, true);
+    assert_eq!(
+        coordinator.owners[0]
+            .last_error
+            .as_ref()
+            .map(RuleError::message),
+        Some("cleanup unknown")
+    );
     assert!(coordinator.has_pending());
     settings.enabled = false;
+    settings.rules[0].enabled = true;
     tick(
         &mut coordinator,
         &settings,

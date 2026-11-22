@@ -209,6 +209,7 @@ impl<P: Platform> Default for Coordinator<P> {
 
 impl<P: Platform> Coordinator<P> {
     pub(super) fn sync_settings(&mut self, settings: &KeepRunningSettings, general_enabled: bool) {
+        let flight_owner = self.flight.as_ref().map(|flight| &flight.owner);
         for owner in &mut self.owners {
             owner.active = false;
         }
@@ -238,11 +239,25 @@ impl<P: Platform> Coordinator<P> {
             };
             owner.active = true;
             if owner.rule.as_ref() != rule {
+                let only_enabled_changed = owner.rule.executable_path == rule.executable_path
+                    && owner.rule.arguments == rule.arguments
+                    && owner.rule.working_directory == rule.working_directory;
+                let owns_flight = flight_owner.is_some_and(|id| Arc::ptr_eq(id, &owner.id));
+                owner.last_error = if only_enabled_changed && owns_flight {
+                    // This diagnostic was already recorded when the previous snapshot published.
+                    owner
+                        .last_error
+                        .as_ref()
+                        .map(|error| error.message().to_owned())
+                        .or_else(|| owner.retry_error.take())
+                        .map(RuleError::Recorded)
+                } else {
+                    None
+                };
                 owner.policy.launch_settings_changed();
                 owner.rule = Arc::new(rule.clone());
                 owner.members.clear();
                 owner.identity = None;
-                owner.last_error = None;
                 owner.retry_error = None;
             }
             if general_enabled && settings.enabled && rule.enabled {
@@ -258,9 +273,9 @@ impl<P: Platform> Coordinator<P> {
                 owner.members.clear();
             }
         }
-        let flight = self.flight.as_ref().map(|flight| &flight.owner);
-        self.owners
-            .retain(|owner| owner.active || flight.is_some_and(|id| Arc::ptr_eq(id, &owner.id)));
+        self.owners.retain(|owner| {
+            owner.active || flight_owner.is_some_and(|id| Arc::ptr_eq(id, &owner.id))
+        });
     }
 
     pub(super) fn has_pending(&self) -> bool {
@@ -268,11 +283,15 @@ impl<P: Platform> Coordinator<P> {
     }
 
     pub(super) fn invalidate_settings(&mut self) {
+        let flight_owner = self.flight.as_ref().map(|flight| &flight.owner);
         for owner in &mut self.owners {
             owner.policy.launch_settings_changed();
             owner.members.clear();
             owner.identity = None;
-            owner.retry_error = None;
+            // Retain an owned diagnostic until sync_settings can check the exact edit.
+            if !flight_owner.is_some_and(|id| Arc::ptr_eq(id, &owner.id)) {
+                owner.retry_error = None;
+            }
         }
     }
 
