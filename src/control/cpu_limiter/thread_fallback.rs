@@ -137,19 +137,10 @@ impl<O: ThreadFallbackOperations> ThreadFallbackTarget<O> {
         let unknown = inventory
             .iter()
             .copied()
-            .filter(|id| {
-                !self
-                    .threads
-                    .values()
-                    .any(|thread| thread.captured.id == *id)
-            })
+            .filter(|&id| self.threads_for_id(id).next().is_none())
             .collect::<BTreeSet<_>>();
         if unknown.is_empty() {
-            self.frozen = inventory.iter().all(|id| {
-                self.threads
-                    .values()
-                    .any(|thread| thread.captured.id == *id && thread.owned_increment)
-            });
+            self.frozen = self.inventory_is_frozen(inventory);
             return Ok(());
         }
 
@@ -184,12 +175,20 @@ impl<O: ThreadFallbackOperations> ThreadFallbackTarget<O> {
             );
         }
         self.freeze_threads(&keys)?;
-        self.frozen = inventory.iter().all(|id| {
-            self.threads
-                .values()
-                .any(|thread| thread.captured.id == *id && thread.owned_increment)
-        });
+        self.frozen = self.inventory_is_frozen(inventory);
         Ok(())
+    }
+
+    fn inventory_is_frozen(&self, inventory: &BTreeSet<u32>) -> bool {
+        inventory
+            .iter()
+            .all(|&id| self.threads_for_id(id).any(|thread| thread.owned_increment))
+    }
+
+    fn threads_for_id(&self, id: u32) -> impl Iterator<Item = &ManagedThread<O>> {
+        self.threads
+            .range((id, 0)..=(id, u64::MAX))
+            .map(|(_, thread)| thread)
     }
 
     pub(super) fn thaw(&mut self) -> Result<(), CpuLimiterTargetError> {
