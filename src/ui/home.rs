@@ -1,5 +1,6 @@
 use super::design;
 use super::widgets::button;
+use crate::action_log::ActionLogEntry;
 use crate::activity::ActivityState;
 use crate::automation::{RuntimeFeatureStatus, RuntimeStatusSnapshot};
 use crate::backend::dashboard_metrics::{
@@ -17,7 +18,9 @@ use iced::widget::{canvas, column, container, responsive, row, text};
 use iced::{mouse, Element, Fill, Point, Rectangle, Renderer, Theme};
 use rust_i18n::t;
 use std::{
+    cell::RefCell,
     collections::VecDeque,
+    sync::{Arc, Weak},
     time::{Instant, SystemTime},
 };
 
@@ -28,6 +31,7 @@ const HISTORY_WINDOW: std::time::Duration =
 const MAX_SAMPLE_GAP: std::time::Duration = std::time::Duration::from_millis(1500);
 const CHART_AXIS_WIDTH: f32 = 64.0;
 const CHART_FILL_ALPHA: f32 = 0.08;
+const RECENT_LOG_LIMIT: usize = 20;
 
 struct DashboardLayout {
     columns: usize,
@@ -182,6 +186,7 @@ pub(super) struct Model {
     latest: Sample,
     history: VecDeque<Sample>,
     hovered: [Option<usize>; 4],
+    recent_log_widths: RefCell<RecentLogWidths>,
 }
 #[derive(Debug, Clone)]
 pub(super) enum Message {
@@ -422,7 +427,11 @@ impl Model {
             .height(layout.summary_height)
             .width(Fill)
             .style(super::widgets::surface);
-            let recent = recent_logs(&status.action_log_entries, layout.summary_height);
+            let recent = recent_logs(
+                &status.action_log_entries,
+                layout.summary_height,
+                &self.recent_log_widths,
+            );
             if layout.columns > 1 {
                 body = body.push(row![enabled, recent].spacing(super::widgets::CARD_GAP));
             } else {
@@ -676,11 +685,39 @@ impl Model {
         }
     }
 }
-fn recent_logs(logs: &[crate::action_log::ActionLogEntry], height: f32) -> Element<'_, Message> {
+#[derive(Default)]
+struct RecentLogWidths {
+    entries: Weak<Vec<ActionLogEntry>>,
+    locale: String,
+    widths: [Option<f32>; RECENT_LOG_LIMIT],
+}
+
+impl RecentLogWidths {
+    fn reset_for(&mut self, logs: &Arc<Vec<ActionLogEntry>>) {
+        let locale = rust_i18n::locale();
+        if self.entries.as_ptr() != Arc::as_ptr(logs) || self.locale != *locale {
+            self.entries = Arc::downgrade(logs);
+            self.locale.clear();
+            self.locale.push_str(&locale);
+            self.widths.fill(None);
+        }
+    }
+}
+
+fn recent_logs<'a>(
+    logs: &'a Arc<Vec<ActionLogEntry>>,
+    height: f32,
+    widths: &'a RefCell<RecentLogWidths>,
+) -> Element<'a, Message> {
+    widths.borrow_mut().reset_for(logs);
     let mut rows = column![];
-    for entry in logs.iter().rev().take(20) {
-        rows = rows
-            .push(responsive(move |size| recent_log_row(entry, size.width)).height(iced::Shrink));
+    for (index, entry) in logs.iter().rev().take(RECENT_LOG_LIMIT).enumerate() {
+        rows = rows.push(
+            responsive(move |size| {
+                recent_log_row(entry, size.width, &mut widths.borrow_mut().widths[index])
+            })
+            .height(iced::Shrink),
+        );
         rows = rows.push(iced::widget::rule::horizontal(1));
     }
     let content: Element<'_, Message> = if logs.is_empty() {
@@ -728,7 +765,11 @@ fn recent_logs(logs: &[crate::action_log::ActionLogEntry], height: f32) -> Eleme
     .height(height)
     .into()
 }
-fn recent_log_row(entry: &crate::action_log::ActionLogEntry, width: f32) -> Element<'_, Message> {
+fn recent_log_row(
+    entry: &ActionLogEntry,
+    width: f32,
+    measured_width: &mut Option<f32>,
+) -> Element<'static, Message> {
     const TIME_WIDTH: f32 = 64.0;
     const LEVEL_WIDTH: f32 = 64.0;
     const PADDING: [u16; 2] = [6, 4];
@@ -745,11 +786,13 @@ fn recent_log_row(entry: &crate::action_log::ActionLogEntry, width: f32) -> Elem
         - 2.0 * f32::from(PADDING[1])
         - 2.0 * design::space::SMALL as f32)
         .max(0.0);
-    let description_width = super::widgets::text_width_with_font(
-        &description,
-        design::typography::CAPTION,
-        design::typography::DEFAULT_FONT,
-    );
+    let description_width = *measured_width.get_or_insert_with(|| {
+        super::widgets::text_width_with_font(
+            &description,
+            design::typography::CAPTION,
+            design::typography::DEFAULT_FONT,
+        )
+    });
     let tooltip = (description_width > available).then(|| text(description.clone()));
     let row = button(
         row![
@@ -1749,9 +1792,10 @@ mod tests {
             reason: "Applied configured process policy".into(),
         };
         let renderer = Renderer::new(design::typography::FONT, iced::Pixels(14.0));
-        let mut view: Element<'_, Message> = responsive(|size| recent_log_row(&entry, size.width))
-            .height(iced::Shrink)
-            .into();
+        let mut view: Element<'_, Message> =
+            responsive(|size| recent_log_row(&entry, size.width, &mut None))
+                .height(iced::Shrink)
+                .into();
         let mut tree = Tree::new(&view);
         // Reuse the widget state while resizing in both directions.
         for (width, truncated) in [(900.0, false), (220.0, true), (900.0, false)] {
