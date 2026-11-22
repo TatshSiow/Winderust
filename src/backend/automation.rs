@@ -100,7 +100,7 @@ use crate::{
     thread_priority::{ThreadPriorityManager, ThreadPrioritySnapshot},
     timer_resolution::{TimerResolutionManager, TimerResolutionSnapshot},
     tray::{self, TrayVisibilityWatcher},
-    windows_events::{WindowsAutomationEvent, WindowsEventWatcher},
+    windows_events::{WindowsAutomationEvent, WindowsEventWatcher, WindowsEventWatcherMode},
 };
 
 mod instance_balancing;
@@ -1001,33 +1001,32 @@ impl RuntimeHandle {
         if lock_unpoisoned(&self.shared.state).stop_requested {
             return;
         }
+        let mode = windows_event_watcher_mode(&settings.value);
         let mut watcher = lock_unpoisoned(&self.event_watcher);
         if watcher
             .as_ref()
-            .is_some_and(|watcher| !watcher.is_running())
+            .is_some_and(|watcher| Some(watcher.mode()) != mode || !watcher.is_running())
         {
             *watcher = None;
         }
 
-        if windows_event_watcher_required(&settings.value) {
-            if watcher.is_none() {
-                let shared = Arc::clone(&self.shared);
-                let stopped_shared = Arc::clone(&self.shared);
-                *watcher = WindowsEventWatcher::start(
-                    Arc::new(move |event| notify_windows_event(&shared, event)),
-                    Arc::new(move || set_windows_event_watcher_active(&stopped_shared, false)),
-                )
-                .ok();
-            }
-        } else {
-            *watcher = None;
+        if let Some(mode) = mode.filter(|_| watcher.is_none()) {
+            let shared = Arc::clone(&self.shared);
+            let stopped_shared = Arc::clone(&self.shared);
+            *watcher = WindowsEventWatcher::start(
+                mode,
+                Arc::new(move |event| notify_windows_event(&shared, event)),
+                Arc::new(move || set_windows_event_watcher_active(&stopped_shared, false)),
+            )
+            .ok();
         }
 
+        // Event-driven safety gates and polling fallbacks require full watcher coverage.
         set_windows_event_watcher_active(
             &self.shared,
-            watcher
-                .as_ref()
-                .is_some_and(WindowsEventWatcher::is_running),
+            watcher.as_ref().is_some_and(|watcher| {
+                watcher.mode() == WindowsEventWatcherMode::Full && watcher.is_running()
+            }),
         );
         // The watcher may stop between the liveness read and status publication.
         if watcher

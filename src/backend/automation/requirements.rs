@@ -422,6 +422,20 @@ pub(super) fn instance_balancing_required(settings: &Settings) -> bool {
             .any(|rule| rule.enabled)
 }
 
+pub(super) fn windows_event_watcher_mode(settings: &Settings) -> Option<WindowsEventWatcherMode> {
+    if windows_event_watcher_required(settings) {
+        Some(WindowsEventWatcherMode::Full)
+    } else if std::iter::once(settings)
+        .chain(settings.on_battery.as_deref())
+        .any(|profile| feature_refresh_required(profile, adaptive_engine_process_required(profile)))
+    {
+        Some(WindowsEventWatcherMode::SuspendResumeOnly)
+    } else {
+        None
+    }
+}
+
+// Full Windows event coverage is required by the existing event-driven features.
 pub(super) fn windows_event_watcher_required(settings: &Settings) -> bool {
     keep_running_required(settings)
         || instance_limits_required(settings)

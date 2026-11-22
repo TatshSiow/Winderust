@@ -2155,10 +2155,22 @@ fn adaptive_engine_skips_appearance_only_windows_events() {
     settings.adaptive_engine.enabled = true;
     settings.general.accent.source = AccentColorSource::Windows;
 
-    assert!(!windows_event_watcher_required(&settings));
+    assert_eq!(windows_event_watcher_mode(&settings), None);
     assert!(!windows_event_wake_required(
         &settings,
         WindowsAutomationEvent::AppearanceChanged
+    ));
+
+    settings
+        .adaptive_engine_process
+        .limit_background_processors_enabled = true;
+    assert_eq!(
+        windows_event_watcher_mode(&settings),
+        Some(WindowsEventWatcherMode::SuspendResumeOnly)
+    );
+    assert!(windows_event_wake_required(
+        &settings,
+        WindowsAutomationEvent::SuspendResume
     ));
 
     settings.app_suspension.enabled = true;
@@ -2168,7 +2180,10 @@ fn adaptive_engine_skips_appearance_only_windows_events() {
         .push(app_suspension_rule(r"C:\Apps\chat.exe"));
 
     assert!(automation_worker_required(&settings));
-    assert!(windows_event_watcher_required(&settings));
+    assert_eq!(
+        windows_event_watcher_mode(&settings),
+        Some(WindowsEventWatcherMode::Full)
+    );
     assert!(windows_event_wake_required(
         &settings,
         WindowsAutomationEvent::WindowCreated

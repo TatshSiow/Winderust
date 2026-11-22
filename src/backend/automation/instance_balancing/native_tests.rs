@@ -218,6 +218,7 @@ fn native_producer_replans_complete_cohorts_and_restores_on_disable() {
     let events = Arc::clone(&shared);
     let stopped = Arc::clone(&shared);
     let watcher = WindowsEventWatcher::start(
+        crate::backend::windows_events::WindowsEventWatcherMode::Full,
         Arc::new(move |event| notify_windows_event(&events, event)),
         Arc::new(move || set_windows_event_watcher_active(&stopped, false)),
     )
