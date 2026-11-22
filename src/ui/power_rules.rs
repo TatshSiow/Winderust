@@ -1090,16 +1090,14 @@ fn rule_status(
     selected: bool,
     status: &crate::control::power_plan::PowerPlanStatus,
 ) -> &'static str {
-    let (rule_enabled, configured, state, plans) = match rule {
+    let (rule_enabled, state, plans) = match rule {
         RuleRef::Time(rule) => (
             rule.enabled,
-            !rule.days.is_empty(),
             crate::rules::DecisionState::ByTime,
-            [rule.power_plan_guid.as_deref(), None],
+            [rule.configured_plan(), None],
         ),
         RuleRef::Cpu(rule) => (
             rule.enabled,
-            true,
             crate::rules::DecisionState::ByCpuLoad,
             [
                 rule.power_plan_guid.as_deref(),
@@ -1111,7 +1109,7 @@ fn rule_status(
     };
     power_rule_status(
         enabled && rule_enabled,
-        configured,
+        true,
         selected,
         state,
         plans,
