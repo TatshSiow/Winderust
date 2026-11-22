@@ -1024,6 +1024,7 @@ memory_trim:
   idle_time: "Idle Time"
   invalid_threshold: "%{setting} must be a whole number from 1 to %{maximum}."
   trim_now: "Trim now"
+  waiting_for_memory_load: "Memory load is %{load}%, below the %{threshold}% threshold."
   no_exclusions: "No custom rules are configured."
 
 cpu_sets_soft:

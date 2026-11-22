@@ -1027,6 +1027,7 @@ memory_trim:
   idle_time: "閒置時間"
   invalid_threshold: "%{setting}必須是 1 到 %{maximum} 之間的整數。"
   trim_now: "立即修剪"
+  waiting_for_memory_load: "系統記憶體使用率為 %{load}%，低於 %{threshold}% 的門檻。"
   no_exclusions: "尚未設定自訂規則。"
 
 cpu_sets_soft:

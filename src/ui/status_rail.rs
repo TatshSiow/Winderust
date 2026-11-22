@@ -146,6 +146,21 @@ pub(super) fn view<'a>(
         && runtime.worker_error.is_none()
     {
         runtime.feature_status.instance_balancing.message()
+    } else if page == Page::MemoryTrim && state == FeatureRunState::Waiting {
+        let trim = &runtime.feature_status.memory_trim;
+        match (&trim.status, trim.memory_load_percent) {
+            (MemoryTrimStatus::WaitingForMemoryLoad { threshold_percent }, Some(load_percent)) => {
+                Some(
+                    t!(
+                        "memory_trim.waiting_for_memory_load",
+                        load = load_percent,
+                        threshold = threshold_percent
+                    )
+                    .into_owned(),
+                )
+            }
+            _ => None,
+        }
     } else if page == Page::AdaptiveEngine
         && state == FeatureRunState::Running
         && settings.adaptive_engine_process.has_enabled_policies()
@@ -834,7 +849,9 @@ fn feature_status_summary(
             let status = &runtime.feature_status.memory_trim;
             let activity_known = !matches!(
                 status.status,
-                MemoryTrimStatus::ForegroundUnknown | MemoryTrimStatus::Error(_)
+                MemoryTrimStatus::ForegroundUnknown
+                    | MemoryTrimStatus::WaitingForMemoryLoad { .. }
+                    | MemoryTrimStatus::Error(_)
             );
             FeatureStatusSummary {
                 scanned: activity_known.then_some(status.scanned_processes),
@@ -1352,6 +1369,12 @@ mod tests {
         for (status, expected) in [
             (MemoryTrimStatus::ForegroundUnknown, None),
             (MemoryTrimStatus::Error("query failed".into()), None),
+            (
+                MemoryTrimStatus::WaitingForMemoryLoad {
+                    threshold_percent: 80,
+                },
+                None,
+            ),
             (MemoryTrimStatus::Active, Some(0)),
         ] {
             std::sync::Arc::make_mut(&mut runtime.feature_status)

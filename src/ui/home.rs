@@ -1629,6 +1629,7 @@ fn enabled_features(
                 t!("common.unknown").into_owned()
             }
             MemoryTrimStatus::ForegroundUnknown => observation_pause_detail(false),
+            MemoryTrimStatus::WaitingForMemoryLoad { .. } => t!("common.waiting").into_owned(),
             MemoryTrimStatus::Error(_) => observation_pause_detail(true),
             _ => t!("home.trimmed_count", count = memory_trim.trimmed_processes).into_owned(),
         }
