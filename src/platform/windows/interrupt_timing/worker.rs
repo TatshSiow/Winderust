@@ -33,7 +33,8 @@ use crate::platform::windows::cpu_allocation::topology;
 use super::{decode::decode_live, InterruptTimingError, Outcome};
 
 const SESSION_GUID: GUID = GUID::from_u128(0xacd9dac4_48da_4f73_a66d_87e51252a93c);
-const WINDOW: Duration = Duration::from_secs(5);
+const CAPTURE_SECONDS: i64 = 5;
+const WINDOW: Duration = Duration::from_secs(CAPTURE_SECONDS as u64);
 const STARTUP_LIMIT: Duration = Duration::from_secs(2);
 const DRAIN_LIMIT: Duration = Duration::from_secs(3);
 const POLL: Duration = Duration::from_millis(10);
@@ -55,6 +56,7 @@ pub(super) fn capture(name: &str, cancelled: &Receiver<()>) -> Outcome {
                 &consumer_name,
                 ready_sender,
                 start_tick,
+                CAPTURE_SECONDS,
                 cpu_count,
             ));
         });
@@ -224,11 +226,6 @@ impl<'a> Session<'a> {
             | EVENT_TRACE_FLAG_IMAGE_LOAD
             | EVENT_TRACE_FLAG_NO_SYSCONFIG;
         let wide = name.encode_utf16().chain([0]).collect::<Vec<_>>();
-        let mut start_tick = 0;
-        // SAFETY: start_tick is a valid writable i64 for the synchronous call.
-        if unsafe { QueryPerformanceCounter(&raw mut start_tick) } == 0 {
-            return Err(capture_error(std::io::Error::last_os_error()));
-        }
         let mut handle = CONTROLTRACE_HANDLE::default();
         // SAFETY: start takes a writable handle, a NUL-terminated UTF-16 name,
         // and a properties buffer with trailing string space at its advertised offsets.
@@ -240,7 +237,15 @@ impl<'a> Session<'a> {
             )
         };
         match code {
-            ERROR_SUCCESS => Ok((Self { name, active: true }, start_tick)),
+            ERROR_SUCCESS => {
+                let session = Self { name, active: true };
+                let mut start_tick = 0;
+                // SAFETY: start_tick is writable. A failed clock read drops the live session.
+                if unsafe { QueryPerformanceCounter(&raw mut start_tick) } == 0 {
+                    return Err(capture_error(std::io::Error::last_os_error()));
+                }
+                Ok((session, start_tick))
+            }
             ERROR_ALREADY_EXISTS => Err(InterruptTimingError::InUse),
             ERROR_ACCESS_DENIED | ERROR_PRIVILEGE_NOT_HELD => {
                 Err(InterruptTimingError::AccessDenied)

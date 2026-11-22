@@ -51,6 +51,7 @@ memory. Users can export the summarized report after the capture finishes.
 | --- | --- | --- |
 | `CoCreateGuid` | Generates the capture identity appended to the descriptive logger name. | https://learn.microsoft.com/en-us/windows/win32/api/combaseapi/nf-combaseapi-cocreateguid |
 | `StartTraceW` | Creates the system logger with QPC timestamps and bounded ETW buffers. | https://learn.microsoft.com/en-us/windows/win32/api/evntrace/nf-evntrace-starttracew |
+| `QueryPerformanceCounter` and `QueryPerformanceFrequency` | Establish and validate the five-second raw timestamp window after the trace starts. | https://learn.microsoft.com/en-us/windows/win32/api/profileapi/nf-profileapi-queryperformancecounter, https://learn.microsoft.com/en-us/windows/win32/api/profileapi/nf-profileapi-queryperformancefrequency |
 | `OpenTraceW`, `ProcessTrace`, `CloseTrace` | Consumes real-time `EVENT_RECORD` callbacks with raw timestamps and closes the consumer handle. | https://learn.microsoft.com/en-us/windows/win32/api/evntrace/nf-evntrace-opentracew, https://learn.microsoft.com/en-us/windows/win32/api/evntrace/nf-evntrace-processtrace, https://learn.microsoft.com/en-us/windows/win32/api/evntrace/nf-evntrace-closetrace |
 | `EVENT_RECORD.BufferContext` | Reads the 16-bit processor index or 8-bit processor number according to the event header flag. | https://learn.microsoft.com/en-us/windows/win32/api/evntrace/ns-evntrace-etw_buffer_context, https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-dtyp/fa4f7836-06ee-4ab6-8688-386a5a85f8c5 |
 | `GetLogicalProcessorInformationEx` | Reuses the Windows CPU topology query to confirm the same single processor group with contiguous active CPU numbers at both ends of the capture. | https://learn.microsoft.com/en-us/windows/win32/api/sysinfoapi/nf-sysinfoapi-getlogicalprocessorinformationex |
@@ -70,7 +71,11 @@ failure. Each generated capture name is used once. Query and stop are separate
 operations because ETW provides no documented atomic identity check for stop.
 
 The decoder accepts the x64 `PerfInfo` v2 and `Image_Load` v2/v3 layouts observed
-in live traces. It counts unsupported or invalid records separately. ISR opcode
+in live traces. Both report boundaries use the QPC sample taken after
+`StartTraceW` succeeds and the QPC frequency. A failed start sample triggers
+cleanup of the owned session. The drain-time QPC sample identifies impossible
+future timestamps. ETW loss counters and malformed-record warnings cover the
+full collection. ISR opcode
 50 follows the [TraceEvent parser](https://github.com/microsoft/perfview/blob/main/src/TraceEvent/Parsers/KernelTraceEventParser.cs).
 An x64 `Image_Load` v2/v3 load or rundown record with a verified kernel address
 range and an unreadable basename retains an unattributed lifetime and counts

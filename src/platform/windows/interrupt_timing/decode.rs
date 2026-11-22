@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, ptr::null, sync::mpsc::Sender};
+use std::{collections::BTreeMap, ops::RangeInclusive, ptr::null, sync::mpsc::Sender};
 
 use serde::{Deserialize, Serialize};
 use windows_sys::{
@@ -82,6 +82,7 @@ pub(super) fn decode_live(
     session_name: &str,
     ready: Sender<()>,
     capture_start: i64,
+    capture_seconds: i64,
     cpu_count: Option<u16>,
 ) -> Result<InterruptTimingReport, DecodeError> {
     let mut frequency = 0;
@@ -89,6 +90,10 @@ pub(super) fn decode_live(
     if unsafe { QueryPerformanceFrequency(&mut frequency) } == 0 || frequency <= 0 {
         return Err(DecodeError::Clock);
     }
+    let capture_end = frequency
+        .checked_mul(capture_seconds)
+        .and_then(|ticks| capture_start.checked_add(ticks))
+        .ok_or(DecodeError::Clock)?;
     let mut name = wide_null(session_name);
     let mut events = Events::default();
     let mut logfile = EVENT_TRACE_LOGFILEW {
@@ -119,7 +124,7 @@ pub(super) fn decode_live(
         return Err(DecodeError::Clock);
     }
     drop(handle);
-    events.report(capture_start, drain_end, frequency, cpu_count)
+    events.report(capture_start..=capture_end, drain_end, frequency, cpu_count)
 }
 
 struct TraceHandle(PROCESSTRACE_HANDLE);
@@ -295,8 +300,8 @@ impl Events {
 
     fn report(
         self,
-        start: i64,
-        end: i64,
+        window: RangeInclusive<i64>,
+        drain_end: i64,
         frequency: i64,
         cpu_count: Option<u16>,
     ) -> Result<InterruptTimingReport, DecodeError> {
@@ -325,12 +330,19 @@ impl Events {
         let mut incomplete_intervals = 0;
         let mut unresolved_attribution = 0;
         for event in self.interrupts {
-            if event.entry < start {
-                incomplete_intervals += 1;
+            if event.entry < *window.start() {
+                incomplete_intervals += usize::from(event.end >= *window.start());
                 continue;
             }
-            if event.end > end {
+            if event.end > drain_end {
                 invalid_intervals += 1;
+                continue;
+            }
+            if event.entry > *window.end() {
+                continue;
+            }
+            if event.end > *window.end() {
+                incomplete_intervals += 1;
                 continue;
             }
             let module = module_name(&images, max_image_size, &event);
@@ -571,15 +583,23 @@ mod tests {
     fn rejects_zero_entry_timestamps_and_excludes_out_of_window_samples() {
         assert!(interrupt(InterruptKind::Dpc, 0, 864_358_955_482, &[0; 16]).is_none());
         let events = Events {
-            interrupts: vec![sample(0, 99, 105), sample(0, 110, 112), sample(0, 115, 121)],
+            interrupts: vec![
+                sample(0, 90, 95),
+                sample(0, 99, 105),
+                sample(0, 110, 112),
+                sample(0, 115, 121),
+                sample(0, 117, 120),
+                sample(0, 121, 125),
+                sample(0, 116, 127),
+            ],
             ..Events::default()
         };
-        let report = events.report(100, 120, 1_000, Some(1)).unwrap();
+        let report = events.report(100..=120, 126, 1_000, Some(1)).unwrap();
         assert_eq!(report.invalid_intervals, 1);
-        assert_eq!(report.incomplete_intervals, 1);
-        assert_eq!(report.modules[0].count, 1);
-        assert_eq!(report.modules[0].total_inclusive_ms, 2.0);
-        assert_eq!(report.per_cpu.unwrap()[0].dpc_ms, 2.0);
+        assert_eq!(report.incomplete_intervals, 2);
+        assert_eq!(report.modules[0].count, 2);
+        assert_eq!(report.modules[0].total_inclusive_ms, 5.0);
+        assert_eq!(report.per_cpu.unwrap()[0].dpc_ms, 5.0);
     }
 
     #[test]
@@ -619,7 +639,7 @@ mod tests {
             ],
             ..Events::default()
         };
-        let report = events.report(100, 140, 1_000, Some(3)).unwrap();
+        let report = events.report(100..=140, 140, 1_000, Some(3)).unwrap();
         assert_eq!(report.modules.iter().map(|row| row.count).sum::<usize>(), 4);
         let rows = report.per_cpu.unwrap();
         assert_eq!(
@@ -644,7 +664,7 @@ mod tests {
             ],
             ..Events::default()
         };
-        let report = events.report(100, 120, 1_000, Some(1)).unwrap();
+        let report = events.report(100..=120, 120, 1_000, Some(1)).unwrap();
         assert!(report.per_cpu.is_none());
         assert_eq!(report.modules[0].count, 2);
         assert_eq!(report.modules[0].total_inclusive_ms, 5.0);
@@ -668,7 +688,7 @@ mod tests {
         events.add_image(ImageKind::Unload, 200, &old).unwrap();
         events.add_image(ImageKind::Initial, 350, &old).unwrap();
 
-        let report = events.report(100, 400, 1_000, None).unwrap();
+        let report = events.report(100..=400, 400, 1_000, None).unwrap();
         let count = |name: &str| {
             report
                 .modules
@@ -697,7 +717,7 @@ mod tests {
             .add_image(ImageKind::Load, 200, &unreadable)
             .is_none());
 
-        let report = events.report(100, 300, 1_000, None).unwrap();
+        let report = events.report(100..=300, 300, 1_000, None).unwrap();
         assert_eq!(report.unresolved_attribution, 1);
         assert_eq!(report.modules.len(), 2);
         assert_eq!(report.modules[0].module, None);
@@ -727,7 +747,7 @@ mod tests {
         events.add_image(ImageKind::Load, 300, &old).unwrap();
         events.add_image(ImageKind::Unload, 400, &old).unwrap();
 
-        let report = events.report(100, 500, 1_000, None).unwrap();
+        let report = events.report(100..=500, 500, 1_000, None).unwrap();
         assert_eq!(report.unresolved_attribution, 2);
         let row = report
             .modules

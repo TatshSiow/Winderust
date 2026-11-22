@@ -700,10 +700,12 @@ Read the relevant section before changing feature policy, ownership, restoration
 - Run diagnostic in Adaptive Engine's CPU Behaviour tab starts a five-second,
   in-memory trace even when Adaptive Engine is off. It changes no settings or
   scheduling rules. The result shows up to five driver and interrupt-type rows
-  ranked by inclusive time, plus any loss or attribution warnings. Per-CPU is
-  collapsed for each new result and shows inclusive DPC and ISR times in
-  milliseconds on verified single-group systems. When a report has driver rows
-  and the CPU breakdown cannot be verified, Per-CPU shows Unavailable.
+  ranked by inclusive time, plus any loss or attribution warnings. The report
+  includes intervals fully contained in the five seconds after ETW startup.
+  Intervals crossing either boundary count as incomplete. Per-CPU is collapsed
+  for each new result and shows inclusive DPC and ISR times in milliseconds on
+  verified single-group systems. When a report has driver rows and the CPU
+  breakdown cannot be verified, Per-CPU shows Unavailable.
 - A completed report can be exported as JSON to a user-selected path. The
   export includes driver basenames, aggregate durations, loss and attribution
   counts, and per-CPU totals when available. It does not include raw trace
