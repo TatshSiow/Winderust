@@ -35,7 +35,6 @@ pub(super) enum Message {
     AllLevels(bool),
     AllFeatures(bool),
     Scrolled(f32),
-    RowPressed,
     Clear,
     Export,
     LogMode(ActionLogMode),
@@ -86,7 +85,6 @@ impl Editor {
                 self.offset.set(0.0);
             }
             Message::Scrolled(offset) => self.offset.set(offset),
-            Message::RowPressed => {}
             Message::Clear => {
                 self.offset.set(0.0);
             }
@@ -262,69 +260,58 @@ impl Editor {
             let entry = group.first;
             let level = entry.result.level();
             entries_table = entries_table.push(
-                iced::widget::button(
-                    container(
-                        row![
-                            text(format!("#{}", count - range.start - index))
-                                .size(design::typography::CAPTION)
-                                .width(48),
-                            text(action_log_time_label(entry.timestamp_epoch_ms))
-                                .size(design::typography::CAPTION)
-                                .width(80),
-                            text(action_log_feature_label(entry.feature))
-                                .size(design::typography::CAPTION)
-                                .width(140),
-                            text(action_log_level_label(level))
-                                .size(design::typography::CAPTION)
-                                .style(move |theme| action_log_level_style(theme, level))
-                                .width(64),
-                            text(action_log_result_label(entry.result))
-                                .size(design::typography::CAPTION)
-                                .width(90),
-                            process_group(group, candidates),
-                            {
-                                let fitted = super::widgets::fitted_text(
-                                    &entry.reason,
-                                    size.width.max(1024.0) - 672.0,
-                                    design::typography::CAPTION,
-                                );
-                                let truncated = fitted != entry.reason;
-                                let content: Element<'_, Message> = container(
-                                    text(fitted)
-                                        .size(design::typography::CAPTION)
-                                        .wrapping(text::Wrapping::None),
+                container(
+                    row![
+                        text(format!("#{}", count - range.start - index))
+                            .size(design::typography::CAPTION)
+                            .width(48),
+                        text(action_log_time_label(entry.timestamp_epoch_ms))
+                            .size(design::typography::CAPTION)
+                            .width(80),
+                        text(action_log_feature_label(entry.feature))
+                            .size(design::typography::CAPTION)
+                            .width(140),
+                        text(action_log_level_label(level))
+                            .size(design::typography::CAPTION)
+                            .style(move |theme| action_log_level_style(theme, level))
+                            .width(64),
+                        text(action_log_result_label(entry.result))
+                            .size(design::typography::CAPTION)
+                            .width(90),
+                        process_group(group, candidates),
+                        {
+                            let fitted = super::widgets::fitted_text(
+                                &entry.reason,
+                                size.width.max(1024.0) - 672.0,
+                                design::typography::CAPTION,
+                            );
+                            let truncated = fitted != entry.reason;
+                            let content: Element<'_, Message> = container(
+                                text(fitted)
+                                    .size(design::typography::CAPTION)
+                                    .wrapping(text::Wrapping::None),
+                            )
+                            .width(Fill)
+                            .clip(true)
+                            .into();
+                            if truncated {
+                                super::widgets::tooltip(
+                                    content,
+                                    text(entry.reason.as_str()),
+                                    iced::widget::tooltip::Position::Top,
                                 )
-                                .width(Fill)
-                                .clip(true)
-                                .into();
-                                if truncated {
-                                    super::widgets::tooltip(
-                                        content,
-                                        text(entry.reason.as_str()),
-                                        iced::widget::tooltip::Position::Top,
-                                    )
-                                    .into()
-                                } else {
-                                    content
-                                }
+                                .into()
+                            } else {
+                                content
                             }
-                        ]
-                        .spacing(design::space::SMALL)
-                        .align_y(iced::Center),
-                    )
-                    .padding([0, design::space::MEDIUM as u16])
-                    .center_y(ACTION_LOG_ROW_HEIGHT - 1.0)
-                    .width(Fill),
+                        }
+                    ]
+                    .spacing(design::space::SMALL)
+                    .align_y(iced::Center),
                 )
-                .padding(0)
-                .width(Fill)
-                .on_press(Message::RowPressed)
-                .style(|theme, status| {
-                    let mut style = super::widgets::quiet(theme, status);
-                    style.border.radius = 0.0.into();
-                    style.text_color = theme.palette().text;
-                    style
-                }),
+                .padding([0, design::space::MEDIUM as u16])
+                .center_y(ACTION_LOG_ROW_HEIGHT - 1.0)
+                .width(Fill),
             );
             entries_table = entries_table.push(iced::widget::rule::horizontal(1));
         }
