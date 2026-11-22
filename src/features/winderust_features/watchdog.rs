@@ -224,17 +224,39 @@ impl WatchdogManager {
                 );
             }
         };
+        let mut path_gaps = BTreeMap::new();
         let matched: Vec<_> = processes
             .iter()
             .filter(|process| {
-                settings
+                let path = settings
                     .rules
                     .iter()
-                    .any(|rule| rule.enabled && matching_path(&rule.selector, process).is_some())
+                    .filter(|rule| rule.enabled)
+                    .find_map(|rule| matching_path(&rule.selector, process));
+                if !self.states.is_empty()
+                    && process.image_path.is_none()
+                    && process.is_critical != Some(true)
+                {
+                    if let Some(time) = process.creation_time {
+                        path_gaps.insert((process.id, time), path);
+                    }
+                }
+                path.is_some()
             })
             .cloned()
             .collect();
         let samples = sample_process_resources(&matched, ProcessResourceSampling::UsageOnly);
+        // The fallback queries by PID. Only treat its path as evidence for a
+        // previous member once this pass's resource sample confirms the generation.
+        for (&(pid, time), path) in &mut path_gaps {
+            if path.is_some()
+                && samples
+                    .get(&pid)
+                    .is_none_or(|sample| sample.creation_time != time)
+            {
+                *path = None;
+            }
+        }
         let total_memory_required = !matched.is_empty()
             && settings.rules.iter().any(|rule| {
                 rule.enabled
@@ -244,7 +266,14 @@ impl WatchdogManager {
         let total_memory = total_memory_required
             .then(|| crate::backend::dashboard_metrics::sample_memory_usage().total_physical_bytes)
             .flatten();
-        self.evaluate(settings, &matched, &samples, total_memory, Instant::now())
+        self.evaluate_catalog(
+            settings,
+            &matched,
+            &path_gaps,
+            &samples,
+            total_memory,
+            Instant::now(),
+        )
     }
 
     fn note_settings(&mut self, settings: &WatchdogSettings) {
@@ -254,10 +283,11 @@ impl WatchdogManager {
         }
     }
 
-    fn evaluate(
+    fn evaluate_catalog(
         &mut self,
         settings: &WatchdogSettings,
         processes: &[ProcessInfo],
+        path_gaps: &BTreeMap<ProcessIdentity, Option<&Path>>,
         samples: &BTreeMap<u32, ProcessResourceSample>,
         total_memory: Option<u64>,
         now: Instant,
@@ -272,6 +302,11 @@ impl WatchdogManager {
         let mut activity = BTreeMap::<u32, BatchActivity>::new();
         let mut events = Vec::new();
         let mut cpu_usage = process_cpu_usage_batch();
+        let unresolved_on_path = |identity: &ProcessIdentity, path: &Path| {
+            path_gaps.get(identity).is_some_and(|resolved| {
+                resolved.is_none_or(|resolved| same_executable_path(resolved, path))
+            })
+        };
         let groups = settings
             .rules
             .iter()
@@ -307,9 +342,6 @@ impl WatchdogManager {
                 };
                 matched.push((process, sample));
             }
-            if members.is_empty() {
-                continue;
-            }
             let mut state = self
                 .states
                 .remove(&key)
@@ -325,6 +357,23 @@ impl WatchdogManager {
                     self.states.remove(&previous)
                 })
                 .unwrap_or_default();
+            // An exact prior member whose path could not be read still affects coverage.
+            // Keep its identity without reusing an old path or CPU sample as evidence.
+            for &identity in state
+                .members
+                .keys()
+                .filter(|identity| unresolved_on_path(identity, &key.2))
+            {
+                if let std::collections::btree_map::Entry::Vacant(member) = members.entry(identity)
+                {
+                    member.insert(None);
+                    activity.entry(identity.0).or_default().skipped = true;
+                    complete = false;
+                }
+            }
+            if members.is_empty() {
+                continue;
+            }
             if !members
                 .keys()
                 .any(|identity| state.members.contains_key(identity))
@@ -470,6 +519,20 @@ impl WatchdogManager {
             }
             states.insert(key, state);
         }
+        // A path gap can hide the entire group. Preserve only exact identities still
+        // observed with unresolved paths, and stop qualification until coverage returns.
+        for (key, mut state) in std::mem::take(&mut self.states) {
+            state
+                .members
+                .retain(|identity, _| unresolved_on_path(identity, &key.2));
+            if !state.members.is_empty() {
+                state.interrupt_observation();
+                for &(pid, _) in state.members.keys() {
+                    activity.entry(pid).or_default().skipped = true;
+                }
+                states.insert(key, state);
+            }
+        }
         for row in activity.into_values() {
             snapshot.monitored_processes += usize::from(row.monitored);
             snapshot.alerting_processes += usize::from(row.alerting);
@@ -505,6 +568,26 @@ fn metric_value(
 mod tests {
     use super::*;
     use crate::config::{WatchdogMemoryUnit, WatchdogRule};
+
+    impl WatchdogManager {
+        fn evaluate(
+            &mut self,
+            settings: &WatchdogSettings,
+            processes: &[ProcessInfo],
+            samples: &BTreeMap<u32, ProcessResourceSample>,
+            total_memory: Option<u64>,
+            now: Instant,
+        ) -> (WatchdogSnapshot, Vec<WatchdogEvent>) {
+            self.evaluate_catalog(
+                settings,
+                processes,
+                &BTreeMap::new(),
+                samples,
+                total_memory,
+                now,
+            )
+        }
+    }
 
     fn process() -> ProcessInfo {
         ProcessInfo {
@@ -1314,6 +1397,53 @@ mod tests {
                 );
                 assert_eq!(events.len(), usize::from(matches!(second, 2 | 9)));
             }
+        }
+    }
+
+    #[test]
+    fn unreadable_path_interrupts_an_exact_members_combined_interval() {
+        let mut settings = settings();
+        let rule = &mut settings.rules[0];
+        rule.selector = WatchdogSelector::ExactName {
+            executable_name: "test.exe".into(),
+        };
+        rule.memory.comparison = WatchdogComparison::AtOrBelow;
+        rule.memory.warning.threshold = 30;
+        rule.memory.critical.threshold = 5;
+        let mut processes = [process(), process()];
+        processes[1].id += 1;
+        let start = Instant::now();
+        let mut manager = WatchdogManager::default();
+
+        for second in 0..5 {
+            let now = start + Duration::from_secs(second);
+            let samples = sample(&processes[0], now, Some(0));
+            let (snapshot, events) = if (1..=3).contains(&second) {
+                let unresolved_paths = BTreeMap::from([((processes[1].id, 10), None)]);
+                manager.evaluate_catalog(
+                    &settings,
+                    &processes[..1],
+                    &unresolved_paths,
+                    &samples,
+                    Some(1000),
+                    now,
+                )
+            } else {
+                let mut samples = samples;
+                samples.extend(sample(&processes[1], now, Some(800)));
+                manager.evaluate_catalog(
+                    &settings,
+                    &processes,
+                    &BTreeMap::new(),
+                    &samples,
+                    Some(1000),
+                    now,
+                )
+            };
+            if (1..=3).contains(&second) {
+                assert_eq!(snapshot.skipped_processes, 2);
+            }
+            assert!(events.is_empty());
         }
     }
 

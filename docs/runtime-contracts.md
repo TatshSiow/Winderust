@@ -250,7 +250,8 @@ Read the relevant section before changing feature policy, ownership, restoration
   replacement, shared-setting or rule changes, and disable clear stale sustained
   timers. Membership changes keep the app incident while any exact instance
   survives. Within a matched group, unavailable protection or resource data
-  breaks the affected sustained intervals. Already-fired responses stay latched
+  breaks the affected sustained intervals. An unresolved path on an exact prior
+  member makes its group incomplete. Already-fired responses stay latched
   through observation gaps when the next sample confirms an exact member
   survives. New or unsampled members require a fresh CPU baseline. Power-source
   changes leave Watchdog rules and incident state unchanged.
