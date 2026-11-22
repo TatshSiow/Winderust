@@ -273,6 +273,7 @@ impl RuntimeCore {
         // Prepare replacements before a simultaneous termination can stop the same app.
         events.sort_by_key(|event| event.response.action != WatchdogAction::Restart);
         let mut actions = WatchdogActionCycle::default();
+        let mut notification_error = None;
         for event in events {
             let level = t!(if event.critical {
                 "watchdog.critical"
@@ -421,7 +422,7 @@ impl RuntimeCore {
                     ),
                     Err(error) => {
                         let error = error.localized();
-                        snapshot.last_error = Some(error.clone());
+                        notification_error = Some(error.clone());
                         (ActionLogResult::Failed, format!("{detail}. {error}"))
                     }
                 };
@@ -434,6 +435,7 @@ impl RuntimeCore {
                 );
             }
         }
+        snapshot.last_error = snapshot.last_error.or(notification_error);
         snapshot
     }
 
