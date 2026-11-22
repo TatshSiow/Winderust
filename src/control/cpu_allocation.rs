@@ -1684,6 +1684,12 @@ impl<P: CpuAllocationPlatform> CpuAllocationCoordinator<P> {
         affinity.chain(cpu_sets_only)
     }
 
+    pub(crate) fn needs_topology_observation(&self) -> bool {
+        self.claims.values().any(|claims| !claims.is_empty())
+            || self.has_managed_state()
+            || self.has_pending_reconciliation()
+    }
+
     pub(crate) fn has_managed_state(&self) -> bool {
         !self.managed_affinity.is_empty() || !self.managed_cpu_sets.is_empty()
     }

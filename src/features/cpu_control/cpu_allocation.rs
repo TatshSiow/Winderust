@@ -311,6 +311,31 @@ impl CpuAllocationManager {
         self.disabled_snapshot(coordinator, owner, false, reason, action_log)
     }
 
+    pub(crate) fn reconcile_empty_generation<P: CpuAllocationPlatform>(
+        &mut self,
+        coordinator: &mut CpuAllocationCoordinator<P>,
+        owner: ControlOwner,
+        scanned_processes: usize,
+        action_log: &mut ActionLog,
+    ) -> CpuAllocationGeneration {
+        self.invalidate_zone_generation();
+        self.zone_failure = ZoneAllocationFailure::Waiting;
+        let mut snapshot = self.clear_discovered_targets(
+            coordinator,
+            owner,
+            "process no longer matches a CPU allocation rule",
+            action_log,
+        );
+        snapshot.enabled = true;
+        snapshot.scanned_processes = scanned_processes;
+        CpuAllocationGeneration {
+            snapshot,
+            zone_counts: None,
+            fallback_count: 0,
+            zone_failure: ZoneAllocationFailure::Waiting,
+        }
+    }
+
     #[expect(
         clippy::too_many_arguments,
         reason = "one owner generation includes ordered zone roles and its independent fallback"
