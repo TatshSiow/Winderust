@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, HashSet},
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
@@ -22,8 +22,8 @@ use crate::{
     features::priority_control::PriorityProcessTier,
     foreground::{
         contains_process_name, is_foreground_process, process_executable_path, process_failure_key,
-        process_session_id, same_executable_path, ProtectedProcesses,
-        EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS,
+        process_list::unicode_case_match, process_session_id, same_executable_path,
+        ProtectedProcesses, EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS,
     },
     rules::{
         execution_failure_suppression_threshold, ExecutionFailureTracker, ExecutionSuppression,
@@ -160,14 +160,12 @@ impl CpuAllocationManager {
             );
         }
 
-        let enabled_process_names = settings
-            .rules
+        let enabled_process_names = enabled_rule_process_names(&settings.rules);
+        let unicode_process_names = enabled_process_names
             .iter()
-            .filter(|rule| cpu_allocation_rule_is_active(rule))
-            .filter_map(|rule| Path::new(&rule.executable_path).file_name())
-            .filter_map(|name| name.to_str())
-            .map(str::to_ascii_lowercase)
-            .collect::<BTreeSet<_>>();
+            .map(String::as_str)
+            .filter(|name| !name.is_ascii())
+            .collect::<Vec<_>>();
         if enabled_process_names.is_empty() {
             let reason = format!("no {} rules configured", self.feature_label());
             return self.disabled_snapshot(coordinator, owner, true, &reason, action_log);
@@ -245,7 +243,11 @@ impl CpuAllocationManager {
                 || !process.can_set_information
                 || process.id == current_process_id
                 || is_builtin_excluded(&process.name)
-                || !enabled_process_names.contains(&process.name.to_ascii_lowercase())
+                || !process_name_may_match(
+                    &enabled_process_names,
+                    &unicode_process_names,
+                    &process.name,
+                )
             {
                 continue;
             }
@@ -1137,6 +1139,37 @@ fn processor_kind(
     }
 }
 
+fn enabled_rule_process_names(rules: &[CpuAllocationRule]) -> HashSet<String> {
+    rules
+        .iter()
+        .filter(|rule| cpu_allocation_rule_is_active(rule))
+        .filter_map(|rule| Path::new(rule.executable_path.trim()).file_name())
+        .filter_map(|name| name.to_str())
+        .map(str::to_ascii_lowercase)
+        .collect()
+}
+
+fn process_name_may_match(
+    names: &HashSet<String>,
+    unicode_names: &[&str],
+    process_name: &str,
+) -> bool {
+    // The full path matcher trims the end of the path, including the basename.
+    let process_name = process_name.trim_end();
+    if names.contains(&process_name.to_ascii_lowercase()) {
+        return true;
+    }
+    if process_name.is_ascii() {
+        unicode_names
+            .iter()
+            .any(|name| unicode_case_match(name, process_name))
+    } else {
+        names
+            .iter()
+            .any(|name| unicode_case_match(name, process_name))
+    }
+}
+
 fn matching_rule<'a>(
     rules: &'a [CpuAllocationRule],
     executable_path: &Path,
@@ -1232,6 +1265,37 @@ mod tests {
         assert!(matching_rule(&rules, Path::new(r"C:\Apps\Browser\browser.exe")).is_none());
         assert!(matching_rule(&rules, Path::new(r"C:\Apps\Backup\backup.exe")).is_none());
         assert!(matching_rule(&rules, Path::new(r"D:\Other\worker.exe")).is_none());
+    }
+
+    #[test]
+    fn process_name_prefilter_allows_trimmed_and_unicode_rule_spellings() {
+        let rule = |path: &str| CpuAllocationRule {
+            enabled: true,
+            executable_path: path.to_owned(),
+            focus_selection: crate::cpu_topology::test_selection(1),
+            visible_window_selection: crate::cpu_topology::test_selection(1),
+            background_selection: crate::cpu_topology::test_selection(1),
+        };
+        let rules = [
+            rule(r" C:\Apps\Worker.EXE "),
+            rule(r"C:\Apps\éditeur.exe"),
+            rule(r"C:\Apps\ leading.exe"),
+        ];
+        let names = enabled_rule_process_names(&rules);
+        let unicode_names = names
+            .iter()
+            .map(String::as_str)
+            .filter(|name| !name.is_ascii())
+            .collect::<Vec<_>>();
+        for name in ["worker.exe", "Éditeur.exe", " leading.exe", "worker.exe "] {
+            assert!(process_name_may_match(&names, &unicode_names, name));
+        }
+        assert!(!process_name_may_match(
+            &names,
+            &unicode_names,
+            "different.exe"
+        ));
+        assert!(matching_rule(&rules, Path::new(r"D:\Other\éditeur.exe")).is_none());
     }
 
     #[test]

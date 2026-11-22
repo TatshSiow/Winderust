@@ -901,8 +901,8 @@ pub fn same_executable_path(left: &Path, right: &Path) -> bool {
     }
 }
 
-// Ordinal equality only decides whether two Unicode spellings warrant canonical readback.
-fn unicode_case_match(left: &str, right: &str) -> bool {
+// Ordinal equality makes Unicode spellings candidates for full path verification.
+pub(crate) fn unicode_case_match(left: &str, right: &str) -> bool {
     if left.is_ascii() && right.is_ascii() {
         return false;
     }
