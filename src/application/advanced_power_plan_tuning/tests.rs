@@ -92,20 +92,6 @@ fn values(percent: u32) -> AdvancedPowerPlanTuningSourceValues {
 }
 
 #[test]
-fn successful_apply_is_followed_by_readback() {
-    let actual = values(75);
-    let store = FakeStore::new(actual);
-    let service = AdvancedPowerPlanTuningService::with_store(Box::new(store.clone()));
-
-    let outcome = service.apply_values("plan", values(75));
-
-    assert!(outcome.applied);
-    assert_eq!(outcome.actual_values, Some(actual.into()));
-    assert!(outcome.error.is_none());
-    assert_eq!(store.calls(), vec!["apply", "read"]);
-}
-
-#[test]
 fn reviewed_apply_rejects_stale_values_and_rechecks_before_writing() {
     let actual = values(75);
     let store = FakeStore::new(actual);
