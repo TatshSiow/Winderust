@@ -145,6 +145,7 @@ pub(super) struct Runtime {
     rules: Vec<Rule>,
     controls: Option<(CpuAllocationSettings, CpuAllocationSettings, bool)>,
     dirty: bool,
+    status_after_release: Option<InstanceBalancingSnapshot>,
 }
 
 impl Runtime {
@@ -207,6 +208,28 @@ impl Runtime {
 
     pub(super) fn active(&self) -> bool {
         self.dirty || self.rules.iter().any(|rule| !rule.accepted.is_empty())
+    }
+
+    pub(super) fn take_settled_release_status(
+        &mut self,
+        coordinator: &CpuAllocationCoordinator,
+    ) -> Option<InstanceBalancingSnapshot> {
+        if self.status_after_release.is_some()
+            && coordinator.policy_managed_process_count(ControlOwner::InstanceBalancing) == 0
+        {
+            return self.status_after_release.take();
+        }
+        None
+    }
+
+    fn remember_release_only_status(&mut self, snapshot: &InstanceBalancingSnapshot) {
+        if snapshot.last_error.is_some() {
+            self.status_after_release = Some(InstanceBalancingSnapshot {
+                enabled: snapshot.enabled,
+                detail: snapshot.detail.clone(),
+                ..Default::default()
+            });
+        }
     }
 
     fn accepted_targets(&self) -> BTreeSet<ProcessTargetKey> {
@@ -452,6 +475,7 @@ fn record_release(summary: CpuAllocationReleaseSummary, log: &mut ActionLog) -> 
     let errors = summary
         .failures
         .iter()
+        .filter(|failure| failure.owner == ControlOwner::InstanceBalancing)
         .map(|failure| failure.error.to_string())
         .collect::<Vec<_>>();
     cpu_allocation::record_cpu_allocation_reconciliation(
@@ -473,6 +497,7 @@ impl RuntimeCore {
         watcher_active: bool,
     ) -> InstanceBalancingSnapshot {
         let runtime = &mut self.instance_balancing;
+        runtime.status_after_release = None;
         let controls = (
             &active.cpu_sets_soft,
             &active.processor_affinity_hard,
@@ -508,6 +533,7 @@ impl RuntimeCore {
             } else {
                 InstanceBalancingDetail::Disabled
             });
+            runtime.remember_release_only_status(&snapshot);
             return snapshot;
         }
         let topology = cpu_allocation::processor_topology();
@@ -690,6 +716,9 @@ impl RuntimeCore {
             }
         }
         snapshot.process_activity_known = observed_rules != 0 && observed_rules == rule_count;
+        if rule_count == 0 {
+            runtime.remember_release_only_status(&snapshot);
+        }
         if let Some(error) = &snapshot.last_error {
             snapshot.detail = Some(InstanceBalancingDetail::Diagnostic(error.clone()));
             snapshot.exclusions.clear();

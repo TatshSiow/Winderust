@@ -1849,6 +1849,12 @@ fn run_background_automation(
             scheduler.schedule_now(RefreshDomain::PowerPlanCheck, wait_now);
             None
         };
+        if let Some(status) = runner
+            .instance_balancing
+            .take_settled_release_status(&runner.cpu_allocation_coordinator)
+        {
+            update_instance_balancing_status(&shared, status);
+        }
         runner.publish_action_log_if_changed(&shared);
         let by_activity =
             runner.by_activity_observation(settings, active_power_source(plugged_in), wait_now);
