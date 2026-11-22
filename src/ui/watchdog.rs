@@ -759,15 +759,16 @@ impl Editor {
             duration = duration
                 .push(text(t!("watchdog.invalid_duration").to_string()).style(text::danger));
         }
+        let validation = (duration_valid && !valid).then(|| {
+            text(t!("watchdog.invalid").to_string())
+                .style(text::danger)
+                .into()
+        });
         let (details, scroll_id) = match draft.tab {
-            DraftTab::Monitor(resource) => {
-                let mut details = Self::monitor_details(draft, resource);
-                if duration_valid && !valid {
-                    details =
-                        details.push(text(t!("watchdog.invalid").to_string()).style(text::danger));
-                }
-                (details, "watchdog-rule-details")
-            }
+            DraftTab::Monitor(resource) => (
+                Self::monitor_details(draft, resource),
+                "watchdog-rule-details",
+            ),
             DraftTab::MatchPreview => {
                 (Self::match_preview_details(draft), "watchdog-match-preview")
             }
@@ -854,14 +855,15 @@ impl Editor {
                 .extend(comparison.map(Into::into))
                 .spacing(design::space::SMALL)
                 .align_y(iced::Center),
-                super::motion::wrap(
-                    super::scrolling::scrollable_pane(details)
-                        .id(scroll_id)
-                        .height(Fill),
-                    true,
-                    super::motion::Effect::Content(draft.tab.content_key()),
-                ),
             ]
+            .extend(validation)
+            .push(super::motion::wrap(
+                super::scrolling::scrollable_pane(details)
+                    .id(scroll_id)
+                    .height(Fill),
+                true,
+                super::motion::Effect::Content(draft.tab.content_key()),
+            ))
             .spacing(widgets::CARD_GAP)
             .height(Fill),
             row![
