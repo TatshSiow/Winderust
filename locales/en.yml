@@ -766,6 +766,14 @@ app_suspension:
   no_suspendable: "No custom rules are configured."
   suspend: "Suspend"
   resume_temporarily: "Temporarily resume"
+  status:
+    automation_disabled: "Automation disabled."
+    disabled: "App Suspension disabled."
+    no_rules_configured: "No App Suspension rules configured."
+    unsupported: "App Suspension unavailable: Windows Job Object freeze is not supported on this system."
+    foreground_unknown: "Paused: foreground app is unknown."
+    session_unknown: "Paused: current Windows session is unknown."
+    active: "App Suspension active."
   indicator:
     unavailable: "Unavailable"
     unavailable_help: "This app is running only in Session 0 or under a Windows service account, so Winderust will not suspend it."

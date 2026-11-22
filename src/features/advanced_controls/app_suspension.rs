@@ -88,16 +88,17 @@ pub enum AppSuspensionStatus {
 
 impl fmt::Display for AppSuspensionStatus {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(match self {
-            Self::AutomationDisabled => "Automation disabled.",
-            Self::Disabled => "App Suspension disabled.",
-            Self::NoRulesConfigured => "No App Suspension rules configured.",
-            Self::Unsupported => "App Suspension unavailable: Windows Job Object freeze is not supported on this system.",
-            Self::ForegroundUnknown => "Paused: foreground app is unknown.",
-            Self::SessionUnknown => "Paused: current Windows session is unknown.",
-            Self::Active => "App Suspension active.",
-            Self::Error(error) => error,
-        })
+        let key = match self {
+            Self::AutomationDisabled => "app_suspension.status.automation_disabled",
+            Self::Disabled => "app_suspension.status.disabled",
+            Self::NoRulesConfigured => "app_suspension.status.no_rules_configured",
+            Self::Unsupported => "app_suspension.status.unsupported",
+            Self::ForegroundUnknown => "app_suspension.status.foreground_unknown",
+            Self::SessionUnknown => "app_suspension.status.session_unknown",
+            Self::Active => "app_suspension.status.active",
+            Self::Error(error) => return formatter.write_str(error),
+        };
+        formatter.write_str(&rust_i18n::t!(key))
     }
 }
 
@@ -2993,10 +2994,6 @@ mod tests {
         );
 
         assert_eq!(status.status, AppSuspensionStatus::ForegroundUnknown);
-        assert_eq!(
-            status.status.to_string(),
-            "Paused: foreground app is unknown."
-        );
         assert!(status.status_unknown);
         assert_eq!(status.grace_apps, 0);
         assert_eq!(status.failed_actions, 0);

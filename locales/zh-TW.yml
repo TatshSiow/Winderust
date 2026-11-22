@@ -768,6 +768,14 @@ app_suspension:
   no_suspendable: "尚未設定自訂規則。"
   suspend: "暫停"
   resume_temporarily: "暫時繼續"
+  status:
+    automation_disabled: "自動化已停用。"
+    disabled: "應用程式暫停已停用。"
+    no_rules_configured: "尚未設定應用程式暫停規則。"
+    unsupported: "應用程式暫停無法使用：此系統不支援 Windows Job Object 凍結。"
+    foreground_unknown: "暫停：無法確認前景應用程式。"
+    session_unknown: "暫停：無法確認目前的 Windows 工作階段。"
+    active: "應用程式暫停正在執行。"
   indicator:
     unavailable: "無法使用"
     unavailable_help: "此應用程式只在工作階段 0 或 Windows 服務帳戶下執行，因此 Winderust 不會暫停它。"
