@@ -99,6 +99,7 @@ fn shared(settings: &Arc<Settings>) -> Arc<SharedAutomationState> {
             pending_keep_running_resets: Default::default(),
             pending_instance_limits_resets: super::super::instance_limits::PendingResets::default(),
             pending_instance_balancing_resets: PendingResets::default(),
+            pending_sleep_prevention_settings: Default::default(),
             input_activity: InputActivityTracker::default(),
             windows_event_watcher_active: false,
             worker_accepting_work: false,

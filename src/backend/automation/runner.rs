@@ -562,6 +562,50 @@ impl RuntimeCore {
         }
     }
 
+    pub(super) fn replay_sleep_prevention_settings(
+        &mut self,
+        snapshot: &AutomationSnapshot,
+        plugged_in: Option<bool>,
+    ) {
+        let events = snapshot.wake_events;
+        let Some(previous) = &self.last_settings else {
+            return;
+        };
+        if snapshot.sleep_prevention_settings.is_empty()
+            || !snapshot.windows_event_watcher_active
+            || events.windows_event_watcher_changed
+            || events.power_changed
+            || events.suspend_resume
+            || events.session_changed
+            || plugged_in.is_none()
+            || previous.plugged_in != plugged_in
+            || self.sleep_prevention_power_source() != plugged_in
+        {
+            return;
+        }
+
+        // A saved configuration can filter these callbacks before the watcher is synced.
+        let covered = std::iter::once(&previous.configured)
+            .chain(&snapshot.sleep_prevention_settings)
+            .chain(std::iter::once(&snapshot.settings))
+            .all(|settings| {
+                windows_event_watcher_required(settings)
+                    && [
+                        WindowsAutomationEvent::PowerChanged,
+                        WindowsAutomationEvent::SuspendResume,
+                        WindowsAutomationEvent::SessionChanged,
+                    ]
+                    .into_iter()
+                    .all(|event| windows_event_wake_required(settings, event))
+            });
+        if covered {
+            for settings in &snapshot.sleep_prevention_settings {
+                self.sleep_prevention_manager
+                    .note_configuration(settings, plugged_in);
+            }
+        }
+    }
+
     pub(super) fn note_settings(
         &mut self,
         configured: &Arc<Settings>,

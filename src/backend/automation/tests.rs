@@ -1368,6 +1368,24 @@ fn runtime_settings_snapshot_revision_noop_update_does_not_bump_worker_settings(
 }
 
 #[test]
+fn sleep_prevention_discards_the_whole_burst_when_intermediate_saves_overflow() {
+    let settings = Arc::new(Settings::default());
+    let mut pending = PendingSleepPreventionSettings::default();
+    for _ in 0..4 {
+        pending.record(&settings);
+    }
+    assert_eq!(pending.intermediate.len(), 4);
+
+    pending.record(&settings);
+    pending.record(&settings);
+    assert!(std::mem::take(&mut pending).intermediate.is_empty());
+
+    pending.record(&settings);
+    assert_eq!(pending.intermediate.len(), 1);
+    assert!(Arc::ptr_eq(&pending.intermediate[0], &settings));
+}
+
+#[test]
 fn pending_auto_exclusions_are_taken_only_after_generation_change() {
     let automation = RuntimeHandle::start(&runtime_settings(Settings::default()));
     let wakes = Arc::new(AtomicU64::new(0));
@@ -2674,6 +2692,7 @@ fn callbacks_deliver_events_for_either_profile_without_polling() {
             pending_keep_running_resets: Default::default(),
             pending_instance_limits_resets: instance_limits::PendingResets::default(),
             pending_instance_balancing_resets: instance_balancing::PendingResets::default(),
+            pending_sleep_prevention_settings: Default::default(),
             input_activity: InputActivityTracker::default(),
             windows_event_watcher_active: true,
             worker_accepting_work: false,

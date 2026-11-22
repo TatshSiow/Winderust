@@ -155,7 +155,7 @@ impl SleepPreventionManager {
         changed
     }
 
-    fn note_configuration(&mut self, settings: &Settings, plugged_in: Option<bool>) {
+    pub(crate) fn note_configuration(&mut self, settings: &Settings, plugged_in: Option<bool>) {
         let profiles = [settings, settings.battery_profile()];
         if self.configuration.as_ref().is_some_and(|previous| {
             previous.iter().zip(&profiles).all(|(previous, profile)| {

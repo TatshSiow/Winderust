@@ -10,6 +10,7 @@ pub(super) struct AutomationSnapshot {
     pub(super) keep_running_resets: keep_running::PendingResets,
     pub(super) instance_limits_resets: instance_limits::PendingResets,
     pub(super) instance_balancing_resets: instance_balancing::PendingResets,
+    pub(super) sleep_prevention_settings: Vec<Arc<Settings>>,
     pub(super) windows_event_watcher_active: bool,
 }
 
@@ -25,6 +26,8 @@ pub(super) fn automation_snapshot(shared: &SharedAutomationState) -> Option<Auto
         keep_running_resets: std::mem::take(&mut state.pending_keep_running_resets),
         instance_limits_resets: std::mem::take(&mut state.pending_instance_limits_resets),
         instance_balancing_resets: std::mem::take(&mut state.pending_instance_balancing_resets),
+        sleep_prevention_settings: std::mem::take(&mut state.pending_sleep_prevention_settings)
+            .intermediate,
         windows_event_watcher_active: state.windows_event_watcher_active,
     })
 }

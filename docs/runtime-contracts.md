@@ -846,8 +846,14 @@ Read the relevant section before changing feature policy, ownership, restoration
   until they exit or the user explicitly disables/re-enables their rules or the
   feature. Suspend/resume takes precedence over saved settings first observed
   in the same worker pass. Power-profile changes preserve this suppression.
-  Editing an inactive profile cannot rearm an app in the active profile. User
-  sleep, lid actions, critical-battery handling, and Windows policy remain authoritative.
+  Editing an inactive profile cannot rearm an app in the active profile.
+  Winderust can preserve a quick disable and re-enable between worker passes
+  when the active power source stays known and Windows event coverage remains
+  continuous. Winderust retains up to four intermediate saves per worker pass.
+  Overflow or an uncertain power, session, or watcher transition discards that
+  history and the worker evaluates the latest saved configuration normally.
+  User sleep, lid actions, critical-battery handling, and Windows policy remain
+  authoritative.
   A missing or stopped Windows event watcher blocks new requests, releases owned
   requests, and suppresses the current cohort until explicitly rearmed.
 - Running-app reconciliation remains at one second in visible and tray modes;

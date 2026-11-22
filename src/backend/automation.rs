@@ -442,10 +442,33 @@ struct AutomationWorkerState {
     pending_keep_running_resets: keep_running::PendingResets,
     pending_instance_limits_resets: instance_limits::PendingResets,
     pending_instance_balancing_resets: instance_balancing::PendingResets,
+    pending_sleep_prevention_settings: PendingSleepPreventionSettings,
     input_activity: InputActivityTracker,
     windows_event_watcher_active: bool,
     worker_accepting_work: bool,
     stop_requested: bool,
+}
+
+#[derive(Default)]
+struct PendingSleepPreventionSettings {
+    intermediate: Vec<Arc<Settings>>,
+    overflowed: bool,
+}
+
+impl PendingSleepPreventionSettings {
+    fn record(&mut self, settings: &Arc<Settings>) {
+        // shortcut: Keep four intermediate saves, revisit when larger bursts need replay.
+        const MAX_INTERMEDIATE_SETTINGS: usize = 4;
+        if self.overflowed {
+            return;
+        }
+        if self.intermediate.len() == MAX_INTERMEDIATE_SETTINGS {
+            self.intermediate.clear();
+            self.overflowed = true;
+        } else {
+            self.intermediate.push(Arc::clone(settings));
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -505,6 +528,7 @@ impl RuntimeHandle {
                 pending_keep_running_resets: Default::default(),
                 pending_instance_limits_resets: instance_limits::PendingResets::default(),
                 pending_instance_balancing_resets: instance_balancing::PendingResets::default(),
+                pending_sleep_prevention_settings: Default::default(),
                 input_activity: InputActivityTracker::default(),
                 windows_event_watcher_active: false,
                 worker_accepting_work: false,
@@ -572,6 +596,12 @@ impl RuntimeHandle {
                     bump_status_generation(&self.shared, &mut state);
                 }
                 instance_balancing::record_settings_changes(&mut state, &settings.value);
+                if state.pending_events.settings_changed {
+                    let state = &mut *state;
+                    state
+                        .pending_sleep_prevention_settings
+                        .record(&state.settings);
+                }
                 state.settings = Arc::clone(&settings.value);
                 state.runtime_revision = settings.runtime_revision;
                 state.pending_events.settings_changed = true;
@@ -1136,8 +1166,9 @@ fn run_background_automation(
             runner.action_log.clear();
         }
         runner.action_log.begin_batch();
-        let configured_settings = snapshot.settings;
         let plugged_in = power_source();
+        runner.replay_sleep_prevention_settings(&snapshot, plugged_in);
+        let configured_settings = snapshot.settings;
         let settings = active_power_source_settings(configured_settings.as_ref(), plugged_in);
         let change_generation = snapshot.change_generation;
         let cpu_allocation_release_retry_pending_at_pass_start =
@@ -2194,6 +2225,7 @@ mod keep_running_intake_tests {
                 pending_keep_running_resets: Default::default(),
                 pending_instance_limits_resets: instance_limits::PendingResets::default(),
                 pending_instance_balancing_resets: instance_balancing::PendingResets::default(),
+                pending_sleep_prevention_settings: Default::default(),
                 input_activity: InputActivityTracker::default(),
                 windows_event_watcher_active: true,
                 worker_accepting_work: true,
