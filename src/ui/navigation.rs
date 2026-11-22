@@ -616,7 +616,12 @@ pub(super) fn dashboard_search_pages(query: &str, show_advanced_controls: bool) 
 }
 
 fn dashboard_page_matches_query(page: Page, query: &str) -> bool {
-    let text = dashboard_page_search_text(page).to_lowercase();
+    let mut text = dashboard_page_search_text(page);
+    if text.is_ascii() {
+        text.make_ascii_lowercase();
+    } else {
+        text = text.to_lowercase();
+    }
     query.split_whitespace().all(|term| text.contains(term))
 }
 
