@@ -2482,12 +2482,6 @@ impl Default for MemoryTrimSettings {
 }
 
 impl IoPrioritySettings {
-    pub fn contains_exclusion(&self, process_name: &str) -> bool {
-        self.exclusions
-            .iter()
-            .any(|rule| same_rule_executable_path(&rule.executable_path, process_name))
-    }
-
     pub fn override_for(
         &self,
         process_name: &str,
@@ -2501,12 +2495,6 @@ impl IoPrioritySettings {
 }
 
 impl ProcessPrioritySettings {
-    pub fn contains_exclusion(&self, process_name: &str) -> bool {
-        self.exclusions
-            .iter()
-            .any(|rule| same_rule_executable_path(&rule.executable_path, process_name))
-    }
-
     pub fn override_for(
         &self,
         process_name: &str,
@@ -2520,12 +2508,6 @@ impl ProcessPrioritySettings {
 }
 
 impl ThreadPrioritySettings {
-    pub fn contains_exclusion(&self, process_name: &str) -> bool {
-        self.exclusions
-            .iter()
-            .any(|rule| same_rule_executable_path(&rule.executable_path, process_name))
-    }
-
     pub fn override_for(
         &self,
         process_name: &str,
@@ -2539,12 +2521,6 @@ impl ThreadPrioritySettings {
 }
 
 impl DynamicPriorityBoostSettings {
-    pub fn contains_exclusion(&self, process_name: &str) -> bool {
-        self.exclusions
-            .iter()
-            .any(|rule| same_rule_executable_path(&rule.executable_path, process_name))
-    }
-
     pub fn override_for(
         &self,
         process_name: &str,
@@ -2558,12 +2534,6 @@ impl DynamicPriorityBoostSettings {
 }
 
 impl GpuPrioritySettings {
-    pub fn contains_exclusion(&self, process_name: &str) -> bool {
-        self.exclusions
-            .iter()
-            .any(|rule| same_rule_executable_path(&rule.executable_path, process_name))
-    }
-
     pub fn override_for(
         &self,
         process_name: &str,
@@ -2577,12 +2547,6 @@ impl GpuPrioritySettings {
 }
 
 impl MemoryPrioritySettings {
-    pub fn contains_exclusion(&self, process_name: &str) -> bool {
-        self.exclusions
-            .iter()
-            .any(|rule| same_rule_executable_path(&rule.executable_path, process_name))
-    }
-
     pub fn override_for(
         &self,
         process_name: &str,

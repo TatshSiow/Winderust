@@ -1834,7 +1834,10 @@ fn adaptive_engine_process_pressure_feeds_priority_defaults() {
         thread_priority.background_priority,
         ProcessThreadPrioritySetting::BelowNormal
     );
-    assert!(thread_priority.contains_exclusion("game.exe"));
+    assert_eq!(
+        thread_priority.exclusions,
+        settings.adaptive_engine_process.custom_rules
+    );
 
     let dynamic_priority_boost = effective_dynamic_priority_boost_settings(&settings, true);
     assert!(dynamic_priority_boost.enabled);
@@ -1847,7 +1850,10 @@ fn adaptive_engine_process_pressure_feeds_priority_defaults() {
         dynamic_priority_boost.background_boost,
         ProcessDynamicPriorityBoostSetting::Disabled
     );
-    assert!(dynamic_priority_boost.contains_exclusion("game.exe"));
+    assert_eq!(
+        dynamic_priority_boost.exclusions,
+        settings.adaptive_engine_process.custom_rules
+    );
 
     let io_priority = effective_io_priority_settings(&settings, true);
     assert_eq!(
@@ -1861,7 +1867,10 @@ fn adaptive_engine_process_pressure_feeds_priority_defaults() {
     assert!(io_priority.foreground_detection_enabled);
     assert!(io_priority.preserve_foreground_priority);
     assert!(io_priority.preserve_background_priority);
-    assert!(io_priority.contains_exclusion("game.exe"));
+    assert_eq!(
+        io_priority.exclusions,
+        settings.adaptive_engine_process.custom_rules
+    );
 
     let gpu_priority = effective_gpu_priority_settings(&settings, true);
     assert_eq!(
@@ -1880,7 +1889,10 @@ fn adaptive_engine_process_pressure_feeds_priority_defaults() {
         gpu_priority.background_priority,
         ProcessGpuPrioritySetting::BelowNormal
     );
-    assert!(gpu_priority.contains_exclusion("game.exe"));
+    assert_eq!(
+        gpu_priority.exclusions,
+        settings.adaptive_engine_process.custom_rules
+    );
 }
 
 #[test]

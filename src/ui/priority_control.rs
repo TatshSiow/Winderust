@@ -294,13 +294,10 @@ impl Kind {
     pub(super) fn can_add(self, settings: &Settings, path: &str) -> bool {
         can_add_exact_process_candidate(
             path,
-            |path| match self {
-                Self::Process => settings.process_priority.contains_exclusion(path),
-                Self::Thread => settings.thread_priority.contains_exclusion(path),
-                Self::Io => settings.io_priority.contains_exclusion(path),
-                Self::Gpu => settings.gpu_priority.contains_exclusion(path),
-                Self::Memory => settings.memory_priority.contains_exclusion(path),
-                Self::DynamicBoost => settings.dynamic_priority_boost.contains_exclusion(path),
+            |path| {
+                self.rules(settings)
+                    .iter()
+                    .any(|rule| same_rule_executable_path(&rule.executable_path, path))
             },
             |name| match self {
                 Self::Process => crate::process_priority::is_builtin_excluded(name),

@@ -1619,121 +1619,14 @@ impl WinderustApp {
                 }
             }
             Message::ExecutableChosen(page, profile, path) => {
-                if profile == self.power_source {
-                    if let Some(path) = path {
-                        let Ok(path) = path.into_os_string().into_string() else {
-                            self.error_message = t!("common.unsupported_unicode_path").to_string();
-                            return Task::none();
-                        };
-                        if let Some(kind) = priority_kind(page) {
-                            return self.update(Message::Priority(
-                                kind,
-                                priority_control::Message::Path(
-                                    super::process_rules::picked_path_input(path),
-                                ),
-                            ));
-                        }
-                        match page {
-                            Page::SleepPrevention => {
-                                return self.update(Message::SleepPrevention(
-                                    sleep_prevention::Message::Path(
-                                        super::process_rules::picked_path_input(path),
-                                    ),
-                                ));
-                            }
-                            Page::AppSuspension => {
-                                return self.update(Message::Suspension(
-                                    app_suspension::Message::Path(
-                                        super::process_rules::picked_path_input(path),
-                                    ),
-                                ));
-                            }
-                            Page::Watchdog => {
-                                return self.update(Message::Watchdog(watchdog::Message::Path(
-                                    super::process_rules::picked_path_input(path),
-                                )));
-                            }
-                            Page::InstanceLimits => {
-                                return self.update(Message::InstanceLimits(
-                                    instance_limits::Message::Path(path),
-                                ));
-                            }
-                            Page::KeepRunning => {
-                                return self.update(Message::KeepRunning(
-                                    keep_running::Message::Path(
-                                        super::process_rules::picked_path_input(path),
-                                    ),
-                                ));
-                            }
-                            Page::MemoryTrim => {
-                                return self.update(Message::Trim(memory_trim::Message::Path(
-                                    super::process_rules::picked_path_input(path),
-                                )));
-                            }
-                            Page::TimerResolution => {
-                                return self.update(Message::Timer(
-                                    timer_resolution::Message::Path(
-                                        super::process_rules::picked_path_input(path),
-                                    ),
-                                ));
-                            }
-                            Page::CpuSetsSoft => {
-                                return self.update(Message::Allocation(
-                                    cpu_allocation::Kind::Soft,
-                                    cpu_allocation::Message::Path(
-                                        super::process_rules::picked_path_input(path),
-                                    ),
-                                ));
-                            }
-                            Page::ProcessorAffinityHard => {
-                                return self.update(Message::Allocation(
-                                    cpu_allocation::Kind::Hard,
-                                    cpu_allocation::Message::Path(
-                                        super::process_rules::picked_path_input(path),
-                                    ),
-                                ));
-                            }
-                            Page::BackgroundEfficiency => {
-                                return self.update(Message::Efficiency(
-                                    background_efficiency::Message::Path(
-                                        super::process_rules::picked_path_input(path),
-                                    ),
-                                ));
-                            }
-                            Page::AdaptiveEngine => {
-                                return self.update(Message::Adaptive(
-                                    adaptive_engine::Message::Path(
-                                        super::process_rules::picked_path_input(path),
-                                    ),
-                                ));
-                            }
-                            Page::CpuLimiter => {
-                                return self.update(Message::CpuLimiter(
-                                    cpu_limiter::Message::Path(
-                                        super::process_rules::picked_path_input(path),
-                                    ),
-                                ));
-                            }
-                            Page::ByFocus => {
-                                return self.update(Message::ProcessPowerPlans(
-                                    process_power_plans::Kind::Focus,
-                                    process_power_plans::Message::Path(
-                                        super::process_rules::picked_path_input(path),
-                                    ),
-                                ));
-                            }
-                            Page::ByRunningApp => {
-                                return self.update(Message::ProcessPowerPlans(
-                                    process_power_plans::Kind::RunningApp,
-                                    process_power_plans::Message::Path(
-                                        super::process_rules::picked_path_input(path),
-                                    ),
-                                ));
-                            }
-                            _ => {}
-                        }
-                    }
-                }
+                let Some(path) = path.filter(|_| profile == self.power_source) else {
+                    return Task::none();
+                };
+                let Ok(path) = path.into_os_string().into_string() else {
+                    self.error_message = t!("common.unsupported_unicode_path").to_string();
+                    return Task::none();
+                };
+                return self.update(picked_executable_message(page, path));
             }
             Message::ProcessPowerPlans(kind, process_power_plans::Message::Browse) => {
                 return self.browse(match kind {
@@ -3949,6 +3842,46 @@ fn priority_kind(page: Page) -> Option<priority_control::Kind> {
         Page::MemoryPriority => Some(priority_control::Kind::Memory),
         Page::DynamicPriorityBoost => Some(priority_control::Kind::DynamicBoost),
         _ => None,
+    }
+}
+
+fn picked_executable_message(page: Page, path: String) -> Message {
+    if page == Page::InstanceLimits {
+        return Message::InstanceLimits(instance_limits::Message::Path(path));
+    }
+    let path = super::process_rules::picked_path_input(path);
+    if let Some(kind) = priority_kind(page) {
+        return Message::Priority(kind, priority_control::Message::Path(path));
+    }
+    match page {
+        Page::SleepPrevention => Message::SleepPrevention(sleep_prevention::Message::Path(path)),
+        Page::AppSuspension => Message::Suspension(app_suspension::Message::Path(path)),
+        Page::Watchdog => Message::Watchdog(watchdog::Message::Path(path)),
+        Page::KeepRunning => Message::KeepRunning(keep_running::Message::Path(path)),
+        Page::MemoryTrim => Message::Trim(memory_trim::Message::Path(path)),
+        Page::TimerResolution => Message::Timer(timer_resolution::Message::Path(path)),
+        Page::CpuSetsSoft => Message::Allocation(
+            cpu_allocation::Kind::Soft,
+            cpu_allocation::Message::Path(path),
+        ),
+        Page::ProcessorAffinityHard => Message::Allocation(
+            cpu_allocation::Kind::Hard,
+            cpu_allocation::Message::Path(path),
+        ),
+        Page::BackgroundEfficiency => {
+            Message::Efficiency(background_efficiency::Message::Path(path))
+        }
+        Page::AdaptiveEngine => Message::Adaptive(adaptive_engine::Message::Path(path)),
+        Page::CpuLimiter => Message::CpuLimiter(cpu_limiter::Message::Path(path)),
+        Page::ByFocus => Message::ProcessPowerPlans(
+            process_power_plans::Kind::Focus,
+            process_power_plans::Message::Path(path),
+        ),
+        Page::ByRunningApp => Message::ProcessPowerPlans(
+            process_power_plans::Kind::RunningApp,
+            process_power_plans::Message::Path(path),
+        ),
+        _ => unreachable!("Executable Browse is not wired for {page:?}"),
     }
 }
 
