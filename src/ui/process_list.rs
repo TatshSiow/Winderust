@@ -360,6 +360,9 @@ impl ProcessList {
                 self.refreshing = false;
                 match result {
                     Ok(data) => {
+                        let rebuild_rows = !self.population_loaded
+                            || !matches!(self.sort, Sort::Name | Sort::Pid)
+                            || self.processes != data.processes;
                         self.population_loaded = true;
                         let mut cpu_usage = crate::cpu::process_cpu_usage_batch();
                         self.cpu = data
@@ -395,7 +398,9 @@ impl ProcessList {
                             .filter(|path| !self.icons.contains_key(*path))
                             .cloned()
                             .collect::<Vec<_>>();
-                        self.rebuild();
+                        if rebuild_rows {
+                            self.rebuild();
+                        }
                         if !missing.is_empty() {
                             // Publish rows before extracting executable icons, and keep one refresh in flight.
                             self.refreshing = true;
