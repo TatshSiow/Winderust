@@ -536,6 +536,18 @@ fn sidebar_state(
         if !priority.enabled && priority.last_error.is_some() {
             return FeatureRunState::Error;
         }
+    } else if page == Page::AppSuspension {
+        use crate::features::advanced_controls::app_suspension::AppSuspensionStatus;
+        let suspension = &runtime.feature_status.app_suspension;
+        if !suspension.status_unknown
+            && matches!(
+                suspension.status,
+                AppSuspensionStatus::AutomationDisabled | AppSuspensionStatus::Disabled
+            )
+            && suspension.last_error.is_some()
+        {
+            return FeatureRunState::Error;
+        }
     }
     if !settings.general.enabled
         || super::navigation::feature_page_enabled(settings, page) == Some(false)
@@ -1096,6 +1108,34 @@ mod tests {
         assert_ne!(sample, Default::default());
         std::sync::Arc::make_mut(&mut runtime.feature_status).watchdog = sample;
         assert_eq!(status(&runtime), (FeatureRunState::Waiting, [Some(0); 3]));
+    }
+
+    #[test]
+    fn app_suspension_sidebar_reports_pending_restore_when_disabled() {
+        let mut settings = Settings::default();
+        settings.general.enabled = true;
+        settings.app_suspension.enabled = false;
+        let mut runtime = RuntimeStatusSnapshot {
+            generation: 1,
+            ..Default::default()
+        };
+
+        for (frozen, error, unknown, expected) in [
+            (1, Some("thaw failed"), false, FeatureRunState::Error),
+            (0, None, false, FeatureRunState::Inactive),
+            (0, Some("lock error"), true, FeatureRunState::Inactive),
+        ] {
+            let features = std::sync::Arc::make_mut(&mut runtime.feature_status);
+            features.app_suspension.suspended_processes = frozen;
+            features.app_suspension.last_error = error.map(str::to_owned);
+            features.app_suspension.status_unknown = unknown;
+
+            let summary = feature_status_summary(Page::AppSuspension, &runtime).unwrap();
+            assert_eq!(
+                sidebar_state(Page::AppSuspension, &settings, &runtime, &summary, None),
+                expected
+            );
+        }
     }
 
     #[test]
