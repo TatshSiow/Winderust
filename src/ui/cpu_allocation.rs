@@ -4,13 +4,14 @@ use crate::application::SettingsEditor;
 use crate::config::{CpuAllocationPreset, CpuAllocationRule, CpuAllocationSettings, Settings};
 use crate::cpu_allocation::{self, LogicalProcessorInfo, LogicalProcessorKind};
 use crate::cpu_topology::{CacheKind, CpuSelection, CpuTopology, ProcessorId, SavedSelectionError};
-use crate::foreground::executable_path_key;
-use crate::ui::process_rules::can_add_process_candidate;
+use crate::foreground::process_list::normalize_path_slashes;
+use crate::ui::process_rules::{
+    can_add_exact_process_candidate, exact_path_input, picked_path_input,
+};
 use crate::ui::scrolling::scrollable;
 use iced::widget::{column, row, text};
 use iced::{Element, Fill};
 use rust_i18n::t;
-use std::path::Path;
 use std::rc::Rc;
 
 #[derive(Debug, Clone, Copy)]
@@ -111,7 +112,8 @@ impl Editor {
             Message::Path(v) => self.path = v,
             Message::Browse => {}
             Message::Add => {
-                if can_add(s, &self.path) {
+                let path = exact_path_input(&self.path);
+                if can_add(s, path) {
                     let selection = match SelectionCatalog::capture(k).all_selection() {
                         Ok(selection) => selection,
                         Err(error) => {
@@ -121,7 +123,7 @@ impl Editor {
                     };
                     settings_mut(s, k).rules.push(CpuAllocationRule {
                         enabled: true,
-                        executable_path: executable_path_key(Path::new(&self.path)),
+                        executable_path: normalize_path_slashes(path).into_owned(),
                         focus_selection: selection.clone(),
                         visible_window_selection: selection.clone(),
                         background_selection: selection,
@@ -343,13 +345,13 @@ impl Editor {
                 "",
                 "cpu_allocation.rules_help"
             ),
-            super::app_picker::view(
+            super::app_picker::view_with_path_selection(
                 &self.path,
                 candidates,
                 true,
-                Message::Path,
+                (Message::Path, |path| Message::Path(picked_path_input(path))),
                 Message::Browse,
-                (can_add(s, &self.path)).then_some(Message::Add),
+                (can_add(s, exact_path_input(&self.path))).then_some(Message::Add),
                 |path| can_add(s, path).then_some(true)
             )
         ]
@@ -691,7 +693,7 @@ impl Editor {
     }
 }
 fn can_add(s: &Settings, path: &str) -> bool {
-    can_add_process_candidate(
+    can_add_exact_process_candidate(
         path,
         |p| s.cpu_sets_soft.contains_rule_for(p) || s.processor_affinity_hard.contains_rule_for(p),
         cpu_allocation::is_builtin_excluded,

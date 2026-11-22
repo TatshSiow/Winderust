@@ -2755,7 +2755,7 @@ impl AdaptiveEngineProcessSettings {
     }
 }
 
-fn same_rule_executable_path(configured_path: &str, observed_path: &str) -> bool {
+pub(crate) fn same_rule_executable_path(configured_path: &str, observed_path: &str) -> bool {
     let configured_path = configured_path.trim_start();
     !configured_path.is_empty()
         && !observed_path.is_empty()

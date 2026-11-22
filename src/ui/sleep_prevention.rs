@@ -1,9 +1,12 @@
 use super::{app_picker, design, widgets};
 use crate::application::SettingsEditor;
-use crate::config::{SleepPreventionRule, SleepPreventionSettings};
+use crate::config::{same_rule_executable_path, SleepPreventionRule, SleepPreventionSettings};
 use crate::control::instance_limits::validate_path;
+use crate::foreground::process_list::normalize_path_slashes;
 use crate::sleep_prevention::SleepPreventionSnapshot;
-use crate::ui::process_rules::{can_add_process_candidate, process_setting_matches};
+use crate::ui::process_rules::{
+    can_add_exact_process_candidate, exact_path_input, picked_path_input,
+};
 use iced::{
     widget::{column, text},
     Element, Fill,
@@ -28,8 +31,8 @@ pub(super) enum Message {
 
 impl Editor {
     fn can_add(settings: &SleepPreventionSettings, path: &str) -> bool {
-        validate_path(path.trim()).is_ok()
-            && can_add_process_candidate(
+        validate_path(path).is_ok()
+            && can_add_exact_process_candidate(
                 path,
                 |path| settings.contains_rule_for(path),
                 crate::features::power_plan_control::by_running_app::is_builtin_excluded,
@@ -43,15 +46,16 @@ impl Editor {
                 settings.sleep_prevention.enabled = value;
             }
             Message::Path(value) => self.path = value,
-            Message::Add if Self::can_add(current, &self.path) => {
-                settings.sleep_prevention.rules.push(SleepPreventionRule {
-                    executable_path: crate::foreground::executable_path_key(std::path::Path::new(
-                        self.path.trim(),
-                    )),
-                    enabled: true,
-                    keep_display_on: false,
-                });
-                self.path.clear();
+            Message::Add => {
+                let path = exact_path_input(&self.path);
+                if Self::can_add(current, path) {
+                    settings.sleep_prevention.rules.push(SleepPreventionRule {
+                        executable_path: normalize_path_slashes(path).into_owned(),
+                        enabled: true,
+                        keep_display_on: false,
+                    });
+                    self.path.clear();
+                }
             }
             Message::RuleEnabled(index, value)
                 if current
@@ -73,7 +77,6 @@ impl Editor {
                 settings.sleep_prevention.rules.remove(index);
             }
             Message::Enabled(_)
-            | Message::Add
             | Message::Browse
             | Message::RuleEnabled(..)
             | Message::KeepDisplayOn(..)
@@ -122,21 +125,19 @@ impl Editor {
                 )
             })
             .collect();
-        let can_add = Self::can_add(settings, &self.path);
-        let mut picker = column![app_picker::view(
+        let path = exact_path_input(&self.path);
+        let can_add = Self::can_add(settings, path);
+        let mut picker = column![app_picker::view_with_path_selection(
             &self.path,
             candidates,
             true,
-            Message::Path,
+            (Message::Path, |path| Message::Path(picked_path_input(path))),
             Message::Browse,
             can_add.then_some(Message::Add),
             |path| Self::can_add(settings, path).then_some(true),
         )]
         .spacing(design::space::SMALL);
-        if !can_add
-            && app_picker::is_path_query(&self.path)
-            && validate_path(self.path.trim()).is_err()
-        {
+        if !can_add && app_picker::is_path_query(&self.path) && validate_path(path).is_err() {
             picker = picker.push(app_picker::path_format_hint());
         }
         super::scrolling::scrollable(
@@ -170,7 +171,7 @@ fn indicator(status: Option<&SleepPreventionSnapshot>, rule: &SleepPreventionRul
     let Some(status) = status else {
         return t!("common.unknown").to_string();
     };
-    let matches = |path: &str| process_setting_matches(path, &rule.executable_path);
+    let matches = |path: &str| same_rule_executable_path(&rule.executable_path, path);
     let contains = |paths: &[String]| paths.iter().any(|path| matches(path));
     let accepted_request = || {
         if !status.system_requested {
@@ -220,12 +221,17 @@ mod tests {
             r"C:\Apps\.\worker.exe",
             r"C:\Apps\child\..\worker.exe",
             r"\\?\C:\Apps\worker.exe",
+            r#""C:\Apps\worker.exe ""#,
         ] {
             editor.update(&mut settings, Message::Path(path.into()));
             editor.update(&mut settings, Message::Add);
         }
         assert!(!settings.has_unsaved_changes());
-        for path in [r" C:\Apps\worker.exe ", r" \\server\share\worker.exe "] {
+        for path in [
+            r" C:\Apps\worker.exe ",
+            "C:\\Apps\\worker.exe\u{3000}",
+            r" \\server\share\worker.exe ",
+        ] {
             editor.update(&mut settings, Message::Path(path.into()));
             editor.update(&mut settings, Message::Add);
         }
@@ -235,7 +241,14 @@ mod tests {
             .iter()
             .map(|rule| rule.executable_path.as_str())
             .collect();
-        assert_eq!(paths, [r"C:\Apps\worker.exe", r"\\server\share\worker.exe"]);
+        assert_eq!(
+            paths,
+            [
+                r"C:\Apps\worker.exe",
+                "C:\\Apps\\worker.exe\u{3000}",
+                r"\\server\share\worker.exe"
+            ]
+        );
     }
 
     #[test]

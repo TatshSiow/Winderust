@@ -4,7 +4,7 @@ use crate::app_suspension::{self, AppSuspensionSnapshot};
 use crate::application::SettingsEditor;
 use crate::config::{AppSuspensionRule, AppSuspensionSettings, NetworkThresholdUnit};
 use crate::ui::process_rules::{
-    can_add_app_suspension_process, new_app_suspension_rule, process_setting_matches,
+    can_add_app_suspension_process, exact_path_input, new_app_suspension_rule, picked_path_input,
 };
 use crate::ui::scrolling::scrollable;
 use iced::widget::{column, text};
@@ -121,12 +121,15 @@ impl Editor {
                 }
             }
             Message::Path(v) => self.path = v,
-            Message::Add if self.can_add(s, unavailable) => {
-                settings
-                    .app_suspension
-                    .suspendable_apps
-                    .push(new_app_suspension_rule(&self.path));
-                self.path.clear();
+            Message::Add => {
+                let path = exact_path_input(&self.path);
+                if Self::can_add(s, path, unavailable) {
+                    settings
+                        .app_suspension
+                        .suspendable_apps
+                        .push(new_app_suspension_rule(path));
+                    self.path.clear();
+                }
             }
             Message::Delay(field, value) => {
                 if let Some(seconds) = field
@@ -253,16 +256,13 @@ impl Editor {
             | Message::Thaw(_)
             | Message::Audio(_)
             | Message::Network(_)
-            | Message::Add
             | Message::Browse => {}
         }
         None
     }
-    fn can_add(&self, s: &AppSuspensionSettings, unavailable: &[String]) -> bool {
-        can_add_app_suspension_process(s, &self.path)
-            && !unavailable
-                .iter()
-                .any(|p| process_setting_matches(p, &self.path))
+    fn can_add(s: &AppSuspensionSettings, path: &str, unavailable: &[String]) -> bool {
+        can_add_app_suspension_process(s, path)
+            && !app_suspension::contains_process(unavailable, path)
     }
     pub(super) fn view<'a>(
         &'a self,
@@ -325,20 +325,14 @@ impl Editor {
             t!("common.rules").to_string(),
             design::typography::BODY,
         ));
-        body = body.push(super::app_picker::view(
+        body = body.push(super::app_picker::view_with_path_selection(
             &self.path,
             candidates,
             true,
-            Message::Path,
+            (Message::Path, |path| Message::Path(picked_path_input(path))),
             Message::Browse,
-            (self.can_add(s, unavailable)).then_some(Message::Add),
-            |path| {
-                Some(
-                    !unavailable
-                        .iter()
-                        .any(|blocked| process_setting_matches(blocked, path)),
-                )
-            },
+            Self::can_add(s, exact_path_input(&self.path), unavailable).then_some(Message::Add),
+            |path| Some(!app_suspension::contains_process(unavailable, path)),
         ));
         let mut cards = Vec::new();
         for (i, r) in s.suspendable_apps.iter().enumerate() {
@@ -676,6 +670,26 @@ mod tests {
             settings.app_suspension.suspendable_apps[0].network_download_threshold_bytes,
             0
         );
+    }
+
+    #[test]
+    fn selecting_a_literal_suffix_does_not_use_the_other_apps_availability() {
+        let ordinary = r"C:\Apps\test.exe";
+        let selected = "C:\\Apps\\test.exe\u{3000}";
+        let unavailable = [ordinary.to_string()];
+        let status = AppSuspensionSnapshot::default();
+        let mut editor = Editor::default();
+        let mut settings = SettingsEditor::with_settings(Settings::default());
+        editor.update(
+            &mut settings,
+            &status,
+            &unavailable,
+            Message::Path(picked_path_input(selected.into())),
+        );
+        editor.update(&mut settings, &status, &unavailable, Message::Add);
+        let rules = &settings.app_suspension.suspendable_apps;
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].executable_path, selected);
     }
 
     #[test]

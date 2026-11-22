@@ -191,15 +191,15 @@ pub(super) fn update(s: &mut SettingsEditor, path: &str, m: Message) -> Option<S
         }
         Message::CpuEnabled(soft, enabled) => {
             let (kind, other) = if soft { (Soft, Hard) } else { (Hard, Soft) };
-            let has_rule = cpu_allocation::settings(s, kind).contains_rule_for(&path);
+            let has_rule = cpu_allocation::settings(s, kind).contains_rule_for(image_path);
             if !enabled && has_rule {
                 cpu_allocation::settings_mut(s, kind)
                     .rules
-                    .retain(|rule| !process_setting_matches(&rule.executable_path, &path));
+                    .retain(|rule| !same_rule_executable_path(&rule.executable_path, image_path));
             } else if enabled
                 && !has_rule
-                && !cpu_allocation::settings(s, other).contains_rule_for(&path)
-                && !crate::cpu_allocation::is_builtin_excluded(&path)
+                && !cpu_allocation::settings(s, other).contains_rule_for(image_path)
+                && !crate::cpu_allocation::is_builtin_excluded(image_path)
             {
                 let selection =
                     match cpu_allocation::SelectionCatalog::capture(kind).all_selection() {
@@ -210,7 +210,10 @@ pub(super) fn update(s: &mut SettingsEditor, path: &str, m: Message) -> Option<S
                     .rules
                     .push(CpuAllocationRule {
                         enabled: true,
-                        executable_path: path,
+                        executable_path: crate::foreground::process_list::normalize_path_slashes(
+                            image_path,
+                        )
+                        .into_owned(),
                         focus_selection: selection.clone(),
                         visible_window_selection: selection.clone(),
                         background_selection: selection,
@@ -223,7 +226,7 @@ pub(super) fn update(s: &mut SettingsEditor, path: &str, m: Message) -> Option<S
                 .rules
                 .iter()
                 .enumerate()
-                .find(|(_, rule)| process_setting_matches(&rule.executable_path, &path))
+                .find(|(_, rule)| same_rule_executable_path(&rule.executable_path, image_path))
             {
                 if let Err(error) = cpu_allocation::verify_selection(&selection, kind) {
                     return Some(error);
@@ -246,13 +249,13 @@ pub(super) fn update(s: &mut SettingsEditor, path: &str, m: Message) -> Option<S
                 .cpu_limiter
                 .rules
                 .iter()
-                .any(|r| process_setting_matches(&r.executable_path, &path));
+                .any(|r| same_rule_executable_path(&r.executable_path, image_path));
             if !enabled && has_rule {
                 s.cpu_limiter
                     .rules
-                    .retain(|r| !process_setting_matches(&r.executable_path, &path));
-            } else if enabled && !has_rule && !crate::cpu_limiter::is_builtin_excluded(&path) {
-                s.cpu_limiter.rules.push(new_cpu_limiter_rule(&path));
+                    .retain(|r| !same_rule_executable_path(&r.executable_path, image_path));
+            } else if enabled && !has_rule && !crate::cpu_limiter::is_builtin_excluded(image_path) {
+                s.cpu_limiter.rules.push(new_cpu_limiter_rule(image_path));
             }
         }
         Message::LimiterMode(tier, value) => {
@@ -260,7 +263,7 @@ pub(super) fn update(s: &mut SettingsEditor, path: &str, m: Message) -> Option<S
                 .cpu_limiter
                 .rules
                 .iter()
-                .position(|r| process_setting_matches(&r.executable_path, &path))
+                .position(|r| same_rule_executable_path(&r.executable_path, image_path))
             {
                 cpu_limiter::CpuLimiter::default().update_profile(
                     s,
@@ -273,7 +276,7 @@ pub(super) fn update(s: &mut SettingsEditor, path: &str, m: Message) -> Option<S
                 .cpu_limiter
                 .rules
                 .iter()
-                .position(|r| process_setting_matches(&r.executable_path, &path))
+                .position(|r| same_rule_executable_path(&r.executable_path, image_path))
             {
                 cpu_limiter::CpuLimiter::default().update_profile(
                     s,
@@ -516,7 +519,7 @@ pub(super) fn view<'a>(
         let rule = settings
             .rules
             .iter()
-            .find(|r| process_setting_matches(&r.executable_path, path));
+            .find(|r| same_rule_executable_path(&r.executable_path, path));
         let blocked = rule.is_none() && (excluded || other.contains_rule_for(path));
         let catalog = rule.map(|_| {
             cpu_allocation::SelectionCatalog::capture(if soft {
@@ -580,7 +583,7 @@ pub(super) fn view<'a>(
         .cpu_limiter
         .rules
         .iter()
-        .find(|r| process_setting_matches(&r.executable_path, path));
+        .find(|r| same_rule_executable_path(&r.executable_path, path));
     let mut card = column![setting_row(
         "nav.cpu_limiter",
         switch(limiter.is_some(), Some(Message::Limiter))
@@ -781,6 +784,68 @@ mod tests {
         }
         assert!(s.global().on_battery.is_none());
         assert!(s.processor_affinity_hard.rules.is_empty());
+    }
+
+    #[test]
+    fn cpu_rule_edits_keep_literal_executable_suffixes() {
+        let ordinary = r"C:\Apps\worker.exe";
+        let selected = "C:\\Apps\\worker.exe\u{3000}";
+        let mut initial = Settings::default();
+        initial
+            .cpu_limiter
+            .rules
+            .push(new_cpu_limiter_rule(ordinary));
+        let selection = crate::cpu_topology::test_selection(1);
+        initial.cpu_sets_soft.rules = [ordinary, selected]
+            .into_iter()
+            .map(|path| CpuAllocationRule {
+                enabled: true,
+                executable_path: path.into(),
+                focus_selection: selection.clone(),
+                visible_window_selection: selection.clone(),
+                background_selection: selection.clone(),
+            })
+            .collect();
+        let mut settings = SettingsEditor::with_settings(initial);
+        assert_eq!(
+            update(&mut settings, selected, Message::Limiter(true)),
+            None
+        );
+        assert_eq!(
+            update(
+                &mut settings,
+                selected,
+                Message::LimiterLimit(Tier::Focus, 25)
+            ),
+            None
+        );
+
+        let raw = toml::to_string_pretty(settings.global()).unwrap();
+        let saved: Settings = toml::from_str(&raw).unwrap();
+        assert_eq!(saved.cpu_limiter.rules[0].executable_path, ordinary);
+        assert_ne!(
+            saved.cpu_limiter.rules[0].focus_allowed_cpu_time_percent,
+            25
+        );
+        assert_eq!(saved.cpu_limiter.rules[1].executable_path, selected);
+        assert_eq!(
+            saved.cpu_limiter.rules[1].focus_allowed_cpu_time_percent,
+            25
+        );
+        assert_eq!(saved.cpu_sets_soft.rules[1].executable_path, selected);
+
+        assert_eq!(
+            update(&mut settings, selected, Message::Limiter(false)),
+            None
+        );
+        assert_eq!(
+            update(&mut settings, selected, Message::CpuEnabled(true, false)),
+            None
+        );
+        assert_eq!(settings.cpu_limiter.rules.len(), 1);
+        assert_eq!(settings.cpu_limiter.rules[0].executable_path, ordinary);
+        assert_eq!(settings.cpu_sets_soft.rules.len(), 1);
+        assert_eq!(settings.cpu_sets_soft.rules[0].executable_path, ordinary);
     }
 
     #[test]

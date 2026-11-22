@@ -3,10 +3,12 @@ use crate::config::{
     ExecutableSelector,
 };
 use crate::config::{
+    same_rule_executable_path, CpuLimiterRule, CpuLimiterSettings, ProcessRuleMode,
+};
+use crate::config::{
     AppSuspensionRule, AppSuspensionSettings, MemoryTrimSettings, NetworkThresholdUnit,
     ProcessExclusionRule, TimerResolutionRule, TimerResolutionSettings,
 };
-use crate::config::{CpuLimiterRule, CpuLimiterSettings, ProcessRuleMode};
 use crate::control::instance_limits::validate_path;
 use crate::cpu_limiter;
 use crate::foreground::executable_path_key;
@@ -56,13 +58,13 @@ pub(super) fn can_add_exact_process_candidate(
 }
 
 pub(crate) fn can_add_cpu_limiter_process(settings: &CpuLimiterSettings, process: &str) -> bool {
-    can_add_process_candidate(
+    can_add_exact_process_candidate(
         process,
         |process| {
             settings
                 .rules
                 .iter()
-                .any(|rule| process_setting_matches(&rule.executable_path, process))
+                .any(|rule| same_rule_executable_path(&rule.executable_path, process))
         },
         cpu_limiter::is_builtin_excluded,
     )
@@ -71,7 +73,7 @@ pub(crate) fn can_add_cpu_limiter_process(settings: &CpuLimiterSettings, process
 pub(crate) fn new_cpu_limiter_rule(process: &str) -> CpuLimiterRule {
     CpuLimiterRule {
         enabled: true,
-        executable_path: executable_path_key(Path::new(process)),
+        executable_path: normalize_path_slashes(process).into_owned(),
         focus_mode: ProcessRuleMode::Default,
         visible_window_mode: ProcessRuleMode::Default,
         background_mode: ProcessRuleMode::Default,
@@ -230,7 +232,7 @@ pub(crate) fn can_add_app_suspension_process(
     settings: &AppSuspensionSettings,
     process: &str,
 ) -> bool {
-    can_add_process_candidate(
+    can_add_exact_process_candidate(
         process,
         |process| settings.contains_suspendable_app(process),
         app_suspension::is_builtin_excluded,
@@ -240,7 +242,7 @@ pub(crate) fn can_add_app_suspension_process(
 pub(crate) fn new_app_suspension_rule(process: &str) -> AppSuspensionRule {
     AppSuspensionRule {
         enabled: true,
-        executable_path: executable_path_key(Path::new(process)),
+        executable_path: normalize_path_slashes(process).into_owned(),
         network_wake_enabled: true,
         audio_wake_enabled: true,
         network_download_threshold_bytes: 1,

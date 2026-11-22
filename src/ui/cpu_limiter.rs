@@ -10,7 +10,9 @@ use std::ops::{Deref, DerefMut};
 use crate::application::SettingsEditor;
 use crate::config::{CpuLimiterRule, CpuLimiterSettings, ProcessRuleMode};
 use crate::features::cpu_control::cpu_limiter::CpuLimiterSnapshot;
-use crate::ui::process_rules::{can_add_cpu_limiter_process, new_cpu_limiter_rule};
+use crate::ui::process_rules::{
+    can_add_cpu_limiter_process, exact_path_input, new_cpu_limiter_rule, picked_path_input,
+};
 
 pub(super) fn limit_slider<'a, M: Clone + 'a>(
     value: u8,
@@ -231,8 +233,9 @@ impl CpuLimiter {
                 self.numbers.insert((path, tier), raw);
             }
             Message::Add => {
-                if can_add_cpu_limiter_process(&settings, &self.path) {
-                    settings.rules.push(new_cpu_limiter_rule(&self.path));
+                let path = exact_path_input(&self.path);
+                if can_add_cpu_limiter_process(&settings, path) {
+                    settings.rules.push(new_cpu_limiter_rule(path));
                     self.path.clear();
                 }
             }
@@ -367,13 +370,14 @@ impl CpuLimiter {
         ));
         body = body
             .push(super::widgets::setting_title("cpu_limiter.rules"))
-            .push(super::app_picker::view(
+            .push(super::app_picker::view_with_path_selection(
                 &self.path,
                 candidates,
                 true,
-                Message::Path,
+                (Message::Path, |path| Message::Path(picked_path_input(path))),
                 Message::Browse,
-                (can_add_cpu_limiter_process(settings, &self.path)).then_some(Message::Add),
+                (can_add_cpu_limiter_process(settings, exact_path_input(&self.path)))
+                    .then_some(Message::Add),
                 |path| can_add_cpu_limiter_process(settings, path).then_some(true),
             ));
         let mut cards = Vec::new();

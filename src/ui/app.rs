@@ -1634,12 +1634,16 @@ impl WinderustApp {
                         match page {
                             Page::SleepPrevention => {
                                 return self.update(Message::SleepPrevention(
-                                    sleep_prevention::Message::Path(path),
+                                    sleep_prevention::Message::Path(
+                                        super::process_rules::picked_path_input(path),
+                                    ),
                                 ));
                             }
                             Page::AppSuspension => {
                                 return self.update(Message::Suspension(
-                                    app_suspension::Message::Path(path),
+                                    app_suspension::Message::Path(
+                                        super::process_rules::picked_path_input(path),
+                                    ),
                                 ));
                             }
                             Page::Watchdog => {
@@ -1668,13 +1672,17 @@ impl WinderustApp {
                             Page::CpuSetsSoft => {
                                 return self.update(Message::Allocation(
                                     cpu_allocation::Kind::Soft,
-                                    cpu_allocation::Message::Path(path),
+                                    cpu_allocation::Message::Path(
+                                        super::process_rules::picked_path_input(path),
+                                    ),
                                 ));
                             }
                             Page::ProcessorAffinityHard => {
                                 return self.update(Message::Allocation(
                                     cpu_allocation::Kind::Hard,
-                                    cpu_allocation::Message::Path(path),
+                                    cpu_allocation::Message::Path(
+                                        super::process_rules::picked_path_input(path),
+                                    ),
                                 ));
                             }
                             Page::BackgroundEfficiency => {
@@ -1688,8 +1696,11 @@ impl WinderustApp {
                                 ));
                             }
                             Page::CpuLimiter => {
-                                return self
-                                    .update(Message::CpuLimiter(cpu_limiter::Message::Path(path)));
+                                return self.update(Message::CpuLimiter(
+                                    cpu_limiter::Message::Path(
+                                        super::process_rules::picked_path_input(path),
+                                    ),
+                                ));
                             }
                             Page::ByFocus => {
                                 return self.update(Message::ProcessPowerPlans(
