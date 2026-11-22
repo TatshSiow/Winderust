@@ -221,6 +221,7 @@ impl BackgroundEfficiencyManager {
                     return None;
                 }
                 let executable_path = process_executable_path(process)?;
+                let path = executable_path.to_str()?;
                 let creation_time = process.creation_time?;
                 let focus = is_foreground_process(
                     process.id,
@@ -230,18 +231,13 @@ impl BackgroundEfficiencyManager {
                 );
                 let visible_window =
                     !focus && visible_processes.contains(process.id, &executable_path);
-                if !background_efficiency_enabled_for(
-                    settings,
-                    executable_path.to_string_lossy().as_ref(),
-                    focus,
-                    visible_window,
-                ) {
+                if !background_efficiency_enabled_for(settings, path, focus, visible_window) {
                     return None;
                 }
                 Some(BackgroundEfficiencyTarget {
                     process_id: process.id,
                     process_name: process.name.clone(),
-                    executable_path: executable_path.to_string_lossy().into_owned(),
+                    executable_path: path.to_owned(),
                     creation_time,
                     ignore_timer_resolution: ignore_timer_resolution_allowed(
                         process.id,

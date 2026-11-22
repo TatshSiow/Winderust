@@ -184,10 +184,12 @@ impl MemoryPriorityManager {
                 && settings.visible_window_detection_enabled
                 && visible_processes.contains(process.id, &executable_path);
             let tier = PriorityProcessTier::from_flags(foreground, visible_window);
-            let path = executable_path.to_string_lossy();
-            let policy = rule_priority_policy(settings, &path, tier);
+            let Some(path) = executable_path.to_str() else {
+                continue;
+            };
+            let policy = rule_priority_policy(settings, path, tier);
             if focus_unknown
-                && policy != rule_priority_policy(settings, &path, PriorityProcessTier::Foreground)
+                && policy != rule_priority_policy(settings, path, PriorityProcessTier::Foreground)
             {
                 return self.pause_rules_for_unknown_focus(controller, action_log);
             }
@@ -197,7 +199,7 @@ impl MemoryPriorityManager {
             targets.push(MemoryPriorityTarget {
                 process_id: process.id,
                 process_name: process.name.clone(),
-                executable_path: path.into_owned(),
+                executable_path: path.to_owned(),
                 creation_time,
                 priority,
                 foreground,
