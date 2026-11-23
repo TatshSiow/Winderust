@@ -1,5 +1,89 @@
 use super::*;
-use crate::config::Settings;
+use crate::config::{AdaptiveProcessorPowerPreset, Settings};
+
+#[test]
+fn equivalent_presets_keep_one_selected_row_per_source() {
+    use BuiltInPreset::Balanced;
+    use PowerSourceProfile::{OnBattery, PluggedIn};
+    use PresetChoice::{BuiltIn, Custom};
+
+    let mut saved = Settings::default();
+    Balanced.apply(&mut saved.adaptive_engine, PluggedIn);
+    Balanced.apply(&mut saved.battery_profile_mut().adaptive_engine, OnBattery);
+    saved.adaptive_processor_power_presets = [
+        ("AC Quiet", PluggedIn),
+        ("AC Work", PluggedIn),
+        ("Battery Quiet", OnBattery),
+    ]
+    .map(|(name, source)| {
+        let settings = match source {
+            PluggedIn => &saved,
+            OnBattery => saved.battery_profile(),
+        };
+        AdaptiveProcessorPowerPreset::capture(name.into(), &settings.adaptive_engine, source)
+    })
+    .to_vec();
+    saved.sync_shared_settings_to_battery();
+    let mut settings = SettingsEditor::with_settings(saved);
+    let mut editor = Editor::default();
+
+    assert_eq!(editor.active_preset(&settings), Some(BuiltIn(Balanced)));
+    for (message, active) in [
+        (Message::ApplyPreset(0), Custom("AC Quiet")),
+        (Message::ApplyPreset(1), Custom("AC Work")),
+        (Message::Preset(Balanced), BuiltIn(Balanced)),
+        (Message::ApplyPreset(0), Custom("AC Quiet")),
+    ] {
+        editor.update(&mut settings, message);
+        assert_eq!(editor.active_preset(&settings), Some(active));
+        assert!(!settings.has_unsaved_changes());
+    }
+
+    settings.select_power_source(OnBattery);
+    editor.reset_drafts();
+    assert_eq!(editor.active_preset(&settings), Some(BuiltIn(Balanced)));
+    editor.update(&mut settings, Message::ApplyPreset(2));
+    assert_eq!(
+        editor.active_preset(&settings),
+        Some(Custom("Battery Quiet"))
+    );
+    assert!(!settings.has_unsaved_changes());
+
+    settings.select_power_source(PluggedIn);
+    editor.reset_drafts();
+    assert_eq!(editor.active_preset(&settings), Some(Custom("AC Quiet")));
+    editor.update(
+        &mut settings,
+        Message::BoostMode(
+            |settings, mode| settings.base_processor_policy.boost_mode = mode,
+            ProcessorBoostMode::Aggressive,
+        ),
+    );
+    assert!(editor.active_preset(&settings).is_none());
+    assert!(settings.has_unsaved_changes());
+    editor.update(&mut settings, Message::ApplyPreset(0));
+    assert!(!settings.has_unsaved_changes());
+
+    editor.update(&mut settings, Message::EditPreset(0));
+    editor.update(&mut settings, Message::PresetName("AC Renamed".into()));
+    editor.update(&mut settings, Message::CancelPreset);
+    assert_eq!(editor.active_preset(&settings), Some(Custom("AC Quiet")));
+    assert!(!settings.has_unsaved_changes());
+    editor.update(&mut settings, Message::EditPreset(0));
+    editor.update(&mut settings, Message::PresetName(" AC RENAMED ".into()));
+    editor.update(&mut settings, Message::SavePreset);
+    assert_eq!(editor.active_preset(&settings), Some(Custom("AC RENAMED")));
+    assert!(settings.has_unsaved_changes());
+
+    editor.update(&mut settings, Message::DeletePreset(0));
+    assert_eq!(editor.active_preset(&settings), Some(BuiltIn(Balanced)));
+    settings.select_power_source(OnBattery);
+    editor.reset_drafts();
+    assert_eq!(
+        editor.active_preset(&settings),
+        Some(Custom("Battery Quiet"))
+    );
+}
 
 #[test]
 fn editing_a_preset_keeps_its_values_until_current_settings_are_requested() {

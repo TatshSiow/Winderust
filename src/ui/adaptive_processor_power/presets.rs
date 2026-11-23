@@ -12,6 +12,12 @@ pub(super) struct PresetDraft {
     pub(super) use_current_values: bool,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum PresetChoice<Name> {
+    BuiltIn(BuiltInPreset),
+    Custom(Name),
+}
+
 impl PresetDraft {
     pub(super) fn new() -> Self {
         Self {
@@ -30,9 +36,8 @@ impl PresetDraft {
     }
 
     fn name_conflicts(&self, presets: &[AdaptiveProcessorPowerPreset]) -> bool {
-        let name = self.name.trim();
         presets.iter().enumerate().any(|(index, preset)| {
-            self.index != Some(index) && name.eq_ignore_ascii_case(preset.name.trim())
+            self.index != Some(index) && same_preset_name(&self.name, &preset.name)
         })
     }
 
@@ -151,6 +156,10 @@ impl Editor {
             ),
         };
         let index = draft.index;
+        if let Some(index) = index {
+            let previous = &settings.global().adaptive_processor_power_presets[index].name;
+            self.replace_selected_preset_name(previous, Some(&preset.name));
+        }
         settings.edit_global(|settings| {
             let presets = &mut settings.adaptive_processor_power_presets;
             if let Some(index) = index {
@@ -162,12 +171,52 @@ impl Editor {
         self.preset_draft = None;
     }
 
+    pub(super) fn replace_selected_preset_name(&mut self, previous: &str, name: Option<&str>) {
+        for selected in &mut self.selected_presets {
+            if matches!(selected, Some(PresetChoice::Custom(current)) if same_preset_name(current, previous))
+            {
+                *selected = name.map(|name| PresetChoice::Custom(name.to_owned()));
+            }
+        }
+    }
+
+    pub(super) fn active_preset<'a>(
+        &self,
+        settings: &'a SettingsEditor,
+    ) -> Option<PresetChoice<&'a str>> {
+        if self.validation_error().is_some() {
+            return None;
+        }
+        let source = settings.selected_power_source();
+        let presets = &settings.global().adaptive_processor_power_presets;
+        let builtin = |preset: BuiltInPreset| {
+            preset
+                .matches(&settings.adaptive_engine, source)
+                .then_some(PresetChoice::BuiltIn(preset))
+        };
+        let custom = |preset: &'a AdaptiveProcessorPowerPreset| {
+            preset
+                .matches(&settings.adaptive_engine, source)
+                .then_some(PresetChoice::Custom(preset.name.as_str()))
+        };
+        let selected = match self.selected_presets[source as usize].as_ref() {
+            Some(PresetChoice::BuiltIn(preset)) => builtin(*preset),
+            Some(PresetChoice::Custom(name)) => presets
+                .iter()
+                .find(|preset| same_preset_name(&preset.name, name))
+                .and_then(custom),
+            None => None,
+        };
+        selected
+            .or_else(|| BuiltInPreset::ALL.into_iter().find_map(builtin))
+            .or_else(|| presets.iter().find_map(custom))
+    }
+
     pub(in crate::ui) fn presets_panel<'a>(
         &'a self,
         settings: &'a SettingsEditor,
     ) -> Element<'a, Message> {
-        let source = settings.selected_power_source();
-        let valid = self.validation_error().is_none();
+        let active = self.active_preset(settings);
         let heading = |label| widgets::heading(label, design::typography::SECONDARY);
         let mut list = column![
             text(t!("adaptive_processor_power.preset_help").to_string())
@@ -181,7 +230,7 @@ impl Editor {
         for preset in BuiltInPreset::ALL {
             list = list.push(preset_button(
                 preset.label(),
-                valid && preset.matches(&settings.adaptive_engine, source),
+                active == Some(PresetChoice::BuiltIn(preset)),
                 Message::Preset(preset),
             ));
         }
@@ -201,7 +250,7 @@ impl Editor {
                 row![
                     preset_button(
                         preset.name.as_str(),
-                        valid && preset.matches(&settings.adaptive_engine, source),
+                        active == Some(PresetChoice::Custom(preset.name.as_str())),
                         Message::ApplyPreset(index),
                     ),
                     widgets::tooltip(
@@ -302,6 +351,10 @@ impl Editor {
             (500, 310),
         ))
     }
+}
+
+fn same_preset_name(left: &str, right: &str) -> bool {
+    left.trim().eq_ignore_ascii_case(right.trim())
 }
 
 fn preset_button<'a>(

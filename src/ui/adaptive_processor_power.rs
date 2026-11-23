@@ -11,7 +11,7 @@ use rust_i18n::t;
 
 mod presets;
 pub(super) use presets::BuiltInPreset;
-use presets::PresetDraft;
+use presets::{PresetChoice, PresetDraft};
 
 #[cfg(test)]
 mod editor_tests;
@@ -33,6 +33,7 @@ pub(super) struct Editor {
     numbers: NumberInputs,
     tab: Tab,
     preset_draft: Option<PresetDraft>,
+    selected_presets: [Option<PresetChoice<String>>; 2],
 }
 
 #[derive(Debug, Clone)]
@@ -71,6 +72,7 @@ impl Editor {
                 numbers.drafts.clear();
                 let source = settings.selected_power_source();
                 edit_settings(settings, |target| preset.apply(target, source));
+                self.selected_presets[source as usize] = Some(PresetChoice::BuiltIn(preset));
             }
             Message::NewPreset => self.preset_draft = Some(PresetDraft::new()),
             Message::EditPreset(index) => {
@@ -104,10 +106,17 @@ impl Editor {
                     numbers.drafts.clear();
                     let source = settings.selected_power_source();
                     edit_settings(settings, |target| preset.apply(target, source));
+                    self.selected_presets[source as usize] =
+                        Some(PresetChoice::Custom(preset.name));
                 }
             }
             Message::DeletePreset(index) => {
-                if index < settings.global().adaptive_processor_power_presets.len() {
+                if let Some(preset) = settings
+                    .global()
+                    .adaptive_processor_power_presets
+                    .get(index)
+                {
+                    self.replace_selected_preset_name(&preset.name, None);
                     settings.edit_global(|settings| {
                         settings.adaptive_processor_power_presets.remove(index);
                     });
