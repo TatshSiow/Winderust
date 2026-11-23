@@ -332,6 +332,12 @@ fn create_event_window() -> HWND {
 }
 
 fn register_window_hook(event: u32) -> HWINEVENTHOOK {
+    // Focusing Winderust can end another app's By Focus match.
+    let flags = if event == EVENT_SYSTEM_FOREGROUND {
+        WINEVENT_OUTOFCONTEXT
+    } else {
+        WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS
+    };
     // SAFETY: win_event_proc has the required static ABI and the out-of-context hook
     // retains no borrowed Rust data.
     unsafe {
@@ -342,7 +348,7 @@ fn register_window_hook(event: u32) -> HWINEVENTHOOK {
             Some(win_event_proc),
             0,
             0,
-            WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS,
+            flags,
         )
     }
 }

@@ -222,7 +222,7 @@ held state through the controller's active-GUID observation.
 
 | API | Used for | Reference |
 | --- | --- | --- |
-| `SetWinEventHook` | Receives foreground changes and top-level window creation events outside Winderust's own process. | https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setwineventhook |
+| `SetWinEventHook` | Receives foreground changes, including transitions to a Winderust window. The top-level window creation hook excludes events from Winderust's own process. | https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setwineventhook |
 | `RegisterPowerSettingNotification` | Delivers A/C source and power-scheme personality changes to the hidden window. | https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-registerpowersettingnotification |
 | `RegisterSuspendResumeNotification` | Delivers suspend and resume notifications to the hidden window. | https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-registersuspendresumenotification |
 | `WTSRegisterSessionNotification` | Delivers current-session lock, unlock, logon, logoff, and related session changes. | https://learn.microsoft.com/en-us/windows/win32/api/wtsapi32/nf-wtsapi32-wtsregistersessionnotification |
