@@ -986,18 +986,12 @@ pub fn process_matches_executable_path(process: &ProcessInfo, executable_path: &
         return false;
     }
 
-    if let Some(actual_path) = process.image_path.as_deref() {
-        return same_executable_path(actual_path, executable_path);
-    }
-    process_image_path(process.id)
+    verified_process_executable_path(process)
         .is_some_and(|actual_path| same_executable_path(&actual_path, executable_path))
 }
 
 pub fn process_executable_path(process: &ProcessInfo) -> Option<PathBuf> {
-    process
-        .image_path
-        .clone()
-        .or_else(|| process_image_path(process.id))
+    verified_process_executable_path(process).map(Cow::into_owned)
 }
 
 pub fn contains_process_name<T: AsRef<str>>(list: &[T], process_name: &str) -> bool {
@@ -1618,6 +1612,7 @@ mod tests {
             .expect("current process creation time should be readable");
         let path =
             query_process_image_path(&handle).expect("current image path should be readable");
+        let path_text = path.to_str().expect("current image path should be Unicode");
         let mut observed = ProcessInfo {
             id,
             creation_time: Some(creation_time),
@@ -1627,7 +1622,7 @@ mod tests {
             is_service_account: None,
             is_critical: None,
             can_set_information: false,
-            name: String::new(),
+            name: path.file_name().unwrap().to_string_lossy().into_owned(),
             image_path: Some(PathBuf::from("cached.exe")),
         };
 
@@ -1635,6 +1630,7 @@ mod tests {
             observed_process_executable_path(&observed),
             Some(path.clone())
         );
+        assert_eq!(process_executable_path(&observed), None);
 
         let sibling_id = id ^ 1;
         let capture = |process: &ProcessInfo| {
@@ -1646,18 +1642,28 @@ mod tests {
             )
         };
         observed.image_path = None;
+        assert_eq!(
+            process_executable_path(&observed).as_deref(),
+            Some(path.as_path())
+        );
+        assert!(process_matches_executable_path(&observed, path_text));
         assert!(capture(&observed).contains(sibling_id, &path));
 
         observed.creation_time = Some(creation_time ^ 1);
         assert_eq!(observed_process_executable_path(&observed), None);
+        assert_eq!(process_executable_path(&observed), None);
+        assert!(!process_matches_executable_path(&observed, path_text));
         let stale = capture(&observed);
         assert!(stale.contains(id, &path));
         assert!(!stale.contains(sibling_id, &path));
 
         observed.creation_time = None;
         assert_eq!(observed_process_executable_path(&observed), None);
+        assert_eq!(process_executable_path(&observed), None);
+        assert!(!process_matches_executable_path(&observed, path_text));
         let cached_path = PathBuf::from(r"C:\Apps\cached.exe");
         observed.image_path = Some(cached_path.clone());
+        assert_eq!(process_executable_path(&observed), None);
         assert!(!capture(&observed).contains(sibling_id, &cached_path));
 
         observed.creation_time = Some(creation_time);

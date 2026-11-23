@@ -608,6 +608,9 @@ Read the relevant section before changing feature policy, ownership, restoration
 - Foreground CPU deltas require complete samples of the same exact process generations; missing members and counter regression discard the baseline.
 - CPU Set discovery is lazy and operation-local, including failure caching. Existing explicit and Adaptive claims preserve assignments on discovery failure without suppressing applications; pending handoffs retry on the existing cleanup interval. Guarded Instance Balancing claims withdraw instead.
 - Process enrichment cannot replace the identity generation captured by the cycle. Newly available or changed generations are deferred (non-actionable) until a fresh cycle, preserving consistency with cached Adaptive membership and earlier consumers.
+  Catalog path matching requires that captured creation time and an absolute image.
+  When the catalog lacks an image, Winderust checks the creation time on the same
+  handle used to read the path.
 
 ## CPU allocation and Adaptive Engine
 

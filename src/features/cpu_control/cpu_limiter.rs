@@ -140,7 +140,9 @@ impl CpuLimiterManager {
         let mut selected = BTreeMap::new();
         let mut active_failure_keys = BTreeSet::new();
         for process in processes.iter() {
-            let Some(executable_path) = process_executable_path(process) else {
+            let (Some(creation_time), Some(executable_path)) =
+                (process.creation_time, process_executable_path(process))
+            else {
                 continue;
             };
             let Some(rule) = matching_rule(settings, &executable_path) else {
@@ -168,10 +170,6 @@ impl CpuLimiterManager {
                 skipped_processes += 1;
                 continue;
             }
-            let Some(creation_time) = process.creation_time else {
-                skipped_processes += 1;
-                continue;
-            };
             let Some(allowed_cpu_time_percent) =
                 resolved_allowed_cpu_time_percent(settings, rule, focus, visible_window)
             else {

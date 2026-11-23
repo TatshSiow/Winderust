@@ -246,8 +246,8 @@ impl WatchdogManager {
             .cloned()
             .collect();
         let samples = sample_process_resources(&matched, sampling_mode(settings));
-        // The fallback queries by PID. Only treat its path as evidence for a
-        // previous member once this pass's resource sample confirms the generation.
+        // Treat fallback evidence as current only when this pass also sampled
+        // the exact process generation.
         for (&(pid, time), path) in &mut path_gaps {
             if path.is_some()
                 && samples
