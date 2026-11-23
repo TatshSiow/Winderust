@@ -672,6 +672,7 @@ interrupt_timing:
   failed: "Windows 無法擷取中斷計時。"
   timed_out: "中斷計時逾時。"
   timed_out_cleanup: "中斷計時逾時，正在等待清理完成。"
+  cleanup_failed: "中斷計時無法確認擷取作業已完成清理。"
   previous_report_status: "%{status} 目前顯示先前的報告。"
   no_samples: "未擷取到已完成的中斷樣本。"
   top_routine_modules: "總耗時最高的常式模組"

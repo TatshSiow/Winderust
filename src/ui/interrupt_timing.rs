@@ -235,6 +235,7 @@ impl State {
             error,
             InterruptTimingError::Worker(_)
                 | InterruptTimingError::Capture(_)
+                | InterruptTimingError::Cleanup(_)
                 | InterruptTimingError::TimedOut(_)
         ) {
             crate::backend::diagnostics::error(&format!("Interrupt Timing failed with {error}"));
@@ -266,6 +267,7 @@ impl State {
                 InterruptTimingError::InUse => "interrupt_timing.in_use",
                 InterruptTimingError::Cancelled => "interrupt_timing.cancelled",
                 InterruptTimingError::TimedOut(_) => "interrupt_timing.timed_out",
+                InterruptTimingError::Cleanup(_) => "interrupt_timing.cleanup_failed",
                 InterruptTimingError::Worker(_) | InterruptTimingError::Capture(_) => {
                     "interrupt_timing.failed"
                 }
@@ -574,7 +576,7 @@ mod tests {
     #[test]
     fn timeout_keeps_cleanup_pending_and_preserves_the_previous_report() {
         let previous = report(1);
-        let cleanup_error = InterruptTimingError::Worker("ETW cleanup failed".into());
+        let cleanup_error = InterruptTimingError::Cleanup("ETW cleanup failed".into());
         for (outcome, expected_error) in [
             (Ok(report(2)), None),
             (Err(InterruptTimingError::Cancelled), None),

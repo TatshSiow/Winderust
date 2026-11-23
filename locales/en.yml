@@ -670,6 +670,7 @@ interrupt_timing:
   failed: "Windows could not capture interrupt timing."
   timed_out: "Interrupt Timing timed out."
   timed_out_cleanup: "Interrupt Timing timed out. Waiting for cleanup."
+  cleanup_failed: "Interrupt Timing could not confirm capture cleanup."
   previous_report_status: "%{status} Showing the previous report."
   no_samples: "No completed interrupt samples were captured."
   top_routine_modules: "Top routine modules by total time"

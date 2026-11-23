@@ -48,6 +48,8 @@ pub(crate) enum InterruptTimingError {
     #[error("Interrupt timing helper timed out: {0}")]
     TimedOut(String),
     #[error("{0}")]
+    Cleanup(String),
+    #[error("{0}")]
     Worker(String),
     #[error("{0}")]
     Capture(String),
@@ -318,12 +320,9 @@ fn supervise_worker(
             | InterruptTimingError::Capture(_)),
         ) => match recover_if_idle(Some(identity)) {
             Ok(()) => Err(error),
-            Err(cleanup) => Err(match error {
-                InterruptTimingError::TimedOut(detail) => InterruptTimingError::TimedOut(format!(
-                    "{detail} ETW cleanup failed: {cleanup}"
-                )),
-                error => worker_error(format!("{error} ETW cleanup failed: {cleanup}")),
-            }),
+            Err(cleanup) => Err(InterruptTimingError::Cleanup(format!(
+                "{error} ETW cleanup failed: {cleanup}"
+            ))),
         },
         outcome => outcome,
     }
