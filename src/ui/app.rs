@@ -3302,7 +3302,10 @@ impl WinderustApp {
         let settings_are_pending = self.pending_settings_changes();
         let save_notice_visible =
             settings_are_pending || self.power_plan_control.selected_guid.is_some();
-        let save_notice_in_editor = self.page == Page::AdaptiveProcessorPower;
+        let save_notice_in_editor = matches!(
+            self.page,
+            Page::AdaptiveProcessorPower | Page::AppSuspension
+        );
         let save_card =
             || widgets::settings_card(self.save_notice(settings_are_pending)).width(360);
         let content = container(super::motion::wrap(
