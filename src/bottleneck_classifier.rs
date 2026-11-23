@@ -36,10 +36,7 @@ pub(crate) struct BottleneckClassifier {
 
 impl BottleneckClassifier {
     pub(crate) fn reset(&mut self) -> BottleneckSnapshot {
-        self.gpu = None;
-        self.candidate = BottleneckState::Unknown;
-        self.candidate_samples = 0;
-        self.stable = BottleneckState::Unknown;
+        *self = Self::default();
         BottleneckSnapshot::default()
     }
 
@@ -144,7 +141,7 @@ mod tests {
     }
 
     #[test]
-    fn state_changes_only_after_three_matching_samples() {
+    fn missing_data_clears_the_state_before_three_sample_recovery() {
         let mut classifier = BottleneckClassifier::default();
         classifier.stabilize(BottleneckState::GpuBound);
         classifier.stabilize(BottleneckState::GpuBound);
@@ -162,5 +159,21 @@ mod tests {
         }
         classifier.stabilize(BottleneckState::CpuBound);
         assert_eq!(classifier.stable, BottleneckState::CpuBound);
+    }
+
+    #[test]
+    fn reset_discards_the_per_processor_baseline() {
+        let mut classifier = BottleneckClassifier::default();
+        classifier.processors.sample_busy_processor_for_test(10);
+        assert_eq!(
+            classifier.processors.sample_busy_processor_for_test(20),
+            Some(vec![100.0])
+        );
+
+        assert_eq!(classifier.reset(), BottleneckSnapshot::default());
+        assert_eq!(
+            classifier.processors.sample_busy_processor_for_test(30),
+            None
+        );
     }
 }

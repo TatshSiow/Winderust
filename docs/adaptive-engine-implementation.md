@@ -21,6 +21,10 @@ use the shared automation runtime and foreground demand observations.
   `src/backend/audio_activity.rs` provides the shared active-audio safety guard.
 - `src/backend/automation.rs` owns worker scheduling, status publication, and shutdown.
 
+The System Bottleneck rail is diagnostic. It uses total CPU, busiest logical processor, and
+busiest GPU engine readings. The diagnostic pauses in the tray and starts a fresh observation
+when the window returns. CPU Behaviour and power-plan rules keep their own sampling schedules.
+
 ## Presets
 
 The preset definitions live in `src/ui/adaptive_presets.rs` and apply CPU Behaviour settings.

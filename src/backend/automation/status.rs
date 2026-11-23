@@ -45,6 +45,16 @@ pub(super) fn set_windows_event_watcher_active(shared: &SharedAutomationState, a
     shared.changed.notify_one();
 }
 
+pub(super) fn notify_tray_visibility_changed(shared: &SharedAutomationState) {
+    let mut state = lock_unpoisoned(&shared.state);
+    if state.stop_requested || !state.worker_accepting_work {
+        return;
+    }
+    state.pending_events.tray_visibility_changed = true;
+    state.change_generation = state.change_generation.wrapping_add(1);
+    shared.changed.notify_one();
+}
+
 pub(super) fn notify_windows_event(shared: &SharedAutomationState, event: WindowsAutomationEvent) {
     let mut state = lock_unpoisoned(&shared.state);
     if state.stop_requested || !windows_event_wake_required(&state.settings, event) {

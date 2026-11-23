@@ -2512,6 +2512,95 @@ fn shared_automation_state(settings: Settings) -> SharedAutomationState {
 }
 
 #[test]
+fn tray_visibility_edges_remain_pending_before_the_worker_waits() {
+    let shared = shared_automation_state(Settings::default());
+    lock_unpoisoned(&shared.state).worker_accepting_work = true;
+    let before = automation_snapshot(&shared).unwrap().change_generation;
+
+    notify_tray_visibility_changed(&shared);
+    notify_tray_visibility_changed(&shared);
+
+    assert_eq!(lock_unpoisoned(&shared.state).change_generation, before + 2);
+    assert!(!wait_for_wake(&shared, None, before));
+    let snapshot = automation_snapshot(&shared).unwrap();
+    assert_eq!(
+        snapshot.wake_events,
+        AutomationWakeEvents {
+            tray_visibility_changed: true,
+            ..Default::default()
+        }
+    );
+    assert_eq!(
+        automation_snapshot(&shared).unwrap().wake_events,
+        AutomationWakeEvents::default()
+    );
+}
+
+#[test]
+fn system_bottleneck_sampling_restarts_after_a_tray_restore() {
+    use std::sync::{atomic::AtomicBool, mpsc};
+
+    let mut settings = Settings::default();
+    settings.general.enabled = true;
+    settings.adaptive_engine.enabled = true;
+    settings.adaptive_engine.adaptive_processor_power_enabled = false;
+    assert!(automation_worker_required(&settings));
+    assert!(!process_appearance_scan_required(&settings));
+    assert!(!power_plan_checks_required(&settings));
+
+    let shared = Arc::new(shared_automation_state(settings));
+    lock_unpoisoned(&shared.state).worker_accepting_work = true;
+    let hidden = Arc::new(AtomicBool::new(true));
+    let (pass, passes) = mpsc::channel();
+    let worker_shared = Arc::clone(&shared);
+    let worker_hidden = Arc::clone(&hidden);
+    let worker = thread::spawn(move || {
+        run_background_automation(
+            worker_shared,
+            || {
+                let _ = pass.send(());
+                Some(true)
+            },
+            || worker_hidden.load(Ordering::Acquire),
+        )
+    });
+    let timeout = Duration::from_secs(3);
+    let classifier_enabled = || {
+        lock_unpoisoned(&shared.state)
+            .status
+            .feature_status
+            .bottleneck_classifier
+            .enabled
+    };
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        passes.recv_timeout(timeout).unwrap();
+        notify_tray_visibility_changed(&shared);
+        // The second pass cannot start before the first hidden pass finishes.
+        passes.recv_timeout(timeout).unwrap();
+        assert!(!classifier_enabled());
+
+        for hidden_to_tray in [false, true, false] {
+            hidden.store(hidden_to_tray, Ordering::Release);
+            notify_tray_visibility_changed(&shared);
+            let deadline = Instant::now() + timeout;
+            while classifier_enabled() == hidden_to_tray {
+                assert!(Instant::now() < deadline, "diagnostic did not refresh");
+                thread::sleep(Duration::from_millis(5));
+            }
+        }
+    }));
+    {
+        let mut state = lock_unpoisoned(&shared.state);
+        state.stop_requested = true;
+        shared.changed.notify_one();
+    }
+    worker.join().unwrap().unwrap();
+    if let Err(error) = result {
+        std::panic::resume_unwind(error);
+    }
+}
+
+#[test]
 fn watchdog_actions_require_current_policy_and_no_shutdown_or_session_transition() {
     let mut settings = Settings::default();
     settings.general.enabled = true;
@@ -2725,11 +2814,15 @@ fn idle_battery_worker_survives_source_changes_without_settings_updates() {
     let shared = automation.shared.clone();
     let (tx, rx) = mpsc::channel();
     let worker = thread::spawn(move || {
-        run_background_automation(shared, || {
-            let plugged_in = source_reader.load(Ordering::SeqCst);
-            tx.send(plugged_in).unwrap();
-            Some(plugged_in)
-        })
+        run_background_automation(
+            shared,
+            || {
+                let plugged_in = source_reader.load(Ordering::SeqCst);
+                tx.send(plugged_in).unwrap();
+                Some(plugged_in)
+            },
+            || false,
+        )
     });
     let result = || {
         assert!(!rx.recv_timeout(Duration::from_secs(2)).unwrap());

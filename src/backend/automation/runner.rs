@@ -1096,13 +1096,11 @@ impl RuntimeCore {
         update_adaptive_engine_process_status(shared, status);
     }
 
-    pub(super) fn run_bottleneck_classifier_update(
-        &mut self,
-        settings: &Settings,
-    ) -> BottleneckSnapshot {
-        if !bottleneck_classifier_required(settings) {
-            return self.bottleneck_classifier.reset();
-        }
+    pub(super) fn reset_bottleneck_classifier(&mut self) -> BottleneckSnapshot {
+        self.bottleneck_classifier.reset()
+    }
+
+    pub(super) fn run_bottleneck_classifier_update(&mut self) -> BottleneckSnapshot {
         self.refresh_cpu_usage();
         self.bottleneck_classifier.sample(self.cpu_usage.percent)
     }

@@ -474,6 +474,7 @@ impl PendingSleepPreventionSettings {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct AutomationWakeEvents {
     settings_changed: bool,
+    tray_visibility_changed: bool,
     windows_event_watcher_changed: bool,
     foreground_changed: bool,
     window_created: bool,
@@ -541,24 +542,26 @@ impl RuntimeHandle {
         });
         let self_power_shared = Arc::clone(&shared);
         let self_power_error = Mutex::new(None);
-        let (self_power, tray_visibility_watcher) =
-            match SelfPowerRetryWatcher::start(Arc::new(move |result| {
-                report_self_power_result(&self_power_shared, &self_power_error, result)
-            })) {
-                Ok(watcher) => {
-                    watcher.request().set_hidden_mode(tray::is_hidden_to_tray());
-                    let visibility_self_power = watcher.request();
-                    let visibility_watcher =
-                        TrayVisibilityWatcher::start(Arc::new(move |hidden| {
-                            visibility_self_power.set_hidden_mode(hidden);
-                        }));
-                    (Some(watcher), Some(visibility_watcher))
-                }
-                Err(error) => {
-                    update_worker_error(&shared, Some(error));
-                    (None, None)
-                }
-            };
+        let self_power = match SelfPowerRetryWatcher::start(Arc::new(move |result| {
+            report_self_power_result(&self_power_shared, &self_power_error, result)
+        })) {
+            Ok(watcher) => {
+                watcher.request().set_hidden_mode(tray::is_hidden_to_tray());
+                Some(watcher)
+            }
+            Err(error) => {
+                update_worker_error(&shared, Some(error));
+                None
+            }
+        };
+        let visibility_self_power = self_power.as_ref().map(SelfPowerRetryWatcher::request);
+        let visibility_shared = Arc::clone(&shared);
+        let tray_visibility_watcher = TrayVisibilityWatcher::start(Arc::new(move |hidden| {
+            notify_tray_visibility_changed(&visibility_shared);
+            if let Some(self_power) = &visibility_self_power {
+                self_power.set_hidden_mode(hidden);
+            }
+        }));
         let automation = Self {
             shared,
             lifecycle: Mutex::new(()),
@@ -567,7 +570,7 @@ impl RuntimeHandle {
             event_watcher: Mutex::new(None),
             input_hook: Mutex::new(None),
             self_power: Mutex::new(self_power),
-            tray_visibility_watcher: Mutex::new(tray_visibility_watcher),
+            tray_visibility_watcher: Mutex::new(Some(tray_visibility_watcher)),
         };
         automation.sync_windows_event_watcher(settings);
         automation.sync_input_hook(settings);
@@ -1020,7 +1023,11 @@ impl RuntimeHandle {
             let thread_shared = Arc::clone(&self.shared);
             lock_unpoisoned(&self.shared.state).worker_accepting_work = true;
             *thread = Some(thread::spawn(move || {
-                run_background_automation(thread_shared, power_source::is_plugged_in)
+                run_background_automation(
+                    thread_shared,
+                    power_source::is_plugged_in,
+                    tray::is_hidden_to_tray,
+                )
             }));
         }
     }
@@ -1153,6 +1160,7 @@ impl Drop for AutomationWorkerExitGuard<'_> {
 fn run_background_automation(
     shared: Arc<SharedAutomationState>,
     power_source: impl Fn() -> Option<bool>,
+    tray_hidden: impl Fn() -> bool,
 ) -> Result<(), String> {
     let _exit_guard = AutomationWorkerExitGuard { shared: &shared };
     let mut runner = RuntimeCore::for_worker(&shared)?;
@@ -1235,7 +1243,7 @@ fn run_background_automation(
         runner.input_activity = snapshot.input_activity;
         let windows_event_watcher_active = snapshot.windows_event_watcher_active;
         let mut observations = CycleObservations::default();
-        let hidden_to_tray = tray::is_hidden_to_tray();
+        let hidden_to_tray = tray_hidden();
         let adaptive_engine_enabled = settings.adaptive_engine.enabled;
         let background_efficiency_refresh_interval = automation_refresh_interval(
             hidden_to_tray,
@@ -1415,8 +1423,8 @@ fn run_background_automation(
             || runner.has_temporary_power_plan();
         let adaptive_engine_process_refresh_required = settings_changed
             || feature_refresh_required(settings, adaptive_engine_process_required(settings));
-        let bottleneck_classifier_refresh_required = settings_changed
-            || feature_refresh_required(settings, bottleneck_classifier_required(settings));
+        let bottleneck_classifier_refresh_required =
+            !hidden_to_tray && bottleneck_classifier_required(settings);
         let adaptive_power_plan_refresh_required = settings_changed
             || feature_refresh_required(settings, adaptive_power_plan_required(settings))
             || runner.adaptive_power_plan_managed();
@@ -1544,10 +1552,20 @@ fn run_background_automation(
         } else {
             None
         };
+        if wake_events.tray_visibility_changed
+            || (settings_changed && !bottleneck_classifier_refresh_required)
+        {
+            let status = runner.reset_bottleneck_classifier();
+            if bottleneck_classifier_refresh_required {
+                scheduler.schedule_now(RefreshDomain::BottleneckClassifier, now);
+            } else {
+                update_bottleneck_classifier_status(&shared, status);
+            }
+        }
         if bottleneck_classifier_refresh_required
             && scheduler.is_due(RefreshDomain::BottleneckClassifier, now)
         {
-            let status = runner.run_bottleneck_classifier_update(settings);
+            let status = runner.run_bottleneck_classifier_update();
             update_bottleneck_classifier_status(&shared, status);
             scheduler.schedule_after(
                 RefreshDomain::BottleneckClassifier,
