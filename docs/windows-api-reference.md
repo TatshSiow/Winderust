@@ -926,7 +926,7 @@ User-facing behavior:
 - Process List Resume treats a group member without an App Suspension claim as already resumed after verifying its live identity and eligibility. That read-only check leaves other suspension owners and manual thaw timers alone.
 - Windows keeps a Job Object alive until both its last handle is closed and all associated processes exit. A released live process therefore remains in its exact named, thawed job. A later Suspend may reuse that existing name only after `IsProcessInJob` proves the exact target is already a member; an unrelated name collision fails closed.
 - A failed thaw retains the frozen job for bounded retry. If thaw succeeds but recovery-journal cleanup fails, status changes to thawed while a cleanup-only record remains; later App Suspension passes reconcile both pending states without another user action. The controller does not falsely report the process as frozen or reapply the OS mutation during cleanup retry, and the feature prunes its exact record once compensation removes controller ownership.
-- Taskbar and tray shell clicks temporarily thaw suspended top-level window owner processes only, so minimized and tray-hidden apps can restore without thawing unrelated non-window worker processes. Repeated shell clicks do not keep extending the thaw window.
+- App-switch shortcuts temporarily thaw suspended processes that own top-level windows. Taskbar and tray shell interaction can temporarily thaw all App Suspension freezes so apps with no enumerated window can restore. Repeated shell interaction keeps the existing thaw window.
 
 Network wake in `src/features/advanced_controls/app_suspension/wake_activity.rs`
 enumerates IPv4 and IPv6 TCP connections with their owning PIDs. It compares the
