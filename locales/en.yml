@@ -635,6 +635,7 @@ background_efficiency:
   release_reason_automation_disabled: "automation disabled"
   release_reason_feature_disabled: "Background Efficiency disabled"
   release_reason_unknown_foreground: "foreground app is unknown"
+  release_reason_unknown_power_source: "Windows could not confirm the power source"
   release_reason_unavailable_windows: "visible windows are unavailable"
   release_reason_unknown_session: "current Windows session is unknown"
   release_reason_unavailable_processes: "process list unavailable"

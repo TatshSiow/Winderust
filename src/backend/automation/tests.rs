@@ -1294,6 +1294,41 @@ fn explicit_cpu_allocation_paths_exclude_only_active_usable_rules() {
 }
 
 #[test]
+fn background_efficiency_source_difference_needs_an_enabled_policy() {
+    let mut settings = Settings::default();
+    settings.general.theme_mode = AppThemeMode::Dark;
+    settings.general.accent.source = AccentColorSource::Custom;
+    assert!(!background_efficiency_policy_varies_by_source(&settings));
+    let efficiency = &mut settings.battery_profile_mut().background_efficiency;
+    efficiency.enabled = true;
+    efficiency.background_efficiency_mode = false;
+    assert!(!background_efficiency_policy_varies_by_source(&settings));
+
+    settings
+        .battery_profile_mut()
+        .background_efficiency
+        .background_efficiency_mode = true;
+    assert!(background_efficiency_policy_varies_by_source(&settings));
+    assert!(automation_worker_required(&settings));
+    assert_eq!(
+        windows_event_watcher_mode(&settings),
+        Some(WindowsEventWatcherMode::Full)
+    );
+    assert!(windows_event_wake_required(
+        &settings,
+        WindowsAutomationEvent::PowerChanged
+    ));
+
+    settings.background_efficiency.enabled = true;
+    assert!(!background_efficiency_policy_varies_by_source(&settings));
+    settings
+        .battery_profile_mut()
+        .background_efficiency
+        .visible_window_detection_enabled = true;
+    assert!(background_efficiency_policy_varies_by_source(&settings));
+}
+
+#[test]
 fn timer_resolution_requests_power_events_only_for_different_profile_enablement() {
     let mut settings = Settings::default();
     settings.general.theme_mode = AppThemeMode::Dark;

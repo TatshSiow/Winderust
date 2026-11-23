@@ -1467,8 +1467,15 @@ fn run_background_automation(
             cpu_limiter_active,
             memory_trim_active,
         );
+        let background_efficiency_active =
+            feature_refresh_required(settings, settings.background_efficiency.enabled);
+        let background_efficiency_policy_varies = (plugged_in.is_none()
+            || !windows_event_watcher_active)
+            && background_efficiency_policy_varies_by_source(&configured_settings);
+        let background_efficiency_waits_for_source =
+            plugged_in.is_none() && background_efficiency_policy_varies;
         let background_efficiency_refresh_required = settings_changed
-            || feature_refresh_required(settings, settings.background_efficiency.enabled);
+            || (background_efficiency_active && !background_efficiency_waits_for_source);
         let app_suspension_refresh_required = settings_changed
             || app_suspension_waits_for_source
             || feature_refresh_required(settings, app_suspension_required(settings))
@@ -1608,8 +1615,11 @@ fn run_background_automation(
         if background_efficiency_refresh_required
             && scheduler.is_due(RefreshDomain::BackgroundEfficiency, now)
         {
-            let background_efficiency_status =
-                runner.run_background_efficiency_update(settings, &mut observations);
+            let background_efficiency_status = runner.run_background_efficiency_update(
+                settings,
+                background_efficiency_waits_for_source,
+                &mut observations,
+            );
             update_background_efficiency_status(&shared, background_efficiency_status);
             scheduler.schedule_after(
                 RefreshDomain::BackgroundEfficiency,
@@ -2234,12 +2244,14 @@ fn run_background_automation(
         if let Some(delay) = runner.control_release_retry_delay(sleep_now) {
             wait_for = Some(min_worker_wait(wait_for, delay));
         }
-        if timer_resolution_waits_for_source
+        if background_efficiency_waits_for_source
+            || timer_resolution_waits_for_source
             || (!timer_resolution_active
                 && !windows_event_watcher_active
                 && timer_resolution_enablement_varies_by_source(&configured_settings))
             || (!windows_event_watcher_active
-                && (adaptive_enablement_varies_by_source(&configured_settings)
+                && ((!background_efficiency_active && background_efficiency_policy_varies)
+                    || adaptive_enablement_varies_by_source(&configured_settings)
                     || memory_trim_policy_difference != MemoryTrimPolicyDifference::Common
                     || cpu_limiter_policy_varies
                     || app_suspension_policy_varies

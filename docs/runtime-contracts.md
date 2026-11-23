@@ -859,6 +859,11 @@ Read the relevant section before changing feature policy, ownership, restoration
   Home and Status distinguish missing observations from a confirmed zero.
   Inventory and pending restoration failures surface as errors, with the
   restoration failure taking precedence until retry succeeds.
+  When Windows cannot verify the power source, differing saved Background Efficiency
+  settings pause automatic claims if either profile can apply them. The comparison
+  includes settings that may not affect the current processes. The worker releases
+  only its Background Efficiency claims and rechecks the source while paused, or
+  when a dormant profile could become active without power notifications.
 - Every Priority Control page uses three ordered default tiers: Focus App, then apps with visible windows, then background. Visible Window Detection defaults off and has its own selectable value; custom process rules independently override all three tiers. Retired Auto priority values are rejected rather than mapped to current defaults.
 - Foreground Detection requires an executable tied to the captured process generation. An
   unavailable or unverified image makes the Focus observation unavailable.

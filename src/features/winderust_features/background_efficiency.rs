@@ -93,6 +93,7 @@ const AGGRESSIVE_BUILT_IN_EXCLUSIONS: &[&str] = &[
 pub struct BackgroundEfficiencySnapshot {
     pub enabled: bool,
     pub observation_paused: bool,
+    pub waiting_for_power_source: bool,
     pub unsupported: bool,
     pub scanned_processes: usize,
     pub throttled_processes: usize,
@@ -362,6 +363,22 @@ impl BackgroundEfficiencyManager {
             ..Default::default()
         };
         self.with_release_status(controller, status)
+    }
+
+    pub(crate) fn pause_for_power_source(
+        &mut self,
+        controller: &mut PriorityEfficiencyController,
+        action_log: &mut ActionLog,
+    ) -> BackgroundEfficiencySnapshot {
+        BackgroundEfficiencySnapshot {
+            waiting_for_power_source: true,
+            ..self.paused_snapshot(
+                controller,
+                action_log,
+                "background_efficiency.release_reason_unknown_power_source",
+                None,
+            )
+        }
     }
 
     fn disabled_snapshot(

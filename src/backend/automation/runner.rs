@@ -578,7 +578,7 @@ impl RuntimeCore {
         if let Err(error) = self.cpu_allocation_coordinator.shutdown() {
             errors.push(format!("CPU allocation restoration failed: {error}"));
         }
-        self.run_background_efficiency_update(&settings, &mut observations);
+        self.run_background_efficiency_update(&settings, false, &mut observations);
         if let Err(error) = self.priority_efficiency_controller.shutdown() {
             errors.push(format!(
                 "Process Priority and Efficiency restoration failed: {error}"
@@ -810,8 +810,15 @@ impl RuntimeCore {
     pub(super) fn run_background_efficiency_update(
         &mut self,
         settings: &Settings,
+        waiting_for_power_source: bool,
         observations: &mut CycleObservations,
     ) -> BackgroundEfficiencySnapshot {
+        if waiting_for_power_source {
+            return self.background_efficiency_manager.pause_for_power_source(
+                &mut self.priority_efficiency_controller,
+                &mut self.action_log,
+            );
+        }
         let foreground_process_id = observations.foreground_process_id();
         self.background_efficiency_manager.update(
             &mut self.priority_efficiency_controller,

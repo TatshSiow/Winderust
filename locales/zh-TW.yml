@@ -637,6 +637,7 @@ background_efficiency:
   release_reason_automation_disabled: "自動化已停用"
   release_reason_feature_disabled: "背景效率已停用"
   release_reason_unknown_foreground: "無法判定前景應用程式"
+  release_reason_unknown_power_source: "Windows 無法確認電源來源"
   release_reason_unavailable_windows: "無法取得可見視窗"
   release_reason_unknown_session: "無法判定目前的 Windows 工作階段"
   release_reason_unavailable_processes: "無法取得程序清單"

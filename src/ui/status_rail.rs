@@ -181,18 +181,11 @@ pub(super) fn view<'a>(
     };
     let state = sidebar_state(page, settings, runtime, &summary, observed_state);
     let (state_label, detail, color) = match (page, state) {
-        (Page::TimerResolution, FeatureRunState::Paused)
-            if runtime
-                .feature_status
-                .timer_resolution
-                .waiting_for_power_source =>
-        {
-            (
-                "sidebar_status.paused",
-                "home.power_source_unavailable",
-                "common.waiting",
-            )
-        }
+        (_, FeatureRunState::Paused) if waiting_for_power_source(page, runtime) => (
+            "sidebar_status.paused",
+            "home.power_source_unavailable",
+            "common.waiting",
+        ),
         (Page::CpuLimiter, FeatureRunState::Paused)
             if runtime.feature_status.cpu_limiter.waiting_for_power_source =>
         {
@@ -758,6 +751,24 @@ fn sleep_prevention_state(sleep: Option<&SleepPreventionSnapshot>) -> FeatureRun
     }
 }
 
+fn waiting_for_power_source(page: Page, runtime: &RuntimeStatusSnapshot) -> bool {
+    match page {
+        Page::BackgroundEfficiency => {
+            runtime
+                .feature_status
+                .background_efficiency
+                .waiting_for_power_source
+        }
+        Page::TimerResolution => {
+            runtime
+                .feature_status
+                .timer_resolution
+                .waiting_for_power_source
+        }
+        _ => false,
+    }
+}
+
 fn sidebar_state(
     page: Page,
     settings: &Settings,
@@ -767,15 +778,15 @@ fn sidebar_state(
 ) -> FeatureRunState {
     use crate::control::power_plan::PowerPlanOwner;
     use crate::rules::DecisionState;
+    if waiting_for_power_source(page, runtime) {
+        return if runtime.worker_error.is_some() || summary.last_error.is_some() {
+            FeatureRunState::Error
+        } else {
+            FeatureRunState::Paused
+        };
+    }
     if page == Page::TimerResolution {
         let timer = &runtime.feature_status.timer_resolution;
-        if timer.waiting_for_power_source {
-            return if runtime.worker_error.is_some() || summary.last_error.is_some() {
-                FeatureRunState::Error
-            } else {
-                FeatureRunState::Paused
-            };
-        }
         if !timer.enabled && timer.requested_100ns.is_some() && timer.last_error.is_some() {
             return FeatureRunState::Error;
         }
@@ -1951,6 +1962,56 @@ mod tests {
         let waiting = labels(&runtime);
         assert_eq!(waiting[0], t!("sidebar_status.paused"));
         assert_eq!(waiting[1], t!("cpu_limiter.waiting_for_power_source"));
+    }
+
+    #[test]
+    fn background_efficiency_sidebar_keeps_power_source_pause_and_restore_errors_across_drafts() {
+        let mut saved = Settings::default();
+        saved.general.enabled = true;
+        saved.background_efficiency.enabled = false;
+        saved.battery_profile_mut().background_efficiency.enabled = true;
+        let mut editor = crate::application::SettingsEditor::with_settings(saved);
+        editor.select_power_source(PowerSourceProfile::OnBattery);
+        editor.background_efficiency.enabled = false;
+        let page = Page::BackgroundEfficiency;
+        let mut runtime = RuntimeStatusSnapshot {
+            generation: 1,
+            ..Default::default()
+        };
+        let render = |runtime: &RuntimeStatusSnapshot, plugged_in| {
+            let settings = saved_rail_settings(&editor, page, runtime, plugged_in);
+            rail_text(view(page, settings, runtime, &[], plugged_in).unwrap())
+        };
+        assert_eq!(render(&runtime, Some(true))[0], t!("common.inactive"));
+
+        let efficiency =
+            &mut std::sync::Arc::make_mut(&mut runtime.feature_status).background_efficiency;
+        efficiency.enabled = true;
+        efficiency.observation_paused = true;
+        efficiency.waiting_for_power_source = true;
+        let paused = render(&runtime, None);
+        assert_eq!(paused[0], t!("sidebar_status.paused"));
+        assert_eq!(paused[1], t!("home.power_source_unavailable"));
+
+        let efficiency =
+            &mut std::sync::Arc::make_mut(&mut runtime.feature_status).background_efficiency;
+        efficiency.last_error = Some("restore failed".into());
+        let error = render(&runtime, None);
+        assert_eq!(error[0], t!("common.error"));
+        assert!(error.iter().any(|text| text == "restore failed"));
+
+        let efficiency =
+            &mut std::sync::Arc::make_mut(&mut runtime.feature_status).background_efficiency;
+        efficiency.last_error = None;
+        efficiency.waiting_for_power_source = false;
+        efficiency.observation_paused = false;
+        efficiency.throttled_processes = 1;
+        let summary = feature_status_summary(page, &runtime).unwrap();
+        let settings = saved_rail_settings(&editor, page, &runtime, Some(false));
+        assert_eq!(
+            sidebar_state(page, settings, &runtime, &summary, None),
+            FeatureRunState::Running
+        );
     }
 
     #[test]

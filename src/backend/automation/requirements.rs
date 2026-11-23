@@ -70,6 +70,30 @@ pub(super) fn adaptive_engine_process_required(settings: &Settings) -> bool {
     settings.adaptive_engine.enabled && settings.adaptive_engine_process.has_enabled_policies()
 }
 
+pub(super) fn background_efficiency_policy_varies_by_source(settings: &Settings) -> bool {
+    let Some(battery) = settings.on_battery.as_deref() else {
+        return false;
+    };
+    if settings.general.enabled == battery.general.enabled
+        && settings.background_efficiency == battery.background_efficiency
+    {
+        return false;
+    }
+    let has_policy = |profile: &Settings| {
+        let efficiency = &profile.background_efficiency;
+        feature_refresh_required(profile, efficiency.enabled)
+            && (efficiency.background_efficiency_mode
+                || (efficiency.foreground_detection_enabled
+                    && efficiency.foreground_efficiency_mode)
+                || (efficiency.visible_window_detection_enabled
+                    && efficiency.visible_window_efficiency_mode)
+                || efficiency.custom_rules.iter().any(|rule| {
+                    rule.enabled && efficiency.custom_rule_applies_efficiency_mode(rule)
+                }))
+    };
+    has_policy(settings) || has_policy(battery)
+}
+
 pub(super) fn app_suspension_required(settings: &Settings) -> bool {
     settings.app_suspension.enabled && app_suspension::has_enabled_rules(&settings.app_suspension)
 }
