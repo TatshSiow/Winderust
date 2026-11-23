@@ -1913,17 +1913,7 @@ impl WinderustApp {
                             .map(Message::Processes),
                     );
                 }
-                if (page.supports_power_source_profiles()
-                    || matches!(
-                        page,
-                        Page::ActionLog
-                            | Page::Watchdog
-                            | Page::KeepRunning
-                            | Page::InstanceLimits
-                            | Page::InstanceBalancing
-                    ))
-                    && !self.catalog_loading
-                {
+                if page_needs_app_catalog(page) && !self.catalog_loading {
                     tasks.push(self.load_catalog());
                 }
                 return Task::batch(tasks);
@@ -2084,15 +2074,7 @@ impl WinderustApp {
                                 .map(Message::Processes),
                         );
                     }
-                    if (self.page.supports_power_source_profiles()
-                        || matches!(
-                            self.page,
-                            Page::ActionLog
-                                | Page::Watchdog
-                                | Page::KeepRunning
-                                | Page::InstanceLimits
-                                | Page::InstanceBalancing
-                        ))
+                    if page_needs_app_catalog(self.page)
                         && !self.catalog_loading
                         && self.catalog_sampled_at.elapsed() >= Duration::from_secs(3)
                     {
@@ -3985,6 +3967,34 @@ fn page_needs_power_plans(page: Page, process_rulesets_open: bool) -> bool {
         || page.section_landing_page() == Page::PowerPlanControl
 }
 
+fn page_needs_app_catalog(page: Page) -> bool {
+    matches!(
+        page,
+        Page::ActionLog
+            | Page::AdaptiveEngine
+            | Page::AppSuspension
+            | Page::BackgroundEfficiency
+            | Page::ByFocus
+            | Page::ByRunningApp
+            | Page::CpuLimiter
+            | Page::CpuSetsSoft
+            | Page::DynamicPriorityBoost
+            | Page::GpuPriority
+            | Page::InstanceBalancing
+            | Page::InstanceLimits
+            | Page::IoPriority
+            | Page::KeepRunning
+            | Page::MemoryPriority
+            | Page::MemoryTrim
+            | Page::ProcessPriority
+            | Page::ProcessorAffinityHard
+            | Page::SleepPrevention
+            | Page::ThreadPriority
+            | Page::TimerResolution
+            | Page::Watchdog
+    )
+}
+
 fn combine_warnings(first: Option<String>, second: Option<String>) -> Option<String> {
     match (first, second) {
         (Some(mut first), Some(second)) => {
@@ -4640,6 +4650,22 @@ mod tests {
             Message::DiscardAndClose,
         ] {
             assert!(!message.allowed_during_exit());
+        }
+    }
+
+    #[test]
+    fn app_catalog_refresh_requires_a_page_that_uses_it() {
+        for page in [
+            Page::AdaptiveProcessorPower,
+            Page::ByActivity,
+            Page::ByCpuLoad,
+            Page::ByTime,
+        ] {
+            assert!(page.supports_power_source_profiles());
+            assert!(!page_needs_app_catalog(page));
+        }
+        for page in [Page::ByFocus, Page::ByRunningApp, Page::ActionLog] {
+            assert!(page_needs_app_catalog(page));
         }
     }
 
