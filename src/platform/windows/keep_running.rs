@@ -16,16 +16,15 @@ use windows_sys::Win32::{
         DuplicateHandle, HANDLE, HWND, INVALID_HANDLE_VALUE, WAIT_OBJECT_0, WAIT_TIMEOUT,
     },
     Security::{
-        GetKernelObjectSecurity, GetLengthSid, GetSecurityDescriptorDacl,
-        GetSecurityDescriptorSacl, GetSidSubAuthority, GetSidSubAuthorityCount,
-        GetTokenInformation, IsValidSid, IsWellKnownSid, SetKernelObjectSecurity, TokenElevation,
-        TokenElevationType, TokenGroups, TokenIntegrityLevel, TokenIsAppContainer,
-        TokenLinkedToken, TokenPrivileges, TokenRestrictedSids, TokenSessionId, TokenStatistics,
-        TokenUIAccess, TokenUser, WinLocalServiceSid, WinLocalSystemSid, WinNetworkServiceSid,
-        DACL_SECURITY_INFORMATION, LABEL_SECURITY_INFORMATION, LUID_AND_ATTRIBUTES,
-        SID_AND_ATTRIBUTES, TOKEN_DUPLICATE, TOKEN_GROUPS, TOKEN_INFORMATION_CLASS,
-        TOKEN_LINKED_TOKEN, TOKEN_MANDATORY_LABEL, TOKEN_PRIVILEGES, TOKEN_QUERY, TOKEN_STATISTICS,
-        TOKEN_USER,
+        GetKernelObjectSecurity, GetSecurityDescriptorDacl, GetSecurityDescriptorSacl,
+        GetSidSubAuthority, GetSidSubAuthorityCount, GetTokenInformation, IsWellKnownSid,
+        SetKernelObjectSecurity, TokenElevation, TokenElevationType, TokenGroups,
+        TokenIntegrityLevel, TokenIsAppContainer, TokenLinkedToken, TokenPrivileges,
+        TokenRestrictedSids, TokenSessionId, TokenStatistics, TokenUIAccess, TokenUser,
+        WinLocalServiceSid, WinLocalSystemSid, WinNetworkServiceSid, DACL_SECURITY_INFORMATION,
+        LABEL_SECURITY_INFORMATION, LUID_AND_ATTRIBUTES, SID_AND_ATTRIBUTES, TOKEN_DUPLICATE,
+        TOKEN_GROUPS, TOKEN_INFORMATION_CLASS, TOKEN_LINKED_TOKEN, TOKEN_MANDATORY_LABEL,
+        TOKEN_PRIVILEGES, TOKEN_QUERY, TOKEN_STATISTICS, TOKEN_USER,
     },
     Storage::FileSystem::{
         CreateFileW, FileIdInfo, GetFileInformationByHandleEx, FILE_ATTRIBUTE_NORMAL, FILE_ID_INFO,
@@ -61,6 +60,8 @@ use windows_sys::Win32::{
 };
 
 use crate::win_util::{last_error, WinHandle};
+
+use super::sid_bytes;
 
 type Result<T> = std::result::Result<T, KeepRunningError>;
 
@@ -316,37 +317,6 @@ fn token_buffer(token: &WinHandle, class: TOKEN_INFORMATION_CLASS) -> Result<Vec
     Ok(storage)
 }
 
-fn sid_bytes(sid: *mut c_void, storage: &[usize]) -> Result<Vec<u8>> {
-    let start = storage.as_ptr() as usize;
-    let end = start + size_of_val(storage);
-    let address = sid as usize;
-    if address < start || address.checked_add(8).is_none_or(|value| value > end) {
-        return Err(KeepRunningError::Unsupported(
-            "Windows returned an invalid token SID.",
-        ));
-    }
-    // SAFETY: the SID header lies inside the retained native response.
-    let count = unsafe { *sid.cast::<u8>().add(1) } as usize;
-    if address
-        .checked_add(8 + count * 4)
-        .is_none_or(|value| value > end)
-    {
-        return Err(KeepRunningError::Unsupported(
-            "Windows returned a truncated token SID.",
-        ));
-    }
-    // SAFETY: the complete counted SID lies in the retained allocation.
-    if unsafe { IsValidSid(sid) } == 0 {
-        return Err(KeepRunningError::Unsupported(
-            "Windows returned an invalid token SID.",
-        ));
-    }
-    // SAFETY: the SID is valid and its complete storage remains alive.
-    let bytes = unsafe { GetLengthSid(sid) } as usize;
-    // SAFETY: GetLengthSid's validated SID bytes lie within storage.
-    Ok(unsafe { std::slice::from_raw_parts(sid.cast::<u8>(), bytes) }.to_vec())
-}
-
 #[derive(PartialEq, Eq)]
 struct TokenFacts {
     sid: Vec<u8>,
@@ -392,7 +362,9 @@ fn facts(token: &WinHandle) -> Result<TokenFacts> {
     }
     // SAFETY: user is aligned and contains the complete native TOKEN_USER header.
     let user_sid = unsafe { (*user.as_ptr().cast::<TOKEN_USER>()).User.Sid };
-    let sid = sid_bytes(user_sid, &user)?;
+    let sid = sid_bytes(user_sid, &user)
+        .map_err(KeepRunningError::Unsupported)?
+        .to_vec();
     // SAFETY: sid_bytes validated this SID in retained native user-token storage.
     let service_account = unsafe {
         IsWellKnownSid(user_sid, WinLocalSystemSid) != 0
@@ -407,7 +379,7 @@ fn facts(token: &WinHandle) -> Result<TokenFacts> {
     }
     // SAFETY: label is aligned and contains the complete TOKEN_MANDATORY_LABEL header.
     let label_sid = unsafe { (*label.as_ptr().cast::<TOKEN_MANDATORY_LABEL>()).Label.Sid };
-    sid_bytes(label_sid, &label)?;
+    sid_bytes(label_sid, &label).map_err(KeepRunningError::Unsupported)?;
     // SAFETY: sid_bytes validated the complete SID inside the retained label allocation.
     let count = unsafe { *GetSidSubAuthorityCount(label_sid) };
     if count == 0 {
@@ -439,7 +411,8 @@ fn facts(token: &WinHandle) -> Result<TokenFacts> {
                 .cast::<SID_AND_ATTRIBUTES>()
                 .add(index)
         };
-        groups.push((sid_bytes(entry.Sid, &group_storage)?, entry.Attributes));
+        let sid = sid_bytes(entry.Sid, &group_storage).map_err(KeepRunningError::Unsupported)?;
+        groups.push((sid.to_vec(), entry.Attributes));
     }
     groups.sort_unstable();
     let privilege_storage = token_buffer(token, TokenPrivileges)?;

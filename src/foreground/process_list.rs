@@ -13,6 +13,7 @@ use windows_sys::Win32::System::Threading::GetCurrentProcessId;
 
 use crate::{
     cpu::ProcessCpuSample,
+    platform::windows::sid_bytes,
     win_util::{filetime_to_u64, WinHandle},
 };
 
@@ -734,7 +735,10 @@ fn list_process_entries() -> Result<Vec<ProcessInfo>, String> {
 
 pub fn list_processes_with_paths() -> Result<Vec<ProcessInfo>, String> {
     let mut processes = list_processes()?;
-    enrich_process_metadata(&mut processes, process_identity_from_handle);
+    let mut account_names = BTreeMap::new();
+    enrich_process_metadata(&mut processes, |handle| {
+        process_identity_from_handle(handle, &mut account_names)
+    });
     Ok(processes)
 }
 
@@ -747,7 +751,7 @@ pub(crate) fn enrich_process_paths(processes: &mut [ProcessInfo]) {
 
 fn enrich_process_metadata(
     processes: &mut [ProcessInfo],
-    identity: impl Fn(&WinHandle) -> (Option<String>, Option<bool>),
+    mut identity: impl FnMut(&WinHandle) -> (Option<String>, Option<bool>),
 ) {
     for process in processes {
         let Some(handle) = open_process_for_query(process.id) else {
@@ -1136,17 +1140,37 @@ fn process_critical_from_handle(process: &WinHandle) -> Option<bool> {
     (unsafe { IsProcessCritical(process.raw(), &mut critical) } != 0).then_some(critical != 0)
 }
 
-fn process_identity_from_handle(process: &WinHandle) -> (Option<String>, Option<bool>) {
+fn process_identity_from_handle(
+    process: &WinHandle,
+    account_names: &mut BTreeMap<Vec<u8>, String>,
+) -> (Option<String>, Option<bool>) {
     let Some(token_buffer) = process_token_user_buffer(process) else {
         return (None, None);
     };
     // SAFETY: successful TokenUser output starts with a valid aligned TOKEN_USER whose SID remains
     // valid while token_buffer is alive.
     let token_user = unsafe { &*token_buffer.as_ptr().cast::<TOKEN_USER>() };
-    (
-        process_user_name_from_sid(token_user.User.Sid),
-        Some(sid_is_service_account(token_user.User.Sid)),
-    )
+    let Ok(sid) = sid_bytes(token_user.User.Sid, &token_buffer) else {
+        return (None, None);
+    };
+    let native_sid = sid.as_ptr().cast_mut().cast();
+    let name = cached_account_name(account_names, sid, || {
+        process_user_name_from_sid(native_sid)
+    });
+    (name, Some(sid_is_service_account(native_sid)))
+}
+
+fn cached_account_name(
+    account_names: &mut BTreeMap<Vec<u8>, String>,
+    sid: &[u8],
+    lookup: impl FnOnce() -> Option<String>,
+) -> Option<String> {
+    if let Some(name) = account_names.get(sid) {
+        return Some(name.clone());
+    }
+    let name = lookup()?;
+    account_names.insert(sid.to_vec(), name.clone());
+    Some(name)
 }
 
 fn process_user_name_from_sid(sid: PSID) -> Option<String> {
@@ -1562,15 +1586,11 @@ mod tests {
     #[test]
     fn path_enrichment_keeps_safety_metadata_and_limits_account_names_to_ui() {
         let process_id = std::process::id();
-        let mut current = list_processes()
+        let mut current = list_processes_with_paths()
             .expect("process snapshot is available")
             .into_iter()
             .find(|process| process.id == process_id)
             .expect("current process is present in its own snapshot");
-        enrich_process_metadata(
-            std::slice::from_mut(&mut current),
-            process_identity_from_handle,
-        );
         assert!(current
             .user_name
             .as_ref()
@@ -1588,6 +1608,25 @@ mod tests {
             "runtime enrichment must omit account names"
         );
         assert_eq!(current, expected);
+    }
+
+    #[test]
+    fn account_name_cache_reuses_successes_by_sid_and_retries_failures() {
+        let mut names = BTreeMap::new();
+        assert_eq!(cached_account_name(&mut names, &[1], || None), None);
+        assert_eq!(
+            cached_account_name(&mut names, &[1], || Some("Alice".to_owned())).as_deref(),
+            Some("Alice")
+        );
+        assert_eq!(
+            cached_account_name(&mut names, &[1], || panic!("SID is already cached")).as_deref(),
+            Some("Alice")
+        );
+        assert_eq!(
+            cached_account_name(&mut names, &[2], || Some("Bob".to_owned())).as_deref(),
+            Some("Bob")
+        );
+        assert_eq!(names.len(), 2);
     }
 
     #[test]
