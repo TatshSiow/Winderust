@@ -3529,7 +3529,7 @@ impl WinderustApp {
             layout,
             shield(
                 container(super::motion::wrap(
-                    save_card(),
+                    iced::widget::opaque(save_card()),
                     save_notice_visible,
                     super::motion::Effect::Visible
                 ))
