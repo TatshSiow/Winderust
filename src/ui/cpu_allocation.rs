@@ -330,7 +330,6 @@ impl Editor {
         candidates: &'a [super::app_picker::Candidate],
     ) -> Element<'a, Message> {
         let feature = settings(s, k);
-        let catalog = SelectionCatalog::capture(k);
         let mut body = column![
             super::widgets::toggle_card(
                 match k {
@@ -357,9 +356,10 @@ impl Editor {
         ]
         .spacing(super::widgets::CARD_GAP);
         let mut rules = Vec::new();
-        let mut shared_presets = None;
+        let mut rule_options: Option<(SelectionCatalog, Rc<[_]>)> = None;
         for (i, r) in feature.rules.iter().enumerate() {
-            let presets: &Rc<[_]> = shared_presets.get_or_insert_with(|| {
+            let (catalog, presets) = rule_options.get_or_insert_with(|| {
+                let catalog = SelectionCatalog::capture(k);
                 let mut choices = catalog.presets.clone();
                 choices.extend(
                     s.cpu_allocation_presets
@@ -367,7 +367,7 @@ impl Editor {
                         .map(|p| super::widgets::Choice(p.selection.clone(), p.name.clone())),
                 );
                 choices.retain(|p| !p.0.is_empty() && catalog.error(&p.0).is_none());
-                choices.into()
+                (catalog, choices.into())
             });
             let controls = [Tier::Focus, Tier::Visible, Tier::Background]
                 .into_iter()
