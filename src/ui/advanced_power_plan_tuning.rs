@@ -209,7 +209,13 @@ struct ApplyReview {
 
 struct UnverifiedApply {
     review: ApplyReview,
-    activation_failed: bool,
+    recovery: ReadbackRecovery,
+}
+
+enum ReadbackRecovery {
+    Draft,
+    RetryActivation,
+    VerifyWrite,
 }
 
 impl ApplyReview {
@@ -433,15 +439,25 @@ impl Editor {
                     self.pending_activation = None;
                 }
                 self.set_readback(Some(v));
-                if let Some(UnverifiedApply {
-                    review,
-                    activation_failed,
-                }) = self.unverified_apply.take()
-                {
-                    if activation_failed && review.expected_readback() == v {
-                        self.pending_activation = Some(review);
-                    } else if review.origin != ApplyOrigin::Restore {
-                        self.values = Some(review.recover_draft(v));
+                if let Some(UnverifiedApply { review, recovery }) = self.unverified_apply.take() {
+                    match (recovery, review.expected_readback() == v) {
+                        (ReadbackRecovery::RetryActivation, true) => {
+                            self.pending_activation = Some(review);
+                        }
+                        (ReadbackRecovery::VerifyWrite, true) => {
+                            let completed = self.pending_activation.take().unwrap_or(review);
+                            if self.remember_verified_write(&completed, v) {
+                                self.status = if completed.origin == ApplyOrigin::Restore {
+                                    Feedback::Restored(completed.name)
+                                } else {
+                                    Feedback::Applied(completed.name)
+                                };
+                            }
+                        }
+                        _ if review.origin != ApplyOrigin::Restore => {
+                            self.values = Some(review.recover_draft(v));
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -695,6 +711,10 @@ impl Editor {
             .error
             .as_ref()
             .is_some_and(AdvancedPowerPlanTuningApplyError::failed_to_refresh_active_plan);
+        let write_completed = matches!(
+            outcome.error,
+            Some(AdvancedPowerPlanTuningApplyError::Readback(_))
+        );
         self.set_readback(outcome.actual_values);
         if !restoring && !outcome.applied {
             self.values = self.readback.map(|actual| review.recover_draft(actual));
@@ -731,12 +751,18 @@ impl Editor {
             if let Some((expected, actual)) = expected.zip(self.readback) {
                 append_readback_differences(&mut message, expected, actual);
             }
-            if self.readback.is_none() && (!restoring || retry || activation_failed) {
+            if self.readback.is_none()
+                && (!restoring || retry || activation_failed || write_completed)
+            {
                 self.pending_activation = pending;
-                self.unverified_apply = Some(UnverifiedApply {
-                    review,
-                    activation_failed: activation_failed && !retry,
-                });
+                let recovery = if write_completed {
+                    ReadbackRecovery::VerifyWrite
+                } else if activation_failed && !retry {
+                    ReadbackRecovery::RetryActivation
+                } else {
+                    ReadbackRecovery::Draft
+                };
+                self.unverified_apply = Some(UnverifiedApply { review, recovery });
             } else if (activation_failed || retry)
                 && self.readback == Some(original.expected_readback())
             {
@@ -2380,6 +2406,59 @@ mod tests {
             active: true,
             managed_adaptive: false,
         }
+    }
+
+    #[test]
+    fn exact_refresh_verifies_completed_apply_and_restore_after_failed_readback() {
+        let previous = tuning_retry_baseline();
+        let (service, store) = AdvancedPowerPlanTuningService::fake(previous);
+        let plan = tuning_retry_plan();
+        let plans = [plan.clone()];
+        let mut editor = Editor {
+            service,
+            ..Default::default()
+        };
+        editor.ensure_plan(&plans);
+        let mut requested = previous.writable();
+        requested.ac.processor.performance_max = 85;
+        editor.values = Some(requested);
+        editor.update_dirty();
+        editor.review_apply(&plans, ApplyOrigin::Page).unwrap();
+
+        let unavailable = || AdvancedPowerPlanTuningError::ReadValues("test failure".into());
+        store.set_apply_result(None, Err(unavailable()));
+        assert!(!editor.confirm_apply(&plans));
+        assert!(editor.dirty);
+        editor.refresh(&plans);
+        assert!(editor.dirty);
+        assert!(editor.restore_point_for(&plans).is_none());
+        assert_eq!(store.requests().len(), 1);
+
+        let applied = previous.with_requested(requested);
+        store.set_values(applied);
+        editor.refresh(&plans);
+        assert!(!editor.dirty);
+        let (_, point) = editor.restore_point_for(&plans).unwrap();
+        assert_eq!(point.previous, previous);
+        assert_eq!(point.applied, applied);
+        assert!(matches!(editor.status, Feedback::Applied(ref name) if name == &plan.name));
+
+        editor.review_restore(&plans).unwrap();
+        store.set_apply_result(None, Err(unavailable()));
+        assert!(!editor.confirm_apply(&plans));
+        assert!(editor.dirty);
+        store.set_values(previous);
+        editor.refresh(&plans);
+        assert!(!editor.dirty);
+        assert!(editor.restore_points.is_empty());
+        assert!(matches!(editor.status, Feedback::Restored(ref name) if name == &plan.name));
+        assert_eq!(
+            store.requests(),
+            [
+                (previous.writable(), requested),
+                (requested, previous.writable())
+            ]
+        );
     }
 
     #[test]

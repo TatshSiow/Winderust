@@ -483,8 +483,10 @@ Read the relevant section before changing feature policy, ownership, restoration
   On a failed Apply with readback, the draft retains the original changes that
   are still writable and differ from the plan. When readback fails, the editor
   keeps the reviewed edits pending. Refresh values reads the same plan before
-  recovering changes that are still writable. Discard drops the retained edits.
-  A retry requires a new review.
+  recovering changes that are still writable. If the write succeeded, a later
+  exact read of that plan verifies the result and updates the restore point
+  without writing again. Discard drops the retained edits. A retry requires a
+  new review.
 - Restore previous tuning values keeps one in-memory restore point per plan GUID
   after a verified Apply that changed values. It captures the pre-apply values
   only when the writer can reproduce the editable values exactly and preserve
