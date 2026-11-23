@@ -260,6 +260,7 @@ impl RuntimeCore {
 
     pub(super) fn run_watchdog_update(
         &mut self,
+        shared: &SharedAutomationState,
         settings: &Settings,
         observations: &mut CycleObservations,
     ) -> WatchdogSnapshot {
@@ -314,6 +315,9 @@ impl RuntimeCore {
             .into_owned();
             let mut action_detail = t!("watchdog.no_action").to_string();
             if event.response.action != WatchdogAction::None {
+                if !watchdog_action_is_current(shared, settings) {
+                    continue;
+                }
                 let restarting = event.response.action == WatchdogAction::Restart;
                 let result = if restarting {
                     actions

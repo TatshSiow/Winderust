@@ -1756,8 +1756,11 @@ fn run_background_automation(
             scheduler.schedule_after(RefreshDomain::MemoryTrim, scheduled_at, interval);
         }
         if watchdog_refresh_required && scheduler.is_due(RefreshDomain::Watchdog, now) {
-            let status =
-                runner.run_watchdog_update(configured_settings.as_ref(), &mut observations);
+            let status = runner.run_watchdog_update(
+                &shared,
+                configured_settings.as_ref(),
+                &mut observations,
+            );
             update_feature_status(
                 &shared,
                 status,
@@ -2084,6 +2087,18 @@ fn run_background_automation(
     }
 
     runner.shutdown()
+}
+
+fn watchdog_action_is_current(shared: &SharedAutomationState, expected: &Settings) -> bool {
+    let state = lock_unpoisoned(&shared.state);
+    !state.stop_requested
+        && !state.pending_events.suspend_resume
+        && !state.pending_events.session_changed
+        && state.settings.general.enabled
+        && state.settings.watchdog.enabled
+        && state.settings.watchdog == expected.watchdog
+        && state.settings.general.allow_cross_session_process_control
+            == expected.general.allow_cross_session_process_control
 }
 
 fn reserve_keep_running_commit(

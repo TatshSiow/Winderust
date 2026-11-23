@@ -250,15 +250,19 @@ Read the relevant section before changing feature policy, ownership, restoration
   notification only. The feature defaults off. When both response levels are
   enabled, a critical response subsumes a simultaneous warning for the same
   resource. Each response fires once per incident. Missing samples break only
-  the affected resource's sustained interval. Collection gaps, complete app-instance
-  replacement, shared-setting or rule changes, and disable clear stale sustained
-  timers. Membership changes keep the app incident while any exact instance
-  survives. Within a matched group, unavailable protection or resource data
-  breaks the affected sustained intervals. An unresolved path on an exact prior
-  member makes its group incomplete. Already-fired responses stay latched
+  the affected resource's sustained interval. Collection gaps, complete
+  app-instance replacement, shared-setting or rule changes, and disable clear
+  stale sustained timers. Membership changes keep the app incident while any
+  exact instance survives. Within a matched group, unavailable protection or
+  resource data breaks the affected sustained intervals. An unresolved path on
+  an exact prior member makes its group incomplete. Already-fired responses stay latched
   through observation gaps when the next sample confirms an exact member
   survives. New or unsampled members require a fresh CPU baseline. Power-source
   changes leave Watchdog rules and incident state unchanged.
+- Before each automatic Terminate or Restart, the runtime checks the latest
+  Watchdog settings, automation enablement, and cross-session policy. A changed
+  policy or pending shutdown, suspend/resume, or session change cancels that
+  incident's response before Keep Running is paused or a restart cooldown starts.
 - `RuntimeCore` executes automatic termination through `ProcessTerminationController`,
   preserving exact identity, protected-process and helper exclusions, current
   cross-session policy, and Windows access checks. The controller preflights

@@ -2480,11 +2480,10 @@ fn unrelated_wakes_preserve_periodic_power_plan_checks() {
     assert!(scheduler.is_due(RefreshDomain::PowerPlanCheck, now));
 }
 
-#[test]
-fn callbacks_deliver_events_for_either_profile_without_polling() {
-    let shared = SharedAutomationState {
+fn shared_automation_state(settings: Settings) -> SharedAutomationState {
+    SharedAutomationState {
         state: Mutex::new(AutomationWorkerState {
-            settings: Arc::new(Settings::default()),
+            settings: Arc::new(settings),
             runtime_revision: SettingsRevision::initial(),
             persisted_revision: SettingsRevision::initial(),
             change_generation: 0,
@@ -2509,7 +2508,72 @@ fn callbacks_deliver_events_for_either_profile_without_polling() {
         status_generation: AtomicU64::new(0),
         pending_auto_exclusions_generation: AtomicU64::new(0),
         auto_exclusion_wake: Mutex::new(None),
-    };
+    }
+}
+
+#[test]
+fn watchdog_actions_require_current_policy_and_no_shutdown_or_session_transition() {
+    let mut settings = Settings::default();
+    settings.general.enabled = true;
+    settings.watchdog.enabled = true;
+    settings
+        .watchdog
+        .rules
+        .push(crate::config::WatchdogRule::new(r"C:\Apps\test.exe".into()));
+    let shared = shared_automation_state(settings.clone());
+    assert!(watchdog_action_is_current(&shared, &settings));
+
+    {
+        let mut state = lock_unpoisoned(&shared.state);
+        state.windows_event_watcher_active = false;
+        state.pending_events.windows_event_watcher_changed = true;
+        state.pending_events.settings_changed = true;
+        state.pending_events.power_changed = true;
+        let current = Arc::make_mut(&mut state.settings);
+        current.memory_trim.enabled = !current.memory_trim.enabled;
+    }
+    assert!(watchdog_action_is_current(&shared, &settings));
+
+    type Change<T> = (&'static str, fn(&mut T));
+    let settings_changes: [Change<Settings>; 4] = [
+        ("master disabled", |current| current.general.enabled = false),
+        ("Watchdog disabled", |current| {
+            current.watchdog.enabled = false
+        }),
+        ("rule disabled", |current| {
+            current.watchdog.rules[0].enabled = false
+        }),
+        ("cross-session permission changed", |current| {
+            current.general.allow_cross_session_process_control =
+                !current.general.allow_cross_session_process_control;
+        }),
+    ];
+    for (name, change) in settings_changes {
+        let mut current = settings.clone();
+        change(&mut current);
+        let shared = shared_automation_state(current);
+        assert!(!watchdog_action_is_current(&shared, &settings), "{name}");
+    }
+
+    let intents: [Change<AutomationWorkerState>; 3] = [
+        ("shutdown", |state| state.stop_requested = true),
+        ("suspend or resume", |state| {
+            state.pending_events.suspend_resume = true
+        }),
+        ("session change", |state| {
+            state.pending_events.session_changed = true
+        }),
+    ];
+    for (name, queue) in intents {
+        let shared = shared_automation_state(settings.clone());
+        queue(&mut lock_unpoisoned(&shared.state));
+        assert!(!watchdog_action_is_current(&shared, &settings), "{name}");
+    }
+}
+
+#[test]
+fn callbacks_deliver_events_for_either_profile_without_polling() {
+    let shared = shared_automation_state(Settings::default());
     for battery_only in [true, false] {
         let mut settings = Settings::default();
         settings.battery_profile_mut();
