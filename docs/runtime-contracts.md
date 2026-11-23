@@ -305,6 +305,11 @@ Read the relevant section before changing feature policy, ownership, restoration
 
 - Failed Adaptive plan setup retains the created GUID until verified cleanup succeeds. Pending cleanup uses the existing bounded retry interval and does not allocate replacement plans. Ownership starts immediately after duplication, before metadata or idle-state initialization. A never-activated clone whose source remains active preserves the ordinary restoration chain; genuine external plan changes still invalidate it.
 - Power-plan selections belong to the page or rule that exposes them. By Activity owns Idle/Active plans; other automation rules own `power_plan_guid`. There is no global power-plan fallback or load-time mapping migration. The `power_plans` field on `ByActivitySettings` owns the visible Idle/Active selections.
+- Ordinary rules wait for a known power source when A/C pause is enabled or
+  their settings differ between power profiles. While waiting, the worker polls
+  at the configured check interval and can read the current plan and detect
+  external changes. It retains the temporary restore point. Explicit automation
+  disable, removal of all ordinary plan rules, and Exit can still restore the plan.
 - Visible Power Plan Control pages and Process List Rulesets refresh the plan
   catalog on window focus and when a changed active GUID is absent from the
   catalog. An active-plan change observed during a query triggers a fresh read.

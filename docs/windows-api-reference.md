@@ -195,6 +195,11 @@ User-facing behavior:
 | `PowerRegisterForEffectivePowerModeNotifications` | Registers the callback that keeps the displayed Windows effective power mode current. Only `S_OK` indicates successful registration. | https://learn.microsoft.com/en-us/windows/win32/api/powersetting/nf-powersetting-powerregisterforeffectivepowermodenotifications |
 | `PowerUnregisterFromEffectivePowerModeNotifications` | Unregisters the callback and waits for active callbacks to complete. If it returns failure, Winderust retains the callback context for process lifetime because Windows may still reference it. | https://learn.microsoft.com/en-us/windows/win32/api/powersetting/nf-powersetting-powerunregisterfromeffectivepowermodenotifications |
 
+`src/backend/power_source.rs` reports an unknown source for a failed read or
+an unknown `ACLineStatus`. `src/backend/automation/requirements.rs` uses that
+result to defer ordinary plan rules when their policy depends on the source.
+[GetSystemPowerStatus](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-getsystempowerstatus), [SYSTEM_POWER_STATUS](https://learn.microsoft.com/en-us/windows/win32/api/winbase/ns-winbase-system_power_status).
+
 ## Automation Event Watcher
 
 `RuntimeHandle` owns `src/backend/windows_events.rs` as an RAII event source. The watcher retains one dedicated hidden-window thread for event-driven automation wakes. Full coverage requires the hidden window, foreground hook, window-creation hook, every configured power-setting notification, suspend/resume notification, and current-session notification. Adaptive CPU Pressure Restraint, Limit Background Processors, and Dynamic Resource Zones can request a hidden window with only the suspend/resume registration. Event-driven safety gates still require full watcher coverage. Each mode releases partial registrations on startup failure. Runtime mode changes join the previous watcher before starting a replacement. Runtime shutdown joins the watcher before joining the automation worker.
@@ -1171,6 +1176,7 @@ so duplicate launches also work before the first window opens or after one is de
 src/backend/tray.rs wakes the Iced daemon on tray actions, visibility changes, TaskbarCreated, and WM_POWERBROADCAST/PBT_APMPOWERSTATUSCHANGE. The power-status event refreshes the tray's AC/battery feature profile through GetSystemPowerStatus; idle windowless operation needs no UI polling. Reference: https://learn.microsoft.com/en-us/windows/win32/power/pbt-apmpowerstatuschange . No undocumented contract.
 
 The visible Home sampler in `src/ui/home.rs` uses `src/backend/power_source.rs` to read the current power source at its existing sample interval. Enabled Features shows an unavailable state if Windows cannot determine the source. [GetSystemPowerStatus](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-getsystempowerstatus).
+
 
 ## Accent color picker
 

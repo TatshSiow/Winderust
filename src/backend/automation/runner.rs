@@ -4,7 +4,7 @@ use crate::runtime::observations::{CycleObservations, ForegroundCpuHistory};
 use crate::{
     action_log::{ActionLogFeature, ActionLogResult},
     adaptive_engine_process::{focus_and_launch_profile_eligible, focus_process_priority_eligible},
-    control::memory_priority::MemoryPriorityReleaseOwner,
+    control::{memory_priority::MemoryPriorityReleaseOwner, power_plan::PowerPlanOwner},
     foreground::{process_session_id, ProcessInfo},
     platform::windows::process::current_process_id,
     rules::decision_engine::{matching_by_focus_rules, ordinary_power_plan_stop},
@@ -1931,17 +1931,21 @@ impl RuntimeCore {
         activity_state: ActivityState,
         observations: &mut CycleObservations,
     ) -> Result<(), ActivePlanCheckError> {
-        let settings = active_power_source_settings(configured_settings, plugged_in);
         if self.power_plan_controller.adaptive_active() {
             self.power_plan_rule_context = None;
             self.by_cpu_load_scheduler.reset();
             return Ok(());
         }
 
-        if let Err(error) = self
+        let active_plan = self
             .power_plan_controller
-            .refresh_active_plan_for_status(Instant::now(), false)
-        {
+            .refresh_active_plan_for_status(Instant::now(), false);
+        if ordinary_power_plan_waits_for_source(configured_settings, plugged_in) {
+            return active_plan;
+        }
+
+        let settings = active_power_source_settings(configured_settings, plugged_in);
+        if let Err(error) = active_plan {
             self.by_cpu_load_scheduler.reset();
             let status = self.power_plan_controller.status();
             let activity_conflicts_with_choice = matches!(
@@ -2200,19 +2204,31 @@ impl RuntimeCore {
             ordinary_power_plan_stop(settings.effective(), settings.plugged_in)
                 .map(|(state, _)| state)
         });
-        if status.owner != Some(crate::control::power_plan::PowerPlanOwner::OrdinaryAutomation)
-            || (status.restoring_previous
-                && (stop_state.is_none() || self.has_temporary_power_plan()))
+        let waits_for_source = self.last_settings.as_ref().is_some_and(|settings| {
+            ordinary_power_plan_waits_for_source(&settings.configured, settings.plugged_in)
+        });
+        if status.owner == Some(PowerPlanOwner::AdaptiveProcessorPower)
+            || (!waits_for_source
+                && (status.owner != Some(PowerPlanOwner::OrdinaryAutomation)
+                    || (status.restoring_previous
+                        && (stop_state.is_none() || self.has_temporary_power_plan()))))
         {
             self.power_plan_rule_context = None;
             return (status, None);
         }
+        if waits_for_source {
+            self.power_plan_rule_context = None;
+        }
         let context = self.power_plan_rule_context.as_ref();
-        if let Some(decision_state) = stop_state.or_else(|| {
-            context
-                .is_none()
-                .then_some(DecisionState::WaitingForObservation)
-        }) {
+        if let Some(decision_state) = waits_for_source
+            .then_some(DecisionState::WaitingForObservation)
+            .or(stop_state)
+            .or_else(|| {
+                context
+                    .is_none()
+                    .then_some(DecisionState::WaitingForObservation)
+            })
+        {
             // This is a display projection. The controller still owns any pending restoration.
             return (
                 PowerPlanStatus {
@@ -2545,6 +2561,41 @@ mod settings_tests {
         let (_, context) = runner.power_plan_status();
         assert!(context.is_none());
         assert!(runner.power_plan_rule_context.is_none());
+    }
+
+    #[test]
+    #[allow(clippy::field_reassign_with_default)] // Keep this context-only fixture free of native shutdown.
+    fn battery_only_power_plan_rules_wait_for_a_verified_source() {
+        let mut settings = Settings::default();
+        let battery = settings.battery_profile_mut();
+        battery.by_time.enabled = true;
+        battery.by_time.rules.push(crate::config::ByTimeRule {
+            enabled: true,
+            days: vec![crate::config::WeekdaySetting::Mon],
+            power_plan_guid: Some("battery-plan".into()),
+            ..Default::default()
+        });
+        let settings = Arc::new(settings);
+        let mut runner = RuntimeCore::default();
+        runner.shutdown_started = true;
+        runner.note_settings(&settings, AutomationWakeEvents::default(), None);
+        runner.power_plan_rule_context = Some(PowerPlanRuleContext {
+            settings: Arc::clone(&settings),
+            source: PowerSourceProfile::PluggedIn,
+        });
+
+        assert!(!power_plan_checks_required(&settings));
+        assert!(ordinary_power_plan_waits_for_source(&settings, None));
+        let (status, context) = runner.power_plan_status();
+        assert_eq!(
+            status.decision_state,
+            Some(DecisionState::WaitingForObservation)
+        );
+        assert!(context.is_none());
+        assert!(runner.power_plan_rule_context.is_none());
+        for plugged_in in [Some(false), Some(true)] {
+            assert!(!ordinary_power_plan_waits_for_source(&settings, plugged_in));
+        }
     }
 
     #[test]

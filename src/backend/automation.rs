@@ -1409,8 +1409,11 @@ fn run_background_automation(
             }
         }
         let now = Instant::now();
-        let power_plan_checks_required =
-            power_plan_checks_required(settings) || runner.has_temporary_power_plan();
+        let power_plan_waits_for_source =
+            ordinary_power_plan_waits_for_source(&configured_settings, plugged_in);
+        let power_plan_checks_required = power_plan_waits_for_source
+            || power_plan_checks_required(settings)
+            || runner.has_temporary_power_plan();
         let scan_process_appearance = process_appearance_scan_required(settings);
         let background_efficiency_refresh_required = settings_changed
             || feature_refresh_required(settings, settings.background_efficiency.enabled);
@@ -1904,12 +1907,16 @@ fn run_background_automation(
                 ) {
                     update_worker_error(&shared, Some(error));
                 }
-                let delay = power_plan_check_delay(
-                    settings,
-                    windows_event_watcher_active,
-                    activity.idle_for,
-                    wall_time,
-                );
+                let delay = if power_plan_waits_for_source {
+                    Some(configured_check_interval(settings))
+                } else {
+                    power_plan_check_delay(
+                        settings,
+                        windows_event_watcher_active,
+                        activity.idle_for,
+                        wall_time,
+                    )
+                };
                 runner
                     .temporary_power_plan_retry_delay()
                     .map_or(delay, |retry| Some(min_worker_wait(delay, retry)))

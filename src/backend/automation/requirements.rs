@@ -147,6 +147,26 @@ pub(super) fn power_plan_checks_required(settings: &Settings) -> bool {
             || by_running_app_required(settings))
 }
 
+pub(super) fn ordinary_power_plan_waits_for_source(
+    settings: &Settings,
+    plugged_in: Option<bool>,
+) -> bool {
+    if plugged_in.is_some() || !settings.general.enabled {
+        return false;
+    }
+
+    let battery = settings.battery_profile();
+    (settings.general.pause_power_plan_switching_while_plugged_in
+        || settings.on_battery.as_deref().is_some_and(|battery| {
+            settings.by_activity != battery.by_activity
+                || settings.by_focus != battery.by_focus
+                || settings.by_running_app != battery.by_running_app
+                || settings.by_cpu_load != battery.by_cpu_load
+                || settings.by_time != battery.by_time
+        }))
+        && (power_plan_checks_required(settings) || power_plan_checks_required(battery))
+}
+
 pub(super) fn automation_worker_required(settings: &Settings) -> bool {
     keep_running_required(settings)
         || instance_limits_required(settings)
