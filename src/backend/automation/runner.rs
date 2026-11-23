@@ -2196,6 +2196,16 @@ impl RuntimeCore {
     }
 
     pub(super) fn power_plan_status(&mut self) -> (PowerPlanStatus, Option<&PowerPlanRuleContext>) {
+        // Cleanup can complete between Adaptive Processor Power updates.
+        if self.adaptive_processor_power_error.is_some()
+            && !self.power_plan_controller.has_pending_cleanup()
+            && self.last_settings.as_ref().is_some_and(|observed| {
+                let settings = observed.effective();
+                !feature_refresh_required(settings, adaptive_power_plan_required(settings))
+            })
+        {
+            self.adaptive_processor_power_error = None;
+        }
         let mut status = self.power_plan_controller.status();
         status.adaptive_processor_power_error = self.adaptive_processor_power_error.clone();
         let stop_state = self.last_settings.as_ref().and_then(|settings| {
@@ -2373,6 +2383,71 @@ impl Drop for RuntimeCore {
 #[cfg(test)]
 mod settings_tests {
     use super::*;
+
+    #[test]
+    #[allow(clippy::field_reassign_with_default)] // Keep this status-only fixture free of native shutdown.
+    fn disabled_adaptive_power_clears_errors_after_the_managed_plan_is_released() {
+        const CLEANUP_ERROR: &str = "Adaptive plan cleanup failed";
+        const APPLY_ERROR: &str = "Adaptive plan apply failed";
+        let profiles = |master, ac, battery| {
+            let mut settings = Settings::default();
+            settings.general.enabled = master;
+            settings.adaptive_engine.adaptive_processor_power_enabled = ac;
+            settings
+                .battery_profile_mut()
+                .adaptive_engine
+                .adaptive_processor_power_enabled = battery;
+            Arc::new(settings)
+        };
+        for (plugged_in, master, ac, battery) in [
+            (Some(true), true, false, true),
+            (Some(false), true, true, false),
+            (Some(false), false, true, true),
+        ] {
+            let mut runner = RuntimeCore::default();
+            runner.shutdown_started = true;
+            runner.last_settings = Some(ObservedSettings {
+                configured: profiles(master, ac, battery),
+                plugged_in,
+            });
+            runner.power_plan_controller = PowerPlanController::temporary_adaptive_fixture();
+            runner.adaptive_processor_power_error = Some(CLEANUP_ERROR.into());
+            assert_eq!(
+                runner
+                    .power_plan_status()
+                    .0
+                    .adaptive_processor_power_error
+                    .as_deref(),
+                Some(CLEANUP_ERROR)
+            );
+
+            runner.power_plan_controller = PowerPlanController::default();
+            assert!(runner
+                .power_plan_status()
+                .0
+                .adaptive_processor_power_error
+                .is_none());
+            runner.last_settings = Some(ObservedSettings {
+                configured: profiles(true, true, true),
+                plugged_in,
+            });
+            assert!(runner
+                .power_plan_status()
+                .0
+                .adaptive_processor_power_error
+                .is_none());
+
+            runner.adaptive_processor_power_error = Some(APPLY_ERROR.into());
+            assert_eq!(
+                runner
+                    .power_plan_status()
+                    .0
+                    .adaptive_processor_power_error
+                    .as_deref(),
+                Some(APPLY_ERROR)
+            );
+        }
+    }
 
     #[test]
     fn power_only_samples_foreground_demand_and_reprimes_on_power_source_change() {
