@@ -1,8 +1,9 @@
 use std::{
+    borrow::Cow,
     collections::{BTreeMap, BTreeSet},
     ffi::{OsStr, OsString},
     ops::Bound::{Excluded, Unbounded},
-    path::PathBuf,
+    path::{Path, PathBuf},
     time::{Duration, Instant},
 };
 
@@ -13,7 +14,7 @@ use windows_sys::Win32::System::{
 
 use crate::{
     action_log::{ActionLog, ActionLogFeature, ActionLogResult},
-    config::MemoryTrimSettings,
+    config::{MemoryTrimSettings, Settings},
     control::{
         memory_trim::{MemoryTrimController, MemoryTrimOutcome, MemoryTrimPlatform},
         process::{ProcessControlError, ProcessControlTarget},
@@ -21,8 +22,9 @@ use crate::{
     cpu::{process_cpu_usage_percent, ProcessCpuSample},
     foreground::{
         contains_process_name, executable_grouping_key, process_executable_path,
-        process_list::catalog_process_executable_path, same_executable_path,
-        should_ignore_foreground_process, EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS,
+        process_list::{catalog_process_executable_path, normalize_path_slashes},
+        same_executable_path, should_ignore_foreground_process,
+        EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS,
     },
     rules::{execution_failure_suppression_threshold, ExecutionFailureTracker},
     runtime::observations::CycleObservations,
@@ -57,12 +59,83 @@ pub enum MemoryTrimStatus {
     #[default]
     Disabled,
     ForegroundUnknown,
+    WaitingForPowerSource {
+        manual_trim_blocked: bool,
+    },
     WaitingForMemoryLoad {
         threshold_percent: u8,
     },
     Active,
     ManualCompleted,
     Error(String),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum MemoryTrimPolicyDifference {
+    Common,
+    AutomaticOnly,
+    ManualAndAutomatic,
+}
+
+pub(crate) fn memory_trim_policy_difference(settings: &Settings) -> MemoryTrimPolicyDifference {
+    use MemoryTrimPolicyDifference::*;
+
+    let Some(battery) = settings
+        .on_battery
+        .as_deref()
+        .filter(|_| settings.general.enabled)
+    else {
+        return Common;
+    };
+    let ac = &settings.memory_trim;
+    let battery = &battery.memory_trim;
+    if ac == battery || (!ac.enabled && !battery.enabled) {
+        return Common;
+    }
+    if ac.enabled != battery.enabled
+        || working_set_threshold_bytes(ac) != working_set_threshold_bytes(battery)
+        || (ac.exclusions != battery.exclusions
+            && enabled_exclusions(ac) != enabled_exclusions(battery))
+    {
+        return ManualAndAutomatic;
+    }
+    if load_threshold(ac) != load_threshold(battery)
+        || ac.process_idle_seconds != battery.process_idle_seconds
+    {
+        return AutomaticOnly;
+    }
+    Common
+}
+
+fn enabled_exclusions(settings: &MemoryTrimSettings) -> BTreeSet<Cow<'_, str>> {
+    settings
+        .exclusions
+        .iter()
+        .filter(|rule| rule.enabled)
+        .map(|rule| rule.executable_path.trim_start())
+        .filter(|path| Path::new(path).is_absolute())
+        .map(normalize_path_slashes)
+        .collect()
+}
+
+fn load_threshold(settings: &MemoryTrimSettings) -> u8 {
+    settings.system_memory_load_threshold_percent.min(100)
+}
+
+fn working_set_threshold_bytes(settings: &MemoryTrimSettings) -> u64 {
+    settings.process_working_set_threshold_mb.saturating_mul(MB)
+}
+
+impl MemoryTrimSnapshot {
+    pub(crate) fn waiting_for_power_source(manual_trim_blocked: bool) -> Self {
+        Self {
+            enabled: true,
+            status: MemoryTrimStatus::WaitingForPowerSource {
+                manual_trim_blocked,
+            },
+            ..Self::default()
+        }
+    }
 }
 
 #[derive(Default)]
@@ -240,7 +313,7 @@ impl MemoryTrimManager {
             }
         };
 
-        let threshold = settings.system_memory_load_threshold_percent.min(100);
+        let threshold = load_threshold(settings);
         let below_threshold = memory_load_percent < threshold;
         if below_threshold {
             self.break_idle_intervals();
@@ -491,7 +564,7 @@ impl MemoryTrimManager {
                 return Err(error);
             }
         };
-        let threshold_bytes = settings.process_working_set_threshold_mb.saturating_mul(MB);
+        let threshold_bytes = working_set_threshold_bytes(settings);
         if sample.working_set_bytes < threshold_bytes {
             if let Some(state) = self.tracked.get_mut(&process_id) {
                 state.observe_below_working_set_threshold(sample.cpu);
@@ -577,7 +650,7 @@ impl MemoryTrimManager {
         self.last_automatic_trim_pid = 0;
     }
 
-    fn break_idle_intervals(&mut self) {
+    pub(crate) fn break_idle_intervals(&mut self) {
         for state in self.tracked.values_mut() {
             state.break_idle_interval();
         }

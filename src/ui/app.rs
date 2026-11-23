@@ -3050,7 +3050,13 @@ impl WinderustApp {
                 if page == Page::MemoryTrim {
                     let can_trim = settings.general.enabled
                         && settings.memory_trim.enabled
-                        && !self.manual_trim_pending;
+                        && !self.manual_trim_pending
+                        && !matches!(
+                            self.status.feature_status.memory_trim.status,
+                            crate::memory_trim::MemoryTrimStatus::WaitingForPowerSource {
+                                manual_trim_blocked: true
+                            }
+                        );
                     column![
                         panel,
                         iced::widget::rule::horizontal(1),

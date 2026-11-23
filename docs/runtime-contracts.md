@@ -516,6 +516,9 @@ Read the relevant section before changing feature policy, ownership, restoration
   below the size threshold break idle qualification without rearming a process
   already trimmed during that idle episode. Observed activity or a new exact
   process identity may rearm it; explicitly disabling automation clears tracking.
+- If Windows cannot confirm the power source, differing pressure or idle thresholds pause
+  automatic trimming. Differing enablement, working-set thresholds or exclusions also block
+  Trim Now. Waiting breaks the idle interval and preserves the prior trim and cooldown.
 - The controller checks the working-set threshold on the verified process handle
   immediately before either automatic or manual trimming. A working set below
   the minimum returns to waiting and clears idle qualification.

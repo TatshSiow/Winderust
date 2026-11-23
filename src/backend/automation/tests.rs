@@ -500,6 +500,51 @@ fn manual_memory_trim_request_starts_worker_and_always_replies() {
 }
 
 #[test]
+fn manual_memory_trim_requires_a_known_source_only_when_manual_policies_differ() {
+    use crate::memory_trim::MemoryTrimStatus;
+
+    let reply = |settings: Settings, plugged_in| {
+        let configured = Arc::new(settings);
+        let mut runner = RuntimeCore::default();
+        runner.note_settings(&configured, AutomationWakeEvents::default(), plugged_in);
+        let (result, receiver) = sync_channel(1);
+        let mut observations = CycleObservations::with_adaptive_cpu_sample(Vec::new(), None, None);
+        runner.run_process_control_commands(
+            active_power_source_settings(&configured, plugged_in),
+            false,
+            VecDeque::from([ProcessControlCommand::MemoryTrim { result }]),
+            &mut observations,
+        );
+        receiver.try_recv().unwrap().unwrap().status
+    };
+    let mut settings = Settings::default();
+    settings.memory_trim.enabled = true;
+    settings
+        .battery_profile_mut()
+        .memory_trim
+        .process_idle_seconds += 1;
+    assert_eq!(
+        reply(settings.clone(), None),
+        MemoryTrimStatus::ForegroundUnknown
+    );
+
+    settings
+        .battery_profile_mut()
+        .memory_trim
+        .process_working_set_threshold_mb += 1;
+    assert_eq!(
+        reply(settings.clone(), None),
+        MemoryTrimStatus::WaitingForPowerSource {
+            manual_trim_blocked: true
+        }
+    );
+    assert_eq!(
+        reply(settings, Some(false)),
+        MemoryTrimStatus::ForegroundUnknown
+    );
+}
+
+#[test]
 fn process_termination_request_starts_worker_and_replies() {
     let automation = RuntimeHandle::start(&runtime_settings(Settings::default()));
 
@@ -1409,8 +1454,8 @@ fn active_cpu_limiter_keeps_process_discovery_at_one_second() {
     }
 
     assert!(process_appearance_scan_required(&settings));
-    assert!(!process_appearance_scan_required_with_limiter(
-        &settings, false
+    assert!(!process_appearance_scan_required_for_runtime(
+        &settings, false, false
     ));
     assert_eq!(
         process_appearance_refresh_interval(false, true, false),

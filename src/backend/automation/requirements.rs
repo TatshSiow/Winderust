@@ -147,12 +147,17 @@ pub(super) fn sleep_prevention_required(settings: &Settings) -> bool {
 }
 
 pub(super) fn process_appearance_scan_required(settings: &Settings) -> bool {
-    process_appearance_scan_required_with_limiter(settings, cpu_limiter_required(settings))
+    process_appearance_scan_required_for_runtime(
+        settings,
+        cpu_limiter_required(settings),
+        settings.memory_trim.enabled,
+    )
 }
 
-pub(super) fn process_appearance_scan_required_with_limiter(
+pub(super) fn process_appearance_scan_required_for_runtime(
     settings: &Settings,
     cpu_limiter_active: bool,
+    memory_trim_active: bool,
 ) -> bool {
     settings.general.enabled
         && (settings.background_efficiency.enabled
@@ -167,7 +172,7 @@ pub(super) fn process_appearance_scan_required_with_limiter(
             || settings.io_priority.enabled
             || settings.gpu_priority.enabled
             || settings.memory_priority.enabled
-            || settings.memory_trim.enabled)
+            || memory_trim_active)
 }
 
 pub(super) fn power_plan_checks_required(settings: &Settings) -> bool {
@@ -286,6 +291,7 @@ pub(super) fn windows_event_watcher_mode(settings: &Settings) -> Option<WindowsE
     if windows_event_watcher_required(settings)
         || adaptive_enablement_varies_by_source(settings)
         || cpu_limiter_policy_varies_by_source(settings)
+        || memory_trim_policy_difference(settings) != MemoryTrimPolicyDifference::Common
     {
         Some(WindowsEventWatcherMode::Full)
     } else if std::iter::once(settings)

@@ -15,6 +15,7 @@ pub(super) fn manual_result(result: MemoryTrimSnapshot) -> Result<(), String> {
     let key = match result.status {
         MemoryTrimStatus::AutomationDisabled => "memory_trim.manual_automation_disabled",
         MemoryTrimStatus::Disabled => "memory_trim.manual_disabled",
+        MemoryTrimStatus::WaitingForPowerSource { .. } => "memory_trim.manual_power_source_unknown",
         MemoryTrimStatus::ForegroundUnknown => "memory_trim.manual_foreground_unknown",
         MemoryTrimStatus::ManualCompleted => {
             if result.failed_processes == 0 {

@@ -222,10 +222,25 @@ pub(super) fn view<'a>(
         && runtime.worker_error.is_none()
     {
         runtime.feature_status.instance_balancing.message()
-    } else if page == Page::MemoryTrim && state == FeatureRunState::Waiting {
+    } else if page == Page::MemoryTrim {
         let trim = &runtime.feature_status.memory_trim;
         match (&trim.status, trim.memory_load_percent) {
-            (MemoryTrimStatus::WaitingForMemoryLoad { threshold_percent }, Some(load_percent)) => {
+            (
+                MemoryTrimStatus::WaitingForPowerSource {
+                    manual_trim_blocked,
+                },
+                _,
+            ) if state == FeatureRunState::Paused => Some(
+                t!(if *manual_trim_blocked {
+                    "memory_trim.waiting_for_power_source"
+                } else {
+                    "memory_trim.automatic_waiting_for_power_source"
+                })
+                .into_owned(),
+            ),
+            (MemoryTrimStatus::WaitingForMemoryLoad { threshold_percent }, Some(load_percent))
+                if state == FeatureRunState::Waiting =>
+            {
                 Some(
                     t!(
                         "memory_trim.waiting_for_memory_load",
@@ -749,6 +764,18 @@ fn sidebar_state(
             FeatureRunState::Paused
         };
     }
+    if page == Page::MemoryTrim
+        && matches!(
+            runtime.feature_status.memory_trim.status,
+            MemoryTrimStatus::WaitingForPowerSource { .. }
+        )
+    {
+        return if runtime.worker_error.is_some() {
+            FeatureRunState::Error
+        } else {
+            FeatureRunState::Paused
+        };
+    }
     if !settings.general.enabled
         || super::navigation::feature_page_enabled(settings, page) == Some(false)
     {
@@ -1029,6 +1056,7 @@ fn feature_status_summary(
             let activity_known = !matches!(
                 status.status,
                 MemoryTrimStatus::ForegroundUnknown
+                    | MemoryTrimStatus::WaitingForPowerSource { .. }
                     | MemoryTrimStatus::WaitingForMemoryLoad { .. }
                     | MemoryTrimStatus::Error(_)
             );
@@ -1992,6 +2020,12 @@ mod tests {
 
         for (status, expected) in [
             (MemoryTrimStatus::ForegroundUnknown, None),
+            (
+                MemoryTrimStatus::WaitingForPowerSource {
+                    manual_trim_blocked: true,
+                },
+                None,
+            ),
             (MemoryTrimStatus::Error("query failed".into()), None),
             (
                 MemoryTrimStatus::WaitingForMemoryLoad {

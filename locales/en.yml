@@ -1025,6 +1025,9 @@ timer_resolution:
   log_no_match: "no foreground timer resolution rule matched"
 
 memory_trim:
+  waiting_for_power_source: "Memory Trim is paused until Windows reports the power source."
+  automatic_waiting_for_power_source: "Automatic trimming is paused until Windows reports the power source."
+  manual_power_source_unknown: "Memory Trim could not verify the current power source."
   intro_1: "Memory Trim actively asks Windows to trim RAM pages from idle high-memory background processes when memory pressure is high."
   intro_2: "Unlike Memory Priority, this is an immediate working-set trim request, not a long-term reclaim preference."
   intro_3: "Foreground apps, protected Windows processes, and configured custom rules are skipped."

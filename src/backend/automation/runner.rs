@@ -1913,6 +1913,14 @@ impl RuntimeCore {
         )
     }
 
+    pub(super) fn pause_memory_trim_for_power_source(
+        &mut self,
+        manual_trim_blocked: bool,
+    ) -> MemoryTrimSnapshot {
+        self.memory_trim_manager.break_idle_intervals();
+        MemoryTrimSnapshot::waiting_for_power_source(manual_trim_blocked)
+    }
+
     pub(super) fn run_memory_trim_update(
         &mut self,
         settings: &Settings,
@@ -1934,6 +1942,13 @@ impl RuntimeCore {
         settings: &Settings,
         observations: &mut CycleObservations,
     ) -> MemoryTrimSnapshot {
+        if self.last_settings.as_ref().is_some_and(|observed| {
+            observed.plugged_in.is_none()
+                && memory_trim_policy_difference(&observed.configured)
+                    == MemoryTrimPolicyDifference::ManualAndAutomatic
+        }) {
+            return MemoryTrimSnapshot::waiting_for_power_source(true);
+        }
         self.memory_trim_manager.trim_now(
             &mut self.memory_trim_controller,
             &settings.memory_trim,

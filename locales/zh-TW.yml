@@ -1028,6 +1028,9 @@ timer_resolution:
   log_no_match: "沒有符合的前景計時器解析度規則"
 
 memory_trim:
+  waiting_for_power_source: "記憶體修剪已暫停，直到 Windows 回報電源來源。"
+  automatic_waiting_for_power_source: "自動記憶體修剪已暫停，直到 Windows 回報電源來源。"
+  manual_power_source_unknown: "記憶體修剪無法確認目前的電源來源。"
   intro_1: "記憶體修剪會在記憶體壓力高時，要求 Windows 修剪閒置且記憶體用量高的背景程序 RAM 頁面。"
   intro_2: "與記憶體優先順序不同，這會立即要求修剪工作集，而非設定長期的記憶體回收偏好。"
   intro_3: "前景應用程式、受保護的 Windows 程序與符合自訂規則的程序會被略過。"

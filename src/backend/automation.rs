@@ -81,7 +81,10 @@ use crate::{
     gpu_priority::{GpuPriorityManager, GpuPrioritySnapshot},
     io_priority::{IoPriorityManager, IoPrioritySnapshot},
     memory_priority::{MemoryPriorityManager, MemoryPrioritySnapshot},
-    memory_trim::{MemoryTrimManager, MemoryTrimSnapshot},
+    memory_trim::{
+        memory_trim_policy_difference, MemoryTrimManager, MemoryTrimPolicyDifference,
+        MemoryTrimSnapshot,
+    },
     power::{
         AdaptivePowerBoostValues, AdaptivePowerDemand, AdaptivePowerProfile, ProcessorPowerValues,
     },
@@ -138,6 +141,7 @@ const PRIORITY_BOOST_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const IO_PRIORITY_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const GPU_PRIORITY_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const MEMORY_PRIORITY_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
+const POWER_SOURCE_RECHECK_INTERVAL: Duration = Duration::from_secs(1);
 const MEMORY_TRIM_REFRESH_INTERVAL: Duration = Duration::from_secs(15 * 60);
 const MEMORY_TRIM_FOLLOW_UP_INTERVAL: Duration = Duration::from_secs(3);
 const TIMER_RESOLUTION_REFRESH_INTERVAL: Duration = Duration::from_secs(3);
@@ -1256,6 +1260,18 @@ fn run_background_automation(
         let app_suspension_policy_varies = (plugged_in.is_none() || !windows_event_watcher_active)
             && app_suspension_policy_varies_by_source(&configured_settings);
         let app_suspension_waits_for_source = plugged_in.is_none() && app_suspension_policy_varies;
+        let memory_trim_policy_difference = if plugged_in.is_none() || !windows_event_watcher_active
+        {
+            memory_trim_policy_difference(&configured_settings)
+        } else {
+            MemoryTrimPolicyDifference::Common
+        };
+        let memory_trim_waits_for_source = plugged_in.is_none()
+            && memory_trim_policy_difference != MemoryTrimPolicyDifference::Common;
+        let manual_trim_waits_for_source = memory_trim_waits_for_source
+            && memory_trim_policy_difference == MemoryTrimPolicyDifference::ManualAndAutomatic;
+        let memory_trim_active = !memory_trim_waits_for_source
+            && feature_refresh_required(settings, settings.memory_trim.enabled);
         let mut observations = CycleObservations::default();
         let hidden_to_tray = tray_hidden();
         let adaptive_engine_enabled = settings.adaptive_engine.enabled;
@@ -1321,11 +1337,15 @@ fn run_background_automation(
             adaptive_engine_enabled,
             MEMORY_PRIORITY_REFRESH_INTERVAL,
         );
-        let memory_trim_refresh_interval = automation_refresh_interval(
-            hidden_to_tray,
-            adaptive_engine_enabled,
-            MEMORY_TRIM_REFRESH_INTERVAL,
-        );
+        let memory_trim_refresh_interval = if memory_trim_waits_for_source {
+            POWER_SOURCE_RECHECK_INTERVAL
+        } else {
+            automation_refresh_interval(
+                hidden_to_tray,
+                adaptive_engine_enabled,
+                MEMORY_TRIM_REFRESH_INTERVAL,
+            )
+        };
         let timer_resolution_refresh_interval = automation_refresh_interval(
             hidden_to_tray,
             adaptive_engine_enabled,
@@ -1432,8 +1452,11 @@ fn run_background_automation(
         let power_plan_checks_required = power_plan_waits_for_source
             || power_plan_checks_required(settings)
             || runner.has_temporary_power_plan();
-        let scan_process_appearance =
-            process_appearance_scan_required_with_limiter(settings, cpu_limiter_active);
+        let scan_process_appearance = process_appearance_scan_required_for_runtime(
+            settings,
+            cpu_limiter_active,
+            memory_trim_active,
+        );
         let background_efficiency_refresh_required = settings_changed
             || feature_refresh_required(settings, settings.background_efficiency.enabled);
         let app_suspension_refresh_required = settings_changed
@@ -1497,7 +1520,8 @@ fn run_background_automation(
             || runner.instance_balancing.active();
         let memory_trim_refresh_required = settings_changed
             || memory_trim_command_requested
-            || feature_refresh_required(settings, settings.memory_trim.enabled);
+            || memory_trim_active
+            || memory_trim_waits_for_source;
         let timer_resolution_refresh_required = settings_changed
             || feature_refresh_required(settings, timer_resolution_required(settings))
             || runner.timer_resolution_request_active();
@@ -1676,6 +1700,14 @@ fn run_background_automation(
         };
         let manual_memory_trim_processed = command_statuses.memory_trim.is_some();
         if let Some(status) = command_statuses.memory_trim {
+            let status = if memory_trim_waits_for_source {
+                MemoryTrimSnapshot {
+                    auto_excluded_processes: status.auto_excluded_processes,
+                    ..runner.pause_memory_trim_for_power_source(manual_trim_waits_for_source)
+                }
+            } else {
+                status
+            };
             update_memory_trim_status(&shared, status);
             scheduler.schedule_after(RefreshDomain::MemoryTrim, now, memory_trim_refresh_interval);
         }
@@ -1819,13 +1851,24 @@ fn run_background_automation(
             && memory_trim_refresh_required
             && scheduler.is_due(RefreshDomain::MemoryTrim, now)
         {
-            let memory_trim_status = runner.run_memory_trim_update(settings, &mut observations);
-            let (scheduled_at, interval) = if memory_trim_status.has_deferred_candidates {
+            let status = if !memory_trim_waits_for_source {
+                Some(runner.run_memory_trim_update(settings, &mut observations))
+            } else if settings_changed {
+                Some(runner.pause_memory_trim_for_power_source(manual_trim_waits_for_source))
+            } else {
+                None
+            };
+            let (scheduled_at, interval) = if status
+                .as_ref()
+                .is_some_and(|status| status.has_deferred_candidates)
+            {
                 (Instant::now(), MEMORY_TRIM_FOLLOW_UP_INTERVAL)
             } else {
                 (now, memory_trim_refresh_interval)
             };
-            update_memory_trim_status(&shared, memory_trim_status);
+            if let Some(status) = status {
+                update_memory_trim_status(&shared, status);
+            }
             scheduler.schedule_after(RefreshDomain::MemoryTrim, scheduled_at, interval);
         }
         if watchdog_refresh_required && scheduler.is_due(RefreshDomain::Watchdog, now) {
@@ -2166,10 +2209,11 @@ fn run_background_automation(
         }
         if !windows_event_watcher_active
             && (adaptive_enablement_varies_by_source(&configured_settings)
+                || memory_trim_policy_difference != MemoryTrimPolicyDifference::Common
                 || cpu_limiter_policy_varies
                 || app_suspension_policy_varies)
         {
-            wait_for = Some(min_worker_wait(wait_for, Duration::from_secs(1)));
+            wait_for = Some(min_worker_wait(wait_for, POWER_SOURCE_RECHECK_INTERVAL));
         }
 
         if wait_for_wake(&shared, wait_for, change_generation) {
