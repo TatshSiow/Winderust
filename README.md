@@ -36,18 +36,20 @@
 
 - Adaptive Engine - automatic background process restraint.
 - Background Efficiency - set power-efficiency preferences by app and window state.
-- Power Plan Control - switch plans by app focus, running apps, CPU load, activity, or time. Adjust processor power with Adaptive Processor Power and optionally restore the previous plan when rules yield.
+- Power Plan Control - switch plans manually or by app focus, running apps, CPU load, activity, or time. Optionally restore the previous plan when no rule selects one.
+- Adaptive Processor Power - adjust processor settings to match demand through the temporary Winderust Adaptive plan.
 - Advanced Power Plan Tuning - adjust processor performance, core parking, boost, and thread scheduling policies.
 - CPU Control - CPU Limiter, CPU Sets (Soft), Processor Affinity (Hard), and Cache Domain presets.
 - Priority Control - Process Priority, Thread Priority, Dynamic Priority Boost, I/O Priority, GPU Priority, and Memory Priority.
 - Memory Trim - trim background process working sets.
 - Watchdog - CPU and memory alerts for combined usage by path or for individual process instances. Terminate and Restart require Combined by path, an exact executable path, and an At or above threshold.
 - App Suspension and Timer Resolution for selected apps.
-- Sleep Prevention - prevent idle sleep while selected apps run, with an option to keep the display on.
+- Sleep Prevention - ask Windows to stay awake while selected apps run, with an option to keep the display on.
 - Keep Running - relaunch selected desktop apps after their last instance exits. Start the app yourself once to arm its rule.
 - Instance Limits - get notified when an app exceeds your chosen instance count in your Windows session. Launches still proceed.
 - Instance Balancing - distribute whole-core CPU Sets (Soft) preferences across eligible app instances in your Windows session.
-- Process List and Action Log - inspect running processes and export action history to CSV.
+- Process List - inspect running processes, apply controls, and edit per-app rules.
+- Action Log - review action history and export it to CSV.
 - Win32 Priority Separation - adjust Windows scheduler time slices and foreground boost, with backup and restore.
 - Interrupt Timing - capture DPC and ISR activity under Adaptive Engine’s CPU Behaviour tab. View the capture timeline or export the report to JSON.
 

@@ -10,8 +10,8 @@ Process Lasso is a useful comparison point, not the target to clone. Prefer smal
 
 ## Current Scope
 
-- Power Plan Control through By Focus, By Running App, By CPU Load, By
-  Activity, and By Time.
+- Power Plan Control with manual switching and By Focus, By Running App, By
+  CPU Load, By Activity, and By Time rules.
 - Adaptive Processor Power with demand profiles and processor tuning presets.
 - Advanced Power Plan Tuning for core parking, processor performance and boost,
   and long- and short-running thread scheduling policies.
