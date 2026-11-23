@@ -230,8 +230,7 @@ pub(super) fn instance_balancing_required(settings: &Settings) -> bool {
 }
 
 pub(super) fn windows_event_watcher_mode(settings: &Settings) -> Option<WindowsEventWatcherMode> {
-    if windows_event_watcher_required(settings) || adaptive_power_enabled_varies_by_source(settings)
-    {
+    if windows_event_watcher_required(settings) || adaptive_enablement_varies_by_source(settings) {
         Some(WindowsEventWatcherMode::Full)
     } else if std::iter::once(settings)
         .chain(settings.on_battery.as_deref())
@@ -248,9 +247,14 @@ pub(super) fn windows_event_watcher_mode(settings: &Settings) -> Option<WindowsE
     }
 }
 
-pub(super) fn adaptive_power_enabled_varies_by_source(settings: &Settings) -> bool {
-    let enabled =
-        |profile| feature_refresh_required(profile, adaptive_power_plan_required(profile));
+pub(super) fn adaptive_enablement_varies_by_source(settings: &Settings) -> bool {
+    let enabled = |profile: &Settings| {
+        (
+            bottleneck_classifier_required(profile),
+            feature_refresh_required(profile, adaptive_engine_process_required(profile)),
+            feature_refresh_required(profile, adaptive_power_plan_required(profile)),
+        )
+    };
     settings
         .on_battery
         .as_deref()

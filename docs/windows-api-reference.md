@@ -194,7 +194,13 @@ User-facing behavior:
 
 ## Automation Event Watcher
 
-`RuntimeHandle` owns `src/backend/windows_events.rs` as an RAII event source. The watcher retains one dedicated hidden-window thread for event-driven automation wakes. Full coverage requires the hidden window, foreground hook, window-creation hook, every configured power-setting notification, suspend/resume notification, and current-session notification. Adaptive CPU Pressure Restraint, Limit Background Processors, and Dynamic Resource Zones can request a hidden window with only the suspend/resume registration. This mode delivers suspend/resume events and preserves the power-plan polling fallback. Event-driven safety gates still require full watcher coverage. Each mode releases partial registrations on startup failure. Runtime mode changes join the previous watcher before starting a replacement. Runtime shutdown joins the watcher before joining the automation worker.
+`RuntimeHandle` owns `src/backend/windows_events.rs` as an RAII event source. The watcher retains one dedicated hidden-window thread for event-driven automation wakes. Full coverage requires the hidden window, foreground hook, window-creation hook, every configured power-setting notification, suspend/resume notification, and current-session notification. Adaptive CPU Pressure Restraint, Limit Background Processors, and Dynamic Resource Zones can request a hidden window with only the suspend/resume registration. Event-driven safety gates still require full watcher coverage. Each mode releases partial registrations on startup failure. Runtime mode changes join the previous watcher before starting a replacement. Runtime shutdown joins the watcher before joining the automation worker.
+
+When A/C and Battery differ in whether Adaptive Engine CPU policies, System
+Bottleneck, or Adaptive Processor Power run, the worker requests full coverage
+for power-source notifications. Without full coverage it rechecks the source
+every second, including when the window is hidden and System Bottleneck sampling
+is paused.
 
 The watcher also notifies its owner when its thread stops, including startup
 failure or unwinding. Its exit guard marks liveness false before invoking that

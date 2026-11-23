@@ -2601,6 +2601,74 @@ fn system_bottleneck_sampling_restarts_after_a_tray_restore() {
 }
 
 #[test]
+fn battery_only_system_bottleneck_detects_source_changes_without_full_event_coverage() {
+    use std::sync::{atomic::AtomicBool, mpsc};
+
+    let mut settings = Settings::default();
+    settings.general.theme_mode = AppThemeMode::Dark;
+    settings.general.accent.source = AccentColorSource::Custom;
+    let battery = settings.battery_profile_mut();
+    battery.adaptive_engine.enabled = true;
+    assert!(!adaptive_engine_process_required(battery));
+    assert!(!adaptive_power_plan_required(battery));
+
+    let shared = Arc::new(shared_automation_state(settings));
+    {
+        let mut state = lock_unpoisoned(&shared.state);
+        state.worker_accepting_work = true;
+        state.windows_event_watcher_active = false;
+    }
+    let plugged_in = Arc::new(AtomicBool::new(true));
+    let (pass, passes) = mpsc::channel();
+    let worker_shared = Arc::clone(&shared);
+    let worker_plugged_in = Arc::clone(&plugged_in);
+    let worker = thread::spawn(move || {
+        run_background_automation(
+            worker_shared,
+            || {
+                let plugged_in = worker_plugged_in.load(Ordering::Acquire);
+                let _ = pass.send(plugged_in);
+                Some(plugged_in)
+            },
+            || false,
+        )
+    });
+    let timeout = Duration::from_secs(4);
+    let classifier_enabled = || {
+        lock_unpoisoned(&shared.state)
+            .status
+            .feature_status
+            .bottleneck_classifier
+            .enabled
+    };
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        // Let the otherwise idle worker get past its startup refreshes.
+        for _ in 0..3 {
+            assert!(passes.recv_timeout(timeout).unwrap());
+        }
+        assert!(!classifier_enabled());
+
+        for new_source in [false, true] {
+            plugged_in.store(new_source, Ordering::Release);
+            let deadline = Instant::now() + timeout;
+            while classifier_enabled() == new_source {
+                assert!(Instant::now() < deadline, "source change was not processed");
+                thread::sleep(Duration::from_millis(5));
+            }
+        }
+    }));
+    {
+        let mut state = lock_unpoisoned(&shared.state);
+        state.stop_requested = true;
+        shared.changed.notify_one();
+    }
+    worker.join().unwrap().unwrap();
+    if let Err(error) = result {
+        std::panic::resume_unwind(error);
+    }
+}
+
+#[test]
 fn watchdog_actions_require_current_policy_and_no_shutdown_or_session_transition() {
     let mut settings = Settings::default();
     settings.general.enabled = true;
@@ -2868,6 +2936,8 @@ fn all_adaptive_allocation_gates_and_battery_only_zones_schedule_independently()
         }
     }
     let mut settings = Settings::default();
+    settings.general.theme_mode = AppThemeMode::Dark;
+    settings.general.accent.source = AccentColorSource::Custom;
     settings.adaptive_engine.enabled = false;
     let battery = settings.battery_profile_mut();
     battery.adaptive_engine.enabled = true;
@@ -2876,11 +2946,34 @@ fn all_adaptive_allocation_gates_and_battery_only_zones_schedule_independently()
         .adaptive_engine_process
         .dynamic_resource_zones_enabled = true;
     assert!(automation_worker_required(&settings));
-    assert!(windows_event_watcher_required(&settings));
+    assert!(!windows_event_watcher_required(&settings));
+    assert_eq!(
+        windows_event_watcher_mode(&settings),
+        Some(WindowsEventWatcherMode::Full)
+    );
+    assert!(windows_event_wake_required(
+        &settings,
+        WindowsAutomationEvent::PowerChanged
+    ));
     assert!(!adaptive_engine_process_required(
         active_power_source_settings(&settings, Some(true))
     ));
     assert!(adaptive_engine_process_required(
         active_power_source_settings(&settings, Some(false))
     ));
+
+    // The diagnostic pauses while hidden, so it cannot wake A/C when only Battery runs policies.
+    settings.adaptive_engine.enabled = true;
+    assert_eq!(
+        windows_event_watcher_mode(&settings),
+        Some(WindowsEventWatcherMode::Full)
+    );
+
+    settings
+        .adaptive_engine_process
+        .dynamic_resource_zones_enabled = true;
+    assert_eq!(
+        windows_event_watcher_mode(&settings),
+        Some(WindowsEventWatcherMode::SuspendResumeOnly)
+    );
 }

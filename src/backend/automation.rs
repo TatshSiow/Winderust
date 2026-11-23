@@ -2094,7 +2094,7 @@ fn run_background_automation(
             wait_for = Some(min_worker_wait(wait_for, delay));
         }
         if !windows_event_watcher_active
-            && adaptive_power_enabled_varies_by_source(&configured_settings)
+            && adaptive_enablement_varies_by_source(&configured_settings)
         {
             wait_for = Some(min_worker_wait(wait_for, Duration::from_secs(1)));
         }
