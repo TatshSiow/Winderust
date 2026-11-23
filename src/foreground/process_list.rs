@@ -135,7 +135,8 @@ pub struct ProcessResourceSample {
 
 #[derive(Clone, Copy)]
 pub enum ProcessResourceSampling {
-    UsageOnly,
+    CpuOnly,
+    CpuAndMemory,
     WithEfficiencyMode,
 }
 
@@ -145,7 +146,7 @@ impl ProcessResourceSampling {
         query_eco_qos: impl FnOnce() -> Option<bool>,
         query_priority_class: impl FnOnce() -> u32,
     ) -> Option<bool> {
-        if matches!(self, Self::UsageOnly) {
+        if !matches!(self, Self::WithEfficiencyMode) {
             return None;
         }
         if !query_eco_qos()? {
@@ -200,14 +201,18 @@ fn sample_process_resource(
         cb: memory_size,
         ..Default::default()
     };
-    // SAFETY: handle is live and the API accepts a writable extended counter buffer of this size.
-    let memory_available = unsafe {
-        K32GetProcessMemoryInfo(
-            handle.raw(),
-            std::ptr::from_mut(&mut memory).cast(),
-            memory_size,
-        )
-    } != 0;
+    let memory_available = if matches!(sampling, ProcessResourceSampling::CpuOnly) {
+        false
+    } else {
+        // SAFETY: handle is live and the extended counter buffer is writable for this size.
+        unsafe {
+            K32GetProcessMemoryInfo(
+                handle.raw(),
+                std::ptr::from_mut(&mut memory).cast(),
+                memory_size,
+            ) != 0
+        }
+    };
 
     let efficiency_mode = sampling.efficiency_mode(
         || {
@@ -1308,11 +1313,16 @@ pub(crate) fn process_handle_matches_executable_path(
 mod tests {
     #[test]
     fn usage_sampling_skips_efficiency_queries() {
-        let efficiency = ProcessResourceSampling::UsageOnly.efficiency_mode(
-            || panic!("usage-only sampling must not query EcoQoS"),
-            || panic!("usage-only sampling must not query priority"),
-        );
-        assert_eq!(efficiency, None);
+        for mode in [
+            ProcessResourceSampling::CpuOnly,
+            ProcessResourceSampling::CpuAndMemory,
+        ] {
+            let efficiency = mode.efficiency_mode(
+                || panic!("usage-only sampling must not query EcoQoS"),
+                || panic!("usage-only sampling must not query priority"),
+            );
+            assert_eq!(efficiency, None);
+        }
     }
 
     #[test]
@@ -1347,15 +1357,25 @@ mod tests {
     }
 
     #[test]
-    fn usage_only_sampling_keeps_process_identity_and_cpu_observations() {
+    fn resource_sampling_keeps_identity_and_cpu_and_reads_selected_counters() {
         let process_id = std::process::id();
-        let usage = sample_process_resource(process_id, ProcessResourceSampling::UsageOnly)
+        let cpu = sample_process_resource(process_id, ProcessResourceSampling::CpuOnly)
+            .expect("current-process CPU time should be readable");
+        let usage = sample_process_resource(process_id, ProcessResourceSampling::CpuAndMemory)
             .expect("current-process usage should be readable");
         let full = sample_process_resource(process_id, ProcessResourceSampling::WithEfficiencyMode)
             .expect("current-process resources should be readable");
 
+        assert_eq!(cpu.creation_time, usage.creation_time);
         assert_eq!(usage.creation_time, full.creation_time);
+        assert_eq!(cpu.working_set_bytes, None);
+        assert_eq!(cpu.private_commit_bytes, None);
+        assert_eq!(cpu.efficiency_mode, None);
+        assert!(usage.working_set_bytes.is_some() && usage.private_commit_bytes.is_some());
+        assert!(full.working_set_bytes.is_some() && full.private_commit_bytes.is_some());
         assert_eq!(usage.efficiency_mode, None);
+        assert!(usage.cpu.cpu_time_100ns >= cpu.cpu.cpu_time_100ns);
+        assert!(usage.cpu.sampled_at >= cpu.cpu.sampled_at);
         assert!(full.cpu.cpu_time_100ns >= usage.cpu.cpu_time_100ns);
         assert!(full.cpu.sampled_at >= usage.cpu.sampled_at);
     }

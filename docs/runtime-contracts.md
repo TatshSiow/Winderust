@@ -215,10 +215,11 @@ Read the relevant section before changing feature policy, ownership, restoration
 
 ## Watchdog
 
-- Resource sampling in `src/foreground/process_list.rs` requests CPU, creation
-  time, working set, and private commit for Watchdog. A single memory query returns
-  both memory counters. Process List additionally requests
-  Efficiency Mode; its priority-class query is needed only when EcoQoS is enabled.
+- Resource sampling in `src/foreground/process_list.rs` reads CPU and verifies
+  creation time for Watchdog. When an enabled rule monitors Memory, one query
+  returns both working set and private commit. Process List always requests
+  memory counters and Efficiency Mode. It queries priority class only when
+  EcoQoS is enabled.
 
 - `src/features/winderust_features/watchdog.rs` owns CPU and memory sampling,
   sustained thresholds, escalation, and rearming. Rules are global across

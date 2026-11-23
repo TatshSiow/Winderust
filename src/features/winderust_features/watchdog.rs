@@ -245,7 +245,7 @@ impl WatchdogManager {
             })
             .cloned()
             .collect();
-        let samples = sample_process_resources(&matched, ProcessResourceSampling::UsageOnly);
+        let samples = sample_process_resources(&matched, sampling_mode(settings));
         // The fallback queries by PID. Only treat its path as evidence for a
         // previous member once this pass's resource sample confirms the generation.
         for (&(pid, time), path) in &mut path_gaps {
@@ -544,6 +544,18 @@ impl WatchdogManager {
     }
 }
 
+fn sampling_mode(settings: &WatchdogSettings) -> ProcessResourceSampling {
+    if settings
+        .rules
+        .iter()
+        .any(|rule| rule.enabled && rule.memory.enabled)
+    {
+        ProcessResourceSampling::CpuAndMemory
+    } else {
+        ProcessResourceSampling::CpuOnly
+    }
+}
+
 fn metric_value(
     metric: WatchdogMetric,
     cpu_usage: impl FnOnce() -> Option<f32>,
@@ -615,6 +627,37 @@ mod tests {
             rules: vec![rule],
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn sampling_reads_memory_only_when_an_enabled_rule_monitors_it() {
+        let mut settings = settings();
+        let mut memory_rule = settings.rules.pop().unwrap();
+        memory_rule.enabled = false;
+        settings
+            .rules
+            .push(WatchdogRule::new(r"C:\Apps\cpu.exe".into()));
+        assert!(matches!(
+            sampling_mode(&settings),
+            ProcessResourceSampling::CpuOnly
+        ));
+
+        settings.rules.push(memory_rule);
+        assert!(matches!(
+            sampling_mode(&settings),
+            ProcessResourceSampling::CpuOnly
+        ));
+
+        settings.rules[1].enabled = true;
+        assert!(matches!(
+            sampling_mode(&settings),
+            ProcessResourceSampling::CpuAndMemory
+        ));
+        settings.rules[0].enabled = false;
+        assert!(matches!(
+            sampling_mode(&settings),
+            ProcessResourceSampling::CpuAndMemory
+        ));
     }
 
     fn sample(
@@ -1540,14 +1583,14 @@ mod tests {
             rules: vec![rule],
         };
         let mut manager = WatchdogManager::default();
-        let samples = sample_process_resources(&processes, ProcessResourceSampling::UsageOnly);
+        let samples = sample_process_resources(&processes, ProcessResourceSampling::CpuAndMemory);
         let now = Instant::now();
         assert!(manager
             .evaluate(&settings, &processes, &samples, None, now)
             .1
             .is_empty());
         std::thread::sleep(Duration::from_millis(1100));
-        let samples = sample_process_resources(&processes, ProcessResourceSampling::UsageOnly);
+        let samples = sample_process_resources(&processes, ProcessResourceSampling::CpuAndMemory);
         let (_, events) = manager.evaluate(&settings, &processes, &samples, None, Instant::now());
         assert_eq!(events.len(), 1);
         let event = events.into_iter().next().unwrap();
