@@ -1334,6 +1334,7 @@ fn run_background_automation(
         }
         if wake_events.windows_event_watcher_changed {
             scheduler.schedule_now(RefreshDomain::PowerPlanCheck, event_now);
+            scheduler.schedule_now(RefreshDomain::SleepPrevention, event_now);
         }
         if wake_events.foreground_changed {
             scheduler.invalidate(SchedulerEvent::ForegroundChanged, event_now);
