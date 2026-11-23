@@ -62,7 +62,9 @@ Read the relevant section before changing feature policy, ownership, restoration
   native work. The Action Log retains recorded failures after the diagnostic clears.
   Shutdown cancels provisional work without joining a blocked Windows call.
   Membership and filesystem queries remain synchronous on RuntimeCore; the
-  preparation deadline is not a bound on the entire runtime cycle.
+  preparation deadline is not a bound on the entire runtime cycle. When full
+  Windows event coverage is unavailable, discovery pauses while pending launch
+  and cleanup results continue to drain.
 - Immediately before launch commitment, re-enumerate membership outside the
   shared intake mutex, then reserve once under that mutex. Pending Stop commands,
   settings edits, suspend/session changes, shutdown, or watcher loss block the

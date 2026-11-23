@@ -646,13 +646,15 @@ impl<P: Platform> Coordinator<P> {
         self.sync_settings(settings, general_enabled);
         self.completion(now, log);
         let enabled = general_enabled && settings.enabled;
-        let context = P::context();
-        let mut known = watcher_active && context.is_ok();
-        if !watcher_active {
+        let context = if watcher_active {
+            Some(P::context())
+        } else {
             self.pause_all(PauseReason::UnsupportedContext);
-        }
+            None
+        };
+        let mut known = matches!(&context, Some(Ok(_)));
         let mut evidence = BTreeMap::new();
-        if let Ok(context) = context {
+        if let Some(Ok(context)) = context {
             let binding = DesktopBindingKey::new(P::binding(&context));
             let catalog = settings
                 .rules
@@ -724,7 +726,7 @@ impl<P: Platform> Coordinator<P> {
                 let scan = P::scan(&owner.rule, &context, exclude.as_ref(), catalog.as_ref());
                 let now = clock();
                 match scan {
-                    Ok(members) if exits_known && watcher_active => {
+                    Ok(members) if exits_known => {
                         if !matches!(owner.policy.state(), KeepRunningState::Paused(_)) {
                             owner.last_error = None;
                         }
@@ -869,7 +871,7 @@ impl<P: Platform> Coordinator<P> {
                     }
                 }
                 self.flight = Some(flight);
-            } else if enabled && watcher_active {
+            } else if enabled {
                 for index in evidence.keys().copied() {
                     let now = clock();
                     if !matches!(self.owners[index].policy.state(), KeepRunningState::Retrying { next_attempt } if now >= next_attempt)
@@ -957,7 +959,7 @@ impl<P: Platform> Coordinator<P> {
                     }
                 }
             }
-        } else if let Err(error) = context {
+        } else if let Some(Err(error)) = context {
             if enabled {
                 self.pause_all(PauseReason::UnsupportedContext);
                 for owner in self

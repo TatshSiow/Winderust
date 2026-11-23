@@ -1382,7 +1382,6 @@ fn run_background_automation(
         }
         if wake_events.session_changed {
             scheduler.invalidate(SchedulerEvent::SessionChanged, event_now);
-            scheduler.schedule_now(RefreshDomain::KeepRunning, event_now);
         }
         if instance_observation_context_changed {
             scheduler.schedule_now(RefreshDomain::InstanceLimits, event_now);
@@ -1390,7 +1389,7 @@ fn run_background_automation(
         if instance_balancing_reset || instance_observation_context_changed {
             scheduler.schedule_now(RefreshDomain::InstanceBalancing, event_now);
         }
-        if keep_running_command_requested {
+        if keep_running_command_requested || instance_observation_context_changed {
             scheduler.schedule_now(RefreshDomain::KeepRunning, event_now);
         }
         if wake_events.power_changed || wake_events.session_changed {
@@ -1505,9 +1504,13 @@ fn run_background_automation(
                 configured_settings.as_ref(),
                 watchdog_required(configured_settings.as_ref()),
             );
+        let keep_running_configured = keep_running_required(configured_settings.as_ref());
+        let keep_running_sampling_required =
+            keep_running_configured && windows_event_watcher_active;
         let keep_running_refresh_required = settings_changed
             || keep_running_command_requested
-            || keep_running_required(configured_settings.as_ref())
+            || keep_running_sampling_required
+            || (keep_running_configured && instance_observation_context_changed)
             || runner.keep_running.has_pending();
         let instance_limits_configured = instance_limits_required(configured_settings.as_ref());
         let instance_limits_sampling_required =
@@ -2047,7 +2050,7 @@ fn run_background_automation(
                     Duration::from_secs(1),
                 ),
                 (
-                    keep_running_refresh_required || runner.keep_running.has_pending(),
+                    keep_running_sampling_required || runner.keep_running.has_pending(),
                     RefreshDomain::KeepRunning,
                     KEEP_RUNNING_REFRESH_INTERVAL,
                 ),
