@@ -832,22 +832,6 @@ pub fn is_foreground_process(
             .is_some_and(|foreground| same_executable_path(foreground, executable_path))
 }
 
-pub fn should_ignore_foreground_process(
-    exclude_foreground_app: bool,
-    process_id: u32,
-    executable_path: &Path,
-    foreground_process_id: Option<u32>,
-    foreground_executable_path: Option<&Path>,
-) -> bool {
-    exclude_foreground_app
-        && is_foreground_process(
-            process_id,
-            executable_path,
-            foreground_process_id,
-            foreground_executable_path,
-        )
-}
-
 #[derive(Debug, Default)]
 pub struct ProtectedProcesses {
     process_ids: Arc<BTreeSet<u32>>,

@@ -23,8 +23,7 @@ use crate::{
     foreground::{
         contains_process_name, executable_grouping_key, process_executable_path,
         process_list::{catalog_process_executable_path, power_profile_executable_path_key},
-        same_executable_path, should_ignore_foreground_process,
-        EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS,
+        same_executable_path, EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS,
     },
     rules::{execution_failure_suppression_threshold, ExecutionFailureTracker},
     runtime::observations::CycleObservations,
@@ -372,6 +371,7 @@ impl MemoryTrimManager {
             if process.id == 0
                 || process.is_critical != Some(false)
                 || process.id == current_process_id
+                || process.id == foreground_process_id
                 || is_builtin_excluded(&process.name)
             {
                 continue;
@@ -383,15 +383,10 @@ impl MemoryTrimManager {
             let Some(executable_path) = process_executable_path(process) else {
                 continue;
             };
-            if should_ignore_foreground_process(
-                true,
-                process.id,
-                &executable_path,
-                Some(foreground_process_id),
-                Some(&foreground_executable_path),
-            ) || executable_path
-                .to_str()
-                .is_some_and(|path| settings.exclusion_enabled_for(path))
+            if same_executable_path(&foreground_executable_path, &executable_path)
+                || executable_path
+                    .to_str()
+                    .is_some_and(|path| settings.exclusion_enabled_for(path))
             {
                 continue;
             }

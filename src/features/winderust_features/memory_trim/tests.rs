@@ -223,7 +223,10 @@ fn unavailable_foreground_image_pauses_trim_and_breaks_idle_qualification() {
 
     assert_eq!(run(Some(distinct_foreground), auto, 3).trimmed_processes, 0);
     assert_eq!(run(Some(distinct_foreground), auto, 4).trimmed_processes, 1);
-    assert_eq!(run(Some(background), manual, 5).trimmed_processes, 0);
+    let same_image = run(Some(r"c:\apps\WORKER.EXE"), manual, 5);
+    assert_eq!(same_image.status, MemoryTrimStatus::ManualCompleted);
+    assert_eq!(same_image.scanned_processes, 2);
+    assert_eq!(same_image.candidate_processes, 0);
 }
 
 #[test]
@@ -641,33 +644,6 @@ fn builtin_exclusions_cover_sensitive_windows_processes() {
     assert!(is_builtin_excluded("csrss.exe"));
     assert!(is_builtin_excluded("winlogon.exe"));
     assert!(!is_builtin_excluded("worker.exe"));
-}
-
-#[test]
-fn foreground_skip_matches_pid_or_exact_path() {
-    let foreground = Path::new(r"C:\Apps\Foreground\app.exe");
-
-    assert!(should_ignore_foreground_process(
-        true,
-        42,
-        Path::new(r"C:\Apps\helper.exe"),
-        Some(42),
-        Some(foreground),
-    ));
-    assert!(should_ignore_foreground_process(
-        true,
-        99,
-        Path::new(r"c:\apps\foreground\APP.EXE"),
-        Some(42),
-        Some(foreground),
-    ));
-    assert!(!should_ignore_foreground_process(
-        true,
-        99,
-        Path::new(r"D:\Other\app.exe"),
-        Some(42),
-        Some(foreground),
-    ));
 }
 
 #[test]
