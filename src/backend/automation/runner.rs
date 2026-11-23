@@ -2107,8 +2107,9 @@ impl RuntimeCore {
         } else {
             None
         };
-        let observe_foreground =
-            foreground_lookup_required(settings) || self.power_plan_controller.has_focus_plan();
+        let observe_foreground = ordinary_power_plan_stop(settings, plugged_in).is_none()
+            && (foreground_lookup_required(settings)
+                || self.power_plan_controller.has_focus_plan());
         let foreground_process_id = observe_foreground
             .then(|| observations.foreground_process_id())
             .flatten();
