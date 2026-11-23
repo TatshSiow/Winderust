@@ -299,7 +299,13 @@ fn windows_event_wake_required_for_profile(
     if settings.general.enabled {
         match event {
             WindowsAutomationEvent::ForegroundChanged => {
-                power_plan_checks_required(settings) || event_driven_process_work_required(settings)
+                by_focus_required(settings)
+                    || event_driven_process_work_required(settings)
+                    // Preserve foreground work already scheduled when another plan rule keeps the watcher available.
+                    || (power_plan_checks_required(settings)
+                        && (process_appearance_scan_required(settings)
+                            || timer_resolution_required(settings)
+                            || adaptive_power_plan_required(settings)))
             }
             WindowsAutomationEvent::WindowCreated => {
                 event_driven_process_work_required(settings) || sleep_prevention_required(settings)

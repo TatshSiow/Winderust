@@ -2771,6 +2771,52 @@ fn watchdog_actions_require_current_policy_and_no_shutdown_or_session_transition
 }
 
 #[test]
+fn foreground_changes_skip_power_plan_rules_that_do_not_use_focus() {
+    let defaults = Settings::default();
+    let mut activity = defaults.clone();
+    activity.by_activity.enabled = true;
+    activity.by_activity.input_detection.keyboard = true;
+    activity.by_activity.power_plans.power_save_guid = Some("idle-plan".into());
+    activity.by_activity.power_plans.performance_guid = Some("active-plan".into());
+    let mut time = defaults.clone();
+    time.by_time.enabled = true;
+    time.by_time.rules[0].power_plan_guid = Some("time-plan".into());
+    let mut cpu = defaults;
+    cpu.by_cpu_load.enabled = true;
+    cpu.by_cpu_load.rules.push(crate::config::ByCpuLoadRule {
+        enabled: true,
+        power_plan_guid: Some("cpu-plan".into()),
+        ..Default::default()
+    });
+
+    for (name, settings) in [
+        ("By Activity", activity),
+        ("By Time", time),
+        ("By CPU Load", cpu),
+    ] {
+        assert!(power_plan_checks_required(&settings), "{name}");
+        assert_eq!(
+            windows_event_watcher_mode(&settings),
+            Some(WindowsEventWatcherMode::Full)
+        );
+        let shared = shared_automation_state(settings);
+        notify_windows_event(&shared, WindowsAutomationEvent::ForegroundChanged);
+        let snapshot = automation_snapshot(&shared).unwrap();
+        assert_eq!(snapshot.change_generation, 0, "{name}");
+        assert_eq!(
+            snapshot.wake_events,
+            AutomationWakeEvents::default(),
+            "{name}"
+        );
+
+        notify_windows_event(&shared, WindowsAutomationEvent::PowerChanged);
+        let snapshot = automation_snapshot(&shared).unwrap();
+        assert_eq!(snapshot.change_generation, 1, "{name}");
+        assert!(snapshot.wake_events.power_changed, "{name}");
+    }
+}
+
+#[test]
 fn callbacks_deliver_events_for_either_profile_without_polling() {
     let shared = shared_automation_state(Settings::default());
     for battery_only in [true, false] {
@@ -2825,13 +2871,10 @@ fn callbacks_deliver_events_for_either_profile_without_polling() {
         profile.by_focus.enabled = false;
         profile.process_priority.enabled = true;
         lock_unpoisoned(&shared.state).settings = Arc::new(settings.clone());
+        notify_windows_event(&shared, WindowsAutomationEvent::ForegroundChanged);
         notify_windows_event(&shared, WindowsAutomationEvent::PowerChanged);
-        assert!(
-            automation_snapshot(&shared)
-                .unwrap()
-                .wake_events
-                .power_changed
-        );
+        let events = automation_snapshot(&shared).unwrap().wake_events;
+        assert!(events.foreground_changed && events.power_changed);
 
         let profile = if battery_only {
             settings.battery_profile_mut()
