@@ -302,6 +302,8 @@ Read the relevant section before changing feature policy, ownership, restoration
   catalog on window focus and when a changed active GUID is absent from the
   catalog. An active-plan change observed during a query triggers a fresh read.
   Advanced Power Plan Tuning retains unsaved edits during catalog refresh.
+  If the selected plan disappears while edits are pending, the page reports it
+  as unavailable and disables Apply.
 - Power Plan Control Status shows up to one qualified alternative per
   lower-priority mode from the same ordinary decision pass. It does not make
   additional Windows queries or evaluate ordinary alternatives while paused

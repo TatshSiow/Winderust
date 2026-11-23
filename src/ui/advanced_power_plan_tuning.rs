@@ -320,6 +320,21 @@ impl Editor {
         }
     }
 
+    fn status_for_plan(&self, plan: Option<&PowerPlan>) -> Cow<'_, str> {
+        if self.target.is_none() || plan.is_some() {
+            return self.status();
+        }
+        let unavailable = t!("common.selected_plan_unavailable");
+        if self.unverified_apply.is_some() {
+            t!(
+                "processor_power.refresh_unverified_apply",
+                error = unavailable
+            )
+        } else {
+            unavailable
+        }
+    }
+
     pub(super) fn has_invalid_inputs(&self) -> bool {
         self.invalid_percentages.iter().any(InvalidPercentages::any)
     }
@@ -882,13 +897,12 @@ impl Editor {
         plans: &[PowerPlan],
         mode: EffectivePowerMode,
     ) -> Element<'a, Message> {
+        let target_plan = self.selected_plan(plans);
         let choices = tuning_plans(plans)
             .map(|p| PlanChoice(p.guid.clone(), power_plan_label(p)))
             .collect::<Vec<_>>();
-        let selected = choices
-            .iter()
-            .find(|p| Some(&p.0) == self.target.as_ref())
-            .cloned();
+        let selected =
+            target_plan.map(|plan| PlanChoice(plan.guid.clone(), power_plan_label(plan)));
         let mut body = column![
             super::widgets::settings_card(
                 row![
@@ -907,7 +921,7 @@ impl Editor {
             )
         ]
         .spacing(super::widgets::CARD_GAP);
-        if let Some(plan) = self.selected_plan(plans) {
+        if let Some(plan) = target_plan {
             if !plan.active {
                 body = body.push(text(
                     t!(
@@ -1045,7 +1059,7 @@ impl Editor {
                     (self.values.is_some()
                         && self.dirty
                         && !self.has_invalid_inputs()
-                        && self.selected_plan(plans).is_some())
+                        && target_plan.is_some())
                     .then_some(Message::ReviewApply)
                 )
         ]
@@ -1059,7 +1073,7 @@ impl Editor {
         }
         body = body
             .push(super::widgets::settings_card(actions))
-            .push(text(self.status()).wrapping(text::Wrapping::WordOrGlyph));
+            .push(text(self.status_for_plan(target_plan)).wrapping(text::Wrapping::WordOrGlyph));
         scrollable(body).height(Fill).width(Fill).into()
     }
     pub(super) fn apply_review_modal(
@@ -2372,6 +2386,21 @@ mod tests {
                 );
             }
             let draft = editor.values;
+
+            let returning_plan = [PowerPlan {
+                guid: "MISSING-PLAN".into(),
+                name: "Original plan".into(),
+                ..plans[0].clone()
+            }];
+            assert_eq!(
+                editor.status_for_plan(editor.selected_plan(&plans)),
+                t!("common.selected_plan_unavailable")
+            );
+            assert!(editor.selected_plan(&returning_plan).is_some());
+            assert_eq!(
+                editor.status_for_plan(editor.selected_plan(&returning_plan)),
+                editor.status()
+            );
 
             editor.update(&mut settings, &plans, Message::Refresh);
 
