@@ -321,7 +321,8 @@ Read the relevant section before changing feature policy, ownership, restoration
   disable, removal of all ordinary plan rules, and Exit can still restore the plan.
 - Visible Power Plan Control pages and Process List Rulesets refresh the plan
   catalog on window focus and when a changed active GUID is absent from the
-  catalog. An active-plan change observed during a query triggers a fresh read.
+  catalog. Refocus or an active-plan change during a query queues a fresh read
+  and discards the older result.
   Advanced Power Plan Tuning retains unsaved edits during catalog refresh.
   If the selected plan disappears while edits are pending, the page reports it
   as unavailable and disables Apply.

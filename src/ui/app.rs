@@ -1782,6 +1782,7 @@ impl WinderustApp {
             Message::WindowFocused => {
                 if !self.hidden && page_needs_power_plans(self.page, self.processes.rulesets_open())
                 {
+                    self.power_plans_reload_pending |= self.power_plans_loading;
                     return self.load_power_plans();
                 }
             }
