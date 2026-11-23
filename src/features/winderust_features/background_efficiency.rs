@@ -18,7 +18,7 @@ use crate::{
     },
     foreground::{
         contains_process_name, is_foreground_process, process_executable_path, process_failure_key,
-        process_session_id, ProtectedProcesses,
+        process_list::catalog_process_executable_path, process_session_id, ProtectedProcesses,
     },
     rules::{
         execution_failure_suppression_threshold, ExecutionFailureTracker, ExecutionSuppression,
@@ -195,12 +195,16 @@ impl BackgroundEfficiencyManager {
 
         let scanned_processes = processes.len();
         let foreground_process_id = foreground_process_id.filter(|_| needs_foreground);
-        let foreground_executable_path = foreground_process_id.and_then(|id| {
-            processes
-                .iter()
-                .find(|process| process.id == id)
-                .and_then(process_executable_path)
-        });
+        let foreground_executable_path =
+            foreground_process_id.and_then(|id| catalog_process_executable_path(&processes, id));
+        if needs_foreground && foreground_executable_path.is_none() {
+            return self.paused_snapshot(
+                controller,
+                action_log,
+                "background_efficiency.release_reason_unknown_foreground",
+                None,
+            );
+        }
         let visible_processes = ProtectedProcesses::capture(
             processes.as_ref(),
             false,
@@ -652,6 +656,34 @@ fn background_efficiency_enabled_for(
 mod tests {
     use super::*;
     use crate::config::ProcessRuleMode;
+
+    #[test]
+    fn unverified_focused_executable_pauses_only_with_focus_detection() {
+        let mut manager = BackgroundEfficiencyManager::default();
+        let mut controller = PriorityEfficiencyController::default();
+        let mut observations = CycleObservations::with_processes(Vec::new());
+        let mut action_log = ActionLog::default();
+        let mut settings = BackgroundEfficiencySettings {
+            enabled: true,
+            foreground_detection_enabled: true,
+            ..Default::default()
+        };
+        let mut update = |settings: &BackgroundEfficiencySettings| {
+            manager.update(
+                &mut controller,
+                settings,
+                true,
+                true,
+                Some(std::process::id()),
+                &mut observations,
+                &mut action_log,
+            )
+        };
+
+        assert!(update(&settings).observation_paused);
+        settings.foreground_detection_enabled = false;
+        assert!(!update(&settings).observation_paused);
+    }
 
     #[test]
     fn exclusions_include_builtin_and_user_entries() {
