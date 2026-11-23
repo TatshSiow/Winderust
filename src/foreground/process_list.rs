@@ -1054,7 +1054,7 @@ pub(crate) fn catalog_process_executable_path(
     verified_process_executable_path(process)
 }
 
-fn verified_process_executable_path(process: &ProcessInfo) -> Option<Cow<'_, Path>> {
+pub(crate) fn verified_process_executable_path(process: &ProcessInfo) -> Option<Cow<'_, Path>> {
     process.creation_time?;
     process
         .image_path

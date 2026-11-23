@@ -904,6 +904,9 @@ User-facing behavior:
   checks creation time and reads the image on one handle. If the image cannot be
   established, new freezes pause.
   [GetProcessTimes](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getprocesstimes), [QueryFullProcessImageNameW](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-queryfullprocessimagenamew)
+- When a rule candidate lacks a catalog image, `verified_process_executable_path`
+  checks creation time and reads the executable path on the same query handle.
+  A candidate whose image cannot be verified remains unresolved.
 - After the configured background delay, Winderust opens and revalidates PID, creation time, executable path, session, service account, critical/PPL state, and job-assignment rights on the same target handle before assigning an instance-bound named Windows Job Object.
 - It freezes that job with `SetInformationJobObject` and thaws the same job when the focused or clicked app needs to recover, when the process is removed from the list, App Suspension is disabled, automation is disabled, Winderust exits, or the recovery watchdog observes abnormal termination.
 - Automatic rules, Suspend on the App Suspension page, and Process List Suspend/Resume all use typed RuntimeCore commands and the same controller. New acquisition honors the current cross-session setting; restoration of an already-owned exact job does not reapply that acquisition gate.

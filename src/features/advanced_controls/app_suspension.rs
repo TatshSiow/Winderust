@@ -25,9 +25,9 @@ use crate::audio_activity::active_audio_process_ids;
 
 use crate::config::AppSuspensionSettings;
 use crate::foreground::{
-    process_executable_path,
     process_list::{
         catalog_process_executable_path, executable_basename_may_match, normalize_path_slashes,
+        verified_process_executable_path,
     },
     process_session_id, same_executable_path, ProcessActionTarget,
 };
@@ -610,21 +610,21 @@ impl AppSuspensionManager {
                     }
                 }
             }
-            let Some(executable_path) = process_executable_path(process) else {
+            let Some(executable_path) = verified_process_executable_path(process) else {
                 unresolved.push((name, None));
                 continue;
             };
-            let Ok(executable_path) = executable_path.into_os_string().into_string() else {
+            let Some(executable_path) = executable_path.to_str() else {
                 continue;
             };
-            if !settings.suspendable_app_enabled_for(&executable_path) {
+            if !settings.suspendable_app_enabled_for(executable_path) {
                 continue;
             }
 
-            running_apps.insert(normalize_path_slashes(&executable_path).into_owned());
+            running_apps.insert(normalize_path_slashes(executable_path).into_owned());
             if should_skip_foreground_process(
                 process.id,
-                Path::new(&executable_path),
+                Path::new(executable_path),
                 foreground_process_id,
                 &foreground_executable_path,
             ) {
@@ -635,7 +635,7 @@ impl AppSuspensionManager {
                 process.id,
                 TargetProcess {
                     process_name: process.name.clone(),
-                    executable_path,
+                    executable_path: executable_path.to_owned(),
                     creation_time: process.creation_time.unwrap_or_default(),
                     is_service_account: process.is_service_account,
                 },

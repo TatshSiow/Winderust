@@ -540,6 +540,10 @@ Read the relevant section before changing feature policy, ownership, restoration
 - Automatic rules and Suspend on the App Suspension page require an absolute
   foreground image for the catalog process generation. An unavailable image pauses
   new freezes and restarts background grace when observations return.
+- When a rule candidate is missing its catalog image, App Suspension verifies its
+  process generation before accepting an absolute image from the fallback lookup.
+  An unverified candidate keeps the rule's observation unresolved and cannot
+  qualify for a new freeze or wake observation.
 - If an enabled audio or network wake detector reports a failure, App Suspension
   waits for a successful observation before automatically suspending apps that
   use that detector. Affected rules show **Wake detection unavailable** when
