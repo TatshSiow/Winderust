@@ -792,6 +792,8 @@ Read the relevant section before changing feature policy, ownership, restoration
   Inventory and pending restoration failures surface as errors, with the
   restoration failure taking precedence until retry succeeds.
 - Every Priority Control page uses three ordered default tiers: Focus App, then apps with visible windows, then background. Visible Window Detection defaults off and has its own selectable value; custom process rules independently override all three tiers. Retired Auto priority values are rejected rather than mapped to current defaults.
+- Foreground Detection requires an executable tied to the captured process generation. An
+  unavailable or unverified image makes the Focus observation unavailable.
 - I/O Priority and Dynamic Priority Boost restoration retries publish their current
   state and record verified baseline writes in Action Log even after the feature is
   disabled. Retry failures update current status. Successful retries clear the

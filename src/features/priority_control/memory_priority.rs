@@ -17,8 +17,8 @@ use crate::{
     },
     foreground::{
         contains_process_name, is_foreground_process, process_count_label, process_executable_path,
-        process_failure_key, process_session_id, ProtectedProcesses,
-        CORE_BUILT_IN_PROCESS_EXCLUSIONS,
+        process_failure_key, process_list::catalog_process_executable_path, process_session_id,
+        ProtectedProcesses, CORE_BUILT_IN_PROCESS_EXCLUSIONS,
     },
     rules::{execution_failure_suppression_threshold, ExecutionFailureTracker},
     runtime::observations::CycleObservations,
@@ -93,9 +93,9 @@ impl MemoryPriorityManager {
             );
         }
 
-        let focus_unknown =
-            settings.foreground_detection_enabled && foreground_process_id.is_none();
-        if focus_unknown && settings.foreground_priority != settings.background_priority {
+        let focus_changes_default = settings.foreground_detection_enabled
+            && settings.foreground_priority != settings.background_priority;
+        if focus_changes_default && foreground_process_id.is_none() {
             return self.pause_rules_for_unknown_focus(controller, action_log);
         }
 
@@ -126,6 +126,17 @@ impl MemoryPriorityManager {
             }
         };
 
+        let foreground_executable_path = foreground_process_id
+            .filter(|_| settings.foreground_detection_enabled)
+            .and_then(|id| catalog_process_executable_path(&processes, id));
+        let foreground_process_id =
+            foreground_process_id.filter(|_| foreground_executable_path.is_some());
+        let focus_unknown =
+            settings.foreground_detection_enabled && foreground_process_id.is_none();
+        if focus_unknown && focus_changes_default {
+            return self.pause_rules_for_unknown_focus(controller, action_log);
+        }
+
         let visible_processes = if settings.visible_window_detection_enabled {
             let Ok(process_ids) = observations.visible_window_process_ids() else {
                 return self.paused_snapshot(
@@ -140,17 +151,6 @@ impl MemoryPriorityManager {
             ProtectedProcesses::capture(processes.as_ref(), false, None, process_ids)
         } else {
             ProtectedProcesses::default()
-        };
-
-        let foreground_executable_path = if settings.foreground_detection_enabled {
-            foreground_process_id.and_then(|id| {
-                processes
-                    .iter()
-                    .find(|process| process.id == id)
-                    .and_then(process_executable_path)
-            })
-        } else {
-            None
         };
 
         let mut targets = Vec::new();
@@ -173,13 +173,12 @@ impl MemoryPriorityManager {
             else {
                 continue;
             };
-            let foreground = settings.foreground_detection_enabled
-                && is_foreground_process(
-                    process.id,
-                    &executable_path,
-                    foreground_process_id,
-                    foreground_executable_path.as_deref(),
-                );
+            let foreground = is_foreground_process(
+                process.id,
+                &executable_path,
+                foreground_process_id,
+                foreground_executable_path.as_deref(),
+            );
             let visible_window = !foreground
                 && settings.visible_window_detection_enabled
                 && visible_processes.contains(process.id, &executable_path);

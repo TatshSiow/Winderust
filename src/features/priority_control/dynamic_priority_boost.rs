@@ -18,8 +18,8 @@ use crate::{
     },
     foreground::{
         is_foreground_process, process_count_label, process_executable_path, process_failure_key,
-        process_session_id, same_process_name, ProtectedProcesses,
-        CORE_BUILT_IN_PROCESS_EXCLUSIONS,
+        process_list::catalog_process_executable_path, process_session_id, same_process_name,
+        ProtectedProcesses, CORE_BUILT_IN_PROCESS_EXCLUSIONS,
     },
     rules::{execution_failure_suppression_threshold, ExecutionFailureTracker},
     runtime::observations::CycleObservations,
@@ -87,9 +87,9 @@ impl DynamicPriorityBoostManager {
             };
         }
 
-        let focus_unknown =
-            settings.foreground_detection_enabled && foreground_process_id.is_none();
-        if focus_unknown && settings.foreground_boost != settings.background_boost {
+        let focus_changes_default = settings.foreground_detection_enabled
+            && settings.foreground_boost != settings.background_boost;
+        if focus_changes_default && foreground_process_id.is_none() {
             return self.paused_snapshot(controller, action_log, "foreground app is unknown");
         }
 
@@ -124,17 +124,17 @@ impl DynamicPriorityBoostManager {
             ProtectedProcesses::default()
         };
 
+        let foreground_executable_path = foreground_process_id
+            .filter(|_| settings.foreground_detection_enabled)
+            .and_then(|id| catalog_process_executable_path(&processes, id));
+        let foreground_process_id =
+            foreground_process_id.filter(|_| foreground_executable_path.is_some());
+        let focus_unknown =
+            settings.foreground_detection_enabled && foreground_process_id.is_none();
+        if focus_changes_default && focus_unknown {
+            return self.paused_snapshot(controller, action_log, "foreground app is unknown");
+        }
         let scanned_processes = processes.len();
-        let foreground_executable_path = if settings.foreground_detection_enabled {
-            foreground_process_id.and_then(|id| {
-                processes
-                    .iter()
-                    .find(|process| process.id == id)
-                    .and_then(process_executable_path)
-            })
-        } else {
-            None
-        };
 
         let mut target_processes = BTreeMap::new();
         for process in processes.iter() {
@@ -158,13 +158,12 @@ impl DynamicPriorityBoostManager {
                 continue;
             };
             let path = Path::new(&executable_path);
-            let foreground = settings.foreground_detection_enabled
-                && is_foreground_process(
-                    process.id,
-                    path,
-                    foreground_process_id,
-                    foreground_executable_path.as_deref(),
-                );
+            let foreground = is_foreground_process(
+                process.id,
+                path,
+                foreground_process_id,
+                foreground_executable_path.as_deref(),
+            );
             let visible_window = !foreground
                 && settings.visible_window_detection_enabled
                 && visible_processes.contains(process.id, path);
@@ -504,6 +503,54 @@ pub fn is_builtin_excluded(process_name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{config::ProcessDynamicPriorityBoostSetting, foreground::ProcessInfo};
+
+    #[test]
+    fn unverified_foreground_pauses_when_policy_depends_on_focus() {
+        let process_id = std::process::id();
+        let mut observations = CycleObservations::with_processes(vec![ProcessInfo {
+            id: process_id,
+            creation_time: Some(0),
+            parent_id: None,
+            session_id: None,
+            user_name: None,
+            is_service_account: None,
+            is_critical: None,
+            can_set_information: false,
+            name: "test process".to_owned(),
+            image_path: None,
+        }]);
+        let mut manager = DynamicPriorityBoostManager::default();
+        let mut controller = DynamicPriorityBoostController::default();
+        let mut action_log = ActionLog::default();
+        let mut settings = DynamicPriorityBoostSettings {
+            enabled: true,
+            foreground_boost: ProcessDynamicPriorityBoostSetting::Disabled,
+            background_boost: ProcessDynamicPriorityBoostSetting::Default,
+            ..Default::default()
+        };
+        let mut update = |settings: &DynamicPriorityBoostSettings| {
+            manager.update(
+                &mut controller,
+                settings,
+                true,
+                true,
+                Some(process_id),
+                &mut observations,
+                &mut action_log,
+            )
+        };
+
+        assert!(update(&settings).observation_paused);
+        settings.foreground_detection_enabled = false;
+        assert!(!update(&settings).observation_paused);
+
+        settings.foreground_detection_enabled = true;
+        settings.foreground_boost = ProcessDynamicPriorityBoostSetting::Default;
+        let uniform = update(&settings);
+        assert!(!uniform.observation_paused);
+        assert_eq!(uniform.scanned_processes, 1);
+    }
 
     #[test]
     fn repeated_failures_emit_one_boost_auto_exclusion_and_success_resets_it() {

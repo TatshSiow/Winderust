@@ -17,8 +17,9 @@ use crate::{
         process::{ControlOwner, ProcessControlError, ProcessControlTarget, ProcessTargetKey},
     },
     foreground::{
-        is_foreground_process, process_executable_path, process_failure_key, process_session_id,
-        ProtectedProcesses, CORE_BUILT_IN_PROCESS_EXCLUSIONS,
+        is_foreground_process, process_executable_path, process_failure_key,
+        process_list::catalog_process_executable_path, process_session_id, ProtectedProcesses,
+        CORE_BUILT_IN_PROCESS_EXCLUSIONS,
     },
     rules::{execution_failure_suppression_threshold, ExecutionFailureTracker},
     runtime::observations::CycleObservations,
@@ -81,9 +82,9 @@ impl ProcessPriorityManager {
             );
         }
 
-        let focus_unknown =
-            settings.foreground_detection_enabled && foreground_process_id.is_none();
-        if focus_unknown && settings.foreground_priority != settings.background_priority {
+        let focus_changes_default = settings.foreground_detection_enabled
+            && settings.foreground_priority != settings.background_priority;
+        if focus_changes_default && foreground_process_id.is_none() {
             return self.pause_for_unknown_focus(controller, action_log);
         }
 
@@ -109,6 +110,17 @@ impl ProcessPriorityManager {
                 );
             }
         };
+        let foreground_executable_path = foreground_process_id
+            .filter(|_| settings.foreground_detection_enabled)
+            .and_then(|id| catalog_process_executable_path(&processes, id));
+        let foreground_process_id =
+            foreground_process_id.filter(|_| foreground_executable_path.is_some());
+        let focus_unknown =
+            settings.foreground_detection_enabled && foreground_process_id.is_none();
+        if focus_unknown && focus_changes_default {
+            return self.pause_for_unknown_focus(controller, action_log);
+        }
+
         let scanned_processes = processes.len();
         let visible_processes = if settings.visible_window_detection_enabled {
             let Ok(process_ids) = observations.visible_window_process_ids() else {
@@ -123,16 +135,6 @@ impl ProcessPriorityManager {
         } else {
             ProtectedProcesses::default()
         };
-        let foreground_executable_path = settings.foreground_detection_enabled.then(|| {
-            foreground_process_id.and_then(|id| {
-                processes
-                    .iter()
-                    .find(|process| process.id == id)
-                    .and_then(process_executable_path)
-            })
-        });
-        let foreground_executable_path = foreground_executable_path.flatten();
-
         let mut targets = Vec::new();
         for process in processes.iter() {
             if process.id == 0
@@ -150,13 +152,12 @@ impl ProcessPriorityManager {
             else {
                 continue;
             };
-            let foreground = settings.foreground_detection_enabled
-                && is_foreground_process(
-                    process.id,
-                    &executable_path,
-                    foreground_process_id,
-                    foreground_executable_path.as_deref(),
-                );
+            let foreground = is_foreground_process(
+                process.id,
+                &executable_path,
+                foreground_process_id,
+                foreground_executable_path.as_deref(),
+            );
             let visible_window = !foreground
                 && settings.visible_window_detection_enabled
                 && visible_processes.contains(process.id, &executable_path);
@@ -544,6 +545,61 @@ pub fn is_builtin_excluded(process_name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{
+        config::{ProcessExclusionRule, ProcessPrioritySetting},
+        foreground::ProcessInfo,
+    };
+
+    #[test]
+    fn unverified_focus_pauses_only_focus_dependent_priority_policy() {
+        let mut manager = ProcessPriorityManager::default();
+        let mut controller = PriorityEfficiencyController::default();
+        let mut log = ActionLog::new(8);
+        let mut update = |settings: &ProcessPrioritySettings, processes: Vec<ProcessInfo>| {
+            manager.update(
+                &mut controller,
+                settings,
+                true,
+                true,
+                Some(std::process::id()),
+                &mut CycleObservations::with_processes(processes),
+                &mut log,
+            )
+        };
+        let mut settings = ProcessPrioritySettings {
+            enabled: true,
+            ..Default::default()
+        };
+        assert!(update(&settings, vec![]).observation_paused);
+
+        settings.foreground_detection_enabled = false;
+        assert!(!update(&settings, vec![]).observation_paused);
+
+        settings.foreground_detection_enabled = true;
+        settings.background_priority = settings.foreground_priority;
+        let path = r"C:\Apps\helper.exe";
+        let helper = ProcessInfo {
+            id: u32::MAX,
+            creation_time: Some(1),
+            parent_id: None,
+            session_id: None,
+            user_name: None,
+            is_service_account: None,
+            is_critical: Some(false),
+            can_set_information: true,
+            name: "helper.exe".to_owned(),
+            image_path: Some(path.into()),
+        };
+        assert!(!update(&settings, vec![helper.clone()]).observation_paused);
+
+        settings.exclusions.push(ProcessExclusionRule {
+            executable_path: path.to_owned(),
+            process_foreground_priority: Some(ProcessPrioritySetting::AboveNormal),
+            ..Default::default()
+        });
+        assert!(update(&settings, vec![helper]).observation_paused);
+        assert!(log.entries().is_empty());
+    }
 
     #[test]
     fn repeated_failures_emit_one_process_priority_auto_exclusion_and_success_resets_it() {

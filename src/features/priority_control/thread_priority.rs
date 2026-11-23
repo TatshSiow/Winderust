@@ -14,8 +14,9 @@ use crate::{
         },
     },
     foreground::{
-        is_foreground_process, process_executable_path, process_failure_key, process_session_id,
-        same_process_name, ProtectedProcesses, CORE_BUILT_IN_PROCESS_EXCLUSIONS,
+        is_foreground_process, process_failure_key, process_list::catalog_process_executable_path,
+        process_session_id, same_process_name, ProtectedProcesses,
+        CORE_BUILT_IN_PROCESS_EXCLUSIONS,
     },
     rules::{execution_failure_suppression_threshold, ExecutionFailureTracker},
     runtime::observations::CycleObservations,
@@ -78,9 +79,9 @@ impl ThreadPriorityManager {
             return inactive_snapshot(failures);
         }
 
-        let focus_unknown =
-            settings.foreground_detection_enabled && foreground_process_id.is_none();
-        if focus_unknown && settings.foreground_priority != settings.background_priority {
+        let focus_changes_default = settings.foreground_detection_enabled
+            && settings.foreground_priority != settings.background_priority;
+        if focus_changes_default && foreground_process_id.is_none() {
             return self.paused_snapshot(controller, action_log, "foreground app is unknown", None);
         }
 
@@ -111,6 +112,17 @@ impl ThreadPriorityManager {
                 );
             }
         };
+        let foreground_executable_path = foreground_process_id
+            .filter(|_| settings.foreground_detection_enabled)
+            .and_then(|id| catalog_process_executable_path(&processes, id));
+        let foreground_process_id =
+            foreground_process_id.filter(|_| foreground_executable_path.is_some());
+        let focus_unknown =
+            settings.foreground_detection_enabled && foreground_process_id.is_none();
+        if focus_unknown && focus_changes_default {
+            return self.paused_snapshot(controller, action_log, "foreground app is unknown", None);
+        }
+
         let scanned_processes = processes.len();
         let visible_processes = if settings.visible_window_detection_enabled {
             let Ok(process_ids) = observations.visible_window_process_ids() else {
@@ -125,17 +137,6 @@ impl ThreadPriorityManager {
         } else {
             ProtectedProcesses::default()
         };
-        let foreground_executable_path = if settings.foreground_detection_enabled {
-            foreground_process_id.and_then(|id| {
-                processes
-                    .iter()
-                    .find(|process| process.id == id)
-                    .and_then(process_executable_path)
-            })
-        } else {
-            None
-        };
-
         let mut targets = BTreeMap::<ProcessTargetKey, AutomaticTarget>::new();
         for process in processes.iter() {
             if process.id == 0
@@ -154,13 +155,12 @@ impl ThreadPriorityManager {
             let Some(path) = executable_path.to_str() else {
                 continue;
             };
-            let foreground = settings.foreground_detection_enabled
-                && is_foreground_process(
-                    process.id,
-                    executable_path,
-                    foreground_process_id,
-                    foreground_executable_path.as_deref(),
-                );
+            let foreground = is_foreground_process(
+                process.id,
+                executable_path,
+                foreground_process_id,
+                foreground_executable_path.as_deref(),
+            );
             let visible_window = !foreground
                 && settings.visible_window_detection_enabled
                 && visible_processes.contains(process.id, executable_path);
