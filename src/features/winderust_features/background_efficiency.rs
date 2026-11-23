@@ -194,6 +194,7 @@ impl BackgroundEfficiencyManager {
         };
 
         let scanned_processes = processes.len();
+        let foreground_process_id = foreground_process_id.filter(|_| needs_foreground);
         let foreground_executable_path = foreground_process_id.and_then(|id| {
             processes
                 .iter()
@@ -229,9 +230,9 @@ impl BackgroundEfficiencyManager {
                     foreground_process_id,
                     foreground_executable_path.as_deref(),
                 );
-                let visible_window =
-                    !focus && visible_processes.contains(process.id, &executable_path);
-                if !background_efficiency_enabled_for(settings, path, focus, visible_window) {
+                if !background_efficiency_enabled_for(settings, path, focus, || {
+                    visible_processes.contains(process.id, &executable_path)
+                }) {
                     return None;
                 }
                 Some(BackgroundEfficiencyTarget {
@@ -599,7 +600,7 @@ fn is_process_excluded(
         .and_then(|name| name.to_str())
         .unwrap_or(process);
     is_builtin_excluded_for(process_name, settings.aggressiveness)
-        || !background_efficiency_enabled_for(settings, process, focus, visible_window)
+        || !background_efficiency_enabled_for(settings, process, focus, || visible_window)
 }
 
 fn is_builtin_excluded_for(
@@ -630,10 +631,10 @@ fn background_efficiency_enabled_for(
     settings: &BackgroundEfficiencySettings,
     process_name: &str,
     focus: bool,
-    visible_window: bool,
+    visible_window: impl FnOnce() -> bool,
 ) -> bool {
     let focus = settings.foreground_detection_enabled && focus;
-    let visible_window = !focus && settings.visible_window_detection_enabled && visible_window;
+    let visible_window = !focus && settings.visible_window_detection_enabled && visible_window();
     let default_enabled = if focus {
         settings.foreground_efficiency_mode
     } else if visible_window {
@@ -734,7 +735,7 @@ mod tests {
 
     #[test]
     fn custom_rule_prefers_focus_then_visible_window_then_background() {
-        let settings = BackgroundEfficiencySettings {
+        let mut settings = BackgroundEfficiencySettings {
             foreground_detection_enabled: true,
             visible_window_detection_enabled: true,
             custom_rules: vec![crate::config::BackgroundEfficiencyRule {
@@ -748,13 +749,23 @@ mod tests {
         };
 
         assert!(background_efficiency_enabled_for(
-            &settings, "APP.EXE", true, true
+            &settings,
+            "APP.EXE",
+            true,
+            || { panic!("Focus already decides which efficiency mode to use") }
         ));
+        settings.foreground_detection_enabled = false;
         assert!(!background_efficiency_enabled_for(
-            &settings, "app.exe", false, true
+            &settings,
+            "app.exe",
+            true,
+            || true
         ));
         assert!(background_efficiency_enabled_for(
-            &settings, "app.exe", false, false
+            &settings,
+            "app.exe",
+            true,
+            || false
         ));
     }
 
@@ -776,10 +787,16 @@ mod tests {
         };
 
         assert!(!background_efficiency_enabled_for(
-            &settings, "app.exe", true, false
+            &settings,
+            "app.exe",
+            true,
+            || false
         ));
         assert!(background_efficiency_enabled_for(
-            &settings, "app.exe", false, true
+            &settings,
+            "app.exe",
+            false,
+            || true
         ));
     }
 
