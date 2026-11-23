@@ -2135,6 +2135,7 @@ fn reserve_keep_running_commit(
     let state = lock_unpoisoned(&shared.state);
     let current_intents_clear = expected_watcher_active
         && state.windows_event_watcher_active
+        && !state.pending_events.windows_event_watcher_changed
         && !state.stop_requested
         && state.settings.general.enabled
         && state.settings.keep_running.enabled
@@ -2309,9 +2310,10 @@ mod keep_running_intake_tests {
         let now = base + KEEP_RUNNING_REFRESH_INTERVAL;
         let context = DesktopBindingKey::new("desktop-a".into());
         let settings = settings();
-        let blockers: [fn(&mut AutomationWorkerState); 8] = [
+        let blockers: [fn(&mut AutomationWorkerState); 9] = [
             |state| state.stop_requested = true,
             |state| state.windows_event_watcher_active = false,
+            |state| state.pending_events.windows_event_watcher_changed = true,
             |state| state.pending_events.settings_changed = true,
             |state| {
                 let mut settings = (*state.settings).clone();
