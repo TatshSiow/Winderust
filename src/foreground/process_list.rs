@@ -631,15 +631,23 @@ pub struct ProcessCandidateInfo {
 }
 
 pub fn list_process_candidates() -> Result<Vec<ProcessCandidateInfo>, String> {
-    let mut processes = list_processes()?;
-    enrich_process_paths(&mut processes);
+    let processes = list_processes_with(|process, handle| {
+        if has_candidate_access(process) {
+            process.image_path = process_image_path_from_handle(handle);
+            process.is_service_account = process_runs_as_service_account_from_handle(handle);
+        }
+    })?;
     Ok(process_candidates_from_processes(&processes))
+}
+
+fn has_candidate_access(process: &ProcessInfo) -> bool {
+    process.is_critical == Some(false) && process.can_set_information
 }
 
 pub fn process_candidates_from_processes(processes: &[ProcessInfo]) -> Vec<ProcessCandidateInfo> {
     let mut candidates: BTreeMap<OsString, ProcessCandidateInfo> = BTreeMap::new();
     for process in processes {
-        if process.is_critical != Some(false) || !process.can_set_information {
+        if !has_candidate_access(process) {
             continue;
         }
         let Some(image_path) = process.image_path.as_ref() else {
@@ -750,7 +758,7 @@ pub fn list_processes_with_paths() -> Result<Vec<ProcessInfo>, String> {
 }
 
 pub(crate) fn enrich_process_paths(processes: &mut [ProcessInfo]) {
-    // Policy and picker scans need SID safety classification, not display names.
+    // Policy scans need SID safety classification, not display names.
     for process in processes {
         let Some(handle) = open_process_for_query(process.id) else {
             continue;

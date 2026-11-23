@@ -982,6 +982,8 @@ using one `PROCESS_QUERY_LIMITED_INFORMATION` handle per process. The existing
 `PROCESS_SET_INFORMATION` access probe uses a separate handle while the query
 handle remains open. Windows retains the process ID until all handles close and
 the process object is freed. [Process IDs and handle lifetime](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/ns-processthreadsapi-process_information)
+The running-app picker uses the same query handle for image and service-account
+checks after process discovery confirms non-critical status and control access.
 
 Implementation paths: process account/session capture and one-time target validation are in
 `src/foreground/process_list.rs`; rule-driven filtering is applied by the
