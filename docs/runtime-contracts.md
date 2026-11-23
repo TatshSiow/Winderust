@@ -981,6 +981,9 @@ Read the relevant section before changing feature policy, ownership, restoration
   owns foreground-rule policy and reporting only; every successful begin is paired with the exact
   end period on replacement, disable, or shutdown. This process-lifetime state has no crash
   journal.
+- When the saved power profiles differ in whether Timer Resolution has a usable
+  rule, an idle worker uses power-source notifications. If Windows cannot verify
+  the source or event coverage is unavailable, it rechecks the source once a second.
 - Timer Resolution releases its owned request before refreshing capability bounds.
   A failed release keeps Timer Resolution scheduled while it owns the request.
   Status shows Paused when an enabled rule needs a foreground observation

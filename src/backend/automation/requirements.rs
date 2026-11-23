@@ -137,6 +137,15 @@ pub(super) fn timer_resolution_required(settings: &Settings) -> bool {
             .any(|rule| enabled_executable_path_rule(rule.enabled, &rule.executable_path))
 }
 
+pub(super) fn timer_resolution_enablement_varies_by_source(settings: &Settings) -> bool {
+    let enabled =
+        |profile: &Settings| feature_refresh_required(profile, timer_resolution_required(profile));
+    settings
+        .on_battery
+        .as_deref()
+        .is_some_and(|battery| enabled(settings) != enabled(battery))
+}
+
 pub(super) fn sleep_prevention_required(settings: &Settings) -> bool {
     settings.sleep_prevention.enabled
         && settings
@@ -295,6 +304,7 @@ pub(super) fn windows_event_watcher_mode(settings: &Settings) -> Option<WindowsE
     if windows_event_watcher_required(settings)
         || adaptive_enablement_varies_by_source(settings)
         || cpu_limiter_policy_varies_by_source(settings)
+        || timer_resolution_enablement_varies_by_source(settings)
         || memory_trim_policy_difference(settings) != MemoryTrimPolicyDifference::Common
     {
         Some(WindowsEventWatcherMode::Full)

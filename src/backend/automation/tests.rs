@@ -1294,6 +1294,38 @@ fn explicit_cpu_allocation_paths_exclude_only_active_usable_rules() {
 }
 
 #[test]
+fn timer_resolution_requests_power_events_only_for_different_profile_enablement() {
+    let mut settings = Settings::default();
+    settings.general.theme_mode = AppThemeMode::Dark;
+    settings.general.accent.source = AccentColorSource::Custom;
+    settings.timer_resolution.enabled = true;
+    settings.timer_resolution.rules.push(TimerResolutionRule {
+        enabled: true,
+        executable_path: r"C:\Apps\editor.exe".to_owned(),
+        desired_100ns: 10_000,
+    });
+    assert_eq!(windows_event_watcher_mode(&settings), None);
+
+    settings.battery_profile_mut().timer_resolution.enabled = false;
+    assert_eq!(
+        windows_event_watcher_mode(&settings),
+        Some(WindowsEventWatcherMode::Full)
+    );
+    assert!(windows_event_wake_required(
+        &settings,
+        WindowsAutomationEvent::PowerChanged
+    ));
+
+    settings.timer_resolution.rules[0].enabled = false;
+    assert_eq!(windows_event_watcher_mode(&settings), None);
+    settings.battery_profile_mut().timer_resolution.enabled = true;
+    assert_eq!(
+        windows_event_watcher_mode(&settings),
+        Some(WindowsEventWatcherMode::Full)
+    );
+}
+
+#[test]
 fn automation_worker_runs_for_adaptive_power_plan_alone() {
     let mut settings = Settings::default();
     settings.general.theme_mode = AppThemeMode::Dark;
