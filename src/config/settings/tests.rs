@@ -335,40 +335,25 @@ fn appearance_indicators_are_enabled_by_default() {
 
 #[test]
 fn network_threshold_units_convert_to_canonical_bytes() {
-    assert_eq!(
-        NetworkThresholdUnit::Bytes.threshold_bytes_from_value(42.0),
-        42
-    );
-    assert_eq!(
-        NetworkThresholdUnit::Kilobytes.threshold_bytes_from_value(1.5),
-        1_500
-    );
-    assert_eq!(
-        NetworkThresholdUnit::Megabytes.threshold_bytes_from_value(1.25),
-        1_250_000
-    );
-    assert_eq!(
-        NetworkThresholdUnit::Gigabytes.threshold_bytes_from_value(1.25),
-        1_250_000_000
-    );
-    assert_eq!(
-        NetworkThresholdUnit::Megabytes.threshold_value_from_bytes(1_250_000),
-        1.25
-    );
-    assert_eq!(
-        NetworkThresholdUnit::Bytes.threshold_bytes_from_value(1.1),
-        2
-    );
+    use NetworkThresholdUnit::{Bytes, Gigabytes, Kilobytes, Megabytes};
+    let max = i64::MAX as u64;
     for unit in NetworkThresholdUnit::ALL {
-        let raw = 1_250_000_000;
-        assert_eq!(
-            unit.threshold_bytes_from_value(unit.threshold_value_from_bytes(raw)),
-            raw
-        );
-        for invalid in [f64::NAN, f64::INFINITY, -1.0, 0.0] {
-            assert_eq!(unit.threshold_bytes_from_value(invalid), 0);
+        for bytes in [0, 1, 123, 2007, 1_250_000_000, (1 << 53) + 1, max] {
+            assert_eq!(
+                unit.parse_threshold(&unit.format_threshold(bytes)),
+                Some(bytes)
+            );
+        }
+        for invalid in ["NaN", "inf", "-1", "", ".", "1e-", "1e1000"] {
+            assert_eq!(unit.parse_threshold(invalid), None);
         }
     }
+    assert_eq!(Bytes.parse_threshold("1.1"), Some(2));
+    assert_eq!(Kilobytes.parse_threshold("2.007"), Some(2007));
+    assert_eq!(Megabytes.parse_threshold("0.000123"), Some(123));
+    assert_eq!(Gigabytes.parse_threshold("1.25e-2"), Some(12_500_000));
+    assert_eq!(Gigabytes.parse_threshold("9223372036.854775807"), Some(max));
+    assert_eq!(Gigabytes.parse_threshold("9223372036.8547758071"), None);
 }
 
 #[test]

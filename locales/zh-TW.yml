@@ -791,7 +791,7 @@ app_suspension:
   network_detection: "網路意圖偵測"
   network: "網路"
   network_suspension_delay: "網路暫停延遲"
-  invalid_network_threshold: "請為每個應用程式暫停的網路門檻輸入 0 或正數。"
+  invalid_network_threshold: "應用程式暫停的網路門檻必須介於 0 到 9,223,372,036,854,775,807 位元組。"
   suspendable_help: "只有此清單中的應用程式會在背景延遲後被暫停。"
   no_suspendable: "尚未設定自訂規則。"
   suspend: "暫停"

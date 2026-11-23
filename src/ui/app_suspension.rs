@@ -17,7 +17,12 @@ pub(super) struct Editor {
     pub(super) path: String,
     expanded: [bool; 3],
     delay_drafts: BTreeMap<Delay, String>,
-    threshold_drafts: Vec<[Option<String>; 2]>,
+    threshold_drafts: Vec<[Option<ThresholdDraft>; 2]>,
+}
+
+struct ThresholdDraft {
+    text: String,
+    bytes: Option<u64>,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum Delay {
@@ -102,7 +107,7 @@ impl Editor {
             .iter()
             .flatten()
             .flatten()
-            .any(|value| parse_threshold(value).is_none())
+            .any(|draft| draft.bytes.is_none())
     }
 
     pub(super) fn update(
@@ -194,19 +199,18 @@ impl Editor {
                             r.network_download_threshold_bytes,
                         )
                     };
-                    if let Some(bytes) = parse_threshold(&value)
-                        .map(|threshold| unit.threshold_bytes_from_value(threshold))
-                        .filter(|&bytes| bytes != current)
-                    {
-                        let rule = &mut settings.app_suspension.suspendable_apps[i];
-                        if upload {
-                            rule.network_upload_threshold_bytes = bytes;
-                        } else {
-                            rule.network_download_threshold_bytes = bytes;
-                        }
+                    let bytes = unit.parse_threshold(&value);
+                    if let Some(bytes) = bytes.filter(|&bytes| bytes != current) {
+                        set_threshold_bytes(
+                            &mut settings.app_suspension.suspendable_apps[i],
+                            upload,
+                            bytes,
+                        );
                     }
-                    self.threshold_drafts.resize(rule_count, [None, None]);
-                    self.threshold_drafts[i][usize::from(upload)] = Some(value);
+                    self.threshold_drafts
+                        .resize_with(rule_count, || [None, None]);
+                    self.threshold_drafts[i][usize::from(upload)] =
+                        Some(ThresholdDraft { text: value, bytes });
                 }
             }
             Message::Unit(i, upload, v) => {
@@ -225,8 +229,13 @@ impl Editor {
                         }
                         if let Some(row) = self.threshold_drafts.get_mut(i) {
                             let draft = &mut row[usize::from(upload)];
-                            if draft.as_deref().and_then(parse_threshold).is_some() {
+                            if draft.as_ref().is_some_and(|draft| draft.bytes.is_some()) {
                                 *draft = None;
+                            } else if let Some(draft) = draft {
+                                draft.bytes = v.parse_threshold(&draft.text);
+                                if let Some(bytes) = draft.bytes {
+                                    set_threshold_bytes(rule, upload, bytes);
+                                }
                             }
                         }
                     }
@@ -384,15 +393,16 @@ impl Editor {
                     r.network_upload_threshold_unit,
                 ),
             ] {
-                let draft = self
-                    .threshold_drafts
-                    .get(i)
-                    .and_then(|row| row[usize::from(upload)].as_deref());
+                let draft = self.threshold_drafts.get(i).and_then(|row| {
+                    row[usize::from(upload)]
+                        .as_ref()
+                        .map(|draft| draft.text.as_str())
+                });
                 let formatted;
                 let value = if let Some(draft) = draft {
                     draft
                 } else {
-                    formatted = unit.threshold_value_from_bytes(bytes).to_string();
+                    formatted = unit.format_threshold(bytes);
                     &formatted
                 };
                 controls.push(
@@ -478,9 +488,12 @@ impl Editor {
     }
 }
 
-fn parse_threshold(value: &str) -> Option<f64> {
-    let value: f64 = value.parse().ok()?;
-    (value.is_finite() && value >= 0.0).then_some(value)
+fn set_threshold_bytes(rule: &mut AppSuspensionRule, upload: bool, bytes: u64) {
+    if upload {
+        rule.network_upload_threshold_bytes = bytes;
+    } else {
+        rule.network_download_threshold_bytes = bytes;
+    }
 }
 
 fn live_suspension_settings(
@@ -678,7 +691,8 @@ mod tests {
             editor.update(&mut settings, &status, &[], message);
         }
         assert!(editor.has_invalid_thresholds());
-        assert_eq!(editor.threshold_drafts[0], [Some(String::new()), None]);
+        assert_eq!(editor.threshold_drafts[0][0].as_ref().unwrap().text, "");
+        assert!(editor.threshold_drafts[0][1].is_none());
         assert_eq!(
             settings.app_suspension.suspendable_apps[0].network_upload_threshold_bytes,
             1500
@@ -688,17 +702,22 @@ mod tests {
             1
         );
 
-        editor.update(
-            &mut settings,
-            &status,
-            &[],
-            Message::Threshold(0, false, "0".into()),
-        );
-        assert!(!editor.has_invalid_thresholds());
-        assert_eq!(
-            settings.app_suspension.suspendable_apps[0].network_download_threshold_bytes,
-            0
-        );
+        for (message, invalid, expected_bytes) in [
+            (Message::Threshold(0, false, "100000000000".into()), true, 1),
+            (
+                Message::Unit(0, false, NetworkThresholdUnit::Bytes),
+                false,
+                100_000_000_000,
+            ),
+            (Message::Threshold(0, false, "0".into()), false, 0),
+        ] {
+            editor.update(&mut settings, &status, &[], message);
+            assert_eq!(editor.has_invalid_thresholds(), invalid);
+            assert_eq!(
+                settings.app_suspension.suspendable_apps[0].network_download_threshold_bytes,
+                expected_bytes
+            );
+        }
     }
 
     #[test]

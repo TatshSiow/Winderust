@@ -2271,34 +2271,85 @@ impl NetworkThresholdUnit {
         }
     }
 
-    pub fn threshold_value_from_bytes(self, bytes: u64) -> f64 {
-        let bytes = bytes as f64;
+    const fn threshold_scale(self) -> u64 {
         match self {
-            Self::Bytes => bytes,
-            Self::Kilobytes => bytes / 1_000.0,
-            Self::Megabytes => bytes / 1_000_000.0,
-            Self::Gigabytes => bytes / 1_000_000_000.0,
+            Self::Bytes => 1,
+            Self::Kilobytes => 1_000,
+            Self::Megabytes => 1_000_000,
+            Self::Gigabytes => 1_000_000_000,
         }
     }
 
-    pub fn threshold_bytes_from_value(self, value: f64) -> u64 {
-        if !value.is_finite() || value <= 0.0 {
-            return 0;
+    pub(crate) fn format_threshold(self, bytes: u64) -> String {
+        let scale = self.threshold_scale();
+        let whole = bytes / scale;
+        let fraction = bytes % scale;
+        if fraction == 0 {
+            return whole.to_string();
         }
+        let width = scale.ilog10() as usize;
+        let fraction = format!("{fraction:0width$}");
+        format!("{whole}.{}", fraction.trim_end_matches('0'))
+    }
 
-        let bytes = match self {
-            Self::Bytes => value,
-            Self::Kilobytes => value * 1_000.0,
-            Self::Megabytes => value * 1_000_000.0,
-            Self::Gigabytes => value * 1_000_000_000.0,
+    pub(crate) fn parse_threshold(self, value: &str) -> Option<u64> {
+        let negative = value.starts_with('-');
+        let value = value.strip_prefix(['+', '-']).unwrap_or(value);
+        let (mantissa, exponent) = match value.split_once(['e', 'E']) {
+            Some((mantissa, exponent)) => (mantissa, threshold_exponent(exponent)?),
+            None => (value, 0),
         };
-
-        if bytes >= u64::MAX as f64 {
-            u64::MAX
-        } else {
-            bytes.ceil() as u64
+        let (whole, fraction) = mantissa.split_once('.').unwrap_or((mantissa, ""));
+        let digits = whole.bytes().chain(fraction.bytes());
+        let len = whole.len() + fraction.len();
+        if len == 0 || !digits.clone().all(|digit| digit.is_ascii_digit()) {
+            return None;
         }
+        let leading_zeros = digits.clone().take_while(|&digit| digit == b'0').count();
+        if leading_zeros == len {
+            return Some(0);
+        }
+        if negative {
+            return None;
+        }
+
+        // Shift by the unit's decimal scale, then round any fractional byte up.
+        let point = (whole.len() as i64 - leading_zeros as i64)
+            .saturating_add(exponent)
+            .saturating_add(i64::from(self.threshold_scale().ilog10()));
+        if point <= 0 {
+            return Some(1);
+        }
+        if point > 19 {
+            return None;
+        }
+
+        let mut digits = digits.skip(leading_zeros);
+        let bytes = digits
+            .by_ref()
+            .chain(std::iter::repeat(b'0'))
+            .take(point as usize)
+            .try_fold(0_i64, |bytes, digit| {
+                bytes.checked_mul(10)?.checked_add(i64::from(digit - b'0'))
+            })?;
+        bytes
+            .checked_add(i64::from(digits.any(|digit| digit != b'0')))
+            .map(|bytes| bytes as u64)
     }
+}
+
+fn threshold_exponent(value: &str) -> Option<i64> {
+    let digits = value.strip_prefix(['+', '-']).unwrap_or(value);
+    if digits.is_empty() || !digits.bytes().all(|digit| digit.is_ascii_digit()) {
+        return None;
+    }
+    Some(value.parse().unwrap_or_else(|_| {
+        if value.starts_with('-') {
+            i64::MIN
+        } else {
+            i64::MAX
+        }
+    }))
 }
 
 impl Default for AppSuspensionSettings {

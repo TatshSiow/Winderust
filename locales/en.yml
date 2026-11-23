@@ -789,7 +789,7 @@ app_suspension:
   network_detection: "Network intent detection"
   network: "Network"
   network_suspension_delay: "Network suspension delay"
-  invalid_network_threshold: "Enter 0 or a positive number for each App Suspension network threshold."
+  invalid_network_threshold: "Enter an App Suspension network threshold from 0 to 9,223,372,036,854,775,807 bytes."
   suspendable_help: "Only apps in this list can be suspended after the background delay."
   no_suspendable: "No custom rules are configured."
   suspend: "Suspend"

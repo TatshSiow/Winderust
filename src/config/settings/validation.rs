@@ -169,6 +169,15 @@ impl AppSuspensionSettings {
                 ));
             }
         }
+        if self.suspendable_apps.iter().any(|rule| {
+            rule.network_download_threshold_bytes
+                .max(rule.network_upload_threshold_bytes)
+                > i64::MAX as u64
+        }) {
+            return Err(
+                "App Suspension network thresholds must fit in a signed 64-bit byte count.".into(),
+            );
+        }
         Ok(())
     }
 }
