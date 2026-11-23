@@ -22,8 +22,9 @@ use crate::{
     features::priority_control::PriorityProcessTier,
     foreground::{
         contains_process_name, is_foreground_process, process_executable_path, process_failure_key,
-        process_list::unicode_case_match, process_session_id, same_executable_path,
-        ProtectedProcesses, EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS,
+        process_list::{catalog_process_executable_path, unicode_case_match},
+        process_session_id, same_executable_path, ProtectedProcesses,
+        EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS,
     },
     rules::{
         execution_failure_suppression_threshold, ExecutionFailureTracker, ExecutionSuppression,
@@ -223,13 +224,19 @@ impl CpuAllocationManager {
             }
         };
 
+        let foreground_executable_path = foreground_process_id
+            .filter(|_| needs_foreground)
+            .and_then(|id| catalog_process_executable_path(&processes, id));
+        if needs_foreground && foreground_executable_path.is_none() {
+            return self.paused_snapshot(
+                coordinator,
+                owner,
+                "foreground app is unknown",
+                None,
+                action_log,
+            );
+        }
         let scanned_processes = processes.len();
-        let foreground_executable_path = foreground_process_id.and_then(|id| {
-            processes
-                .iter()
-                .find(|process| process.id == id)
-                .and_then(process_executable_path)
-        });
         let visible_processes = ProtectedProcesses::capture(
             processes.as_ref(),
             false,
@@ -1194,7 +1201,8 @@ fn cpu_allocation_observation_requirements(rules: &[CpuAllocationRule]) -> (bool
         .iter()
         .filter(|rule| cpu_allocation_rule_is_active(rule))
     {
-        needs_foreground |= rule.focus_selection != rule.visible_window_selection;
+        needs_foreground |= rule.focus_selection != rule.visible_window_selection
+            || rule.focus_selection != rule.background_selection;
         needs_visible_windows |= rule.visible_window_selection != rule.background_selection;
     }
     (needs_foreground, needs_visible_windows)
@@ -1215,6 +1223,7 @@ fn cpu_allocation_rule_selection(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::foreground::ProcessInfo;
 
     #[test]
     fn zoning_declines_unknown_multigroup_and_unrepresentable_domains() {
@@ -1351,7 +1360,7 @@ mod tests {
         for (focus, visible, background, expected) in [
             (1, 1, 1, (false, false)),
             (2, 1, 1, (true, false)),
-            (1, 1, 2, (false, true)),
+            (1, 1, 2, (true, true)),
             (2, 1, 2, (true, true)),
         ] {
             let rule = CpuAllocationRule {
@@ -1362,6 +1371,70 @@ mod tests {
                 background_selection: crate::cpu_topology::test_selection(background),
             };
             assert_eq!(cpu_allocation_observation_requirements(&[rule]), expected);
+        }
+    }
+
+    #[test]
+    fn changed_foreground_identity_pauses_both_allocation_modes() {
+        let foreground_process = ProcessInfo {
+            id: std::process::id(),
+            creation_time: Some(0),
+            parent_id: None,
+            session_id: None,
+            user_name: None,
+            is_service_account: None,
+            is_critical: None,
+            can_set_information: false,
+            name: "test process".to_owned(),
+            image_path: None,
+        };
+        for (owner, mode, feature) in [
+            (
+                ControlOwner::CpuSetsSoft,
+                CpuAllocationMode::SoftCpuSets,
+                ActionLogFeature::CpuSetsSoft,
+            ),
+            (
+                ControlOwner::ProcessorAffinityHard,
+                CpuAllocationMode::HardAffinity,
+                ActionLogFeature::ProcessorAffinityHard,
+            ),
+        ] {
+            let mut observations =
+                CycleObservations::with_processes(vec![foreground_process.clone()]);
+            let mut manager = CpuAllocationManager::with_action_log_feature(feature);
+            let mut coordinator = CpuAllocationCoordinator::default();
+            let mut action_log = ActionLog::default();
+            let mut settings = CpuAllocationSettings {
+                enabled: true,
+                rules: vec![CpuAllocationRule {
+                    enabled: true,
+                    executable_path: r"C:\Apps\Worker\worker.exe".to_owned(),
+                    focus_selection: crate::cpu_topology::test_selection(1),
+                    visible_window_selection: crate::cpu_topology::test_selection(2),
+                    background_selection: crate::cpu_topology::test_selection(2),
+                }],
+            };
+            let mut update = |settings: &CpuAllocationSettings| {
+                manager.update(
+                    &mut coordinator,
+                    owner,
+                    settings,
+                    (mode, feature),
+                    true,
+                    true,
+                    Some(foreground_process.id),
+                    &mut observations,
+                    &mut action_log,
+                )
+            };
+
+            assert!(update(&settings).observation_paused);
+
+            settings.rules[0].focus_selection = settings.rules[0].background_selection.clone();
+            let independent = update(&settings);
+            assert!(!independent.observation_paused);
+            assert_eq!(independent.scanned_processes, 1);
         }
     }
 

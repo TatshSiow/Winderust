@@ -686,9 +686,9 @@ Window, or Background and select that tier's policy. Foreground
 resolution starts from the active window; visible-window detection keeps top-level windows that are
 visible, not minimized, and not DWM-cloaked. Both classifications include sibling processes with
 the same executable path. A fully covered window still qualifies because `IsWindowVisible` reports
-window style state rather than pixel occlusion. CPU allocation skips a foreground or visible-window
-observation when the adjacent tier masks are identical and the observation cannot change the
-selected mask.
+window style state rather than pixel occlusion. CPU allocation requires a verified foreground
+executable when the Focus selection differs from either Visible Window or Background. It requires
+a visible-window observation when the Visible Window and Background selections differ.
 
 Implementation paths:
 
@@ -700,7 +700,7 @@ Implementation paths:
   confirmed original-state eligibility, and whole-core/unallocated-Set validation.
   The automatic producer in `src/backend/automation/instance_balancing.rs` uses
   retained membership and owner-aware preflight; the feature module owns whole-core
-  planning and qualification. Configuration defaults off; the UI editor is pending.
+  planning and qualification. Configuration defaults off and is edited in `src/ui/instance_balancing.rs`.
 - `src/platform/windows/cpu_allocation.rs`: sole live affinity/CPU Set query and setter adapter,
   including packed `GetSystemCpuSetInformation` conversion and new-claim processor-group validation.
 - `src/platform/windows/cpu_allocation/topology.rs`: read-only `RelationAll` capture and
