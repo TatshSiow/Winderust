@@ -88,7 +88,7 @@ impl RuntimeCore {
         watcher_active: bool,
     ) -> InstanceLimitsSnapshot {
         if !instance_limits_required(settings) {
-            return self.instance_limits.snapshot(Instant::now());
+            return self.instance_limits.snapshot();
         }
         let mut counts = vec![
             CountObservation::Unavailable {
@@ -137,7 +137,6 @@ impl RuntimeCore {
                 Vec::new()
             }
         };
-        let snapshot = self.instance_limits.snapshot(Instant::now());
         for event in events {
             let index = match &event {
                 InstanceLimitsEvent::Excess(index)
@@ -145,8 +144,8 @@ impl RuntimeCore {
                 | InstanceLimitsEvent::Notify(index)
                 | InstanceLimitsEvent::Error(index, _) => *index,
             };
-            let rule = &snapshot.rules[index];
-            let count = match rule.count {
+            let rule = &settings.instance_limits.rules[index];
+            let count = match counts[index] {
                 CountObservation::Complete(count) => count,
                 CountObservation::Incomplete {
                     known_lower_bound, ..
@@ -210,7 +209,7 @@ impl RuntimeCore {
                 reason,
             );
         }
-        self.instance_limits.snapshot(Instant::now())
+        self.instance_limits.snapshot()
     }
 }
 

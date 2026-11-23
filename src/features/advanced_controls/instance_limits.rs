@@ -246,7 +246,7 @@ impl InstanceLimitsManager {
         Ok(())
     }
 
-    pub(crate) fn snapshot(&self, _now: Instant) -> InstanceLimitsSnapshot {
+    pub(crate) fn snapshot(&self) -> InstanceLimitsSnapshot {
         InstanceLimitsSnapshot {
             enabled: self.enabled,
             rules: self

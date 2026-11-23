@@ -68,7 +68,7 @@ fn stale_sample_gaps_restart_excess_and_recovery_qualification() {
 
     assert!(counts(&mut manager, 1, 8).is_empty());
     assert!(counts(&mut manager, 1, 12).is_empty());
-    let snapshot = manager.snapshot(now + Duration::from_secs(12));
+    let snapshot = manager.snapshot();
     assert!(snapshot.rules[0].incident);
     assert_eq!(snapshot.rules[0].notification, NotificationStatus::Accepted);
     assert_eq!(
@@ -96,7 +96,7 @@ fn reset_intents_clear_only_affected_rules_even_when_settings_revert() {
     );
     manager.reset_paths(&[settings.rules[0].executable_path.clone()]);
     manager.sync(&settings, true);
-    let snapshot = manager.snapshot(now);
+    let snapshot = manager.snapshot();
     assert!(!snapshot.rules[0].incident);
     assert!(snapshot.rules[0].sampled_at.is_none());
     assert!(snapshot.rules[1].incident);
@@ -148,7 +148,7 @@ fn lower_bound_excess_notifies_once_and_only_complete_samples_recover() {
         &[CountObservation::Complete(0)],
         now + Duration::from_secs(5),
     );
-    assert!(manager.snapshot(now).rules[0].incident);
+    assert!(manager.snapshot().rules[0].incident);
     assert_eq!(
         manager.observe(
             &[CountObservation::Complete(0)],
@@ -157,7 +157,7 @@ fn lower_bound_excess_notifies_once_and_only_complete_samples_recover() {
         vec![InstanceLimitsEvent::Recovered(0)]
     );
     assert_eq!(
-        manager.snapshot(now).rules[0].notification,
+        manager.snapshot().rules[0].notification,
         NotificationStatus::NotAttempted
     );
 }
@@ -180,7 +180,7 @@ fn gaps_break_continuity_preserve_incidents_and_notification_toggles_do_not_rear
     );
     manager.notification_result(0, Ok(())).unwrap();
     manager.invalidate("Suspended.");
-    assert!(manager.snapshot(now).rules[0].incident);
+    assert!(manager.snapshot().rules[0].incident);
     let mut settings = manager.settings.clone();
     settings.notify = false;
     manager.sync(&settings, true);
@@ -197,7 +197,7 @@ fn gaps_break_continuity_preserve_incidents_and_notification_toggles_do_not_rear
         )
         .is_empty());
     assert_eq!(
-        manager.snapshot(now).rules[0].notification,
+        manager.snapshot().rules[0].notification,
         NotificationStatus::Accepted
     );
 }
@@ -217,14 +217,14 @@ fn edits_reset_only_changed_rules_and_master_disable_clears_state() {
         .push(InstanceLimitsRule::new(r"C:\Apps\other.exe".into()));
     settings.rules.swap(0, 1);
     manager.sync(&settings, true);
-    assert!(manager.snapshot(now).rules[1].incident);
+    assert!(manager.snapshot().rules[1].incident);
     settings.rules[1].max_instances = 2;
     manager.sync(&settings, true);
-    assert!(!manager.snapshot(now).rules[1].incident);
+    assert!(!manager.snapshot().rules[1].incident);
     manager.sync(&settings, false);
-    assert!(!manager.snapshot(now).enabled);
+    assert!(!manager.snapshot().enabled);
     assert!(manager
-        .snapshot(now)
+        .snapshot()
         .rules
         .iter()
         .all(|rule| !rule.incident && rule.sampled_at.is_none()));
