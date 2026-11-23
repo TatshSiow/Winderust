@@ -979,6 +979,7 @@ impl Editor {
         &'a self,
         presets: &'a [AdvancedPowerPlanTuningPreset],
         plans: &[PowerPlan],
+        status: &PowerPlanStatus,
         mode: EffectivePowerMode,
     ) -> Element<'a, Message> {
         let target_plan = self.selected_plan(plans);
@@ -1007,17 +1008,22 @@ impl Editor {
         .spacing(super::widgets::CARD_GAP);
         if let Some(plan) = target_plan {
             if !plan.active {
-                body = body.push(text(
-                    t!(
-                        "processor_power.target_plan_inactive",
-                        plan = plans
-                            .iter()
-                            .find(|p| p.active)
-                            .map(power_plan_label)
-                            .unwrap_or_else(|| t!("processor_power.no_active_plan").to_string())
-                    )
-                    .to_string(),
-                ));
+                let active = plans
+                    .iter()
+                    .find(|p| p.active)
+                    .map(power_plan_label)
+                    .or_else(|| {
+                        (status.active_plan_read_error.is_none()
+                            && power_plan_control::managed_by_adaptive_processor_power(
+                                status, plans,
+                            ))
+                        .then(|| ADAPTIVE_PLAN_NAME.to_owned())
+                    });
+                let message = match active {
+                    Some(plan) => t!("processor_power.target_plan_inactive", plan = plan),
+                    None => t!("processor_power.active_plan_unavailable"),
+                };
+                body = body.push(text(message.into_owned()));
             } else if self.personality == Some(PowerPlanPersonality::Balanced)
                 && !matches!(
                     mode,

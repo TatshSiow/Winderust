@@ -503,6 +503,7 @@ processor_power:
   mode_mixed_reality: "混合實境"
   overlay_warning: "目前的 Windows 電源模式不是平衡，可能會覆寫這個平衡計畫的處理器值。測試時請使用平衡電源模式。"
   target_plan_inactive: "選取的計畫不是作用中計畫。目前作用中計畫：%{plan}。"
+  active_plan_unavailable: "目前無法確認作用中的電源計畫。"
   target_plan: "目標計畫"
   review_changes: "檢查電源計畫變更"
   no_changes: "所選計畫已使用這些值。"

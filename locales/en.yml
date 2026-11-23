@@ -501,6 +501,7 @@ processor_power:
   mode_mixed_reality: "Mixed reality"
   overlay_warning: "The active Windows power mode is not Balanced and can override these Balanced-plan processor values. Use Balanced power mode while testing."
   target_plan_inactive: "Selected plan is not active. Active plan: %{plan}."
+  active_plan_unavailable: "Active plan unavailable."
   target_plan: "Target plan"
   review_changes: "Review power plan changes"
   no_changes: "The selected plan already has these values."

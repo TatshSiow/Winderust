@@ -3671,6 +3671,7 @@ impl WinderustApp {
                 .view(
                     &self.settings.global().advanced_power_plan_tuning_presets,
                     &self.power_plans,
+                    &self.status.power_plan_status,
                     self.effective_power_mode
                         .as_ref()
                         .map_or(crate::power::EffectivePowerMode::Unknown, |monitor| {
