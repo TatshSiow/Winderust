@@ -68,8 +68,10 @@ Read the relevant section before changing feature policy, ownership, restoration
 - Immediately before launch commitment, re-enumerate membership outside the
   shared intake mutex, then reserve once under that mutex. Pending Stop commands,
   settings edits, suspend/session changes, shutdown, or watcher loss block the
-  reservation. Native calls run after unlocking. Later intents pause subsequent
-  retries; they cannot roll back a committed launch. Manual Stop/Stop Process Tree
+  reservation. Watcher loss pauses pending retries even if coverage returns
+  before the worker processes the loss. Native calls run after unlocking. Later
+  intents pause subsequent retries; they cannot roll back a committed launch.
+  Manual Stop/Stop Process Tree
   and Watchdog Terminate/Restart attempts pause affected rules before acting, even
   when the attempt fails. Confirmation of Stop Process Tree submits the captured
   roots for pausing before the fresh tree scan. Verified descendants are paused

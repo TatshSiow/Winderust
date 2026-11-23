@@ -219,7 +219,7 @@ fn sample_is_current(
         && state.windows_event_watcher_active == watcher_active
         && !state.pending_events.suspend_resume
         && !state.pending_events.session_changed
-        && !state.pending_events.windows_event_watcher_changed
+        && state.pending_events.windows_event_watcher_change.is_none()
         && !state.pending_instance_limits_resets.all
         && state.pending_instance_limits_resets.paths.is_empty()
 }
@@ -264,7 +264,10 @@ mod tests {
         assert!(!sample_is_current(&state, &expected, true));
         drop(state);
         let snapshot = automation_snapshot(&runtime.shared).unwrap();
-        assert!(snapshot.wake_events.windows_event_watcher_changed);
+        assert_eq!(
+            snapshot.wake_events.windows_event_watcher_change,
+            Some(WindowsEventWatcherChange::Lost)
+        );
         let mut state = lock_unpoisoned(&runtime.shared.state);
         assert!(sample_is_current(&state, &expected, true));
         state.stop_requested = true;

@@ -430,7 +430,7 @@ fn context_is_current(
             || !state.windows_event_watcher_active
             || state.pending_events.suspend_resume
             || state.pending_events.session_changed
-            || state.pending_events.windows_event_watcher_changed
+            || state.pending_events.windows_event_watcher_change.is_some()
             || state.pending_instance_balancing_resets.all
             || !state.pending_instance_balancing_resets.paths.is_empty()
         {

@@ -474,12 +474,18 @@ impl PendingSleepPreventionSettings {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WindowsEventWatcherChange {
+    Started,
+    Lost,
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct AutomationWakeEvents {
     settings_changed: bool,
     restore_previous_plan_disabled: bool,
     tray_visibility_changed: bool,
-    windows_event_watcher_changed: bool,
+    windows_event_watcher_change: Option<WindowsEventWatcherChange>,
     foreground_changed: bool,
     window_created: bool,
     power_changed: bool,
@@ -1235,12 +1241,19 @@ fn run_background_automation(
         );
         let instance_observation_context_changed = wake_events.suspend_resume
             || wake_events.session_changed
-            || wake_events.windows_event_watcher_changed;
+            || wake_events.windows_event_watcher_change.is_some();
         if instance_observation_context_changed {
             runner.instance_balancing.invalidate();
             runner
                 .instance_limits
                 .invalidate(&t!("instance_limits.waiting_context"));
+        }
+        if snapshot.windows_event_watcher_active
+            && wake_events.windows_event_watcher_change == Some(WindowsEventWatcherChange::Lost)
+        {
+            runner
+                .keep_running
+                .pause_all(PauseReason::UnsupportedContext);
         }
         if wake_events.suspend_resume {
             runner.keep_running.pause_all(PauseReason::Suspend);
@@ -1364,7 +1377,7 @@ fn run_background_automation(
         if settings_changed {
             scheduler.invalidate(SchedulerEvent::SettingsChanged, event_now);
         }
-        if wake_events.windows_event_watcher_changed {
+        if wake_events.windows_event_watcher_change.is_some() {
             scheduler.schedule_now(RefreshDomain::PowerPlanCheck, event_now);
             scheduler.schedule_now(RefreshDomain::SleepPrevention, event_now);
         }
@@ -2257,7 +2270,7 @@ fn reserve_keep_running_commit(
     let state = lock_unpoisoned(&shared.state);
     let current_intents_clear = expected_watcher_active
         && state.windows_event_watcher_active
-        && !state.pending_events.windows_event_watcher_changed
+        && state.pending_events.windows_event_watcher_change.is_none()
         && !state.stop_requested
         && state.settings.general.enabled
         && state.settings.keep_running.enabled
@@ -2435,7 +2448,10 @@ mod keep_running_intake_tests {
         let blockers: [fn(&mut AutomationWorkerState); 9] = [
             |state| state.stop_requested = true,
             |state| state.windows_event_watcher_active = false,
-            |state| state.pending_events.windows_event_watcher_changed = true,
+            |state| {
+                state.pending_events.windows_event_watcher_change =
+                    Some(WindowsEventWatcherChange::Lost)
+            },
             |state| state.pending_events.settings_changed = true,
             |state| {
                 let mut settings = (*state.settings).clone();

@@ -2872,7 +2872,7 @@ fn watchdog_actions_require_current_policy_and_no_shutdown_or_session_transition
     {
         let mut state = lock_unpoisoned(&shared.state);
         state.windows_event_watcher_active = false;
-        state.pending_events.windows_event_watcher_changed = true;
+        state.pending_events.windows_event_watcher_change = Some(WindowsEventWatcherChange::Lost);
         state.pending_events.settings_changed = true;
         state.pending_events.power_changed = true;
         let current = Arc::make_mut(&mut state.settings);

@@ -40,7 +40,12 @@ pub(super) fn set_windows_event_watcher_active(shared: &SharedAutomationState, a
     }
 
     state.windows_event_watcher_active = active;
-    state.pending_events.windows_event_watcher_changed = true;
+    let change = &mut state.pending_events.windows_event_watcher_change;
+    if active {
+        change.get_or_insert(WindowsEventWatcherChange::Started);
+    } else {
+        *change = Some(WindowsEventWatcherChange::Lost);
+    }
     state.change_generation = state.change_generation.wrapping_add(1);
     shared.changed.notify_one();
 }

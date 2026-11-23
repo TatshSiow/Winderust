@@ -606,7 +606,7 @@ impl RuntimeCore {
         };
         if snapshot.sleep_prevention_settings.is_empty()
             || !snapshot.windows_event_watcher_active
-            || events.windows_event_watcher_changed
+            || events.windows_event_watcher_change.is_some()
             || events.power_changed
             || events.suspend_resume
             || events.session_changed
@@ -672,7 +672,7 @@ impl RuntimeCore {
         if source_changed
             || events.suspend_resume
             || events.session_changed
-            || events.windows_event_watcher_changed
+            || events.windows_event_watcher_change.is_some()
         {
             self.reset_adaptive_power_demand();
         }
@@ -681,7 +681,7 @@ impl RuntimeCore {
         }
         // A watcher transition invalidates the coverage behind accepted requests.
         if events.suspend_resume
-            || (events.windows_event_watcher_changed
+            || (events.windows_event_watcher_change.is_some()
                 && self.sleep_prevention_controller.requests().system)
         {
             self.sleep_prevention_manager.suppress_and_release(
