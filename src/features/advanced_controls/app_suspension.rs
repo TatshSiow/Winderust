@@ -25,9 +25,11 @@ use crate::audio_activity::active_audio_process_ids;
 
 use crate::config::AppSuspensionSettings;
 use crate::foreground::{
-    contains_process_name, process_executable_path,
-    process_list::{catalog_process_executable_path, normalize_path_slashes, unicode_case_match},
-    process_session_id, same_executable_path, same_process_name, ProcessActionTarget,
+    process_executable_path,
+    process_list::{
+        catalog_process_executable_path, executable_basename_may_match, normalize_path_slashes,
+    },
+    process_session_id, same_executable_path, ProcessActionTarget,
 };
 use crate::{
     action_log::{ActionLog, ActionLogFeature, ActionLogResult},
@@ -566,7 +568,6 @@ impl AppSuspensionManager {
         let mut target_processes = BTreeMap::new();
         let mut running_apps = BTreeSet::new();
         let mut unresolved = Vec::new();
-        let has_unicode_rule_name = enabled_process_names.iter().any(|name| !name.is_ascii());
 
         for process in processes.iter() {
             if process.id == 0
@@ -579,21 +580,20 @@ impl AppSuspensionManager {
                 continue;
             }
 
-            let name = process.name.trim();
-            let matches_name = contains_process_name(&enabled_process_names, name);
-            if !matches_name
-                || process.is_critical.is_none()
+            let name = process.name.as_str();
+            if !enabled_process_names
+                .iter()
+                .any(|basename| executable_basename_may_match(name, basename))
+            {
+                continue;
+            }
+            if process.is_critical.is_none()
                 || process.creation_time.is_none()
                 || process.session_id.is_none()
                 || process.is_service_account.is_none()
             {
-                if (allow_cross_session_process_control
-                    || process.session_id.is_none_or(|id| id == current_session_id))
-                    && (matches_name
-                        || ((has_unicode_rule_name || !name.is_ascii())
-                            && enabled_process_names
-                                .iter()
-                                .any(|configured| unicode_case_match(configured.trim(), name))))
+                if allow_cross_session_process_control
+                    || process.session_id.is_none_or(|id| id == current_session_id)
                 {
                     unresolved.push((name, process.image_path.as_deref()));
                 }
@@ -652,10 +652,8 @@ impl AppSuspensionManager {
                 path.file_name()
                     .and_then(|name| name.to_str())
                     .is_none_or(|name| {
-                        let name = name.trim();
                         !unresolved.iter().any(|(candidate, observed_path)| {
-                            (same_process_name(name, candidate)
-                                || unicode_case_match(name, candidate))
+                            executable_basename_may_match(candidate, name)
                                 && observed_path
                                     .is_none_or(|observed| same_executable_path(observed, path))
                         })
@@ -2474,6 +2472,48 @@ mod tests {
 
         assert!(contains_process(&suspendable_apps, r"c:/apps/CHAT.exe"));
         assert!(!contains_process(&suspendable_apps, r"C:\Other\chat.exe"));
+    }
+
+    #[test]
+    fn unicode_basename_case_does_not_hide_a_verified_image() {
+        let settings = AppSuspensionSettings {
+            enabled: true,
+            background_delay_seconds: 60,
+            suspendable_apps: vec![suspension_rule(r"C:\Apps\éditeur.exe")],
+            ..Default::default()
+        };
+        let foreground_id = u32::MAX;
+        let process = |id, name: &str, image_path: &str| crate::foreground::ProcessInfo {
+            id,
+            name: name.into(),
+            image_path: Some(image_path.into()),
+            creation_time: Some(u64::from(id) + 1),
+            parent_id: None,
+            session_id: Some(1),
+            user_name: None,
+            is_service_account: Some(false),
+            is_critical: Some(false),
+            can_set_information: true,
+        };
+        let mut observations = CycleObservations::with_processes(vec![
+            process(foreground_id, "foreground.exe", r"C:\Apps\foreground.exe"),
+            process(foreground_id - 1, "Éditeur.exe", r"C:\Apps\éditeur.exe"),
+        ]);
+        let mut log = ActionLog::default();
+        let status = AppSuspensionManager::default().update(
+            &mut SuspensionController::default(),
+            &settings,
+            true,
+            true,
+            Some(foreground_id),
+            &[],
+            &mut observations,
+            &mut log,
+        );
+        assert_eq!(status.running_apps.len(), 1);
+        assert_eq!(status.grace_apps, 1);
+        assert_eq!(status.suspended_processes, 0);
+        assert!(log.entries().is_empty());
     }
 
     #[test]
