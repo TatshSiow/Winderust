@@ -2979,11 +2979,20 @@ impl WinderustApp {
         }
     }
 
-    fn side_panel(&self, page: Page) -> Option<Element<'_, Message>> {
-        feature_info_sidebar(page, self.side_panel_tab, || self.side_panel_body(page))
+    fn side_panel(
+        &self,
+        read_power_source: impl FnOnce() -> Option<bool>,
+    ) -> Option<Element<'_, Message>> {
+        feature_info_sidebar(self.page, self.side_panel_tab, || {
+            self.side_panel_body(read_power_source)
+        })
     }
 
-    fn side_panel_body(&self, page: Page) -> Option<Element<'_, Message>> {
+    fn side_panel_body(
+        &self,
+        read_power_source: impl FnOnce() -> Option<bool>,
+    ) -> Option<Element<'_, Message>> {
+        let page = self.page;
         if page == Page::ProcessList {
             Some(self.processes.side_panel().map(Message::Processes))
         } else if page == Page::ActionLog {
@@ -3031,7 +3040,7 @@ impl WinderustApp {
                     .map(|m| Message::Allocation(cpu_allocation::Kind::Hard, m)),
             )
         } else {
-            let observed_plugged_in = crate::backend::power_source::is_plugged_in();
+            let observed_plugged_in = read_power_source();
             let settings = status_rail::saved_rail_settings(
                 &self.settings,
                 page,
@@ -3108,6 +3117,9 @@ impl WinderustApp {
     }
 
     fn view_content_at_width(&self, width: f32) -> Element<'_, Message> {
+        let observed_power_source = std::cell::OnceCell::new();
+        let read_power_source =
+            || *observed_power_source.get_or_init(crate::backend::power_source::is_plugged_in);
         let shield = |content| {
             if self.page == Page::ProcessList && self.processes.modal_open() {
                 super::modal::background(content)
@@ -3177,7 +3189,7 @@ impl WinderustApp {
         let side_panel_available = matches!(self.page, Page::ProcessList | Page::ActionLog)
             || navigation::page_feature_info_intro(self.page).is_some();
         let side_panel = (self.side_panel_open && side_panel_available)
-            .then(|| self.side_panel(self.page))
+            .then(|| self.side_panel(read_power_source))
             .flatten()
             .map(shield);
         const BREADCRUMB_TEXT_SIZE: u32 = design::typography::SUBTITLE;
@@ -3203,7 +3215,7 @@ impl WinderustApp {
             container(header.wrap().vertical_spacing(design::space::TIGHT)).width(Fill);
         let mut profile_controls = None;
         if self.page.supports_power_source_profiles() {
-            let plugged_in = crate::backend::power_source::is_plugged_in();
+            let plugged_in = read_power_source();
             let mut tabs = row![];
             for (profile, key, live) in [
                 (
@@ -3281,7 +3293,9 @@ impl WinderustApp {
             || widgets::settings_card(self.save_notice(settings_are_pending)).width(360);
         let content = container(super::motion::wrap(
             super::motion::wrap(
-                super::scrolling::repaint_group(self.page_view(settings_are_pending)),
+                super::scrolling::repaint_group(
+                    self.page_view(settings_are_pending, read_power_source),
+                ),
                 true,
                 super::motion::Effect::Content(self.power_source as u64),
             ),
@@ -3459,7 +3473,7 @@ impl WinderustApp {
                 .modal(
                     &self.candidates,
                     self.settings.global().general.enabled,
-                    self.cpu_limiter_rule_status(),
+                    self.cpu_limiter_rule_status(read_power_source),
                 )
                 .map(|modal| modal.map(Message::CpuLimiter)),
             Page::AdvancedPowerPlanTuning => self
@@ -3554,15 +3568,22 @@ impl WinderustApp {
             .spacing(design::space::MEDIUM)
     }
 
-    fn cpu_limiter_rule_status(&self) -> Option<&CpuLimiterSnapshot> {
+    fn cpu_limiter_rule_status(
+        &self,
+        read_power_source: impl FnOnce() -> Option<bool>,
+    ) -> Option<&CpuLimiterSnapshot> {
         let status = &self.status.feature_status.cpu_limiter;
         let selected_is_plugged_in = self.power_source == PowerSourceProfile::PluggedIn;
         (status.source == Some(self.power_source)
-            && crate::backend::power_source::is_plugged_in() == Some(selected_is_plugged_in))
+            && read_power_source() == Some(selected_is_plugged_in))
         .then_some(status)
     }
 
-    fn page_view(&self, settings_are_pending: bool) -> Element<'_, Message> {
+    fn page_view(
+        &self,
+        settings_are_pending: bool,
+        read_power_source: impl FnOnce() -> Option<bool>,
+    ) -> Element<'_, Message> {
         let general = &self.settings.global().general;
         let toggle = |label: &'static str, value, action: fn(bool) -> Message| {
             widgets::toggle_card(label, value, Some(action))
@@ -3579,7 +3600,7 @@ impl WinderustApp {
                 let status = &self.status.feature_status.sleep_prevention;
                 let selected_is_plugged_in = self.power_source == PowerSourceProfile::PluggedIn;
                 let status = (status.source == Some(self.power_source)
-                    && crate::backend::power_source::is_plugged_in()
+                    && read_power_source()
                         .is_none_or(|plugged_in| plugged_in == selected_is_plugged_in))
                 .then_some(status);
                 self.sleep_prevention
@@ -3593,6 +3614,7 @@ impl WinderustApp {
                     &self.status.feature_status.app_suspension,
                     &self.unavailable_candidates,
                     &self.candidates,
+                    read_power_source(),
                 )
                 .map(Message::Suspension),
             Page::Watchdog => self
@@ -3768,7 +3790,7 @@ impl WinderustApp {
                     &self.settings.cpu_limiter,
                     &self.candidates,
                     self.settings.global().general.enabled,
-                    self.cpu_limiter_rule_status(),
+                    self.cpu_limiter_rule_status(read_power_source),
                 )
                 .map(Message::CpuLimiter),
             Page::ProcessList => self

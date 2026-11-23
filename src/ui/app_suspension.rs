@@ -237,7 +237,16 @@ impl Editor {
                     let path = r.executable_path.trim_start();
                     let frozen = app_suspension::contains_process(&status.suspended_apps, path);
                     let blocked = app_suspension::contains_process(unavailable, path);
-                    if frozen || can_suspend(r, status, blocked, live_suspension_settings(settings))
+                    if frozen
+                        || can_suspend(
+                            r,
+                            status,
+                            blocked,
+                            live_suspension_settings(
+                                settings,
+                                crate::backend::power_source::is_plugged_in(),
+                            ),
+                        )
                     {
                         return Some((path.to_owned(), !frozen));
                     }
@@ -270,9 +279,10 @@ impl Editor {
         status: &AppSuspensionSnapshot,
         unavailable: &[String],
         candidates: &'a [super::app_picker::Candidate],
+        observed_plugged_in: Option<bool>,
     ) -> Element<'a, Message> {
         let s = &settings.app_suspension;
-        let live = live_suspension_settings(settings);
+        let live = live_suspension_settings(settings, observed_plugged_in);
         let mut body = column![
             super::widgets::heading(
                 t!("app_suspension.behavior").to_string(),
@@ -473,11 +483,11 @@ fn parse_threshold(value: &str) -> Option<f64> {
     (value.is_finite() && value >= 0.0).then_some(value)
 }
 
-fn live_suspension_settings(settings: &SettingsEditor) -> Option<&AppSuspensionSettings> {
-    let saved = super::status_rail::saved_runtime_settings(
-        settings,
-        crate::backend::power_source::is_plugged_in(),
-    );
+fn live_suspension_settings(
+    settings: &SettingsEditor,
+    observed_plugged_in: Option<bool>,
+) -> Option<&AppSuspensionSettings> {
+    let saved = super::status_rail::saved_runtime_settings(settings, observed_plugged_in);
     (saved.general.enabled && saved.app_suspension.enabled).then_some(&saved.app_suspension)
 }
 

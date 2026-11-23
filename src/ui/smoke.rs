@@ -1,5 +1,6 @@
 //! Opt-in native render check; compiled only with the render-smoke feature.
 use super::*;
+use crate::backend::power_source::is_plugged_in;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 static REQUESTED: AtomicBool = AtomicBool::new(false);
@@ -430,7 +431,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
         assert_eq!(app.side_panel_open, was_open);
         let _ = app.update(Message::CloseSidePanel);
         if !navigation::page_feature_info(page).is_empty() {
-            assert!(app.side_panel(page).is_some());
+            assert!(app.side_panel(is_plugged_in).is_some());
         }
         if matches!(extra, Some(5 | 70 | 71)) {
             assert!(SidePanelTab::for_page(page).contains(&SidePanelTab::Presets));
@@ -438,7 +439,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             let _ = app.update(Message::SidePanelTab(SidePanelTab::Presets));
             assert!(app.side_panel_open);
             assert_eq!(app.side_panel_tab, SidePanelTab::Presets);
-            assert!(app.side_panel(page).is_some());
+            assert!(app.side_panel(is_plugged_in).is_some());
         }
         if extra == Some(0) {
             let section = Page::SettingsHome;
@@ -727,7 +728,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             for &tab in SidePanelTab::for_page(page) {
                 let _ = app.update(Message::SidePanelTab(tab));
                 assert_eq!(app.side_panel_tab, tab);
-                assert!(app.side_panel(page).is_some());
+                assert!(app.side_panel(is_plugged_in).is_some());
             }
             let _ = app.update(Message::Page(page));
             assert_eq!(app.side_panel_tab, SidePanelTab::for_page(page)[0]);
@@ -761,7 +762,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             };
             let _ = app.update(Message::SidePanelTab(tab));
             assert_eq!(app.side_panel_tab, tab);
-            assert!(app.side_panel(page).is_some());
+            assert!(app.side_panel(is_plugged_in).is_some());
             let _ = app.update(Message::ToggleSidePanel);
             assert!(app.side_panel_open);
             app.settings = SettingsEditor::with_settings((*app.settings).clone());
