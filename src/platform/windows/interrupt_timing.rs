@@ -257,7 +257,10 @@ fn run_worker() -> Outcome {
         })
         .map_err(worker_error)?;
     let lease = LeaseGuard::try_acquire()?.ok_or(InterruptTimingError::InUse)?;
-    recover(&lease, None)?;
+    recover(&lease, None).map_err(|error| match error {
+        InterruptTimingError::AccessDenied => error,
+        _ => InterruptTimingError::Cleanup(format!("Previous capture cleanup failed: {error}")),
+    })?;
     lease.publish(identity)?;
     let outcome = worker::capture(&identity.name(), &cancelled);
     match &outcome {
