@@ -772,19 +772,12 @@ impl SelectionCatalog {
 
     fn toggled(&self, selection: &CpuSelection, id: ProcessorId) -> Option<CpuSelection> {
         let topology = self.topology.as_ref().ok()?;
+        self.kind.verify(selection, topology).ok()?;
         if !self
             .processors
             .iter()
             .any(|(candidate, _)| *candidate == id)
         {
-            return None;
-        }
-        if selection.processors().iter().any(|selected| {
-            !self
-                .processors
-                .iter()
-                .any(|(candidate, _)| candidate == selected)
-        }) {
             return None;
         }
         let mut processors = selection.processors().to_vec();
@@ -1213,13 +1206,19 @@ mod tests {
     #[test]
     fn same_members_on_changed_topology_require_explicit_review() {
         let saved = crate::cpu_topology::test_selection(3);
-        let catalog = SelectionCatalog::from_topology(Ok(changed_topology()), Kind::Hard);
-        assert!(catalog.error(&saved).is_some());
-        assert!(verify_selection_against(&saved, &catalog.topology, Kind::Hard).is_err());
-        let reviewed = catalog.reviewed(&saved).unwrap();
-        assert_eq!(saved.processors(), reviewed.processors());
-        assert_ne!(saved.topology(), reviewed.topology());
-        assert!(verify_selection_against(&reviewed, &catalog.topology, Kind::Hard).is_ok());
+        let first = saved.processors()[0];
+        for kind in [Kind::Soft, Kind::Hard] {
+            let catalog = SelectionCatalog::from_topology(Ok(changed_topology()), kind);
+            assert!(catalog.error(&saved).is_some());
+            assert!(catalog.toggled(&saved, first).is_none());
+            let reviewed = catalog.reviewed(&saved).unwrap();
+            assert_eq!(saved.processors(), reviewed.processors());
+            assert_ne!(saved.topology(), reviewed.topology());
+            assert!(catalog.error(&reviewed).is_none());
+            let toggled = catalog.toggled(&reviewed, first).unwrap();
+            assert_eq!(toggled.processors(), &saved.processors()[1..]);
+            assert_eq!(toggled.topology(), reviewed.topology());
+        }
         assert_eq!(saved, crate::cpu_topology::test_selection(3));
         assert!(
             SelectionCatalog::from_topology(Err("unavailable".into()), Kind::Hard)
