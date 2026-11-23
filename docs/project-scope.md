@@ -12,22 +12,25 @@ Process Lasso is a useful comparison point, not the target to clone. Prefer smal
 
 - Power Plan Control through By Focus, By Running App, By CPU Load, By
   Activity, and By Time.
+- Adaptive Processor Power with demand profiles and processor tuning presets.
 - Advanced Power Plan Tuning for core parking, processor performance and boost,
   and long- and short-running thread scheduling policies.
 - Adaptive Engine CPU scheduling for foreground responsiveness and background restraint.
 - Background Efficiency, implemented with Windows EcoQoS at the operating-system
   boundary.
-- CPU Control through CPU Limiter, CPU Sets (Soft), and Processor Affinity (Hard).
+- CPU Control through CPU Limiter, CPU Sets (Soft), Processor Affinity (Hard),
+  and Cache Domain presets.
 - App Suspension for explicit opt-in apps.
 - Priority Control through Process Priority, Thread Priority, Dynamic Priority
   Boost, I/O Priority, GPU Priority, and Memory Priority.
 - Memory Trim.
 - Watchdog with sustained CPU and memory thresholds and Windows notifications by
-  path or process instance. Combined by path rules with an exact executable path
-  can opt in to Terminate or Restart.
+  path or process instance. Terminate and Restart require Combined by path, an
+  exact executable path, and an At or above threshold.
 - Timer Resolution rules tied to foreground apps.
 - Sleep Prevention rules for running apps, with separate display requests.
-- Keep Running rules for opt-in automatic relaunch after a manually started app exits.
+- Keep Running rules for opt-in relaunch after the last eligible instance of a
+  manually started app exits.
 - Instance Limits for sampled per-path process counts and excess notifications in
   the current user's Windows session; it does not prevent or stop app instances.
 - Instance Balancing for separate whole-core CPU Sets (Soft) preferences across
