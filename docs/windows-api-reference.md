@@ -882,6 +882,13 @@ User-facing behavior:
 - A failed thaw retains the frozen job for bounded retry. If thaw succeeds but recovery-journal cleanup fails, status changes to thawed while a cleanup-only record remains; later App Suspension passes reconcile both pending states without another user action. The controller does not falsely report the process as frozen or reapply the OS mutation during cleanup retry, and the feature prunes its exact record once compensation removes controller ownership.
 - Taskbar and tray shell clicks temporarily thaw suspended top-level window owner processes only, so minimized and tray-hidden apps can restore without thawing unrelated non-window worker processes. Repeated shell clicks do not keep extending the thaw window.
 
+Network wake in `src/features/advanced_controls/app_suspension/wake_activity.rs`
+enumerates IPv4 and IPv6 TCP connections with their owning PIDs. It compares the
+per-connection payload byte counters between successive observations.
+[TCP tables](https://learn.microsoft.com/en-us/windows/win32/api/iphlpapi/nf-iphlpapi-getextendedtcptable),
+[IPv4 counters](https://learn.microsoft.com/en-us/windows/win32/api/iphlpapi/nf-iphlpapi-getpertcpconnectionestats),
+[IPv6 counters](https://learn.microsoft.com/en-us/windows/win32/api/iphlpapi/nf-iphlpapi-getpertcp6connectionestats)
+
 ### Job Object Freeze APIs
 
 | API | Used for | Reference |

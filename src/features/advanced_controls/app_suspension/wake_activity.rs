@@ -61,8 +61,6 @@ pub(super) fn network_connection_snapshot(
 
     add_tcp_connections(&mut connections_by_pid, &target_ids, AF_INET as u32)?;
     add_tcp_connections(&mut connections_by_pid, &target_ids, AF_INET6 as u32)?;
-    add_udp_connections(&mut connections_by_pid, &target_ids, AF_INET as u32)?;
-    add_udp_connections(&mut connections_by_pid, &target_ids, AF_INET6 as u32)?;
 
     let mut snapshot = target_processes
         .values()
@@ -350,49 +348,6 @@ pub(super) fn is_network_intent_tcp_state(state: u32) -> bool {
         state,
         TCP_STATE_SYN_SENT | TCP_STATE_SYN_RECEIVED | TCP_STATE_ESTABLISHED
     )
-}
-
-pub(super) fn add_udp_connections(
-    connections_by_pid: &mut NetworkConnectionsByProcess,
-    target_ids: &BTreeSet<u32>,
-    address_family: u32,
-) -> Result<(), String> {
-    let buffer = query_ip_helper_table(|table, size| {
-        // SAFETY: query_ip_helper_table passes either a null sizing buffer or writable storage of
-        // the byte count in size; address_family and table class are documented constants.
-        unsafe { GetExtendedUdpTable(table, size, 0, address_family, UDP_TABLE_OWNER_PID, 0) }
-    })?;
-
-    if address_family == AF_INET as u32 {
-        for row in table_rows::<MIB_UDPROW_OWNER_PID>(&buffer) {
-            if target_ids.contains(&row.dwOwningPid) {
-                connections_by_pid
-                    .entry(row.dwOwningPid)
-                    .or_default()
-                    .insert(
-                        format!("udp4:{}:{}", row.dwLocalAddr, row.dwLocalPort),
-                        None,
-                    );
-            }
-        }
-    } else {
-        for row in table_rows::<MIB_UDP6ROW_OWNER_PID>(&buffer) {
-            if target_ids.contains(&row.dwOwningPid) {
-                connections_by_pid
-                    .entry(row.dwOwningPid)
-                    .or_default()
-                    .insert(
-                        format!(
-                            "udp6:{:?}:{}:{}",
-                            row.ucLocalAddr, row.dwLocalScopeId, row.dwLocalPort
-                        ),
-                        None,
-                    );
-            }
-        }
-    }
-
-    Ok(())
 }
 
 pub(super) fn query_ip_helper_table(

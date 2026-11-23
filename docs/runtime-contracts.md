@@ -538,6 +538,8 @@ Read the relevant section before changing feature policy, ownership, restoration
   waits for a successful observation before automatically suspending apps that
   use that detector. Affected rules show **Wake detection unavailable** when
   ready to suspend. Manual Suspend and existing resume signals remain available.
+- Network wake compares payload byte counts across two samples of the same
+  IPv4 or IPv6 TCP connection.
 - App Suspension releases a rule-owned freeze when its stored executable path
   no longer matches an enabled rule, even if focus, session, or process
   observations are unavailable. Process List freezes have separate ownership.

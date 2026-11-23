@@ -12,12 +12,10 @@ use std::{
 use windows_sys::Win32::{
     Foundation::{ERROR_INSUFFICIENT_BUFFER, NO_ERROR},
     NetworkManagement::IpHelper::{
-        GetExtendedTcpTable, GetExtendedUdpTable, GetPerTcp6ConnectionEStats,
-        GetPerTcpConnectionEStats, SetPerTcp6ConnectionEStats, SetPerTcpConnectionEStats,
-        TCP_ESTATS_DATA_ROD_v0, TCP_ESTATS_DATA_RW_v0, TcpConnectionEstatsData, MIB_TCP6ROW,
-        MIB_TCP6ROW_OWNER_PID, MIB_TCPROW_LH, MIB_TCPROW_LH_0, MIB_TCPROW_OWNER_PID,
-        MIB_UDP6ROW_OWNER_PID, MIB_UDPROW_OWNER_PID, TCP_TABLE_OWNER_PID_CONNECTIONS,
-        UDP_TABLE_OWNER_PID,
+        GetExtendedTcpTable, GetPerTcp6ConnectionEStats, GetPerTcpConnectionEStats,
+        SetPerTcp6ConnectionEStats, SetPerTcpConnectionEStats, TCP_ESTATS_DATA_ROD_v0,
+        TCP_ESTATS_DATA_RW_v0, TcpConnectionEstatsData, MIB_TCP6ROW, MIB_TCP6ROW_OWNER_PID,
+        MIB_TCPROW_LH, MIB_TCPROW_LH_0, MIB_TCPROW_OWNER_PID, TCP_TABLE_OWNER_PID_CONNECTIONS,
     },
     Networking::WinSock::{AF_INET, AF_INET6, IN6_ADDR, IN6_ADDR_0},
     System::Threading::GetCurrentProcessId,
@@ -3344,7 +3342,11 @@ mod tests {
 
     #[test]
     fn network_process_names_with_activity_ignores_steady_sockets() {
-        let previous = network_snapshot("chrome.exe", &[("tcp4:1:2:3:4", None)]);
+        let counters = NetworkActivityCounters {
+            bytes_in: 120,
+            bytes_out: 20,
+        };
+        let previous = network_snapshot("chrome.exe", &[("tcp4:1:2:3:4", Some(counters))]);
         let current = previous.clone();
         let thresholds = network_thresholds("chrome.exe", 1, 0);
 
@@ -3370,7 +3372,11 @@ mod tests {
     #[test]
     fn network_process_names_with_activity_uses_first_seen_process_as_baseline() {
         let previous = BTreeMap::new();
-        let current = network_snapshot("chrome.exe", &[("tcp4:1:2:3:4", None)]);
+        let counters = NetworkActivityCounters {
+            bytes_in: 120,
+            bytes_out: 20,
+        };
+        let current = network_snapshot("chrome.exe", &[("tcp4:1:2:3:4", Some(counters))]);
         let thresholds = network_thresholds("chrome.exe", 1, 0);
 
         let names = network_process_names_with_activity(&previous, &current, &thresholds);
@@ -3381,7 +3387,11 @@ mod tests {
     #[test]
     fn network_process_names_with_activity_ignores_first_socket_after_baseline() {
         let previous = network_snapshot("chrome.exe", &[]);
-        let current = network_snapshot("chrome.exe", &[("tcp4:1:2:3:4", None)]);
+        let counters = NetworkActivityCounters {
+            bytes_in: 120,
+            bytes_out: 20,
+        };
+        let current = network_snapshot("chrome.exe", &[("tcp4:1:2:3:4", Some(counters))]);
         let thresholds = network_thresholds("chrome.exe", 1, 0);
 
         let names = network_process_names_with_activity(&previous, &current, &thresholds);
@@ -3650,34 +3660,18 @@ mod tests {
     }
 
     #[test]
-    fn table_rows_reads_owner_pid_rows() {
+    fn table_rows_reads_tcp_owner_pid_rows() {
+        // Each IPv4 TCP row contains state, local endpoint, remote endpoint, and owner PID.
         let rows = [
-            MIB_UDPROW_OWNER_PID {
-                dwLocalAddr: 1,
-                dwLocalPort: 2,
-                dwOwningPid: 42,
-            },
-            MIB_UDPROW_OWNER_PID {
-                dwLocalAddr: 3,
-                dwLocalPort: 4,
-                dwOwningPid: 99,
-            },
+            [TCP_STATE_ESTABLISHED, 1, 2, 3, 4, 42],
+            [TCP_STATE_ESTABLISHED, 5, 6, 7, 8, 99],
         ];
-        let mut buffer = Vec::new();
-        buffer.extend_from_slice(&(rows.len() as u32).to_ne_bytes());
-        for row in rows {
-            // SAFETY: row is a fully initialized plain Win32 record and the slice is limited to
-            // its exact in-memory size for immediate copying.
-            let bytes = unsafe {
-                std::slice::from_raw_parts(
-                    &row as *const MIB_UDPROW_OWNER_PID as *const u8,
-                    mem::size_of::<MIB_UDPROW_OWNER_PID>(),
-                )
-            };
-            buffer.extend_from_slice(bytes);
+        let mut buffer = (rows.len() as u32).to_ne_bytes().to_vec();
+        for field in rows.into_iter().flatten() {
+            buffer.extend_from_slice(&field.to_ne_bytes());
         }
 
-        let parsed = table_rows::<MIB_UDPROW_OWNER_PID>(&buffer);
+        let parsed = table_rows::<MIB_TCPROW_OWNER_PID>(&buffer);
 
         assert_eq!(parsed.len(), 2);
         assert_eq!(parsed[0].dwOwningPid, 42);
@@ -3685,10 +3679,10 @@ mod tests {
     }
 
     #[test]
-    fn table_rows_rejects_overflowing_row_count() {
-        let buffer = usize::MAX.to_ne_bytes();
+    fn table_rows_rejects_row_count_beyond_the_buffer() {
+        let buffer = u32::MAX.to_ne_bytes();
 
-        assert!(table_rows::<MIB_UDPROW_OWNER_PID>(&buffer).is_empty());
+        assert!(table_rows::<MIB_TCPROW_OWNER_PID>(&buffer).is_empty());
     }
 
     #[test]
