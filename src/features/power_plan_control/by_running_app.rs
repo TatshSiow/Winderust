@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeSet, HashMap},
     path::{Path, PathBuf},
 };
 
@@ -214,9 +214,15 @@ fn preview_rule_processes(
     processes: &[ProcessInfo],
     current_process_id: u32,
     current_session_id: u32,
-    mut session_id: impl FnMut(u32) -> Option<u32>,
-    mut executable_path: impl FnMut(&ProcessInfo) -> Option<PathBuf>,
+    session_id: impl FnMut(u32) -> Option<u32>,
+    executable_path: impl FnMut(&ProcessInfo) -> Option<PathBuf>,
 ) -> ByRunningAppPreview {
+    let mut matcher = ProcessMatcher::new(
+        current_process_id,
+        current_session_id,
+        session_id,
+        executable_path,
+    );
     let mut winner = None;
     let rules = settings
         .rules
@@ -229,15 +235,12 @@ fn preview_rule_processes(
             let mut rows: Vec<_> = processes
                 .iter()
                 .filter_map(|process| {
-                    classify_process(
-                        process,
-                        configured_path,
-                        file_name,
-                        current_process_id,
-                        current_session_id,
-                        &mut session_id,
-                        &mut executable_path,
-                    )
+                    let (kind, path) = matcher.classify(process, configured_path, file_name)?;
+                    Some(ByRunningAppPreviewRow {
+                        pid: process.id,
+                        path: path.map(Path::to_path_buf),
+                        kind,
+                    })
                 })
                 .collect();
             if winner.is_none()
@@ -260,9 +263,15 @@ fn matching_rule_process<'a>(
     processes: &'a [ProcessInfo],
     current_process_id: u32,
     current_session_id: u32,
-    mut session_id: impl FnMut(u32) -> Option<u32>,
-    mut executable_path: impl FnMut(&ProcessInfo) -> Option<PathBuf>,
+    session_id: impl FnMut(u32) -> Option<u32>,
+    executable_path: impl FnMut(&ProcessInfo) -> Option<PathBuf>,
 ) -> (Option<ActiveByRunningApp<&'a str>>, bool) {
+    let mut matcher = ProcessMatcher::new(
+        current_process_id,
+        current_session_id,
+        session_id,
+        executable_path,
+    );
     let mut known = true;
     for (rule_index, rule) in settings.rules.iter().enumerate() {
         let Some(target_guid) = rule.configured_plan() else {
@@ -273,16 +282,9 @@ fn matching_rule_process<'a>(
         };
 
         for process in processes {
-            let kind = classify_process(
-                process,
-                configured_path,
-                file_name,
-                current_process_id,
-                current_session_id,
-                &mut session_id,
-                &mut executable_path,
-            )
-            .map(|row| row.kind);
+            let kind = matcher
+                .classify(process, configured_path, file_name)
+                .map(|(kind, _)| kind);
             match kind {
                 Some(ByRunningAppPreviewMatch::Match) => {
                     return (
@@ -318,48 +320,100 @@ fn rule_executable(rule: &ByRunningAppRule) -> Option<(&str, Option<&Path>)> {
     }
 }
 
-fn classify_process(
-    process: &ProcessInfo,
-    configured_path: Option<&Path>,
-    file_name: &str,
+struct ProcessMatcher<SessionId, ExecutablePath> {
     current_process_id: u32,
     current_session_id: u32,
-    session_id: &mut impl FnMut(u32) -> Option<u32>,
-    executable_path: &mut impl FnMut(&ProcessInfo) -> Option<PathBuf>,
-) -> Option<ByRunningAppPreviewRow> {
-    if process.id == 0 || process.id == current_process_id || process.is_critical == Some(true) {
-        return None;
-    }
-    let name_matches = if configured_path.is_some() {
-        executable_basename_may_match(&process.name, file_name)
-    } else {
-        same_executable_name(&process.name, file_name)
-    };
-    if !name_matches || is_builtin_excluded(&process.name) {
-        return None;
-    }
-    let session = session_id(process.id);
-    if session.is_some_and(|session| session != current_session_id) {
-        return None;
-    }
-    let path = executable_path(process);
-    let kind = match (path.as_deref(), configured_path) {
-        (Some(path), Some(expected_path)) if !same_executable_path(path, expected_path) => {
-            ByRunningAppPreviewMatch::SameNameDifferentPath
+    session_id: SessionId,
+    executable_path: ExecutablePath,
+    candidates: HashMap<(u32, Option<u64>), CandidateObservation>,
+}
+
+enum CandidateObservation {
+    OutsideSession,
+    Eligible {
+        session_known: bool,
+        path: Option<PathBuf>,
+    },
+}
+
+impl<SessionId, ExecutablePath> ProcessMatcher<SessionId, ExecutablePath>
+where
+    SessionId: FnMut(u32) -> Option<u32>,
+    ExecutablePath: FnMut(&ProcessInfo) -> Option<PathBuf>,
+{
+    fn new(
+        current_process_id: u32,
+        current_session_id: u32,
+        session_id: SessionId,
+        executable_path: ExecutablePath,
+    ) -> Self {
+        Self {
+            current_process_id,
+            current_session_id,
+            session_id,
+            executable_path,
+            candidates: HashMap::new(),
         }
-        (Some(path), None) if !path_has_executable_name(path, file_name) => {
-            ByRunningAppPreviewMatch::Unavailable
+    }
+
+    fn classify(
+        &mut self,
+        process: &ProcessInfo,
+        configured_path: Option<&Path>,
+        file_name: &str,
+    ) -> Option<(ByRunningAppPreviewMatch, Option<&Path>)> {
+        if process.id == 0
+            || process.id == self.current_process_id
+            || process.is_critical == Some(true)
+        {
+            return None;
         }
-        (Some(_), _) if process.is_critical == Some(false) && session.is_some() => {
-            ByRunningAppPreviewMatch::Match
+        let name_matches = if configured_path.is_some() {
+            executable_basename_may_match(&process.name, file_name)
+        } else {
+            same_executable_name(&process.name, file_name)
+        };
+        if !name_matches || is_builtin_excluded(&process.name) {
+            return None;
         }
-        _ => ByRunningAppPreviewMatch::Unavailable,
-    };
-    Some(ByRunningAppPreviewRow {
-        pid: process.id,
-        path,
-        kind,
-    })
+        let observation = self
+            .candidates
+            .entry((process.id, process.creation_time))
+            .or_insert_with(|| {
+                let session = (self.session_id)(process.id);
+                if session.is_some_and(|session| session != self.current_session_id) {
+                    CandidateObservation::OutsideSession
+                } else {
+                    CandidateObservation::Eligible {
+                        session_known: session.is_some(),
+                        path: process
+                            .creation_time
+                            .and_then(|_| (self.executable_path)(process)),
+                    }
+                }
+            });
+        let CandidateObservation::Eligible {
+            session_known,
+            path,
+        } = observation
+        else {
+            return None;
+        };
+        let path = path.as_deref();
+        let kind = match (path, configured_path) {
+            (Some(path), Some(expected_path)) if !same_executable_path(path, expected_path) => {
+                ByRunningAppPreviewMatch::SameNameDifferentPath
+            }
+            (Some(path), None) if !path_has_executable_name(path, file_name) => {
+                ByRunningAppPreviewMatch::Unavailable
+            }
+            (Some(_), _) if process.is_critical == Some(false) && *session_known => {
+                ByRunningAppPreviewMatch::Match
+            }
+            _ => ByRunningAppPreviewMatch::Unavailable,
+        };
+        Some((kind, path))
+    }
 }
 
 pub(crate) fn rule_name(rule: &ByRunningAppRule) -> &str {
@@ -754,15 +808,41 @@ mod tests {
             observed_process(7, "game.exe", Some(r"C:\Games\other.exe"), Some(false)),
             observed_process(9, "game.exe", Some(second_path), Some(false)),
             observed_process(8, "game.exe", Some(first_path), Some(false)),
+            observed_process(10, "other.exe", Some(first_path), Some(false)),
         ];
-        let session_id = |pid| match pid {
-            3 => None,
-            4 => Some(2),
-            _ => Some(1),
+        let mut queried_sessions = Vec::new();
+        let mut session_id = |pid| {
+            queried_sessions.push(pid);
+            match pid {
+                3 => None,
+                4 => Some(2),
+                _ => Some(1),
+            }
         };
-        let preview = preview_rule_processes(&settings, &processes, 1, 1, session_id, |process| {
+        let mut queried_paths = Vec::new();
+        let mut executable_path = |process: &ProcessInfo| {
+            queried_paths.push(process.id);
             process.image_path.clone()
-        });
+        };
+        let preview = preview_rule_processes(
+            &settings,
+            &processes,
+            1,
+            1,
+            &mut session_id,
+            &mut executable_path,
+        );
+        let (selected, known) =
+            matching_rule_process(&settings, &processes, 1, 1, session_id, executable_path);
+        let selected = selected.unwrap();
+
+        let expected_sessions = [2, 3, 4, 5, 6, 7, 9, 8];
+        let expected_paths = [2, 3, 5, 6, 7, 9, 8];
+        assert_eq!(
+            queried_sessions,
+            [expected_sessions, expected_sessions].concat()
+        );
+        assert_eq!(queried_paths, [expected_paths, expected_paths].concat());
         let name_matches: Vec<_> = preview.rules[1]
             .iter()
             .map(|row| (row.pid, row.kind))
@@ -780,16 +860,42 @@ mod tests {
             ]
         );
 
-        let (selected, known) =
-            matching_rule_process(&settings, &processes, 1, 1, session_id, |process| {
-                process.image_path.clone()
-            });
-        let selected = selected.unwrap();
         assert_eq!(preview.winner, Some(1));
         assert_eq!(preview.winner, Some(selected.rule_index));
         assert_eq!(selected.target_guid, "name-plan");
         assert_eq!(selected.process_id, 9);
         assert!(known);
+    }
+
+    #[test]
+    fn process_matcher_keeps_observations_with_their_process_generation() {
+        use ByRunningAppPreviewMatch::{Match, Unavailable};
+
+        let game_path = r"C:\Games\game.exe";
+        let mut process = observed_process(42, "game.exe", Some(game_path), Some(false));
+        let mut matcher = ProcessMatcher::new(
+            1,
+            1,
+            |_| Some(1),
+            |process: &ProcessInfo| process.image_path.clone(),
+        );
+
+        process.creation_time = None;
+        assert_eq!(
+            matcher.classify(&process, None, "game.exe"),
+            Some((Unavailable, None))
+        );
+        process.creation_time = Some(1);
+        assert_eq!(
+            matcher.classify(&process, None, "game.exe"),
+            Some((Match, Some(Path::new(game_path))))
+        );
+        process.creation_time = Some(2);
+        process.image_path = None;
+        assert_eq!(
+            matcher.classify(&process, None, "game.exe"),
+            Some((Unavailable, None))
+        );
     }
 
     #[test]
