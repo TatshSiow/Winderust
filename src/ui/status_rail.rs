@@ -1,6 +1,6 @@
 use super::action_log::{action_log_process_label, action_log_time_label};
-use super::design;
 use super::widgets::{action_button, power_plan_label};
+use super::{design, power_plan_control};
 use crate::ui::scrolling::scrollable;
 use crate::{
     action_log::{ActionLogEntry, ActionLogFeature},
@@ -28,6 +28,45 @@ enum FeatureRunState {
     Inactive,
     Unknown,
 }
+
+impl FeatureRunState {
+    fn status_keys(self) -> (&'static str, &'static str, &'static str) {
+        match self {
+            Self::Running => (
+                "common.running",
+                "sidebar_status.running_help",
+                "common.applied",
+            ),
+            Self::Waiting => (
+                "common.waiting",
+                "sidebar_status.waiting_help",
+                "common.waiting",
+            ),
+            Self::Paused => (
+                "sidebar_status.paused",
+                "sidebar_status.paused_help",
+                "common.waiting",
+            ),
+            Self::Blocked => (
+                "sidebar_status.blocked",
+                "sidebar_status.blocked_help",
+                "common.error",
+            ),
+            Self::Error => ("common.error", "sidebar_status.error_help", "common.error"),
+            Self::Inactive => (
+                "common.inactive",
+                "sidebar_status.inactive_help",
+                "common.inactive",
+            ),
+            Self::Unknown => (
+                "common.unknown",
+                "sidebar_status.unknown_help",
+                "common.unknown",
+            ),
+        }
+    }
+}
+
 struct FeatureStatusSummary<'a> {
     scanned: Option<usize>,
     adjusted: Option<usize>,
@@ -48,10 +87,13 @@ pub(super) fn view<'a>(
     plans: &[PowerPlan],
 ) -> Option<Element<'a, Message>> {
     if page == Page::PowerPlanControl {
-        return Some(super::power_plan_control::status_view(
+        return Some(power_plan_control::status_view(
             &runtime.power_plan_status,
             plans,
         ));
+    }
+    if page == Page::AdaptiveProcessorPower {
+        return Some(adaptive_processor_power_view(settings, runtime, plans));
     }
     let power_feature = match page {
         Page::ByActivity => Some(ActionLogFeature::ByActivity),
@@ -92,53 +134,23 @@ pub(super) fn view<'a>(
         &summary,
         instance_limits.as_ref().map(|limits| limits.state),
     );
-    let (state_label, detail, color) = match state {
-        FeatureRunState::Running if page == Page::SleepPrevention => (
+    let (state_label, detail, color) = match (page, state) {
+        (Page::SleepPrevention, FeatureRunState::Running) => (
             "sleep_prevention.request_accepted",
             "sleep_prevention.request_status_help",
             "common.applied",
         ),
-        FeatureRunState::Paused if page == Page::SleepPrevention => (
+        (Page::SleepPrevention, FeatureRunState::Paused) => (
             "sleep_prevention.requests_paused",
             "sleep_prevention.paused_help",
             "common.waiting",
         ),
-        FeatureRunState::Running if page == Page::InstanceLimits => (
+        (Page::InstanceLimits, FeatureRunState::Running) => (
             "instance_limits.monitoring",
             "instance_limits.intro_1",
             "common.applied",
         ),
-        FeatureRunState::Running => (
-            "common.running",
-            "sidebar_status.running_help",
-            "common.applied",
-        ),
-        FeatureRunState::Waiting => (
-            "common.waiting",
-            "sidebar_status.waiting_help",
-            "common.waiting",
-        ),
-        FeatureRunState::Paused => (
-            "sidebar_status.paused",
-            "sidebar_status.paused_help",
-            "common.waiting",
-        ),
-        FeatureRunState::Blocked => (
-            "sidebar_status.blocked",
-            "sidebar_status.blocked_help",
-            "common.error",
-        ),
-        FeatureRunState::Error => ("common.error", "sidebar_status.error_help", "common.error"),
-        FeatureRunState::Inactive => (
-            "common.inactive",
-            "sidebar_status.inactive_help",
-            "common.inactive",
-        ),
-        FeatureRunState::Unknown => (
-            "common.unknown",
-            "sidebar_status.unknown_help",
-            "common.unknown",
-        ),
+        _ => state.status_keys(),
     };
     let detail = if page == Page::InstanceBalancing
         && available
@@ -161,28 +173,11 @@ pub(super) fn view<'a>(
             }
             _ => None,
         }
-    } else if page == Page::AdaptiveEngine
-        && state == FeatureRunState::Running
-        && settings.adaptive_engine_process.has_enabled_policies()
-        && runtime
-            .feature_status
-            .adaptive_engine_process
-            .observation_paused
-    {
-        Some(t!("adaptive_engine_process.power_running_process_paused").into_owned())
     } else {
         None
     }
     .unwrap_or_else(|| t!(detail).into_owned());
-    let mut body = column![
-        container(text(t!(state_label).to_string()).size(design::typography::SECONDARY))
-            .padding([4, 8])
-            .style(move |theme| super::widgets::rule_status_chip(theme, color)),
-        text(detail)
-            .size(design::typography::CAPTION)
-            .style(text::secondary)
-    ]
-    .spacing(design::space::MEDIUM);
+    let mut body = status_body(state_label, detail, color);
     let actions = runtime
         .action_log_summaries
         .get(&summary.action_log_feature);
@@ -195,7 +190,7 @@ pub(super) fn view<'a>(
         body = body.push(detail_row("sidebar_status.current_error", error.to_owned()));
     }
     if power_feature.is_some() {
-        let plan = super::power_plan_control::current_plan_guid(&runtime.power_plan_status, plans)
+        let plan = power_plan_control::current_plan_guid(&runtime.power_plan_status, plans)
             .map(|guid| {
                 plans
                     .iter()
@@ -443,15 +438,89 @@ pub(super) fn view<'a>(
             action_button(t!("admin_rights.relaunch").to_string()).on_press(Message::RelaunchAdmin),
         );
     }
-    let content: Element<'a, Message> = scrollable(
+    Some(scroll_status(body))
+}
+
+fn adaptive_processor_power_view(
+    settings: &Settings,
+    runtime: &RuntimeStatusSnapshot,
+    plans: &[PowerPlan],
+) -> Element<'static, Message> {
+    let enabled =
+        settings.general.enabled && settings.adaptive_engine.adaptive_processor_power_enabled;
+    let (state, error) = adaptive_processor_power_state(enabled, runtime, plans);
+    let (label, mut detail, color) = state.status_keys();
+    if state == FeatureRunState::Waiting && !enabled {
+        detail = "adaptive_processor_power.releasing_plan";
+    }
+    let mut body = status_body(label, t!(detail).into_owned(), color);
+    if let Some(error) = error {
+        body = body.push(detail_row("sidebar_status.current_error", error.to_owned()));
+    }
+    let plan = power_plan_control::current_plan_name(&runtime.power_plan_status, plans);
+    body = body.push(section(
+        "common.current_power_plan",
+        column![text(plan).wrapping(text::Wrapping::WordOrGlyph)],
+    ));
+    scroll_status(body)
+}
+
+fn adaptive_processor_power_state<'a>(
+    enabled: bool,
+    runtime: &'a RuntimeStatusSnapshot,
+    plans: &[PowerPlan],
+) -> (FeatureRunState, Option<&'a str>) {
+    let plan = &runtime.power_plan_status;
+    let managed = power_plan_control::managed_by_adaptive_processor_power(plan, plans);
+    let error = plan.adaptive_processor_power_error.as_deref().or(plan
+        .active_plan_read_error
+        .as_deref()
+        .filter(|_| enabled || managed));
+    let state = if error.is_some() {
+        FeatureRunState::Error
+    } else if !enabled {
+        if managed {
+            FeatureRunState::Waiting
+        } else {
+            FeatureRunState::Inactive
+        }
+    } else if managed {
+        FeatureRunState::Running
+    } else if runtime.generation == 0
+        || power_plan_control::current_plan_guid(plan, plans).is_none()
+    {
+        FeatureRunState::Unknown
+    } else {
+        FeatureRunState::Waiting
+    };
+    (state, error)
+}
+
+fn status_body(
+    label: &str,
+    detail: String,
+    color: &'static str,
+) -> iced::widget::Column<'static, Message> {
+    column![
+        container(text(t!(label).to_string()).size(design::typography::SECONDARY))
+            .padding([4, 8])
+            .style(move |theme| super::widgets::rule_status_chip(theme, color)),
+        text(detail)
+            .size(design::typography::CAPTION)
+            .style(text::secondary)
+    ]
+    .spacing(design::space::MEDIUM)
+}
+
+fn scroll_status(body: iced::widget::Column<'_, Message>) -> Element<'_, Message> {
+    scrollable(
         container(body.width(Fill))
             .width(Fill)
             .padding([0, design::space::MEDIUM as u16]),
     )
     .width(Fill)
     .height(Fill)
-    .into();
-    Some(content)
+    .into()
 }
 pub(super) fn saved_runtime_settings(
     editor: &crate::application::SettingsEditor,
@@ -589,7 +658,7 @@ fn sidebar_state(
         if plan.current_guid.is_none() {
             return FeatureRunState::Unknown;
         }
-        if plan.owner == Some(PowerPlanOwner::AdaptiveEngine)
+        if plan.owner == Some(PowerPlanOwner::AdaptiveProcessorPower)
             || matches!(
                 plan.decision_state,
                 Some(DecisionState::PausedWhilePluggedIn | DecisionState::WaitingForObservation)
@@ -731,13 +800,7 @@ fn sidebar_state(
             _ => {}
         }
     }
-    let adaptive_power_applied = page == Page::AdaptiveEngine
-        && plan.owner == Some(PowerPlanOwner::AdaptiveEngine)
-        && plan_applied;
-    if page == Page::AdaptiveEngine
-        && !adaptive_power_applied
-        && settings.adaptive_engine_process.has_enabled_policies()
-    {
+    if page == Page::AdaptiveEngine && settings.adaptive_engine_process.has_enabled_policies() {
         let adaptive = &features.adaptive_engine_process;
         if adaptive.observation_paused {
             return FeatureRunState::Paused;
@@ -748,8 +811,7 @@ fn sidebar_state(
     }
     let active = (page == Page::Watchdog && summary.scanned.is_some_and(|count| count > 0))
         || summary.adjusted.is_some_and(|count| count > 0)
-        || (page == Page::TimerResolution && features.timer_resolution.requested_100ns.is_some())
-        || adaptive_power_applied;
+        || (page == Page::TimerResolution && features.timer_resolution.requested_100ns.is_some());
     if active {
         FeatureRunState::Running
     } else if summary.protected_or_denied.is_some_and(|count| count > 0) {
@@ -1043,6 +1105,58 @@ fn feature_status_summary(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn adaptive_processor_power_status_tracks_confirmed_ownership_and_release() {
+        use crate::control::power_plan::PowerPlanOwner;
+
+        let mut runtime = RuntimeStatusSnapshot::default();
+        assert_eq!(
+            adaptive_processor_power_state(true, &runtime, &[]),
+            (FeatureRunState::Unknown, None)
+        );
+
+        runtime.generation = 1;
+        std::sync::Arc::make_mut(&mut runtime.power_plan_status).current_guid =
+            Some("balanced".to_owned());
+        assert_eq!(
+            adaptive_processor_power_state(true, &runtime, &[]),
+            (FeatureRunState::Waiting, None)
+        );
+
+        let plan = std::sync::Arc::make_mut(&mut runtime.power_plan_status);
+        plan.current_guid = Some("adaptive".to_owned());
+        plan.target_guid = Some("adaptive".to_owned());
+        plan.owner = Some(PowerPlanOwner::AdaptiveProcessorPower);
+        assert_eq!(
+            adaptive_processor_power_state(true, &runtime, &[]),
+            (FeatureRunState::Running, None)
+        );
+        assert_eq!(
+            adaptive_processor_power_state(false, &runtime, &[]),
+            (FeatureRunState::Waiting, None)
+        );
+
+        let plan = std::sync::Arc::make_mut(&mut runtime.power_plan_status);
+        plan.adaptive_processor_power_error = Some("Could not restore previous plan".to_owned());
+        assert_eq!(
+            adaptive_processor_power_state(false, &runtime, &[]),
+            (
+                FeatureRunState::Error,
+                Some("Could not restore previous plan")
+            )
+        );
+
+        let plan = std::sync::Arc::make_mut(&mut runtime.power_plan_status);
+        plan.current_guid = Some("balanced".to_owned());
+        plan.target_guid = None;
+        plan.owner = None;
+        plan.adaptive_processor_power_error = None;
+        assert_eq!(
+            adaptive_processor_power_state(false, &runtime, &[]),
+            (FeatureRunState::Inactive, None)
+        );
+    }
 
     #[test]
     fn instance_limits_status_ignores_reports_for_superseded_rules() {
@@ -1401,7 +1515,7 @@ mod tests {
         let plan = std::sync::Arc::make_mut(&mut runtime.power_plan_status);
         plan.apply_failed = false;
         plan.restoring_previous = false;
-        plan.owner = Some(PowerPlanOwner::AdaptiveEngine);
+        plan.owner = Some(PowerPlanOwner::AdaptiveProcessorPower);
         assert_eq!(state(&runtime), FeatureRunState::Paused);
     }
 

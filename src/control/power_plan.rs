@@ -19,12 +19,12 @@ const SWITCH_RETRY_INTERVAL: Duration = Duration::from_secs(15);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PowerPlanOwner {
     OrdinaryAutomation,
-    AdaptiveEngine,
+    AdaptiveProcessorPower,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub(crate) enum ManualPowerPlanError {
-    #[error("The active power plan is managed by Adaptive Engine.")]
+    #[error("The active power plan is managed by Adaptive Processor Power.")]
     ManagedByAdaptive,
     #[error("The managed Adaptive plan cannot be selected manually.")]
     ManagedTarget,
@@ -53,6 +53,7 @@ impl From<ActivePlanCheckError> for String {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct PowerPlanStatus {
     pub(crate) active_plan_read_error: Option<String>,
+    pub(crate) adaptive_processor_power_error: Option<String>,
     pub(crate) apply_failed: bool,
     pub(crate) restoring_previous: bool,
     pub(crate) rule_index: Option<usize>,
@@ -361,7 +362,7 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
             .as_ref()
             .and_then(|decision| decision.power_plan_guid.clone());
         let owner = if adaptive_target.is_some() {
-            Some(PowerPlanOwner::AdaptiveEngine)
+            Some(PowerPlanOwner::AdaptiveProcessorPower)
         } else if decision_target.is_some() {
             Some(PowerPlanOwner::OrdinaryAutomation)
         } else {
@@ -370,9 +371,10 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
         let ordinary_decision = self
             .last_decision
             .as_ref()
-            .filter(|_| owner != Some(PowerPlanOwner::AdaptiveEngine));
+            .filter(|_| owner != Some(PowerPlanOwner::AdaptiveProcessorPower));
         PowerPlanStatus {
             active_plan_read_error: self.active_plan_read_error.clone(),
+            adaptive_processor_power_error: None,
             apply_failed: decision_target.as_deref().is_some_and(|guid| {
                 self.switch_failures
                     .has_key_failure(&switch_failure_key(guid))
@@ -1728,7 +1730,7 @@ mod tests {
         assert!(controller.switch_manual("manual", now).is_err());
         assert_eq!(
             controller.status().owner,
-            Some(PowerPlanOwner::AdaptiveEngine)
+            Some(PowerPlanOwner::AdaptiveProcessorPower)
         );
         controller.platform.active = "original".to_owned();
         assert!(!controller
@@ -2654,7 +2656,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             controller.status().owner,
-            Some(PowerPlanOwner::AdaptiveEngine)
+            Some(PowerPlanOwner::AdaptiveProcessorPower)
         );
         assert!(controller.status().competing_modes.is_empty());
 
@@ -3252,6 +3254,38 @@ mod tests {
     }
 
     #[test]
+    fn failed_adaptive_release_keeps_manual_switch_locked_until_verified_restore() {
+        let now = Instant::now();
+        let mut controller = PowerPlanController::with_platform(FakePlatform::new("original"));
+        controller
+            .reconcile_ordinary(decision(Some("ordinary")), now)
+            .unwrap();
+        controller
+            .reconcile_adaptive(adaptive_request(), now)
+            .unwrap();
+        controller.platform.failure = Some(FailurePoint::Begin);
+
+        assert!(controller.release_adaptive(now).is_err());
+        assert_eq!(controller.platform.active, "adaptive-1");
+        assert_eq!(
+            controller.status().owner,
+            Some(PowerPlanOwner::AdaptiveProcessorPower)
+        );
+        assert!(matches!(
+            controller.switch_manual("manual", now),
+            Err(ManualPowerPlanError::ManagedByAdaptive)
+        ));
+
+        controller.platform.failure = None;
+        controller.release_adaptive(now).unwrap();
+        assert_eq!(controller.platform.active, "ordinary");
+        assert!(!controller.platform.plans.contains("adaptive-1"));
+        assert!(controller.switch_manual("manual", now).unwrap());
+        controller.shutdown(now).unwrap();
+        assert_eq!(controller.platform.active, "manual");
+    }
+
+    #[test]
     fn manual_switch_keeps_the_verified_plan_after_a_deferred_commit() {
         for retry in [false, true] {
             let now = Instant::now();
@@ -3812,7 +3846,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             controller.status().owner,
-            Some(PowerPlanOwner::AdaptiveEngine)
+            Some(PowerPlanOwner::AdaptiveProcessorPower)
         );
 
         controller

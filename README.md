@@ -36,7 +36,7 @@
 
 - Adaptive Engine - automatic background process restraint.
 - Background Efficiency - set power-efficiency preferences by app and window state.
-- Power Plan Control - switch plans by app focus, running apps, CPU load, activity, or time, with optional restoration when no rule selects a plan.
+- Power Plan Control - switch plans by app focus, running apps, CPU load, activity, or time. Adjust processor power with Adaptive Processor Power and optionally restore the previous plan when rules yield.
 - Advanced Power Plan Tuning - adjust processor performance, core parking, boost, and thread scheduling policies.
 - CPU Control - CPU Limiter, CPU Sets (Soft), Processor Affinity (Hard), and Cache Domain presets.
 - Priority Control - Process Priority, Thread Priority, Dynamic Priority Boost, I/O Priority, GPU Priority, and Memory Priority.

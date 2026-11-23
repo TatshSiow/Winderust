@@ -1,4 +1,5 @@
 use std::{
+    cmp::Reverse,
     collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
     time::{Duration, Instant},
@@ -8,24 +9,18 @@ use windows_sys::Win32::System::Threading::GetCurrentProcessId;
 
 use crate::{
     action_log::{ActionLog, ActionLogFeature, ActionLogResult},
-    config::{
-        AdaptiveEngineProcessSettings, BackgroundProcessorSelection, CpuAllocationMethod,
-        ProcessPrioritySetting,
-    },
+    audio_activity::active_audio_process_ids,
+    config::{AdaptiveEngineProcessSettings, BackgroundProcessorSelection, CpuAllocationMethod},
     control::{
         cpu_allocation::CpuAllocationCoordinator,
-        memory_priority::MemoryPriorityController,
         priority_efficiency::{
-            PowerThrottlingClaim, PriorityClassClaim, PriorityClassPreservation,
-            PriorityClassValue, PriorityEfficiencyController, PriorityEfficiencyReleaseSummary,
+            PriorityClassClaim, PriorityClassPreservation, PriorityClassValue,
+            PriorityEfficiencyController, PriorityEfficiencyReleaseSummary,
             ProcessPropertyApplyOutcome,
         },
-        process::{ControlOwner, ProcessControlError, ProcessControlTarget, ProcessTargetKey},
+        process::{ControlOwner, ProcessControlError, ProcessControlTarget},
     },
-    cpu::{
-        process_cpu_demand_percent, process_cpu_usage_percent, PerProcessorUsageMonitor,
-        ProcessCpuSample,
-    },
+    cpu::{process_cpu_demand_percent, PerProcessorUsageMonitor, ProcessCpuSample},
     cpu_allocation::{
         self, CpuAllocationManager, CpuAllocationMode, CpuAllocationTarget, LogicalProcessorInfo,
         LogicalProcessorKind,
@@ -33,18 +28,20 @@ use crate::{
     cpu_topology::{CpuSelection, CpuTopology},
     foreground::{
         contains_process_name, process_count_label, process_executable_path, process_failure_key,
-        process_session_id, same_executable_path, same_process_name, ProcessInfo,
-        ProtectedProcesses, EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS,
+        process_session_id, same_executable_path, ProcessInfo, ProtectedProcesses,
+        EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS,
     },
-    memory_priority::{MemoryPriorityManager, MemoryPriorityTarget},
     rules::{execution_failure_suppression_threshold, ExecutionFailureTracker},
-    runtime::observations::CycleObservations,
+    runtime::observations::{
+        foreground_process_group_ids, CycleObservations, ForegroundCpuHistory,
+    },
 };
 
 mod policy;
 mod process_control;
 
 pub use policy::is_builtin_excluded;
+pub(crate) use policy::{focus_and_launch_profile_eligible, focus_process_priority_eligible};
 
 use policy::*;
 use process_control::*;
@@ -54,9 +51,7 @@ const ADAPTIVE_ENGINE_PROCESS_RECOVERY_BAND_PERCENT: u8 = 5;
 const ADAPTIVE_ENGINE_PROCESS_CORE_REBALANCE_INTERVAL_SECS: u64 = 3;
 const ADAPTIVE_ENGINE_PROCESS_CORE_REBALANCE_IMPROVEMENT_PERCENT: f32 = 15.0;
 const ADAPTIVE_ENGINE_PROCESS_SELECTION_STICKINESS_TENTHS: u32 = 50;
-const BACKGROUND_APPLY_SUMMARY_LOG_INTERVAL: Duration = Duration::from_secs(30);
 const FOCUS_AND_LAUNCH_PROFILE_WINDOW: Duration = Duration::from_secs(8);
-const FOCUS_PROCESS_PRIORITY_STABILITY_DELAY_MS: u64 = 750;
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AdaptiveEngineProcessSnapshot {
     pub zones: DynamicResourceZoneSnapshot,
@@ -64,7 +59,6 @@ pub struct AdaptiveEngineProcessSnapshot {
     pub observation_paused: bool,
     pub scanned_processes: usize,
     pub adjusted_processes: usize,
-    pub focus_and_launch_profile_active: bool,
     pub cpu_pressure_restraint_active: bool,
     pub foreground_cpu_usage_tenths: Option<u16>,
     pub skipped_processes: usize,
@@ -96,56 +90,33 @@ pub struct DynamicResourceZoneSnapshot {
 }
 
 pub struct AdaptiveEngineProcessManager {
-    focus_process_candidate: Option<FocusProcessCandidate>,
-    foreground_cpu_sample: Option<(Vec<(u32, u64)>, ProcessCpuSample)>,
+    foreground_cpu_history: ForegroundCpuHistory,
     tracked_processes: BTreeMap<u32, AdaptiveEngineProcessProcess>,
     background_pressure_active: bool,
     cpu_allocation: CpuAllocationManager,
-    background_memory_priority: MemoryPriorityManager,
     cpu_allocation_selection: [Option<CpuAllocationSelection>; 2],
     allocation_settings: Option<AdaptiveEngineProcessSettings>,
     allocation_foreground: Vec<(u32, u64)>,
-    last_background_apply_summary_logged_at: Option<Instant>,
     per_processor_usage: PerProcessorUsageMonitor,
     failure_suppression: ExecutionFailureTracker,
-    unavailable_power_targets: BTreeSet<ProcessTargetKey>,
 }
 
 impl Default for AdaptiveEngineProcessManager {
     fn default() -> Self {
         Self {
-            focus_process_candidate: None,
-            foreground_cpu_sample: None,
+            foreground_cpu_history: ForegroundCpuHistory::default(),
             tracked_processes: BTreeMap::new(),
             background_pressure_active: false,
             cpu_allocation: CpuAllocationManager::with_action_log_feature(
                 ActionLogFeature::AdaptiveEngine,
             ),
-            background_memory_priority: MemoryPriorityManager::default(),
             cpu_allocation_selection: [None; 2],
             allocation_settings: None,
             allocation_foreground: Vec::new(),
-            last_background_apply_summary_logged_at: None,
             per_processor_usage: PerProcessorUsageMonitor::default(),
             failure_suppression: ExecutionFailureTracker::default(),
-            unavailable_power_targets: BTreeSet::new(),
         }
     }
-}
-
-struct FocusProcessCandidate {
-    process_id: u32,
-    process_name: String,
-    executable_path: String,
-    creation_time: u64,
-    first_seen: Instant,
-}
-
-#[derive(Default)]
-struct FocusProcessPriorityGroupResult {
-    skipped: usize,
-    failures: PriorityFailures,
-    auto_excluded_processes: Vec<String>,
 }
 
 #[derive(Clone)]
@@ -156,6 +127,7 @@ struct AdaptiveEngineProcessProcess {
     tier: AdaptiveEngineProcessTier,
     previous_cpu_time: Option<ProcessCpuSample>,
     last_usage_tenths: Option<u16>,
+    pressure_restraint: PressureRestraintEpisode,
     below_since: Option<Instant>,
     active_since: Option<Instant>,
     selected: bool,
@@ -199,19 +171,52 @@ struct CpuAllocationSelection {
     selected_at: Instant,
 }
 
-struct PressureTargetPolicy {
-    priority: Option<PriorityClassValue>,
-    preservation: PriorityClassPreservation,
-    apply_background_efficiency: bool,
+#[derive(Clone, Default)]
+struct PressureRestraintEpisode {
+    hot_since: Option<Instant>,
+    selected_since: Option<Instant>,
+    below_since: Option<Instant>,
 }
 
-struct PriorityTarget {
-    process_name: String,
-    executable_path: String,
-    creation_time: u64,
-    priority: Option<PriorityClassValue>,
-    preservation: PriorityClassPreservation,
-    apply_background_efficiency: bool,
+impl PressureRestraintEpisode {
+    fn qualifies(
+        &mut self,
+        settings: &AdaptiveEngineProcessSettings,
+        now: Instant,
+        usage_tenths: u16,
+    ) -> bool {
+        let threshold = u16::from(settings.background_app_cpu_threshold_percent.min(100)) * 10;
+        if usage_tenths >= threshold {
+            self.below_since = None;
+            let hot_since = *self.hot_since.get_or_insert(now);
+            return self.selected_since.is_some()
+                || (now > hot_since
+                    && now.duration_since(hot_since)
+                        >= Duration::from_millis(settings.reaction_time_ms));
+        }
+
+        self.hot_since = None;
+        let Some(selected_since) = self.selected_since else {
+            return false;
+        };
+        let recovery_threshold =
+            (u16::from(settings.cpu_recovery_threshold_percent) * 10).min(threshold);
+        if usage_tenths > recovery_threshold
+            || now.duration_since(selected_since)
+                < Duration::from_secs(settings.cpu_restraint_time_seconds)
+        {
+            self.below_since = None;
+            return true;
+        }
+
+        let below_since = *self.below_since.get_or_insert(now);
+        if now.duration_since(below_since) < Duration::from_secs(settings.cpu_recovery_time_seconds)
+        {
+            return true;
+        }
+        *self = Self::default();
+        false
+    }
 }
 
 pub struct AdaptiveEngineProcessUpdate<'a> {
@@ -220,19 +225,9 @@ pub struct AdaptiveEngineProcessUpdate<'a> {
     pub allow_cross_session_process_control: bool,
     pub foreground_process_id: Option<u32>,
     pub total_cpu_usage_percent: Option<f32>,
-    pub background_efficiency_managed: bool,
     pub excluded_process_ids: &'a BTreeSet<u32>,
     pub explicit_cpu_allocation_paths: &'a [String],
     pub observations: &'a mut CycleObservations,
-}
-
-struct FocusProcessPriorityGroup<'a> {
-    foreground_id: u32,
-    foreground_process_name: Option<&'a str>,
-    targets: &'a [(u32, String, String, u64)],
-    stability_delay_ms: u64,
-    priority: PriorityClassValue,
-    preservation: PriorityClassPreservation,
 }
 
 impl AdaptiveEngineProcessManager {
@@ -242,7 +237,7 @@ impl AdaptiveEngineProcessManager {
     }
 
     pub(crate) fn reset_pressure_observations(&mut self) {
-        self.foreground_cpu_sample = None;
+        self.foreground_cpu_history = ForegroundCpuHistory::default();
         self.tracked_processes.clear();
         self.background_pressure_active = false;
         self.per_processor_usage = PerProcessorUsageMonitor::default();
@@ -253,7 +248,6 @@ impl AdaptiveEngineProcessManager {
         input: AdaptiveEngineProcessUpdate<'_>,
         cpu_allocation_coordinator: &mut CpuAllocationCoordinator,
         priority_efficiency_controller: &mut PriorityEfficiencyController,
-        memory_priority_controller: &mut MemoryPriorityController,
         action_log: &mut ActionLog,
     ) -> AdaptiveEngineProcessSnapshot {
         let AdaptiveEngineProcessUpdate {
@@ -262,17 +256,15 @@ impl AdaptiveEngineProcessManager {
             allow_cross_session_process_control,
             foreground_process_id,
             total_cpu_usage_percent,
-            background_efficiency_managed,
             excluded_process_ids,
             explicit_cpu_allocation_paths,
             observations,
         } = input;
 
         if !automation_enabled {
-            let failed = self.clear_all_with_memory_priority(
+            let failed = self.clear_all(
                 cpu_allocation_coordinator,
                 priority_efficiency_controller,
-                memory_priority_controller,
                 action_log,
                 "automation disabled",
             );
@@ -295,10 +287,9 @@ impl AdaptiveEngineProcessManager {
         }
 
         if !settings.has_enabled_policies() {
-            let failed = self.clear_all_with_memory_priority(
+            let failed = self.clear_all(
                 cpu_allocation_coordinator,
                 priority_efficiency_controller,
-                memory_priority_controller,
                 action_log,
                 "Adaptive Engine disabled",
             );
@@ -320,23 +311,21 @@ impl AdaptiveEngineProcessManager {
             };
         }
 
-        if foreground_process_id.is_none() {
+        let Some(foreground_id) = foreground_process_id else {
             return self.pause_for_unknown_focus(
                 settings.dynamic_resource_zones_enabled,
                 cpu_allocation_coordinator,
                 priority_efficiency_controller,
-                memory_priority_controller,
                 action_log,
             );
-        }
+        };
 
         // SAFETY: GetCurrentProcessId takes no arguments and has no caller requirements.
         let current_process_id = unsafe { GetCurrentProcessId() };
         let Some(current_session_id) = process_session_id(current_process_id) else {
-            let failed = self.clear_all_with_memory_priority(
+            let failed = self.clear_all(
                 cpu_allocation_coordinator,
                 priority_efficiency_controller,
-                memory_priority_controller,
                 action_log,
                 "current Windows session is unknown",
             );
@@ -362,122 +351,146 @@ impl AdaptiveEngineProcessManager {
             .custom_rules
             .iter()
             .any(|rule| rule.enabled && Path::new(rule.executable_path.trim()).is_absolute());
-        let processes = match if exact_paths_required {
-            observations.processes_with_paths()
-        } else {
-            observations.processes()
-        } {
-            Ok(processes) => processes,
-            Err(err) => {
-                let failed = self.clear_all_with_memory_priority(
-                    cpu_allocation_coordinator,
-                    priority_efficiency_controller,
-                    memory_priority_controller,
-                    action_log,
-                    "process list unavailable",
-                );
-                return AdaptiveEngineProcessSnapshot {
-                    zones: DynamicResourceZoneSnapshot {
-                        status: if settings.dynamic_resource_zones_enabled {
-                            ZoneStatus::Unavailable
-                        } else {
-                            ZoneStatus::Disabled
-                        },
-                        reason: "zone_observations",
-                        ..Default::default()
-                    },
-                    enabled: true,
-                    failed_processes: failed.count,
-                    observation_paused: true,
-                    last_error: failed.last_error.or(Some(err)),
-                    ..Default::default()
-                };
+        let read_background_processes = |observations: &mut CycleObservations| {
+            if exact_paths_required {
+                observations.processes_with_paths()
+            } else {
+                observations.processes()
             }
         };
-
-        let scanned_processes = processes.len();
-        let Ok(visible_window_process_ids) = observations.visible_window_process_ids() else {
-            let failed = self.clear_all_with_memory_priority(
-                cpu_allocation_coordinator,
-                priority_efficiency_controller,
-                memory_priority_controller,
-                action_log,
-                "visible windows are unavailable",
-            );
-            return AdaptiveEngineProcessSnapshot {
-                zones: DynamicResourceZoneSnapshot {
-                    status: if settings.dynamic_resource_zones_enabled {
-                        ZoneStatus::Unavailable
-                    } else {
-                        ZoneStatus::Disabled
-                    },
-                    reason: "zone_observations",
-                    ..Default::default()
-                },
-                enabled: true,
-                failed_processes: failed.count,
-                observation_paused: true,
-                last_error: failed.last_error,
-                ..Default::default()
+        let foreground_processes =
+            match if cpu_pressure_restraint_should_run(settings, None, total_cpu_usage_percent) {
+                read_background_processes(observations)
+            } else {
+                observations.foreground_process_ancestry(foreground_id)
+            } {
+                Ok(processes) => processes,
+                Err(error) => {
+                    let mut status = self.pause_for_unknown_focus(
+                        settings.dynamic_resource_zones_enabled,
+                        cpu_allocation_coordinator,
+                        priority_efficiency_controller,
+                        action_log,
+                    );
+                    status.last_error.get_or_insert(error);
+                    return status;
+                }
             };
-        };
-        let visible_processes = ProtectedProcesses::capture(
-            processes.as_ref(),
-            false,
-            None,
-            visible_window_process_ids,
-        );
-        let processes_by_id = processes
-            .iter()
-            .map(|process| (process.id, process))
-            .collect::<BTreeMap<_, _>>();
-        let mut executable_paths = processes
-            .iter()
-            .filter_map(|process| {
-                process
-                    .image_path
-                    .as_deref()
-                    .and_then(Path::to_str)
-                    .map(|path| (process.id, path.to_owned()))
-            })
-            .collect::<BTreeMap<_, _>>();
-        let foreground_process_name = foreground_process_id
-            .and_then(|id| processes_by_id.get(&id).map(|process| process.name.clone()));
-        let foreground_process_excluded = foreground_process_id
-            .and_then(|id| processes_by_id.get(&id))
-            .and_then(|process| cached_executable_path(process, &mut executable_paths))
-            .is_some_and(|path| settings.custom_rule_enabled_for(&path));
-        let foreground_workload = observations.adaptive_workload(processes.as_ref());
+        let foreground_workload = observations.adaptive_workload(&foreground_processes);
         if foreground_workload.is_empty() {
             return self.pause_for_unknown_focus(
                 settings.dynamic_resource_zones_enabled,
                 cpu_allocation_coordinator,
                 priority_efficiency_controller,
-                memory_priority_controller,
                 action_log,
             );
         }
-        let foreground_process_group_ids =
-            foreground_workload.keys().copied().collect::<BTreeSet<_>>();
-        let visible_window_process_group_ids = processes
-            .iter()
-            .filter(|process| !foreground_process_group_ids.contains(&process.id))
-            .filter(|process| visible_processes.may_contain(process))
-            .filter_map(|process| {
-                cached_executable_path(process, &mut executable_paths).and_then(|path| {
-                    visible_processes
-                        .contains(process.id, Path::new(&path))
-                        .then_some(process.id)
-                })
-            })
-            .collect::<BTreeSet<_>>();
         let foreground_identity = foreground_workload
             .iter()
             .map(|(&id, &creation)| (id, creation))
             .collect::<Vec<_>>();
         let foreground_changed = self.allocation_foreground != foreground_identity;
-        let foreground_cpu_usage_percent = self.update_foreground_cpu_usage(&foreground_identity);
+        let cpu_sample = observations.adaptive_cpu_sample(&foreground_workload);
+        let foreground_cpu_usage_percent = self
+            .foreground_cpu_history
+            .update(foreground_workload, cpu_sample);
         let foreground_cpu_usage_tenths = foreground_cpu_usage_percent.map(percent_tenths);
+        let background_pressure_triggered = self.update_background_pressure(
+            settings,
+            foreground_cpu_usage_percent,
+            total_cpu_usage_percent,
+        );
+        let background_observations = if background_pressure_triggered {
+            let background_observations = read_background_processes(observations)
+                .map_err(|error| ("process list unavailable", Some(error)))
+                .and_then(|processes| {
+                    observations
+                        .visible_window_process_ids()
+                        .map(|windows| (processes, windows))
+                        .map_err(|_| ("visible windows are unavailable", None))
+                });
+            match background_observations {
+                Ok(observations) => Some(observations),
+                Err((reason, error)) => {
+                    return self.pause_for_observation_failure(
+                        settings.dynamic_resource_zones_enabled,
+                        cpu_allocation_coordinator,
+                        priority_efficiency_controller,
+                        action_log,
+                        reason,
+                        error,
+                    );
+                }
+            }
+        } else {
+            None
+        };
+        let processes = background_observations
+            .as_ref()
+            .map_or(&[][..], |(processes, _)| processes.as_ref());
+        let scanned_processes = processes.len();
+        let foreground_group = if background_pressure_triggered
+            && !std::ptr::eq(processes, foreground_processes.as_ref())
+        {
+            let group = foreground_process_group_ids(processes, foreground_process_id);
+            // A new child or reused PID in the full scan invalidates the sampled workload.
+            if group.len() != foreground_identity.len()
+                || foreground_identity.iter().any(|&(id, creation)| {
+                    !group.contains(&id)
+                        || !processes.iter().any(|process| {
+                            process.id == id && process.creation_time == Some(creation)
+                        })
+                })
+            {
+                return self.pause_for_unknown_focus(
+                    settings.dynamic_resource_zones_enabled,
+                    cpu_allocation_coordinator,
+                    priority_efficiency_controller,
+                    action_log,
+                );
+            }
+            group
+        } else {
+            foreground_identity.iter().map(|&(id, _)| id).collect()
+        };
+        let processes_by_id = processes
+            .iter()
+            .map(|process| (process.id, process))
+            .collect::<BTreeMap<_, _>>();
+        let mut executable_paths = BTreeMap::new();
+        let visible_window_process_group_ids = background_observations
+            .as_ref()
+            .map(|(_, windows)| {
+                let visible = ProtectedProcesses::capture(processes, false, None, windows.clone());
+                processes
+                    .iter()
+                    .filter(|process| !foreground_group.contains(&process.id))
+                    .filter(|process| visible.may_contain(process))
+                    .filter_map(|process| {
+                        let path = cached_executable_path(process, &mut executable_paths)?;
+                        visible
+                            .contains(process.id, Path::new(&path))
+                            .then_some(process.id)
+                    })
+                    .collect::<BTreeSet<_>>()
+            })
+            .unwrap_or_default();
+        if self.allocation_settings.as_ref().is_some_and(|previous| {
+            previous.cpu_pressure_restraint_enabled != settings.cpu_pressure_restraint_enabled
+                || previous.background_app_cpu_threshold_percent
+                    != settings.background_app_cpu_threshold_percent
+                || previous.foreground_or_system_cpu_threshold_percent
+                    != settings.foreground_or_system_cpu_threshold_percent
+                || previous.reaction_time_ms != settings.reaction_time_ms
+                || previous.cpu_restraint_time_seconds != settings.cpu_restraint_time_seconds
+                || previous.cpu_recovery_threshold_percent
+                    != settings.cpu_recovery_threshold_percent
+                || previous.cpu_recovery_time_seconds != settings.cpu_recovery_time_seconds
+        }) {
+            for process in self.tracked_processes.values_mut() {
+                process.pressure_restraint = PressureRestraintEpisode::default();
+            }
+        }
         if self.allocation_settings.as_ref() != Some(settings) || foreground_changed {
             self.invalidate_allocation_selection();
             self.allocation_settings = Some(settings.clone());
@@ -493,7 +506,7 @@ impl AdaptiveEngineProcessManager {
                     &process.name,
                     current_process_id,
                     foreground_process_id,
-                    &foreground_process_group_ids,
+                    &foreground_group,
                     excluded_process_ids,
                 )
             {
@@ -514,31 +527,26 @@ impl AdaptiveEngineProcessManager {
             restrainable_processes.insert(process.id, (process.name.clone(), tier));
         }
 
-        let mut target_processes = BTreeMap::new();
-        let focus_and_launch_profile_target = foreground_process_id
-            .zip(foreground_process_name.as_deref())
-            .is_some_and(|(process_id, process_name)| {
-                !excluded_process_ids.contains(&process_id)
-                    && !foreground_process_excluded
+        let focus_and_launch_profile_target = foreground_processes
+            .iter()
+            .find(|process| process.id == foreground_id)
+            .is_some_and(|process| {
+                !excluded_process_ids.contains(&foreground_id)
                     && focus_process_priority_eligible(
-                        process_id,
-                        process_name,
+                        foreground_id,
+                        &process.name,
                         current_process_id,
                         current_session_id,
                     )
-                    && focus_and_launch_profile_eligible(process_id)
+                    && process.creation_time.is_some_and(|created| {
+                        focus_and_launch_profile_eligible(foreground_id, created)
+                    })
+                    && !cached_executable_path(process, &mut executable_paths)
+                        .is_some_and(|path| settings.custom_rule_enabled_for(&path))
             });
-        let focus_and_launch_profile_active = settings.process_priority_enabled
-            && focus_and_launch_profile_enabled(settings, focus_and_launch_profile_target);
-        let background_pressure_triggered = self.update_background_pressure(
-            settings,
-            foreground_cpu_usage_percent,
-            total_cpu_usage_percent,
-        );
-        let background_pressure_applies =
-            background_pressure_triggered && !focus_and_launch_profile_active;
-        let cpu_pressure_restraint_applies =
-            settings.cpu_pressure_restraint_enabled && background_pressure_applies;
+        let cpu_pressure_restraint_applies = settings.cpu_pressure_restraint_enabled
+            && background_pressure_triggered
+            && (foreground_cpu_usage_percent.is_some() || total_cpu_usage_percent.is_some());
         let cpu_allocation_applies = settings.limit_background_processors_enabled
             && background_pressure_triggered
             && !focus_and_launch_profile_target;
@@ -553,6 +561,7 @@ impl AdaptiveEngineProcessManager {
             && !zone_grace
             && foreground_cpu_usage_percent.is_some()
             && !foreground_changed;
+        let placement_applies = cpu_allocation_applies || dynamic_resource_zones_apply;
         let mut zones = DynamicResourceZoneSnapshot {
             status: if settings.dynamic_resource_zones_enabled {
                 ZoneStatus::Waiting
@@ -571,61 +580,8 @@ impl AdaptiveEngineProcessManager {
         let mut auto_excluded_processes = BTreeSet::new();
 
         let mut cpu_allocation_targets = Vec::new();
-        let mut adaptive_engine_process_memory_targets = Vec::new();
-        if settings.cpu_pressure_restraint_enabled && settings.memory_priority_enabled {
-            for process in processes
-                .iter()
-                .filter(|process| process.is_critical == Some(false) && process.can_set_information)
-                .filter(|process| foreground_process_group_ids.contains(&process.id))
-                .filter(|process| !excluded_process_ids.contains(&process.id))
-                .filter(|process| {
-                    !settings.custom_rules.iter().any(|rule| rule.enabled)
-                        || process_executable_path(process)
-                            .as_deref()
-                            .and_then(Path::to_str)
-                            .is_some_and(|path| !settings.custom_rule_enabled_for(path))
-                })
-                .filter(|process| {
-                    focus_process_priority_eligible(
-                        process.id,
-                        &process.name,
-                        current_process_id,
-                        current_session_id,
-                    )
-                })
-            {
-                let (value, foreground, visible_window) = memory_priority_policy(
-                    settings,
-                    true,
-                    visible_window_process_group_ids.contains(&process.id),
-                );
-                let Some(priority) = value.priority() else {
-                    continue;
-                };
-                let Some(executable_path) = cached_executable_path(process, &mut executable_paths)
-                else {
-                    continue;
-                };
-                let Some(creation_time) = process.creation_time else {
-                    continue;
-                };
-                adaptive_engine_process_memory_targets.push(MemoryPriorityTarget {
-                    process_id: process.id,
-                    process_name: process.name.clone(),
-                    executable_path,
-                    creation_time,
-                    priority,
-                    foreground,
-                    visible_window,
-                    preserve_foreground_priority: settings.memory_priority_preserve_foreground,
-                    preserve_visible_window_priority: settings
-                        .memory_priority_preserve_visible_window,
-                    preserve_background_priority: settings.memory_priority_preserve_background,
-                });
-            }
-        }
-        let topology_observation = (cpu_allocation_applies
-            || dynamic_resource_zones_apply
+        let mut priority_candidates = Vec::new();
+        let topology_observation = (placement_applies
             || cpu_allocation_coordinator.needs_topology_observation())
         .then(|| observations.cpu_topology());
         let topology = topology_observation
@@ -642,44 +598,16 @@ impl AdaptiveEngineProcessManager {
         if !needs_load {
             self.per_processor_usage = PerProcessorUsageMonitor::default();
         }
-        if background_pressure_applies || dynamic_resource_zones_apply {
-            if cpu_pressure_restraint_applies {
-                for (process_id, (_, tier)) in &restrainable_processes {
-                    let Some(process) = processes_by_id.get(process_id) else {
-                        continue;
-                    };
-                    let Some(executable_path) =
-                        cached_executable_path(process, &mut executable_paths)
-                    else {
-                        continue;
-                    };
-                    let Some(creation_time) = process.creation_time else {
-                        continue;
-                    };
-                    if settings.custom_rule_enabled_for(&executable_path) {
-                        continue;
-                    }
-                    let Some(policy) = cpu_pressure_restraint_target(
-                        settings,
-                        *tier,
-                        background_efficiency_managed,
-                    ) else {
-                        continue;
-                    };
-                    target_processes.insert(
-                        *process_id,
-                        PriorityTarget {
-                            process_name: process.name.clone(),
-                            executable_path,
-                            creation_time,
-                            priority: policy.priority,
-                            preservation: policy.preservation,
-                            apply_background_efficiency: policy.apply_background_efficiency,
-                        },
-                    );
-                }
-            }
-
+        let audio_process_ids = cpu_pressure_restraint_applies
+            .then(|| {
+                active_audio_process_ids().map_err(|error| {
+                    failures.last_error = Some(format!(
+                        "CPU Pressure Restraint is waiting for audio activity: {error}"
+                    ));
+                })
+            })
+            .and_then(Result::ok);
+        if audio_process_ids.is_some() || placement_applies {
             let now = Instant::now();
             let processors = topology
                 .and_then(Result::ok)
@@ -787,9 +715,7 @@ impl AdaptiveEngineProcessManager {
             let mut actionable_process_ids = BTreeSet::new();
             let mut adaptive_engine_process_candidates = Vec::new();
             for (process_id, (process_name, tier)) in &restrainable_processes {
-                if *tier == AdaptiveEngineProcessTier::VisibleWindow
-                    && !settings.cpu_pressure_restraint_enabled
-                {
+                if *tier != AdaptiveEngineProcessTier::Background {
                     continue;
                 }
                 let Some(process) = processes_by_id.get(process_id) else {
@@ -803,16 +729,50 @@ impl AdaptiveEngineProcessManager {
                     continue;
                 }
                 actionable_process_ids.insert(*process_id);
-                let sample = process_cpu_sample_with_identity(*process_id, &executable_path);
-                if let Some(candidate) = self.update_adaptive_engine_process_sample(
-                    *process_id,
-                    process_name,
-                    &executable_path,
-                    settings,
-                    *tier,
-                    sample,
-                ) {
+                let sample = process_cpu_sample_with_identity(*process_id, &executable_path)
+                    .filter(|(_, creation_time)| Some(*creation_time) == process.creation_time);
+                if let Some(candidate) = self
+                    .update_adaptive_engine_process_sample(
+                        *process_id,
+                        process_name,
+                        &executable_path,
+                        settings,
+                        *tier,
+                        sample,
+                    )
+                    .filter(|_| placement_applies)
+                {
                     adaptive_engine_process_candidates.push(candidate);
+                }
+                let Some(state) = self.tracked_processes.get_mut(process_id) else {
+                    continue;
+                };
+                let pressure_sample = sample.zip(state.last_usage_tenths).filter(|_| {
+                    audio_process_ids
+                        .as_ref()
+                        .is_some_and(|playing| !playing.contains(process_id))
+                });
+                let Some(((sample, creation_time), usage)) = pressure_sample else {
+                    state.pressure_restraint = PressureRestraintEpisode::default();
+                    continue;
+                };
+                if state
+                    .pressure_restraint
+                    .qualifies(settings, sample.sampled_at, usage)
+                {
+                    let selected = state.pressure_restraint.selected_since.is_some();
+                    let score = u32::from(usage)
+                        + u32::from(selected) * ADAPTIVE_ENGINE_PROCESS_SELECTION_STICKINESS_TENTHS;
+                    priority_candidates.push((
+                        score,
+                        sample.sampled_at,
+                        ProcessControlTarget::automatic(
+                            *process_id,
+                            process_name.clone(),
+                            PathBuf::from(&executable_path),
+                            creation_time,
+                        ),
+                    ));
                 }
             }
             self.tracked_processes
@@ -845,31 +805,6 @@ impl AdaptiveEngineProcessManager {
                 };
                 if let Some(process) = self.tracked_processes.get_mut(&candidate.process_id) {
                     process.selected = true;
-                }
-                if settings.cpu_pressure_restraint_enabled && settings.memory_priority_enabled {
-                    let (value, foreground, visible_window) = memory_priority_policy(
-                        settings,
-                        false,
-                        candidate.tier == AdaptiveEngineProcessTier::VisibleWindow,
-                    );
-                    let priority = value.priority();
-                    if let Some(priority) = priority {
-                        adaptive_engine_process_memory_targets.push(MemoryPriorityTarget {
-                            process_id: candidate.process_id,
-                            process_name: candidate.process_name.clone(),
-                            executable_path: executable_path.clone(),
-                            creation_time,
-                            priority,
-                            foreground,
-                            visible_window,
-                            preserve_foreground_priority: settings
-                                .memory_priority_preserve_foreground,
-                            preserve_visible_window_priority: settings
-                                .memory_priority_preserve_visible_window,
-                            preserve_background_priority: settings
-                                .memory_priority_preserve_background,
-                        });
-                    }
                 }
                 if candidate.tier == AdaptiveEngineProcessTier::Background
                     && !cpu_allocation::contains_process(
@@ -923,7 +858,7 @@ impl AdaptiveEngineProcessManager {
                 .as_ref()
                 .filter(|_| !zone_background_targets.is_empty())
             {
-                for process_id in &foreground_process_group_ids {
+                for process_id in &foreground_group {
                     let Some(process) = processes_by_id.get(process_id) else {
                         continue;
                     };
@@ -1049,317 +984,140 @@ impl AdaptiveEngineProcessManager {
         if failures.last_error.is_none() {
             failures.last_error = cpu_allocation_snapshot.last_error.clone();
         }
-        let adaptive_engine_process_memory_snapshot = self.background_memory_priority.update(
-            memory_priority_controller,
-            ControlOwner::AdaptiveEngine,
-            if cpu_pressure_restraint_applies && settings.memory_priority_enabled {
-                adaptive_engine_process_memory_targets
-            } else {
-                Vec::new()
-            },
-            automation_enabled,
-            allow_cross_session_process_control,
-            ActionLogFeature::AdaptiveEngine,
-            action_log,
-        );
-        auto_excluded_processes.extend(
-            adaptive_engine_process_memory_snapshot
-                .auto_excluded_processes
-                .iter()
-                .cloned(),
-        );
-        failures.count += adaptive_engine_process_memory_snapshot.failed_processes;
-        if failures.last_error.is_none() {
-            failures.last_error = adaptive_engine_process_memory_snapshot.last_error.clone();
-        }
 
-        let active_priority_targets = target_processes
+        priority_candidates.sort_unstable_by_key(|(score, _, target)| (Reverse(*score), target.id));
+        let qualified_episodes = priority_candidates
             .iter()
-            .filter(|(_, target)| target.priority.is_some())
-            .map(|(process_id, target)| {
-                adaptive_engine_process_priority_target_key(*process_id, target)
-            })
+            .map(|(_, _, target)| target.key())
             .collect::<BTreeSet<_>>();
-        let active_power_targets = target_processes
-            .iter()
-            .filter(|(_, target)| target.apply_background_efficiency)
-            .map(|(process_id, target)| {
-                adaptive_engine_process_priority_target_key(*process_id, target)
-            })
-            .collect::<BTreeSet<_>>();
-        self.unavailable_power_targets
-            .retain(|target| active_power_targets.contains(target));
-        let mut active_target_names = target_processes
-            .values()
-            .map(|target| process_failure_key(&target.executable_path))
-            .collect::<BTreeSet<_>>();
-        if let Some(process) = foreground_process_id.and_then(|id| processes_by_id.get(&id)) {
-            if let Some(path) = cached_executable_path(process, &mut executable_paths) {
-                active_target_names.insert(process_failure_key(&path));
-            }
-        }
-        self.failure_suppression.retain_keys(&active_target_names);
-        self.merge_controller_release(
-            priority_efficiency_controller.release_priority_policy_except(
-                ControlOwner::AdaptiveEngine,
-                &active_priority_targets,
-            ),
-            action_log,
-            "process no longer needs Adaptive Engine restraint",
-            "process priority",
-            &mut failures,
-        );
-        self.merge_controller_release(
-            priority_efficiency_controller
-                .release_power_policy_except(ControlOwner::AdaptiveEngine, &active_power_targets),
-            action_log,
-            "process no longer needs Adaptive Engine restraint",
-            "Background Efficiency",
-            &mut failures,
+        self.failure_suppression.retain_keys(
+            &priority_candidates
+                .iter()
+                .map(|(_, _, target)| {
+                    process_failure_key(&target.executable_path.to_string_lossy())
+                })
+                .collect(),
         );
         let mut skipped_processes = 0;
-        skipped_processes += adaptive_engine_process_memory_snapshot.skipped_processes;
-        let mut summarized_background_applies = 0;
-
-        for (process_id, target) in target_processes {
+        let mut selected_candidates = Vec::new();
+        let target_limit = usize::from(settings.maximum_restrained_apps.max(1));
+        for (_, sampled_at, target) in priority_candidates {
+            if selected_candidates.len() == target_limit {
+                break;
+            }
+            let executable_path = target.executable_path.to_string_lossy();
             if self.is_executable_path_suppressed(
-                process_id,
-                &target.process_name,
-                &target.executable_path,
+                target.id,
+                &target.name,
+                &executable_path,
                 action_log,
                 &mut auto_excluded_processes,
             ) {
                 skipped_processes += 1;
                 continue;
             }
-            let control_target = ProcessControlTarget::automatic(
-                process_id,
-                target.process_name.clone(),
-                PathBuf::from(&target.executable_path),
-                target.creation_time,
-            );
-            let mut changed = false;
-            let mut skipped = false;
-            let mut hard_failure = false;
-            let mut access_denied = false;
-            let target_key = control_target.key();
-
-            if target.apply_background_efficiency {
-                if self.unavailable_power_targets.contains(&target_key) {
-                    skipped = true;
-                } else {
-                    match priority_efficiency_controller.apply_power_claim(
-                        PowerThrottlingClaim {
-                            target: control_target.clone(),
-                            owner: ControlOwner::AdaptiveEngine,
-                            ignore_timer_resolution: false,
-                        },
-                        allow_cross_session_process_control,
-                    ) {
-                        Ok(ProcessPropertyApplyOutcome::Applied) => {
-                            self.unavailable_power_targets.remove(&target_key);
-                            changed = true;
-                        }
-                        Ok(
-                            ProcessPropertyApplyOutcome::Unchanged
-                            | ProcessPropertyApplyOutcome::Preserved
-                            | ProcessPropertyApplyOutcome::Shadowed,
-                        ) => {
-                            self.unavailable_power_targets.remove(&target_key);
-                        }
-                        Err(ProcessControlError::Unavailable(error)) => {
-                            skipped = true;
-                            self.unavailable_power_targets.insert(target_key.clone());
-                            action_log.record(
-                                ActionLogFeature::AdaptiveEngine,
-                                Some(process_id),
-                                target.process_name.clone(),
-                                ActionLogResult::Skipped,
-                                format!("Cannot read original efficiency settings: {error}"),
-                            );
-                        }
-                        Err(ProcessControlError::ProcessExited) => skipped = true,
-                        Err(ProcessControlError::AccessDenied(error)) => {
-                            access_denied = true;
-                            skipped = true;
-                            self.failure_suppression
-                                .suppress_process_failure(&target.executable_path);
-                            action_log.record(
-                                ActionLogFeature::AdaptiveEngine,
-                                Some(process_id),
-                                target.process_name.clone(),
-                                ActionLogResult::Skipped,
-                                error,
-                            );
-                        }
-                        Err(error) => {
-                            hard_failure = true;
-                            self.record_process_failure(&target.executable_path);
-                            failures.record_control_error(
-                                "Apply Background Efficiency",
-                                process_id,
-                                &target.process_name,
-                                error,
-                                action_log,
-                            );
-                        }
-                    }
-                }
-            }
-
-            if let Some(priority) = target.priority {
-                match priority_efficiency_controller.apply_priority_claim(
-                    PriorityClassClaim {
-                        target: control_target,
-                        owner: ControlOwner::AdaptiveEngine,
-                        priority,
-                        preservation: target.preservation,
-                    },
-                    allow_cross_session_process_control,
-                ) {
-                    Ok(ProcessPropertyApplyOutcome::Applied) => {
-                        changed = true;
-                    }
-                    Ok(ProcessPropertyApplyOutcome::Preserved) => skipped = true,
-                    Ok(
-                        ProcessPropertyApplyOutcome::Unchanged
-                        | ProcessPropertyApplyOutcome::Shadowed,
-                    ) => {}
-                    Err(ProcessControlError::ProcessExited) => skipped = true,
-                    Err(ProcessControlError::AccessDenied(error)) => {
-                        access_denied = true;
-                        skipped = true;
-                        self.failure_suppression
-                            .suppress_process_failure(&target.executable_path);
-                        action_log.record(
-                            ActionLogFeature::AdaptiveEngine,
-                            Some(process_id),
-                            target.process_name.clone(),
-                            ActionLogResult::Skipped,
-                            error,
-                        );
-                    }
-                    Err(error) => {
-                        hard_failure = true;
-                        self.record_process_failure(&target.executable_path);
-                        failures.record_control_error(
-                            "Apply priority",
-                            process_id,
-                            &target.process_name,
-                            error,
-                            action_log,
-                        );
-                    }
-                }
-            }
-
-            self.finish_background_attempt(&target.executable_path, hard_failure, access_denied);
-            if skipped {
-                skipped_processes += 1;
-            }
-            if changed {
-                summarized_background_applies += 1;
-            }
-        }
-        let now = Instant::now();
-        if summarized_background_applies > 0
-            && background_apply_summary_log_due(self.last_background_apply_summary_logged_at, now)
-        {
-            self.last_background_apply_summary_logged_at = Some(now);
-            action_log.record(
-                ActionLogFeature::AdaptiveEngine,
-                None,
-                "",
-                ActionLogResult::Applied,
-                background_apply_summary_message(summarized_background_applies),
-            );
-        }
-
-        if let Some(foreground_id) = foreground_process_id {
-            let (configured_priority, preservation) = process_priority_policy(
-                settings,
-                true,
-                visible_window_process_group_ids.contains(&foreground_id),
-            );
-            let foreground_priority = if settings.process_priority_enabled
-                && (cpu_pressure_restraint_applies || focus_and_launch_profile_active)
+            match priority_efficiency_controller
+                .can_apply_adaptive_restraint(&target, allow_cross_session_process_control)
             {
-                if focus_and_launch_profile_active
-                    && settings.process_priority_foreground_detection_enabled
-                {
-                    Some(PriorityClassValue::AboveNormal)
-                } else {
-                    configured_priority
+                Ok(true) => selected_candidates.push((sampled_at, target)),
+                Ok(false) => self.clear_process_failure(&executable_path),
+                Err(error) => {
+                    skipped_processes += usize::from(self.record_restraint_failure(
+                        &target,
+                        error,
+                        action_log,
+                        &mut failures,
+                    ));
                 }
-            } else {
-                None
-            };
-            if let Some(priority) =
-                foreground_priority.filter(|_| !excluded_process_ids.contains(&foreground_id))
-            {
-                let boost_targets = processes
-                    .iter()
-                    .filter(|process| {
-                        process.is_critical == Some(false) && process.can_set_information
-                    })
-                    .filter(|process| foreground_process_group_ids.contains(&process.id))
-                    .filter(|process| !excluded_process_ids.contains(&process.id))
-                    .filter(|process| {
-                        focus_process_priority_eligible(
-                            process.id,
-                            &process.name,
-                            current_process_id,
-                            current_session_id,
-                        )
-                    })
-                    .filter_map(|process| {
-                        cached_executable_path(process, &mut executable_paths).and_then(|path| {
-                            if settings.custom_rule_enabled_for(&path) {
-                                return None;
-                            }
-                            process.creation_time.map(|creation_time| {
-                                (process.id, process.name.clone(), path, creation_time)
-                            })
-                        })
-                    })
-                    .collect::<Vec<_>>();
-                let result = self.apply_focus_process_priority_group(
-                    FocusProcessPriorityGroup {
-                        foreground_id,
-                        foreground_process_name: foreground_process_name.as_deref(),
-                        targets: &boost_targets,
-                        stability_delay_ms: if focus_and_launch_profile_active {
-                            0
-                        } else {
-                            FOCUS_PROCESS_PRIORITY_STABILITY_DELAY_MS
-                        },
-                        priority,
-                        preservation,
-                    },
-                    priority_efficiency_controller,
-                    allow_cross_session_process_control,
-                    action_log,
-                );
-                skipped_processes += result.skipped;
-                auto_excluded_processes.extend(result.auto_excluded_processes);
-                failures.merge(result.failures);
-            } else if let Some(error) = self.clear_focus_process_priority(
-                priority_efficiency_controller,
-                true,
-                action_log,
-                "focus process priority disabled or blocked",
-            ) {
-                failures.merge(error);
             }
         }
-
+        let active_priority_targets = selected_candidates
+            .iter()
+            .map(|(_, target)| target.key())
+            .collect::<BTreeSet<_>>();
+        let selected_ids = active_priority_targets
+            .iter()
+            .map(|key| key.id)
+            .collect::<BTreeSet<_>>();
+        for (process_id, process) in &mut self.tracked_processes {
+            if !selected_ids.contains(process_id) {
+                process.pressure_restraint.selected_since = None;
+                process.pressure_restraint.below_since = None;
+            }
+        }
+        let release = priority_efficiency_controller
+            .reconcile_adaptive_restraint_targets(&active_priority_targets, &qualified_episodes);
+        // A process awaiting restoration can still occupy a restraint slot.
+        if !release.failures.is_empty() {
+            selected_candidates.clear();
+        }
+        self.merge_controller_release(
+            release,
+            action_log,
+            "process no longer qualifies for CPU Pressure Restraint",
+            "process priority",
+            &mut failures,
+        );
+        for (sampled_at, target) in selected_candidates {
+            let process_id = target.id;
+            let executable_path = target.executable_path.to_string_lossy();
+            let result = priority_efficiency_controller.apply_priority_claim(
+                PriorityClassClaim {
+                    target: target.clone(),
+                    owner: ControlOwner::AdaptiveEngine,
+                    priority: PriorityClassValue::BelowNormal,
+                    preservation: PriorityClassPreservation::OnlyNormal,
+                },
+                allow_cross_session_process_control,
+            );
+            if let Some(process) = self.tracked_processes.get_mut(&process_id).filter(|_| {
+                matches!(
+                    result,
+                    Ok(ProcessPropertyApplyOutcome::Applied
+                        | ProcessPropertyApplyOutcome::Unchanged)
+                )
+            }) {
+                process
+                    .pressure_restraint
+                    .selected_since
+                    .get_or_insert(sampled_at);
+            }
+            match result {
+                Ok(ProcessPropertyApplyOutcome::Applied) => {
+                    self.clear_process_failure(&executable_path);
+                    action_log.record(
+                        ActionLogFeature::AdaptiveEngine,
+                        Some(process_id),
+                        target.name,
+                        ActionLogResult::Applied,
+                        "Lowered process priority to Below Normal during sustained background CPU pressure.",
+                    );
+                }
+                Ok(ProcessPropertyApplyOutcome::Preserved) => {
+                    self.clear_process_failure(&executable_path);
+                    skipped_processes += 1;
+                }
+                Ok(
+                    ProcessPropertyApplyOutcome::Unchanged | ProcessPropertyApplyOutcome::Shadowed,
+                ) => {
+                    self.clear_process_failure(&executable_path);
+                }
+                Err(error) => {
+                    skipped_processes += usize::from(self.record_restraint_failure(
+                        &target,
+                        error,
+                        action_log,
+                        &mut failures,
+                    ));
+                }
+            }
+        }
         AdaptiveEngineProcessSnapshot {
             zones,
             enabled: true,
             observation_paused: false,
             scanned_processes,
             adjusted_processes: 0,
-            focus_and_launch_profile_active,
             cpu_pressure_restraint_active: cpu_pressure_restraint_applies,
             foreground_cpu_usage_tenths,
             skipped_processes,
@@ -1374,15 +1132,32 @@ impl AdaptiveEngineProcessManager {
         zones_enabled: bool,
         cpu_allocation_coordinator: &mut CpuAllocationCoordinator,
         priority_efficiency_controller: &mut PriorityEfficiencyController,
-        memory_priority_controller: &mut MemoryPriorityController,
         action_log: &mut ActionLog,
     ) -> AdaptiveEngineProcessSnapshot {
-        let failed = self.clear_all_with_memory_priority(
+        self.pause_for_observation_failure(
+            zones_enabled,
             cpu_allocation_coordinator,
             priority_efficiency_controller,
-            memory_priority_controller,
             action_log,
             "foreground app is unknown",
+            None,
+        )
+    }
+
+    fn pause_for_observation_failure(
+        &mut self,
+        zones_enabled: bool,
+        cpu_allocation_coordinator: &mut CpuAllocationCoordinator,
+        priority_efficiency_controller: &mut PriorityEfficiencyController,
+        action_log: &mut ActionLog,
+        reason: &str,
+        error: Option<String>,
+    ) -> AdaptiveEngineProcessSnapshot {
+        let failed = self.clear_all(
+            cpu_allocation_coordinator,
+            priority_efficiency_controller,
+            action_log,
+            reason,
         );
         let (status, reason) = if !zones_enabled {
             (ZoneStatus::Disabled, "")
@@ -1400,39 +1175,9 @@ impl AdaptiveEngineProcessManager {
             enabled: true,
             failed_processes: failed.count,
             observation_paused: true,
-            last_error: failed.last_error,
+            last_error: failed.last_error.or(error),
             ..Default::default()
         }
-    }
-
-    fn clear_all_with_memory_priority(
-        &mut self,
-        cpu_allocation_coordinator: &mut CpuAllocationCoordinator,
-        priority_efficiency_controller: &mut PriorityEfficiencyController,
-        memory_priority_controller: &mut MemoryPriorityController,
-        action_log: &mut ActionLog,
-        reason: &str,
-    ) -> PriorityFailures {
-        let mut failures = self.clear_all(
-            cpu_allocation_coordinator,
-            priority_efficiency_controller,
-            action_log,
-            reason,
-        );
-        let memory_snapshot = self.background_memory_priority.update(
-            memory_priority_controller,
-            ControlOwner::AdaptiveEngine,
-            Vec::new(),
-            true,
-            true,
-            ActionLogFeature::AdaptiveEngine,
-            action_log,
-        );
-        failures.count += memory_snapshot.failed_processes;
-        if failures.last_error.is_none() {
-            failures.last_error = memory_snapshot.last_error;
-        }
-        failures
     }
 
     fn clear_all(
@@ -1442,9 +1187,7 @@ impl AdaptiveEngineProcessManager {
         action_log: &mut ActionLog,
         reason: &str,
     ) -> PriorityFailures {
-        let mut failures = self
-            .clear_focus_process_priority(priority_efficiency_controller, true, action_log, reason)
-            .unwrap_or_default();
+        let mut failures = PriorityFailures::default();
         self.merge_controller_release(
             priority_efficiency_controller
                 .release_all_priority_policy(ControlOwner::AdaptiveEngine),
@@ -1453,17 +1196,7 @@ impl AdaptiveEngineProcessManager {
             "process priority",
             &mut failures,
         );
-        self.merge_controller_release(
-            priority_efficiency_controller.release_all_power_policy(ControlOwner::AdaptiveEngine),
-            action_log,
-            reason,
-            "Background Efficiency",
-            &mut failures,
-        );
-        self.focus_process_candidate = None;
         self.reset_pressure_observations();
-        self.last_background_apply_summary_logged_at = None;
-        self.unavailable_power_targets.clear();
         let cpu_allocation_snapshot = self.cpu_allocation.clear_discovered_targets(
             cpu_allocation_coordinator,
             ControlOwner::AdaptiveEngine,
@@ -1475,32 +1208,6 @@ impl AdaptiveEngineProcessManager {
             failures.last_error = cpu_allocation_snapshot.last_error;
         }
         failures
-    }
-
-    fn clear_focus_process_priority(
-        &mut self,
-        priority_efficiency_controller: &mut PriorityEfficiencyController,
-        reset_candidate: bool,
-        action_log: &mut ActionLog,
-        reason: &str,
-    ) -> Option<PriorityFailures> {
-        if reset_candidate {
-            self.focus_process_candidate = None;
-        }
-        let summary = priority_efficiency_controller
-            .release_all_priority_policy(ControlOwner::AdaptiveEngineProcessFocusPriority);
-        if summary.restored_processes == 0 && summary.failures.is_empty() {
-            return None;
-        }
-        let mut failures = PriorityFailures::default();
-        self.merge_controller_release(
-            summary,
-            action_log,
-            reason,
-            "focus process priority",
-            &mut failures,
-        );
-        Some(failures)
     }
 
     fn merge_controller_release(
@@ -1589,9 +1296,39 @@ impl AdaptiveEngineProcessManager {
             .record_process_failure(process_name);
     }
 
-    fn finish_background_attempt(&mut self, path: &str, hard_failure: bool, access_denied: bool) {
-        if !hard_failure && !access_denied {
-            self.clear_process_failure(path);
+    fn record_restraint_failure(
+        &mut self,
+        target: &ProcessControlTarget,
+        error: ProcessControlError,
+        action_log: &mut ActionLog,
+        failures: &mut PriorityFailures,
+    ) -> bool {
+        let executable_path = target.executable_path.to_string_lossy();
+        match error {
+            ProcessControlError::ProcessExited => true,
+            ProcessControlError::AccessDenied(error) => {
+                self.failure_suppression
+                    .suppress_process_failure(&executable_path);
+                action_log.record(
+                    ActionLogFeature::AdaptiveEngine,
+                    Some(target.id),
+                    &target.name,
+                    ActionLogResult::Skipped,
+                    error,
+                );
+                true
+            }
+            error => {
+                self.record_process_failure(&executable_path);
+                failures.record_control_error(
+                    "Apply CPU Pressure Restraint",
+                    target.id,
+                    &target.name,
+                    error,
+                    action_log,
+                );
+                false
+            }
         }
     }
 
@@ -1633,204 +1370,6 @@ impl AdaptiveEngineProcessManager {
 
         self.background_pressure_active = false;
         false
-    }
-
-    fn foreground_boost_stable(
-        &mut self,
-        process_id: u32,
-        process_name: &str,
-        executable_path: &str,
-        creation_time: u64,
-        stability_delay_ms: u64,
-    ) -> bool {
-        let now = Instant::now();
-        if focus_and_launch_profile_eligible(process_id) {
-            self.focus_process_candidate = Some(FocusProcessCandidate {
-                process_id,
-                process_name: process_name.to_owned(),
-                executable_path: executable_path.to_owned(),
-                creation_time,
-                first_seen: now,
-            });
-            return true;
-        }
-
-        match &mut self.focus_process_candidate {
-            Some(candidate)
-                if candidate.process_id == process_id
-                    && same_process_name(&candidate.process_name, process_name)
-                    && candidate.creation_time == creation_time
-                    && same_executable_path(
-                        Path::new(&candidate.executable_path),
-                        Path::new(executable_path),
-                    ) =>
-            {
-                now.duration_since(candidate.first_seen).as_millis()
-                    >= u128::from(stability_delay_ms)
-            }
-            _ => {
-                self.focus_process_candidate = Some(FocusProcessCandidate {
-                    process_id,
-                    process_name: process_name.to_owned(),
-                    executable_path: executable_path.to_owned(),
-                    creation_time,
-                    first_seen: now,
-                });
-                false
-            }
-        }
-    }
-
-    fn apply_focus_process_priority_group(
-        &mut self,
-        group: FocusProcessPriorityGroup<'_>,
-        priority_efficiency_controller: &mut PriorityEfficiencyController,
-        allow_cross_session_process_control: bool,
-        action_log: &mut ActionLog,
-    ) -> FocusProcessPriorityGroupResult {
-        let FocusProcessPriorityGroup {
-            foreground_id,
-            foreground_process_name,
-            targets,
-            stability_delay_ms,
-            priority,
-            preservation,
-        } = group;
-        let mut result = FocusProcessPriorityGroupResult::default();
-        let foreground_name = foreground_process_name.unwrap_or("").trim();
-        if foreground_name.is_empty() || targets.is_empty() {
-            if let Some(error) = self.clear_focus_process_priority(
-                priority_efficiency_controller,
-                true,
-                action_log,
-                "foreground process is not eligible",
-            ) {
-                result.failures.merge(error);
-            }
-            return result;
-        }
-
-        let Some((foreground_path, foreground_creation_time)) =
-            targets.iter().find_map(|(id, _, path, creation_time)| {
-                (*id == foreground_id).then_some((path.as_str(), *creation_time))
-            })
-        else {
-            if let Some(error) = self.clear_focus_process_priority(
-                priority_efficiency_controller,
-                true,
-                action_log,
-                "foreground process identity unavailable",
-            ) {
-                result.failures.merge(error);
-            }
-            return result;
-        };
-        if !self.foreground_boost_stable(
-            foreground_id,
-            foreground_name,
-            foreground_path,
-            foreground_creation_time,
-            stability_delay_ms,
-        ) {
-            if let Some(error) = self.clear_focus_process_priority(
-                priority_efficiency_controller,
-                false,
-                action_log,
-                "foreground app changed before stability delay",
-            ) {
-                result.failures.merge(error);
-            }
-            return result;
-        }
-
-        let active_targets = targets
-            .iter()
-            .map(|(process_id, _, executable_path, creation_time)| {
-                ProcessTargetKey::new(*process_id, *creation_time, Path::new(executable_path))
-            })
-            .collect::<BTreeSet<_>>();
-        self.merge_controller_release(
-            priority_efficiency_controller.release_priority_policy_except(
-                ControlOwner::AdaptiveEngineProcessFocusPriority,
-                &active_targets,
-            ),
-            action_log,
-            "foreground focus changed",
-            "focus process priority",
-            &mut result.failures,
-        );
-
-        let mut auto_excluded_processes = BTreeSet::new();
-        for (process_id, process_name, executable_path, creation_time) in targets {
-            if self.is_executable_path_suppressed(
-                *process_id,
-                process_name,
-                executable_path,
-                action_log,
-                &mut auto_excluded_processes,
-            ) {
-                result.skipped += 1;
-                continue;
-            }
-            match priority_efficiency_controller.apply_priority_claim(
-                PriorityClassClaim {
-                    target: ProcessControlTarget::automatic(
-                        *process_id,
-                        process_name.clone(),
-                        PathBuf::from(executable_path),
-                        *creation_time,
-                    ),
-                    owner: ControlOwner::AdaptiveEngineProcessFocusPriority,
-                    priority,
-                    preservation,
-                },
-                allow_cross_session_process_control,
-            ) {
-                Ok(ProcessPropertyApplyOutcome::Applied) => {
-                    self.clear_process_failure(executable_path);
-                    action_log.record(
-                        ActionLogFeature::AdaptiveEngine,
-                        Some(*process_id),
-                        process_name.clone(),
-                        ActionLogResult::Applied,
-                        format!("Set focus process priority to {}.", priority.label()),
-                    );
-                }
-                Ok(ProcessPropertyApplyOutcome::Preserved) => {
-                    self.clear_process_failure(executable_path);
-                    result.skipped += 1;
-                }
-                Ok(
-                    ProcessPropertyApplyOutcome::Unchanged | ProcessPropertyApplyOutcome::Shadowed,
-                ) => self.clear_process_failure(executable_path),
-                Err(ProcessControlError::ProcessExited) => result.skipped += 1,
-                Err(ProcessControlError::AccessDenied(error)) => {
-                    result.skipped += 1;
-                    self.failure_suppression
-                        .suppress_process_failure(executable_path);
-                    action_log.record(
-                        ActionLogFeature::AdaptiveEngine,
-                        Some(*process_id),
-                        process_name.clone(),
-                        ActionLogResult::Skipped,
-                        error,
-                    );
-                }
-                Err(error) => {
-                    self.record_process_failure(executable_path);
-                    result.failures.record_control_error(
-                        "Set Focus Process Priority",
-                        *process_id,
-                        process_name,
-                        error,
-                        action_log,
-                    );
-                }
-            }
-        }
-
-        result.auto_excluded_processes = auto_excluded_processes.into_iter().collect();
-        result
     }
 
     fn update_adaptive_engine_process_sample(
@@ -1878,6 +1417,7 @@ impl AdaptiveEngineProcessManager {
                 tier,
                 previous_cpu_time: None,
                 last_usage_tenths: None,
+                pressure_restraint: PressureRestraintEpisode::default(),
                 below_since: None,
                 active_since: None,
                 selected: false,
@@ -1895,6 +1435,7 @@ impl AdaptiveEngineProcessManager {
         state.last_usage_tenths = None;
         let Some(usage) = usage else {
             state.clear_restraint();
+            state.pressure_restraint = PressureRestraintEpisode::default();
             return None;
         };
         state.last_usage_tenths = Some(percent_tenths(usage));
@@ -1931,32 +1472,6 @@ impl AdaptiveEngineProcessManager {
         }
         state.clear_restraint();
         None
-    }
-
-    fn update_foreground_cpu_usage(
-        &mut self,
-        foreground_process_ids: &[(u32, u64)],
-    ) -> Option<f32> {
-        if foreground_process_ids.is_empty() {
-            self.foreground_cpu_sample = None;
-            return None;
-        }
-
-        let Some(current) = process_group_cpu_sample(foreground_process_ids) else {
-            self.foreground_cpu_sample = None;
-            return None;
-        };
-        let usage = self
-            .foreground_cpu_sample
-            .as_ref()
-            .and_then(|(previous_ids, previous)| {
-                (previous_ids == foreground_process_ids
-                    && current.cpu_time_100ns >= previous.cpu_time_100ns)
-                    .then_some(*previous)
-                    .and_then(|previous| process_cpu_usage_percent(previous, current))
-            });
-        self.foreground_cpu_sample = Some((foreground_process_ids.to_vec(), current));
-        usage
     }
 
     #[expect(
@@ -2086,23 +1601,6 @@ fn cached_executable_path(
         .ok()?;
     executable_paths.insert(process.id, path.clone());
     Some(path)
-}
-
-fn adaptive_engine_process_priority_value(
-    priority: ProcessPrioritySetting,
-) -> Option<PriorityClassValue> {
-    PriorityClassValue::from_setting(priority)
-}
-
-fn adaptive_engine_process_priority_target_key(
-    process_id: u32,
-    target: &PriorityTarget,
-) -> ProcessTargetKey {
-    ProcessTargetKey::new(
-        process_id,
-        target.creation_time,
-        Path::new(&target.executable_path),
-    )
 }
 
 #[cfg(test)]

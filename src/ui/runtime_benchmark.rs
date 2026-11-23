@@ -7,8 +7,12 @@ use super::presets::{apply_built_in_adaptive_engine_preset, BuiltInAdaptiveEngin
 use crate::{
     acquire_single_instance,
     application::settings::RuntimeSettingsSnapshot,
-    backend::{automation::RuntimeHandle, crash_recovery, privilege},
-    config::{ProcessExclusionRule, ProcessThreadPrioritySetting, Settings},
+    backend::{
+        automation::{RuntimeHandle, RuntimeStatusSnapshot},
+        crash_recovery, privilege,
+    },
+    config::{ProcessExclusionRule, Settings},
+    control::power_plan::PowerPlanOwner,
     power,
     win_util::NamedMutexGuard,
 };
@@ -24,6 +28,7 @@ use std::{
 #[serde(default, deny_unknown_fields)]
 struct BenchmarkRequest {
     benchmark_host_path: Option<String>,
+    adaptive_engine_enabled: Option<bool>,
     dynamic_resource_zones_enabled: Option<bool>,
     limit_background_processors_enabled: Option<bool>,
     cpu_pressure_restraint_enabled: Option<bool>,
@@ -36,6 +41,9 @@ struct BenchmarkRequest {
 
 impl BenchmarkRequest {
     fn apply(self, settings: &mut Settings) -> Result<(), String> {
+        if let Some(enabled) = self.adaptive_engine_enabled {
+            settings.adaptive_engine.enabled = enabled;
+        }
         let process = &mut settings.adaptive_engine_process;
         if let Some(path) = self.benchmark_host_path {
             if !Path::new(&path).is_absolute() {
@@ -99,29 +107,34 @@ fn settings_for(case: &str) -> Result<Settings, String> {
                 BuiltInAdaptiveEnginePreset::Balanced,
             );
             settings.adaptive_engine.enabled = true;
+            settings.adaptive_engine.adaptive_processor_power_enabled = true;
+            settings.adaptive_engine.base_processor_policy =
+                power::ProcessorPowerValues::new_with_boost_mode(
+                    25,
+                    5,
+                    95,
+                    60,
+                    power::ProcessorBoostMode::EfficientEnabled,
+                );
         }
-        "Speed"
-        | "SpeedThreadDefault"
-        | "SpeedThreadDefaultPowerOff"
-        | "SpeedRestraint"
-        | "SpeedRestraintThreadDefault" => {
+        "Speed" | "SpeedPowerOff" | "SpeedRestraint" => {
             apply_built_in_adaptive_engine_preset(
                 &mut settings,
                 BuiltInAdaptiveEnginePreset::Speed,
             );
             settings.adaptive_engine.enabled = true;
-            if case.contains("ThreadDefault") {
-                settings
-                    .adaptive_engine_process
-                    .thread_priority
-                    .foreground_priority = ProcessThreadPrioritySetting::Default;
-            }
-            if case.ends_with("PowerOff") {
-                settings.adaptive_engine.processor_power_policy_enabled = false;
-            }
+            settings.adaptive_engine.adaptive_processor_power_enabled = case != "SpeedPowerOff";
+            settings.adaptive_engine.base_processor_policy =
+                power::ProcessorPowerValues::new_with_boost_mode(
+                    100,
+                    25,
+                    100,
+                    100,
+                    power::ProcessorBoostMode::Aggressive,
+                );
             settings
                 .adaptive_engine_process
-                .cpu_pressure_restraint_enabled = case.contains("Restraint");
+                .cpu_pressure_restraint_enabled = case == "SpeedRestraint";
         }
         _ => return Err(format!("Unknown benchmark case: {case}")),
     }
@@ -204,6 +217,19 @@ fn acquire_benchmark_session() -> Result<NamedMutexGuard, String> {
     Ok(guard)
 }
 
+fn runtime_ready(settings: &Settings, status: &RuntimeStatusSnapshot) -> bool {
+    if !settings.general.enabled {
+        return true;
+    }
+    let power_ready = !settings.adaptive_engine.adaptive_processor_power_enabled
+        || status.power_plan_status.owner == Some(PowerPlanOwner::AdaptiveProcessorPower);
+    let process = &status.feature_status.adaptive_engine_process;
+    let process_ready = !settings.adaptive_engine.enabled
+        || !settings.adaptive_engine_process.has_enabled_policies()
+        || (process.enabled && !process.observation_paused);
+    power_ready && process_ready
+}
+
 fn run(path: &Path, case: &str) -> Result<(), String> {
     if !path.is_dir() {
         return Err("Benchmark directory does not exist".to_owned());
@@ -212,7 +238,7 @@ fn run(path: &Path, case: &str) -> Result<(), String> {
         return Err("Benchmark host must run elevated".to_owned());
     }
     let _guard = acquire_benchmark_session()?;
-    let settings = export_settings(path, case)?;
+    let settings = Arc::new(export_settings(path, case)?);
     let topology = crate::features::cpu_control::cpu_allocation::logical_processors();
     let mut topology_csv = "index,core,kind,efficiency_class\n".to_owned();
     for cpu in topology {
@@ -236,11 +262,10 @@ fn run(path: &Path, case: &str) -> Result<(), String> {
     if let Some(error) = crash_recovery::startup_error() {
         return Err(error);
     }
-    let enabled = settings.adaptive_engine.enabled;
     let runtime = RuntimeHandle::start(&RuntimeSettingsSnapshot {
         runtime_revision: Default::default(),
         persisted_revision: Default::default(),
-        value: Arc::new(settings),
+        value: Arc::clone(&settings),
     });
     let result = (|| {
         let start = Instant::now();
@@ -251,24 +276,23 @@ fn run(path: &Path, case: &str) -> Result<(), String> {
                 break;
             }
             if let Some(status) = runtime.status_snapshot_since(0) {
-                if let Some(error) = &status.worker_error {
+                if let Some(error) = status
+                    .power_plan_status
+                    .adaptive_processor_power_error
+                    .as_ref()
+                    .or(status.worker_error.as_ref())
+                {
                     return Err(error.clone());
                 }
                 let adaptive = &status.feature_status.adaptive_engine_process;
                 samples.push_str(&format!(
-                    "elapsed={:.1} pressure={} foreground_cpu_tenths={:?} scanned={} adjusted={} failed={} error={:?}\n",
+                    "elapsed={:.1} pressure={} foreground_cpu_tenths={:?} paused={} scanned={} adjusted={} failed={} error={:?}\n",
                     start.elapsed().as_secs_f64(), adaptive.cpu_pressure_restraint_active,
-                    adaptive.foreground_cpu_usage_tenths, adaptive.scanned_processes,
+                    adaptive.foreground_cpu_usage_tenths, adaptive.observation_paused,
+                    adaptive.scanned_processes,
                     adaptive.adjusted_processes, adaptive.failed_processes, adaptive.last_error,
                 ));
-                if !ready
-                    && (!enabled
-                        || status
-                            .feature_status
-                            .adaptive_engine_process
-                            .scanned_processes
-                            > 0)
-                {
+                if !ready && runtime_ready(&settings, &status) {
                     write(path, "ready.txt", &original)?;
                     ready = true;
                 }

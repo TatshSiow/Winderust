@@ -401,7 +401,7 @@ fn time_rule_status_requires_enabled_and_confirmed_runtime_plan() {
         rule_status(RuleRef::Time(&rule), true, false, &status),
         "common.waiting"
     );
-    status.owner = Some(PowerPlanOwner::AdaptiveEngine);
+    status.owner = Some(PowerPlanOwner::AdaptiveProcessorPower);
     assert_eq!(
         rule_status(RuleRef::Time(&rule), true, true, &status),
         "common.waiting"

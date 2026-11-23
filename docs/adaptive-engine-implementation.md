@@ -1,8 +1,8 @@
 # Adaptive Engine Implementation
 
-Adaptive Engine combines processor power policy, Background Efficiency, and
-workload-aware CPU scheduling. It extends existing managers instead of creating
-a second automation engine.
+Adaptive Engine lives under CPU Control and provides CPU Pressure Restraint and optional processor placement.
+Adaptive Processor Power is configured under Power Plan Control. Both features
+use the shared automation runtime and foreground demand observations.
 
 ## Components
 
@@ -10,10 +10,8 @@ a second automation engine.
   preset values.
 - `src/backend/automation/runner.rs` collects demand signals, selects the active processor-power
   profile, and coordinates feature policies and controllers.
-- `src/features/winderust_features/adaptive_engine_process.rs` implements the internal
-  CPU-pressure, target-selection, hysteresis, and priority-assist policy.
-- `src/features/winderust_features/background_efficiency.rs` selects eligible targets and submits
-  Background Efficiency claims.
+- `src/features/winderust_features/adaptive_engine_process.rs` implements pressure
+  detection, temporary background priority restraint, and placement policy.
 - `src/control/priority_efficiency.rs`, `src/control/cpu_allocation.rs`, and
   `src/control/power_plan.rs` own live mutations, baselines, compensation, and restoration.
 - `src/power/powercfg.rs` provides typed power-plan operations; raw power APIs remain in
@@ -24,25 +22,21 @@ a second automation engine.
 
 ## Presets
 
-The preset definitions live in `src/ui/adaptive_presets.rs` and combine processor values
-with internal scheduling presets:
+The preset definitions live in `src/ui/adaptive_presets.rs` and apply CPU Behaviour settings.
 
-| Preset | Processor policy | Scheduling preset |
-| --- | --- | --- |
-| Power Save - Dynamic | Maximum 45%, boost disabled | Low Impact |
-| Balanced - Dynamic | Maximum 95%, efficient boost | Low Impact |
-| Performance - Fixed | Minimum 25%, maximum 100%, efficient aggressive boost | Foreground First |
-| Speed - Fixed maximum | Minimum 25%, maximum 100%, aggressive boost | Max Foreground |
+Power Save, Balanced, Performance, and Speed select scheduling values. Custom
+presets capture CPU Behaviour tuning, including its three switches and both
+allocation configurations. Applying a preset leaves Adaptive Processor Power,
+the master switch, and custom rules under their own controls. Existing custom
+preset records retain their stored power values when CPU Behaviour tuning is edited.
 
-Custom presets capture Adaptive Engine tuning, including the three CPU Behaviour switches and
-both independent allocation configurations. Application/Adaptive master switches, exclusions,
-and the separate Background Efficiency feature stay independently owned. Live and preset views
-share CPU Behaviour, Processor Power, and Priority Control controls; custom edits remain in the
-modal draft until saved. Built-ins are read-only. Disabled policies remain editable.
+Custom edits remain in the modal draft until saved. Built-ins are read-only.
+Disabled policies remain editable.
 
 CPU Behaviour has shared detection/timing followed by three independent policies:
 
-- **CPU Pressure Restraint** adjusts eligible priority, efficiency, and memory policy under pressure.
+- **CPU Pressure Restraint** temporarily lowers the priority of background apps
+  with sustained CPU demand during aggregate CPU pressure.
 - **Limit Background Processors** restricts background candidates only, using its own selector,
   percentage/custom mask, and soft/hard method. It never narrows foreground access.
 - **Dynamic Resource Zones (Experimental)** uses separate settings and complementary CPU Sets (Soft).
@@ -92,28 +86,31 @@ migration or copying from the limiter is performed.
 
 ## Runtime Behavior
 
-- Every preset with processor policy enabled uses a temporary managed `Winderust Adaptive` plan.
-  The selected preset supplies the processor baseline, while current CPU, foreground, launch, and
-  I/O demand selects Idle, Responsive, Background Pressure, or Focus and Launch values. Demand can raise the preset
-  immediately; de-escalation uses a short hysteresis delay. Background-dominant CPU pressure uses
-  Background Pressure, while app launches and genuinely heavy Focus Process demand use Focus and Launch. The A/C and Battery
-  boost policy/mode values for both contexts are editable and stored with the Adaptive preset.
+- Adaptive Processor Power uses a temporary managed `Winderust Adaptive` plan when enabled for
+  the current source. Its saved Base Processor Policy supplies the processor baseline. Current
+  CPU, foreground, launch, and I/O demand select Idle, Responsive, Background Pressure, or Focus
+  and Launch. Transitions to lower-demand profiles use the existing delay. The page exposes the
+  boost policy and mode for Background Pressure and Focus and Launch.
 - Winderust applies EcoQoS to itself while the low-power Adaptive Engine path is active.
 - Background Efficiency and Adaptive Engine policy submit typed claims through RuntimeCore. Each
   controller revalidates exact identity, access, protection, and cross-session policy before a
   mutation.
 - Adaptive Engine checks CPU pressure at the configured reaction interval whenever any CPU
-  Behaviour policy is enabled. Foreground and process
-  lifecycle events may schedule an immediate safety pass and release obsolete foreground roles.
-  CPU Pressure Restraint adjusts eligible Visible Window and Background process priority and
-  efficiency according to shared CPU pressure. The restraint candidate limit bounds the separate
-  ranking for background CPU placement and Visible Window or Background memory priority. This
-  ranking uses each app's CPU demand with a small selection-stability bias. Foreground memory
-  priority has separate eligibility within CPU Pressure Restraint. Moving between Visible Window
-  and Background restarts CPU sampling and restraint qualification for the new role.
-- When a selected process enters recovery, Winderust withdraws its background processor limit.
-  The candidate can retain its memory priority adjustment until recovery completes. Renewed CPU
-  demand cancels recovery.
+  Behaviour policy is enabled. It checks foreground identity and samples CPU use before scanning
+  for background candidates under pressure. Quiet passes still reconcile existing claims.
+  Foreground and process lifecycle events may schedule an immediate safety pass to release
+  obsolete foreground roles.
+  Restraint requires two continuous hot observations at least one reaction
+  interval apart for the same process instance. It submits a temporary Normal to
+  Below Normal priority claim. Focused apps and their process groups, apps with
+  visible windows, active audio, and exclusions are protected. Saved Process
+  Priority and Background Efficiency take precedence.
+- Each policy ranks its own eligible candidates within the configured limit.
+  Priority restoration follows the app's minimum hold and recovery settings
+  during continued aggregate pressure. A higher-ranked candidate can take an
+  occupied slot. Loss of aggregate pressure, a protected role, or unavailable
+  required observations withdraw the priority claim. The background processor
+  limit yields when its candidate enters recovery.
 - Missing per-process samples or invalid CPU deltas discard that target's old
   baseline and restraint/recovery episode. Re-entry requires a fresh valid interval;
   skipped/excluded targets cannot retain stale candidate tracking.
@@ -122,11 +119,14 @@ migration or copying from the limiter is performed.
   the existing rebalance interval or a meaningful load improvement. Fixed topology and custom
   selections do not rebalance. Least-used selection requires a fresh load interval after sampling
   pauses.
-- Existing throttling, priority, CPU Set, affinity, and power-plan state is restored when its
+- Existing priority, CPU Set, affinity, and power-plan state is restored when its
   claim is released or Winderust shuts down. The watchdog independently restores committed
   externally persistent state after an abnormal exit.
-- Processor-power demand keeps its independent 500 ms sampling deadline; changing Adaptive Engine
-  reaction time does not change Processor Power behavior.
+- Adaptive Processor Power samples foreground workload, aggregate CPU use and per-processor load
+  at its own 500 ms cadence, including when all CPU Behaviour policies are off. It reuses the
+  foreground process generations and counters when both consumers run in the same cycle.
+  A known foreground workload below 25% and system usage at or above 75% select Background
+  Pressure outside Focus and Launch. CPU Pressure Restraint tuning controls priority claims.
 
 ## Ownership and Recovery
 

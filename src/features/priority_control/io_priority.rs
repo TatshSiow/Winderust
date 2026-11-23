@@ -16,8 +16,9 @@ use crate::{
         process::{ControlOwner, ProcessControlError, ProcessControlTarget, ProcessTargetKey},
     },
     foreground::{
-        contains_process_name, process_count_label, process_executable_path, process_failure_key,
-        process_session_id, ProtectedProcesses, CORE_BUILT_IN_PROCESS_EXCLUSIONS,
+        contains_process_name, is_foreground_process, process_count_label, process_executable_path,
+        process_failure_key, process_session_id, ProtectedProcesses,
+        CORE_BUILT_IN_PROCESS_EXCLUSIONS,
     },
     rules::{execution_failure_suppression_threshold, ExecutionFailureTracker},
     runtime::observations::CycleObservations,
@@ -51,7 +52,6 @@ impl IoPriorityManager {
     pub fn update(
         &mut self,
         controller: &mut IoPriorityController,
-        owner: ControlOwner,
         settings: &IoPrioritySettings,
         automation_enabled: bool,
         allow_cross_session_process_control: bool,
@@ -120,8 +120,6 @@ impl IoPriorityManager {
         };
 
         let scanned_processes = processes.len();
-        let adaptive_workload = (owner == ControlOwner::AdaptiveEngine)
-            .then(|| observations.adaptive_workload(processes.as_ref()));
         let foreground_executable_path = if settings.foreground_detection_enabled {
             foreground_process_id.and_then(|id| {
                 processes
@@ -156,13 +154,11 @@ impl IoPriorityManager {
             };
             let path = Path::new(&executable_path);
             let foreground = settings.foreground_detection_enabled
-                && super::foreground_for_owner(
-                    owner,
-                    process,
+                && is_foreground_process(
+                    process.id,
                     path,
                     foreground_process_id,
                     foreground_executable_path.as_deref(),
-                    adaptive_workload.as_deref(),
                 );
             let visible_window = !foreground
                 && settings.visible_window_detection_enabled
@@ -225,7 +221,7 @@ impl IoPriorityManager {
                         PathBuf::from(executable_path.as_str()),
                         creation_time,
                     ),
-                    owner,
+                    owner: ControlOwner::IoPriority,
                     priority,
                     preservation,
                 },

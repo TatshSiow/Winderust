@@ -7,7 +7,6 @@ pub const ADAPTIVE_POWER_DEESCALATION_DELAY: Duration = Duration::from_secs(5);
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AdaptivePowerDemand {
     pub focus_and_launch_profile_active: bool,
-    pub background_pressure_active: bool,
     pub total_cpu_percent: Option<f32>,
     pub peak_cpu_percent: Option<f32>,
     pub performance_peak_cpu_percent: Option<f32>,
@@ -469,7 +468,9 @@ impl AdaptivePowerProfile {
                 .is_some_and(|usage| usage >= 25.0)
         {
             Self::FocusAndLaunch
-        } else if demand.background_pressure_active && demand.foreground_cpu_percent.is_some() {
+        } else if demand.total_cpu_percent.is_some_and(|usage| usage >= 75.0)
+            && demand.foreground_cpu_percent.is_some()
+        {
             Self::BackgroundPressure
         } else if demand.total_cpu_percent.is_some_and(|usage| usage >= 85.0)
             || demand.peak_cpu_percent.is_some_and(|usage| usage >= 85.0)
@@ -509,15 +510,6 @@ impl AdaptivePowerProfile {
             Self::Responsive
         } else {
             Self::Idle
-        }
-    }
-
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::Idle => "Idle",
-            Self::Responsive => "Responsive",
-            Self::BackgroundPressure => "Background Pressure",
-            Self::FocusAndLaunch => "Focus and Launch",
         }
     }
 
@@ -697,7 +689,6 @@ mod adaptive_tests {
     fn demand() -> AdaptivePowerDemand {
         AdaptivePowerDemand {
             focus_and_launch_profile_active: false,
-            background_pressure_active: false,
             total_cpu_percent: Some(0.0),
             peak_cpu_percent: Some(0.0),
             performance_peak_cpu_percent: None,
@@ -837,7 +828,6 @@ mod adaptive_tests {
         );
         assert_eq!(
             AdaptivePowerProfile::for_demand(AdaptivePowerDemand {
-                background_pressure_active: true,
                 total_cpu_percent: Some(95.0),
                 peak_cpu_percent: Some(100.0),
                 foreground_cpu_percent: Some(5.0),
@@ -847,7 +837,6 @@ mod adaptive_tests {
         );
         assert_eq!(
             AdaptivePowerProfile::for_demand(AdaptivePowerDemand {
-                background_pressure_active: true,
                 total_cpu_percent: Some(95.0),
                 foreground_cpu_percent: None,
                 ..demand()
@@ -856,7 +845,6 @@ mod adaptive_tests {
         );
         assert_eq!(
             AdaptivePowerProfile::for_demand(AdaptivePowerDemand {
-                background_pressure_active: true,
                 foreground_cpu_percent: Some(25.0),
                 ..demand()
             }),

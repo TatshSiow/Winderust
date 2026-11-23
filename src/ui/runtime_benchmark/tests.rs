@@ -6,17 +6,18 @@ fn benchmark_cases_change_only_the_named_tuning() {
     let mut expected = Settings::default();
     apply_built_in_adaptive_engine_preset(&mut expected, BuiltInAdaptiveEnginePreset::Speed);
     expected.adaptive_engine.enabled = true;
+    expected.adaptive_engine.adaptive_processor_power_enabled = true;
+    expected.adaptive_engine.base_processor_policy =
+        power::ProcessorPowerValues::new_with_boost_mode(
+            100,
+            25,
+            100,
+            100,
+            power::ProcessorBoostMode::Aggressive,
+        );
     assert_eq!(speed, expected);
-    expected
-        .adaptive_engine_process
-        .thread_priority
-        .foreground_priority = ProcessThreadPrioritySetting::Default;
-    assert_eq!(settings_for("SpeedThreadDefault").unwrap(), expected);
-    expected.adaptive_engine.processor_power_policy_enabled = false;
-    assert_eq!(
-        settings_for("SpeedThreadDefaultPowerOff").unwrap(),
-        expected
-    );
+    expected.adaptive_engine.adaptive_processor_power_enabled = false;
+    assert_eq!(settings_for("SpeedPowerOff").unwrap(), expected);
     assert!(!settings_for("Default").unwrap().general.enabled);
     assert_eq!(
         settings_for("DefaultPCores").unwrap(),
@@ -32,7 +33,42 @@ fn benchmark_cases_change_only_the_named_tuning() {
 }
 
 #[test]
-fn balanced_export_matches_the_canonical_preset_and_roundtrips() {
+fn runtime_readiness_only_requires_the_enabled_adaptive_policies() {
+    let mut settings = Settings::default();
+    let mut status = RuntimeStatusSnapshot::default();
+    assert!(runtime_ready(&settings, &status));
+
+    settings.adaptive_engine.adaptive_processor_power_enabled = true;
+    Arc::make_mut(&mut status.power_plan_status).owner = Some(PowerPlanOwner::OrdinaryAutomation);
+    assert!(!runtime_ready(&settings, &status));
+    Arc::make_mut(&mut status.power_plan_status).owner =
+        Some(PowerPlanOwner::AdaptiveProcessorPower);
+    assert!(runtime_ready(&settings, &status));
+
+    settings
+        .adaptive_engine_process
+        .cpu_pressure_restraint_enabled = true;
+    assert!(runtime_ready(&settings, &status));
+    settings.adaptive_engine.enabled = true;
+    assert!(!runtime_ready(&settings, &status));
+    Arc::make_mut(&mut status.feature_status)
+        .adaptive_engine_process
+        .enabled = true;
+    assert!(runtime_ready(&settings, &status));
+
+    Arc::make_mut(&mut status.power_plan_status).owner = None;
+    assert!(!runtime_ready(&settings, &status));
+    settings.adaptive_engine.adaptive_processor_power_enabled = false;
+    assert!(runtime_ready(&settings, &status));
+
+    Arc::make_mut(&mut status.feature_status)
+        .adaptive_engine_process
+        .observation_paused = true;
+    assert!(!runtime_ready(&settings, &status));
+}
+
+#[test]
+fn balanced_export_matches_the_process_preset_and_separate_power_tuning() {
     let path = std::env::temp_dir().join(format!(
         "winderust-benchmark-settings-{}-{}",
         std::process::id(),
@@ -45,6 +81,15 @@ fn balanced_export_matches_the_canonical_preset_and_roundtrips() {
     let mut expected = Settings::default();
     apply_built_in_adaptive_engine_preset(&mut expected, BuiltInAdaptiveEnginePreset::Balanced);
     expected.adaptive_engine.enabled = true;
+    expected.adaptive_engine.adaptive_processor_power_enabled = true;
+    expected.adaptive_engine.base_processor_policy =
+        power::ProcessorPowerValues::new_with_boost_mode(
+            25,
+            5,
+            95,
+            60,
+            power::ProcessorBoostMode::EfficientEnabled,
+        );
     assert_eq!(export_settings(&path, "Balanced").unwrap(), expected);
     assert!(
         !expected
@@ -83,6 +128,7 @@ fn balanced_request_changes_only_explicit_overrides() {
     let mut settings = settings_for("Balanced").unwrap();
     let mut expected = settings.clone();
     let request: BenchmarkRequest = serde_json::from_value(serde_json::json!({
+        "adaptive_engine_enabled": false,
         "dynamic_resource_zones_enabled": true,
         "limit_background_processors_enabled": false,
         "cpu_pressure_restraint_enabled": true,
@@ -93,6 +139,7 @@ fn balanced_request_changes_only_explicit_overrides() {
         "background_pressure_ac_boost_mode": "disabled"
     }))
     .unwrap();
+    expected.adaptive_engine.enabled = false;
     let process = &mut expected.adaptive_engine_process;
     process.dynamic_resource_zones_enabled = true;
     process.limit_background_processors_enabled = false;

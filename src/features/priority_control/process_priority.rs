@@ -57,7 +57,7 @@ struct ProcessPriorityTarget {
 impl ProcessPriorityManager {
     #[expect(
         clippy::too_many_arguments,
-        reason = "the policy boundary receives shared observations, exclusions, and its controller"
+        reason = "the policy boundary receives shared observations and its controller"
     )]
     pub(crate) fn update(
         &mut self,
@@ -66,7 +66,6 @@ impl ProcessPriorityManager {
         automation_enabled: bool,
         allow_cross_session_process_control: bool,
         foreground_process_id: Option<u32>,
-        excluded_process_ids: &BTreeSet<u32>,
         observations: &mut CycleObservations,
         action_log: &mut ActionLog,
     ) -> ProcessPrioritySnapshot {
@@ -140,7 +139,6 @@ impl ProcessPriorityManager {
                 || process.id == current_process_id
                 || process.is_critical != Some(false)
                 || !process.can_set_information
-                || excluded_process_ids.contains(&process.id)
                 || (!allow_cross_session_process_control
                     && process_session_id(process.id) != Some(current_session_id))
                 || is_builtin_excluded(&process.name)

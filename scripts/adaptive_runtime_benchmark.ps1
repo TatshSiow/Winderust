@@ -270,10 +270,10 @@ public static class AdaptiveRuntimeCpuSets {
         if ([IO.File]::ReadAllText((Join-Path $directory 'settings.json')) -ne $settingsJson) {
             throw 'The production runtime settings differ from the exported Balanced settings.'
         }
-        if ($effectiveSettings.adaptive_engine.processor_power_policy_enabled) {
+        if ($effectiveSettings.adaptive_engine.adaptive_processor_power_enabled) {
             while ((Get-ActiveSchemeGuid) -eq $balancedGuid) {
                 if ($process.HasExited -or [DateTime]::UtcNow -gt $deadline) {
-                    throw 'Adaptive Engine did not activate its managed processor power policy.'
+                    throw 'Adaptive Processor Power did not activate its managed power plan.'
                 }
                 Start-Sleep -Milliseconds 100
             }

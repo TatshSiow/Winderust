@@ -889,6 +889,9 @@ fn atomic_write_replaces_existing_file() {
 
 #[test]
 fn toml_round_trip_preserves_settings() {
+    let mut adaptive_engine = AdaptiveEngineSettings::default();
+    adaptive_engine.enabled = true;
+    adaptive_engine.adaptive_processor_power_enabled = true;
     let mut settings = Settings {
         general: GeneralSettings {
             enabled: false,
@@ -915,20 +918,7 @@ fn toml_round_trip_preserves_settings() {
             expose_all_priority_values: true,
             show_advanced_controls: true,
         },
-        adaptive_engine: AdaptiveEngineSettings {
-            enabled: true,
-            processor_power_policy_enabled: true,
-            base_processor_policy: crate::power::plan::ProcessorPowerValues::new_with_boost_mode(
-                0,
-                5,
-                45,
-                0,
-                crate::power::plan::ProcessorBoostMode::Disabled,
-            ),
-            background_pressure_profile:
-                crate::power::AdaptivePowerBoostValues::BACKGROUND_PRESSURE,
-            focus_and_launch_profile: crate::power::AdaptivePowerBoostValues::FOCUS_AND_LAUNCH,
-        },
+        adaptive_engine,
         adaptive_engine_presets: vec![AdaptiveEnginePreset {
             name: "Quiet work".to_owned(),
             processor_power_policy_enabled: true,
@@ -1329,6 +1319,38 @@ fn toml_round_trip_preserves_settings() {
 
         assert_eq!(parsed, settings);
     }
+}
+
+#[test]
+fn saved_adaptive_power_tuning_does_not_enable_the_independent_policy() {
+    let mut settings = Settings::default();
+    settings.adaptive_engine.enabled = true;
+    settings
+        .adaptive_engine
+        .base_processor_policy
+        .performance_max = 83;
+    settings
+        .adaptive_engine
+        .background_pressure_profile
+        .ac_policy = 61;
+    settings
+        .battery_profile_mut()
+        .adaptive_engine
+        .focus_and_launch_profile
+        .battery_policy = 38;
+    let mut file = toml::Value::try_from(&settings).unwrap();
+    let old_adaptive = |source: &mut toml::Value| {
+        let table = source["adaptive_engine"].as_table_mut().unwrap();
+        table.remove("adaptive_processor_power_enabled");
+        table.insert("processor_power_policy_enabled".into(), true.into());
+    };
+    old_adaptive(&mut file);
+    old_adaptive(&mut file["on_battery"]);
+
+    let loaded: Settings = file.try_into().unwrap();
+    assert_eq!(loaded, settings);
+    let saved = toml::to_string(&loaded).unwrap();
+    assert!(!saved.contains("processor_power_policy_enabled"));
 }
 
 #[test]

@@ -656,6 +656,44 @@ pub fn process_candidates_from_processes(processes: &[ProcessInfo]) -> Vec<Proce
 }
 
 pub fn list_processes() -> Result<Vec<ProcessInfo>, String> {
+    let mut processes = list_process_entries()?;
+    for process in &mut processes {
+        process.session_id = process_session_id(process.id);
+        let Some(handle) = open_process_for_query(process.id) else {
+            continue;
+        };
+        process.creation_time = handle.process_creation_time();
+        process.is_critical = process_critical_from_handle(&handle);
+        process.can_set_information = process_protection_from_handle(&handle) == Some(false)
+            && process_has_access(process.id, PROCESS_SET_INFORMATION);
+    }
+    Ok(processes)
+}
+
+pub(crate) fn list_process_ancestry(root: u32) -> Result<Vec<ProcessInfo>, String> {
+    let mut processes = list_process_entries()?;
+    let mut children = BTreeMap::<u32, Vec<u32>>::new();
+    for process in &processes {
+        if let Some(parent) = process.parent_id {
+            children.entry(parent).or_default().push(process.id);
+        }
+    }
+    let mut pending = vec![root];
+    let mut candidates = BTreeSet::new();
+    while let Some(id) = pending.pop() {
+        if candidates.insert(id) {
+            pending.extend(children.remove(&id).into_iter().flatten());
+        }
+    }
+    processes.retain(|process| candidates.contains(&process.id));
+    for process in &mut processes {
+        process.creation_time =
+            open_process_for_query(process.id).and_then(|handle| handle.process_creation_time());
+    }
+    Ok(processes)
+}
+
+fn list_process_entries() -> Result<Vec<ProcessInfo>, String> {
     let snapshot = process_snapshot()?;
     let mut entry = PROCESSENTRY32W {
         dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
@@ -671,7 +709,7 @@ pub fn list_processes() -> Result<Vec<ProcessInfo>, String> {
                 id: entry.th32ProcessID,
                 creation_time: None,
                 parent_id: (entry.th32ParentProcessID != 0).then_some(entry.th32ParentProcessID),
-                session_id: process_session_id(entry.th32ProcessID),
+                session_id: None,
                 user_name: None,
                 is_service_account: None,
                 is_critical: None,
@@ -686,15 +724,6 @@ pub fn list_processes() -> Result<Vec<ProcessInfo>, String> {
     }
     ensure_process_iteration_complete()?;
 
-    for process in &mut processes {
-        let Some(handle) = open_process_for_query(process.id) else {
-            continue;
-        };
-        process.creation_time = handle.process_creation_time();
-        process.is_critical = process_critical_from_handle(&handle);
-        process.can_set_information = process_protection_from_handle(&handle) == Some(false)
-            && process_has_access(process.id, PROCESS_SET_INFORMATION);
-    }
     Ok(processes)
 }
 
@@ -1048,6 +1077,10 @@ fn open_process_for_query(process_id: u32) -> Option<WinHandle> {
     // SAFETY: process_id came from a current snapshot and no inherited handle is requested.
     let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, process_id) };
     (!process.is_null()).then(|| WinHandle::new(process))
+}
+
+pub(crate) fn process_cpu_times(process_id: u32) -> Option<(u64, u64)> {
+    open_process_for_query(process_id)?.process_times().ok()
 }
 
 fn process_has_access(process_id: u32, desired_access: u32) -> bool {

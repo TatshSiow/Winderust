@@ -163,11 +163,11 @@ hover/press; background shading supplies feedback.
 - Within Adaptive Engine, CPU Behaviour has no separate master switch;
   CPU Pressure Restraint, Limit Background Processors, and Dynamic Resource Zones own independent switches and retain their
   configuration while Adaptive Engine is off.
-- Adaptive Engine uses the right-rail Info / Status / Presets tabs. Built-in presets are read-only; custom presets can be added, renamed, refreshed from the current tuning, and deleted. Presets exclude master enable switches, custom rules, exclusions, and the separate Background Efficiency feature. The preset editor spans the available modal width, and its control state remains independent from the live page rendered behind it.
-- Adaptive Engine and preset details share CPU Behaviour, Processor Power, and Priority Control tabs; the live page also exposes Custom Rules. Preset modal state is independent of the live page.
+- Adaptive Engine uses the right-rail Info / Status / Presets tabs. Built-in presets are read-only. Custom presets can be added, renamed, refreshed from the current CPU Behaviour tuning, and deleted. The live page also exposes Custom Rules. The preset editor spans the available modal width and keeps its own draft.
 - Priority Control uses Focus / Visible Window / Background dropdown columns and expandable detail cards. Turning a row off does not lock its configuration. Runtime precedence and protection rules live in [Runtime contracts](runtime-contracts.md).
-- Processor Power groups Base Processor Policy, Background Pressure Profile, and Focus and Launch Profile into one card per section with shared internal dividers. CPU Pressure Restraint and Limit Background Processors have independent switches; configuration remains editable while off.
-- Processor Power exposes separate editable A/C and Battery boost policy/mode values for Background Pressure and Focus and Launch. Background-dominant pressure selects Background Pressure; app launches and genuinely heavy Focus App demand select Focus and Launch. These values are part of Adaptive Engine presets rather than hidden runtime constants.
+- Adaptive Processor Power lives under Power Plan Control. Its A/C and Battery editors each have an enable switch, off by default, and use the shared Save and Discard flow. Base Processor Policy, Background Pressure Profile, and Focus and Launch Profile have their own cards with shared internal dividers. Configuration remains editable while the feature is off.
+- The Background Pressure and Focus and Launch cards show one boost policy and one boost mode for the selected power source. The Save notice reserves space below the editor so the last dropdown stays reachable while editing.
+- The Adaptive Processor Power Status rail reports live ownership, errors, and restoration. The source profile selected for editing can differ from the live power source.
 - Prefer one setting per row when possible.
 - Use collapsible setting groups for advanced or multi-row settings.
 - Multi-setting cards use subtle 1px neutral, theme-aware dividers between complete settings, with even inset spacing. Keep labels, descriptions, and associated controls together. Expanded groups separate their header and body with the same divider; single-setting cards have no extra leading/trailing rules. Use shared widgets helpers and preserve dense table styling.
@@ -190,8 +190,9 @@ hover/press; background shading supplies feedback.
   selector with an automation summary. A different selection opens the shared
   Save and Discard notice. Keep the active plan visible while a different plan
   is staged. If a read fails, show the read failure in the automation summary.
-  When Adaptive Engine owns the active plan, show the disabled selector and
-  Processor Power settings shortcut on one row.
+  When Adaptive Processor Power owns the active plan, show Winderust Adaptive
+  in the disabled selector next to its settings shortcut. Enable manual selection
+  after Windows confirms the plan release. Keep restoration status in the Status rail.
 - Power Plan Control exposes one Restore previous plan when no rule selects a
   plan switch beside the global A/C pause. It defaults off and applies to both
   power profiles. Help explains that every selected rule, including explicit

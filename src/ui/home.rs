@@ -1456,6 +1456,12 @@ fn enabled_features(
         by_time,
         t!("common.rule_count", count = settings.by_time.rules.len()).to_string()
     );
+    if settings.adaptive_engine.adaptive_processor_power_enabled {
+        entries.push((
+            Page::AdaptiveProcessorPower,
+            t!("common.enabled").into_owned(),
+        ));
+    }
     let cpu_limiter = &status.cpu_limiter;
     feature!(
         CpuLimiter,
@@ -1531,8 +1537,6 @@ fn enabled_features(
             .into_owned()
         } else if !adaptive.enabled {
             t!("common.unknown").into_owned()
-        } else if adaptive.focus_and_launch_profile_active {
-            t!("home.focus_and_launch_profile").into_owned()
         } else {
             t!("home.adjusted_count", count = adaptive.adjusted_processes).into_owned()
         }
@@ -1687,6 +1691,7 @@ mod tests {
             Page::ByCpuLoad,
             Page::ByActivity,
             Page::ByTime,
+            Page::AdaptiveProcessorPower,
             Page::CpuLimiter,
             Page::CpuSetsSoft,
             Page::ProcessorAffinityHard,

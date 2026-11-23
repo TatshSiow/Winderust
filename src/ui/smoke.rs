@@ -49,7 +49,8 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             Some(1) => Page::CpuLimiter,
             Some(2) => Page::SettingsHome,
             Some(3) => Page::Home,
-            Some(4..=10) => Page::AdaptiveEngine,
+            Some(4 | 6..=10) => Page::AdaptiveEngine,
+            Some(5) => Page::AdaptiveProcessorPower,
             Some(11) => Page::MemoryTrim,
             Some(12) => Page::ByFocus,
             Some(13) => Page::Home,
@@ -459,17 +460,19 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                         TuningTab::CpuBehaviour,
                     )));
                     let _ = app.update(Message::Adaptive(AdaptiveMessage::Collapse(0)));
-                } else if index == 5 || index == 8 {
-                    if index == 8 {
-                        let _ = app.update(Message::Adaptive(AdaptiveMessage::New));
-                    }
-                    let _ = app.update(Message::Adaptive(AdaptiveMessage::TuningTab(
-                        TuningTab::ProcessorPower,
-                    )));
+                } else if index == 5 {
+                    assert!(app.select_power_source(PowerSourceProfile::OnBattery));
+                    app.settings
+                        .adaptive_engine
+                        .adaptive_processor_power_enabled = true;
+                    assert!(app.pending_changes());
+                } else if index == 8 {
+                    let _ = app.update(Message::Adaptive(AdaptiveMessage::New));
                 } else if index == 6 || index == 9 {
                     let _ = app.update(Message::Adaptive(AdaptiveMessage::TuningTab(
-                        TuningTab::PriorityControl,
+                        TuningTab::CpuBehaviour,
                     )));
+                    let _ = app.update(Message::Adaptive(AdaptiveMessage::Collapse(1)));
                 } else if index == 7 {
                     app.settings.adaptive_engine_process.custom_rules.push(
                         crate::config::ProcessExclusionRule {
@@ -544,8 +547,9 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
         }
         if extra == Some(24) {
             let _ = app.update(Message::Adaptive(adaptive_engine::Message::TuningTab(
-                adaptive_engine::TuningTab::PriorityControl,
+                adaptive_engine::TuningTab::CpuBehaviour,
             )));
+            let _ = app.update(Message::Adaptive(adaptive_engine::Message::Collapse(2)));
         }
         if extra == Some(17) {
             app.adaptive = adaptive_engine::Editor::default();
@@ -753,6 +757,12 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
         ]));
     }
     run.ticks += 1;
+    if app.page == Page::AdaptiveProcessorPower && run.ticks == 3 {
+        return Some(iced::widget::operation::snap_to(
+            "adaptive-processor-power-settings",
+            iced::widget::scrollable::RelativeOffset { x: 0.0, y: 1.0 },
+        ));
+    }
     if extra == Some(53) && run.ticks == 3 {
         return Some(iced::widget::operation::snap_to(
             "watchdog-rule-details",
@@ -828,6 +838,6 @@ pub(crate) fn render_all_pages() {
             .filter_map(Result::ok)
             .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "png"))
             .count(),
-        148
+        150
     );
 }

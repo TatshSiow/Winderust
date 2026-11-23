@@ -1,11 +1,61 @@
-use std::{collections::BTreeSet, path::Path, sync::Arc};
-
-use crate::foreground::{
-    active_window::{process_from_id, ForegroundProcess},
-    foreground_process_id, list_processes,
-    process_list::enrich_process_paths,
-    top_level_window_process_ids, visible_window_process_ids, ProcessInfo,
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::Path,
+    sync::Arc,
+    time::Instant,
 };
+
+use crate::{
+    cpu::{process_cpu_usage_percent, ProcessCpuSample},
+    foreground::{
+        active_window::{process_from_id, ForegroundProcess},
+        foreground_process_id, list_processes,
+        process_list::{enrich_process_paths, list_process_ancestry, process_cpu_times},
+        top_level_window_process_ids, visible_window_process_ids, ProcessInfo,
+    },
+};
+
+type AdaptiveWorkload = Arc<BTreeMap<u32, u64>>;
+
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct ForegroundCpuHistory(Option<(AdaptiveWorkload, ProcessCpuSample)>);
+
+impl ForegroundCpuHistory {
+    pub(crate) fn update(
+        &mut self,
+        workload: AdaptiveWorkload,
+        sample: Option<ProcessCpuSample>,
+    ) -> Option<f32> {
+        let previous = std::mem::replace(&mut self.0, sample.map(|sample| (workload, sample)));
+        let (previous_workload, previous) = previous?;
+        let (workload, current) = self.0.as_ref()?;
+        (&previous_workload == workload)
+            .then(|| process_cpu_usage_percent(previous, *current))
+            .flatten()
+    }
+}
+
+fn sample_workload(
+    workload: &BTreeMap<u32, u64>,
+    mut times: impl FnMut(u32) -> Option<(u64, u64)>,
+) -> Option<ProcessCpuSample> {
+    if workload.is_empty() {
+        return None;
+    }
+    let sampled_at = Instant::now();
+    let mut cpu_time_100ns = 0u64;
+    for (&id, &expected_creation) in workload {
+        let (creation, ticks) = times(id)?;
+        if creation != expected_creation {
+            return None;
+        }
+        cpu_time_100ns = cpu_time_100ns.checked_add(ticks)?;
+    }
+    Some(ProcessCpuSample {
+        cpu_time_100ns,
+        sampled_at,
+    })
+}
 
 #[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,7 +116,9 @@ pub(crate) struct CycleObservations {
     sources: ObservationSources,
     processes: Observation<Arc<[ProcessInfo]>>,
     process_paths_enriched: bool,
-    adaptive_workload: Option<Arc<std::collections::BTreeMap<u32, u64>>>,
+    foreground_ancestry: Observation<Arc<[ProcessInfo]>>,
+    adaptive_workload: Option<AdaptiveWorkload>,
+    adaptive_cpu_sample: Option<Option<ProcessCpuSample>>,
     foreground_process_id: Observation<Option<u32>>,
     foreground_process: Observation<Option<ForegroundProcess>>,
     visible_window_process_ids: Observation<Arc<BTreeSet<u32>>>,
@@ -86,7 +138,9 @@ impl CycleObservations {
             sources,
             processes: Observation::NotRequested,
             process_paths_enriched: false,
+            foreground_ancestry: Observation::NotRequested,
             adaptive_workload: None,
+            adaptive_cpu_sample: None,
             foreground_process_id: Observation::NotRequested,
             foreground_process: Observation::NotRequested,
             visible_window_process_ids: Observation::NotRequested,
@@ -100,6 +154,19 @@ impl CycleObservations {
         Self {
             processes: Observation::Available(Arc::from(processes)),
             ..Self::default()
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_adaptive_cpu_sample(
+        processes: Vec<ProcessInfo>,
+        foreground_id: Option<u32>,
+        sample: Option<ProcessCpuSample>,
+    ) -> Self {
+        Self {
+            foreground_process_id: Observation::Available(foreground_id),
+            adaptive_cpu_sample: Some(sample),
+            ..Self::with_processes(processes)
         }
     }
 
@@ -117,10 +184,7 @@ impl CycleObservations {
         }
     }
 
-    pub(crate) fn adaptive_workload(
-        &mut self,
-        processes: &[ProcessInfo],
-    ) -> Arc<std::collections::BTreeMap<u32, u64>> {
+    pub(crate) fn adaptive_workload(&mut self, processes: &[ProcessInfo]) -> AdaptiveWorkload {
         let root = self.foreground_process_id();
         Arc::clone(self.adaptive_workload.get_or_insert_with(|| {
             let ids = foreground_process_group_ids(processes, root);
@@ -132,6 +196,37 @@ impl CycleObservations {
                     .collect(),
             )
         }))
+    }
+
+    pub(crate) fn adaptive_cpu_sample(
+        &mut self,
+        workload: &BTreeMap<u32, u64>,
+    ) -> Option<ProcessCpuSample> {
+        *self
+            .adaptive_cpu_sample
+            .get_or_insert_with(|| sample_workload(workload, process_cpu_times))
+    }
+
+    pub(crate) fn foreground_process_ancestry(
+        &mut self,
+        foreground_id: u32,
+    ) -> Result<Arc<[ProcessInfo]>, String> {
+        match &self.processes {
+            Observation::Available(processes) => return Ok(Arc::clone(processes)),
+            Observation::Unavailable(error) => return Err(error.clone()),
+            Observation::NotRequested => {}
+        }
+        if matches!(self.foreground_ancestry, Observation::NotRequested) {
+            self.foreground_ancestry = match list_process_ancestry(foreground_id) {
+                Ok(processes) => Observation::Available(Arc::from(processes)),
+                Err(error) => Observation::Unavailable(error),
+            };
+        }
+        match &self.foreground_ancestry {
+            Observation::Available(processes) => Ok(Arc::clone(processes)),
+            Observation::Unavailable(error) => Err(error.clone()),
+            Observation::NotRequested => unreachable!("foreground ancestry was just observed"),
+        }
     }
 
     pub(crate) fn processes(&mut self) -> Result<Arc<[ProcessInfo]>, String> {
@@ -384,6 +479,113 @@ mod tests {
     static TOP_LEVEL_WINDOW_CALLS: AtomicUsize = AtomicUsize::new(0);
     static TOPOLOGY_CALLS: AtomicUsize = AtomicUsize::new(0);
 
+    #[test]
+    fn group_samples_require_every_exact_member() {
+        let group = BTreeMap::from([(1, 10), (2, 20)]);
+        assert!(sample_workload(&group, |id| (id == 1).then_some((10, 100))).is_none());
+        assert!(sample_workload(&group, |id| Some((u64::from(id) * 10 + 1, 100))).is_none());
+        assert_eq!(
+            sample_workload(&group, |id| Some((u64::from(id) * 10, u64::from(id) * 100)))
+                .unwrap()
+                .cpu_time_100ns,
+            300
+        );
+    }
+
+    #[test]
+    fn power_only_reads_exact_native_cpu_counters_without_the_control_catalogue() {
+        let mut observations = CycleObservations::with_sources(ObservationSources {
+            foreground_process_id: || Some(std::process::id()),
+            ..ObservationSources::default()
+        });
+        let pid = std::process::id();
+        let processes = observations.foreground_process_ancestry(pid).unwrap();
+        let root = processes.iter().find(|process| process.id == pid).unwrap();
+        assert!(root.creation_time.is_some());
+        assert!(!root.can_set_information);
+        assert!(root.is_critical.is_none());
+        let workload = observations.adaptive_workload(&processes);
+        assert_eq!(workload.get(&pid).copied(), root.creation_time);
+        let sample = observations.adaptive_cpu_sample(&workload).unwrap();
+        assert_eq!(observations.adaptive_cpu_sample(&workload), Some(sample));
+        assert_eq!(
+            observations.availability().processes,
+            ObservationAvailability::NotRequested
+        );
+    }
+
+    #[test]
+    fn adaptive_engine_requests_the_process_list_only_after_foreground_pressure() {
+        use crate::{
+            config::AdaptiveEngineProcessSettings,
+            features::winderust_features::adaptive_engine_process::{
+                AdaptiveEngineProcessManager, AdaptiveEngineProcessUpdate,
+            },
+        };
+        use std::time::Duration;
+
+        let _guard = TEST_LOCK.lock().unwrap();
+        let foreground = Arc::from(processes().unwrap());
+        let settings = AdaptiveEngineProcessSettings {
+            cpu_pressure_restraint_enabled: true,
+            foreground_or_system_cpu_threshold_percent: 50,
+            ..Default::default()
+        };
+        let mut manager = AdaptiveEngineProcessManager::default();
+        let mut allocation = Default::default();
+        let mut priority = Default::default();
+        let mut log = ActionLog::default();
+        let start = Instant::now();
+        for (seconds, ticks, pressured) in [(0, 0, false), (1, 0, false), (2, u64::MAX, true)] {
+            let mut observations = CycleObservations {
+                foreground_ancestry: Observation::Available(Arc::clone(&foreground)),
+                foreground_process_id: Observation::Available(Some(42)),
+                adaptive_cpu_sample: Some(Some(ProcessCpuSample {
+                    cpu_time_100ns: ticks,
+                    sampled_at: start + Duration::from_secs(seconds),
+                })),
+                sources: ObservationSources {
+                    processes: || Err("background list requested".into()),
+                    ..ObservationSources::default()
+                },
+                ..CycleObservations::default()
+            };
+            let status = manager.update(
+                AdaptiveEngineProcessUpdate {
+                    settings: &settings,
+                    automation_enabled: true,
+                    allow_cross_session_process_control: true,
+                    foreground_process_id: Some(42),
+                    total_cpu_usage_percent: Some(0.0),
+                    excluded_process_ids: &BTreeSet::new(),
+                    explicit_cpu_allocation_paths: &[],
+                    observations: &mut observations,
+                },
+                &mut allocation,
+                &mut priority,
+                &mut log,
+            );
+            assert!(status.enabled);
+            assert_eq!(status.observation_paused, pressured);
+            if pressured {
+                assert_eq!(
+                    status.last_error.as_deref(),
+                    Some("background list requested")
+                );
+            } else {
+                assert_eq!(status.scanned_processes, 0);
+                assert_eq!(
+                    status.foreground_cpu_usage_tenths,
+                    (seconds > 0).then_some(0)
+                );
+                assert_eq!(
+                    observations.availability().processes,
+                    ObservationAvailability::NotRequested
+                );
+            }
+        }
+    }
+
     fn topology() -> Result<crate::cpu_topology::CpuTopology, String> {
         use crate::cpu_topology::{CpuTopology, LogicalProcessor, ProcessorGroup, ProcessorId};
         TOPOLOGY_CALLS.fetch_add(1, Ordering::Relaxed);
@@ -510,7 +712,6 @@ mod tests {
             crate::features::priority_control::thread_priority::ThreadPriorityManager::default();
         let result = manager.update(
             &mut crate::control::thread_priority::ThreadPriorityController::default(),
-            crate::control::process::ControlOwner::AdaptiveEngine,
             &crate::config::ThreadPrioritySettings {
                 enabled: true,
                 foreground_detection_enabled: true,
@@ -552,31 +753,17 @@ mod tests {
             BTreeSet::from([42, 101])
         );
         assert!(foreground_process_group_ids(&entries, Some(999)).is_empty());
-        let group = std::collections::BTreeMap::from([(42, 100), (101, 110)]);
-        for (index, adaptive, standalone) in [(0, true, true), (2, true, false), (4, false, true)] {
+        for (index, matches) in [(0, true), (2, false), (4, true)] {
             let process = &entries[index];
-            for (owner, expected) in [
-                (
-                    crate::control::process::ControlOwner::AdaptiveEngine,
-                    adaptive,
+            assert_eq!(
+                crate::foreground::is_foreground_process(
+                    process.id,
+                    process.image_path.as_deref().unwrap(),
+                    Some(42),
+                    entries[0].image_path.as_deref(),
                 ),
-                (
-                    crate::control::process::ControlOwner::ThreadPriority,
-                    standalone,
-                ),
-            ] {
-                assert_eq!(
-                    crate::features::priority_control::foreground_for_owner(
-                        owner,
-                        process,
-                        process.image_path.as_deref().unwrap(),
-                        Some(42),
-                        entries[0].image_path.as_deref(),
-                        Some(&group)
-                    ),
-                    expected
-                );
-            }
+                matches,
+            );
         }
     }
 

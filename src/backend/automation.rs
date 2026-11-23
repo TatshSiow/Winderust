@@ -1419,17 +1419,17 @@ fn run_background_automation(
             || feature_refresh_required(settings, bottleneck_classifier_required(settings));
         let adaptive_power_plan_refresh_required = settings_changed
             || feature_refresh_required(settings, adaptive_power_plan_required(settings))
-            || runner.adaptive_power_plan_active();
+            || runner.adaptive_power_plan_managed();
         let process_priority_refresh_required = settings_changed
             || feature_refresh_required(settings, settings.process_priority.enabled);
         let thread_priority_refresh_required = settings_changed
-            || feature_refresh_required(settings, thread_priority_required(settings));
+            || feature_refresh_required(settings, settings.thread_priority.enabled);
         let dynamic_priority_boost_refresh_required = settings_changed
-            || feature_refresh_required(settings, dynamic_priority_boost_required(settings));
+            || feature_refresh_required(settings, settings.dynamic_priority_boost.enabled);
         let io_priority_refresh_required =
-            settings_changed || feature_refresh_required(settings, io_priority_required(settings));
+            settings_changed || feature_refresh_required(settings, settings.io_priority.enabled);
         let gpu_priority_refresh_required =
-            settings_changed || feature_refresh_required(settings, gpu_priority_required(settings));
+            settings_changed || feature_refresh_required(settings, settings.gpu_priority.enabled);
         let memory_priority_refresh_required = settings_changed
             || feature_refresh_required(settings, settings.memory_priority.enabled);
         let watchdog_refresh_required = settings_changed
@@ -1519,13 +1519,22 @@ fn run_background_automation(
                 background_efficiency_refresh_interval,
             );
         }
+        if process_priority_refresh_required
+            && scheduler.is_due(RefreshDomain::ProcessPriority, now)
+        {
+            let process_priority_status =
+                runner.run_process_priority_update(settings, &mut observations);
+            update_process_priority_status(&shared, process_priority_status);
+            scheduler.schedule_after(
+                RefreshDomain::ProcessPriority,
+                now,
+                process_priority_refresh_interval,
+            );
+        }
         let adaptive_engine_process_status = if adaptive_engine_process_refresh_required
             && scheduler.is_due(RefreshDomain::AdaptiveEngineProcess, now)
         {
             let status = runner.run_adaptive_engine_process_update(settings, &mut observations);
-            if runner.take_helper_dependency_change() {
-                scheduler.invalidate(SchedulerEvent::AdaptiveWorkloadChanged, now);
-            }
             scheduler.schedule_after(
                 RefreshDomain::AdaptiveEngineProcess,
                 now,
@@ -1546,34 +1555,10 @@ fn run_background_automation(
                 BOTTLENECK_CLASSIFIER_REFRESH_INTERVAL,
             );
         }
-        if adaptive_power_plan_refresh_required
-            && scheduler.is_due(RefreshDomain::AdaptivePowerPlan, now)
-        {
-            if let Err(error) = runner.run_adaptive_power_plan_update(settings, &mut observations) {
-                update_worker_error(&shared, Some(error));
-            }
-            scheduler.schedule_after(
-                RefreshDomain::AdaptivePowerPlan,
-                now,
-                ADAPTIVE_POWER_PLAN_REFRESH_INTERVAL,
-            );
-        }
         if io_priority_refresh_required && scheduler.is_due(RefreshDomain::IoPriority, now) {
             let io_priority_status = runner.run_io_priority_update(settings, &mut observations);
             update_io_priority_status(&shared, io_priority_status);
             scheduler.schedule_after(RefreshDomain::IoPriority, now, io_priority_refresh_interval);
-        }
-        if process_priority_refresh_required
-            && scheduler.is_due(RefreshDomain::ProcessPriority, now)
-        {
-            let process_priority_status =
-                runner.run_process_priority_update(settings, &mut observations);
-            update_process_priority_status(&shared, process_priority_status);
-            scheduler.schedule_after(
-                RefreshDomain::ProcessPriority,
-                now,
-                process_priority_refresh_interval,
-            );
         }
         if thread_priority_refresh_required && scheduler.is_due(RefreshDomain::ThreadPriority, now)
         {
@@ -1855,6 +1840,17 @@ fn run_background_automation(
             );
         }
 
+        // Reuse the catalogue if a process policy has already requested it this pass.
+        if adaptive_power_plan_refresh_required
+            && scheduler.is_due(RefreshDomain::AdaptivePowerPlan, now)
+        {
+            runner.run_adaptive_power_plan_update(settings, &mut observations);
+            scheduler.schedule_after(
+                RefreshDomain::AdaptivePowerPlan,
+                now,
+                ADAPTIVE_POWER_PLAN_REFRESH_INTERVAL,
+            );
+        }
         if let Some(error) = runner.retry_control_releases(&shared, Instant::now()) {
             update_worker_error(&shared, Some(error));
         }
@@ -2075,6 +2071,11 @@ fn run_background_automation(
         wait_for = wait_for.map(|delay| delay.saturating_sub(sleep_now - wait_now));
         if let Some(delay) = runner.control_release_retry_delay(sleep_now) {
             wait_for = Some(min_worker_wait(wait_for, delay));
+        }
+        if !windows_event_watcher_active
+            && adaptive_power_enabled_varies_by_source(&configured_settings)
+        {
+            wait_for = Some(min_worker_wait(wait_for, Duration::from_secs(1)));
         }
 
         if wait_for_wake(&shared, wait_for, change_generation) {

@@ -1,4 +1,4 @@
-use iced::widget::{column, container, row, text};
+use iced::widget::{column, container, responsive, row, text};
 use iced::{Element, Fill};
 use rust_i18n::t;
 
@@ -13,7 +13,7 @@ use crate::{
 #[derive(Debug, Clone)]
 pub(super) enum Message {
     Select(String),
-    ProcessorPower,
+    AdaptiveProcessorPower,
 }
 
 #[derive(Debug, Default)]
@@ -56,12 +56,11 @@ pub(super) fn view(
     loading: bool,
     editor: &Editor,
 ) -> Element<'static, Message> {
-    let current = current_plan_guid(status, plans);
-    let managed = managed_by_adaptive(status, plans);
-    let selector = manual_switch(plans, plans_loaded, loading, current, managed, editor);
-    if managed {
-        return widgets::settings_card(selector).into();
+    if managed_by_adaptive_processor_power(status, plans) {
+        return widgets::settings_card(managed_switch()).into();
     }
+    let current = current_plan_guid(status, plans);
+    let selector = manual_switch(plans, plans_loaded, loading, current, editor);
     let (detail, failed) = if status.active_plan_read_error.is_some() {
         (
             t!("power_plan_control.active_plan_read_failed").into_owned(),
@@ -86,21 +85,21 @@ pub(super) fn status_view<M: 'static>(
     plans: &[PowerPlan],
 ) -> Element<'static, M> {
     let current = current_plan_guid(status, plans);
-    let active = current.map_or_else(
-        || t!("common.unknown").to_string(),
-        |guid| plan_name(plans, guid),
-    );
     let (automation, failed) = status_automation_detail(status, plans, current);
     let mut summary = column![
         widgets::setting_title("common.current_power_plan"),
-        text(active).wrapping(text::Wrapping::WordOrGlyph),
+        text(current_plan_name(status, plans)).wrapping(text::Wrapping::WordOrGlyph),
         widgets::setting_title("power_plan_control.automation"),
         text(automation)
             .style(if failed { text::danger } else { text::default })
             .wrapping(text::Wrapping::WordOrGlyph),
     ]
     .spacing(design::space::SMALL);
-    if let Some(error) = &status.active_plan_read_error {
+    if let Some(error) = status
+        .active_plan_read_error
+        .as_ref()
+        .or(status.adaptive_processor_power_error.as_ref())
+    {
         summary = summary
             .push(widgets::setting_title("sidebar_status.current_error"))
             .push(text(error.clone()).wrapping(text::Wrapping::WordOrGlyph));
@@ -147,13 +146,26 @@ pub(super) fn current_plan_guid<'a>(
         .or(status.current_guid.as_deref())
 }
 
-pub(super) fn managed_by_adaptive(status: &PowerPlanStatus, plans: &[PowerPlan]) -> bool {
-    status.owner == Some(PowerPlanOwner::AdaptiveEngine)
+pub(super) fn managed_by_adaptive_processor_power(
+    status: &PowerPlanStatus,
+    plans: &[PowerPlan],
+) -> bool {
+    status.owner == Some(PowerPlanOwner::AdaptiveProcessorPower)
         && status
             .target_guid
             .as_deref()
             .zip(current_plan_guid(status, plans))
             .is_some_and(|(target, current)| target.eq_ignore_ascii_case(current))
+}
+
+pub(super) fn current_plan_name(status: &PowerPlanStatus, plans: &[PowerPlan]) -> String {
+    if managed_by_adaptive_processor_power(status, plans) {
+        return ADAPTIVE_PLAN_NAME.to_owned();
+    }
+    current_plan_guid(status, plans).map_or_else(
+        || t!("common.unknown").to_string(),
+        |guid| plan_name(plans, guid),
+    )
 }
 
 pub(super) fn plan_name(plans: &[PowerPlan], guid: &str) -> String {
@@ -193,8 +205,8 @@ fn status_automation_detail(
     plans: &[PowerPlan],
     current: Option<&str>,
 ) -> (String, bool) {
-    if status.owner == Some(PowerPlanOwner::AdaptiveEngine) {
-        return (t!("nav.adaptive_engine").to_string(), false);
+    if managed_by_adaptive_processor_power(status, plans) {
+        return (t!("nav.adaptive_processor_power").to_string(), false);
     }
     let (mut detail, failed) = automation_detail(status, plans, current);
     if let Some(reason) = cpu_load_match_label(status.cpu_load_match) {
@@ -269,7 +281,6 @@ fn manual_switch(
     plans_loaded: bool,
     loading: bool,
     current: Option<&str>,
-    managed: bool,
     editor: &Editor,
 ) -> Element<'static, Message> {
     let choices: Vec<_> = plans
@@ -287,17 +298,12 @@ fn manual_switch(
                 .find(|choice| choice.0.eq_ignore_ascii_case(guid))
                 .cloned()
         });
-    let eligible =
-        plans_loaded && !loading && !managed && editor.pending.is_none() && !choices.is_empty();
+    let eligible = plans_loaded && !loading && editor.pending.is_none() && !choices.is_empty();
     let staged = eligible
         && selected
             .as_ref()
             .is_some_and(|plan| !current.is_some_and(|guid| plan.0.eq_ignore_ascii_case(guid)));
-    let current_name = if managed {
-        Some(ADAPTIVE_PLAN_NAME.to_owned())
-    } else {
-        current.map(|guid| plan_name(plans, guid))
-    };
+    let current_name = current.map(|guid| plan_name(plans, guid));
     let selector: Element<'static, Message> = if eligible {
         let placeholder = if let Some(name) = current_name.as_ref() {
             name.clone()
@@ -317,34 +323,7 @@ fn manual_switch(
             })
             .to_string()
         });
-        container(
-            row![
-                text(message)
-                    .size(design::typography::BODY)
-                    .style(text::secondary)
-                    .width(Fill),
-                iced::widget::svg(super::assets::chevron_frame(0.0))
-                    .width(design::ICON_SIZE)
-                    .height(design::ICON_SIZE)
-                    .style(|theme: &iced::Theme, _| iced::widget::svg::Style {
-                        color: Some(widgets::muted_color(theme)),
-                    }),
-            ]
-            .spacing(design::space::SMALL)
-            .align_y(iced::Center),
-        )
-        .padding(design::SELECT_PADDING)
-        .width(design::SELECT_WIDTH)
-        .clip(true)
-        .style(|theme| {
-            let style = widgets::select_field(theme, iced::widget::pick_list::Status::Active);
-            iced::widget::container::Style {
-                background: Some(style.background),
-                border: style.border,
-                ..Default::default()
-            }
-        })
-        .into()
+        disabled_plan_selector(message)
     };
     let mut label = column![widgets::setting_title("common.current_power_plan")]
         .spacing(design::space::TIGHT)
@@ -357,19 +336,70 @@ fn manual_switch(
                 .style(text::secondary),
         );
     }
-    let mut controls = row![label];
-    if managed {
-        controls = controls.push(
-            widgets::action_button(t!("power_plan_control.processor_power_settings").to_string())
-                .style(widgets::tertiary_button)
-                .on_press(Message::ProcessorPower),
-        );
-    }
-    controls
-        .push(selector)
+    row![label, selector]
         .spacing(design::space::MEDIUM)
         .align_y(iced::Center)
         .into()
+}
+
+fn managed_switch() -> Element<'static, Message> {
+    const SINGLE_ROW_MIN_WIDTH: f32 = 560.0;
+
+    responsive(|size| {
+        let label = container(widgets::setting_title("common.current_power_plan")).width(Fill);
+        let selector = disabled_plan_selector(ADAPTIVE_PLAN_NAME.to_owned());
+        let shortcut = widgets::action_button(t!("nav.adaptive_processor_power").to_string())
+            .style(widgets::tertiary_button)
+            .on_press(Message::AdaptiveProcessorPower);
+        if size.width < SINGLE_ROW_MIN_WIDTH {
+            column![
+                row![label, selector]
+                    .spacing(design::space::MEDIUM)
+                    .align_y(iced::Center),
+                shortcut,
+            ]
+            .spacing(design::space::TINY)
+            .into()
+        } else {
+            row![label, shortcut, selector]
+                .spacing(design::space::MEDIUM)
+                .align_y(iced::Center)
+                .into()
+        }
+    })
+    .height(iced::Shrink)
+    .into()
+}
+
+fn disabled_plan_selector(message: String) -> Element<'static, Message> {
+    container(
+        row![
+            text(message)
+                .size(design::typography::BODY)
+                .style(text::secondary)
+                .width(Fill),
+            iced::widget::svg(super::assets::chevron_frame(0.0))
+                .width(design::ICON_SIZE)
+                .height(design::ICON_SIZE)
+                .style(|theme: &iced::Theme, _| iced::widget::svg::Style {
+                    color: Some(widgets::muted_color(theme)),
+                }),
+        ]
+        .spacing(design::space::SMALL)
+        .align_y(iced::Center),
+    )
+    .padding(design::SELECT_PADDING)
+    .width(design::SELECT_WIDTH)
+    .clip(true)
+    .style(|theme| {
+        let style = widgets::select_field(theme, iced::widget::pick_list::Status::Active);
+        iced::widget::container::Style {
+            background: Some(style.background),
+            border: style.border,
+            ..Default::default()
+        }
+    })
+    .into()
 }
 
 #[cfg(test)]
@@ -432,17 +462,32 @@ mod tests {
             managed_adaptive: true,
         }];
         let managed_status = PowerPlanStatus {
-            owner: Some(PowerPlanOwner::AdaptiveEngine),
+            owner: Some(PowerPlanOwner::AdaptiveProcessorPower),
             target_guid: Some("adaptive".into()),
             current_guid: Some("adaptive".into()),
             ..PowerPlanStatus::default()
         };
-        for (status, plans, plans_loaded, loading, max_height) in [
-            (&status, plans.as_slice(), true, false, 100.0),
-            (&status, &[], false, true, 100.0),
-            (&status, plans.as_slice(), false, true, 100.0),
-            (&managed_status, managed_plans.as_slice(), true, false, 72.0),
-            (&managed_status, &[], false, true, 72.0),
+        for (status, plans, plans_loaded, loading, width, max_height) in [
+            (&status, plans.as_slice(), true, false, 740.0, 100.0),
+            (&status, &[], false, true, 740.0, 100.0),
+            (&status, plans.as_slice(), false, true, 740.0, 100.0),
+            (
+                &managed_status,
+                managed_plans.as_slice(),
+                true,
+                false,
+                740.0,
+                72.0,
+            ),
+            (&managed_status, &[], false, true, 740.0, 72.0),
+            (
+                &managed_status,
+                managed_plans.as_slice(),
+                true,
+                false,
+                450.0,
+                105.0,
+            ),
         ] {
             let mut card = view(status, plans, plans_loaded, loading, &Editor::default());
             let mut tree = Tree::new(&card);
@@ -451,7 +496,7 @@ mod tests {
                 .layout(
                     &mut tree,
                     &renderer,
-                    &layout::Limits::new(iced::Size::ZERO, iced::Size::new(740.0, 620.0)),
+                    &layout::Limits::new(iced::Size::ZERO, iced::Size::new(width, 620.0)),
                 )
                 .bounds();
             assert!(bounds.height <= max_height, "card bounds {bounds:?}");
@@ -486,7 +531,7 @@ mod tests {
     #[test]
     fn adaptive_lock_requires_tracked_ownership_and_matching_readback() {
         let mut status = PowerPlanStatus {
-            owner: Some(PowerPlanOwner::AdaptiveEngine),
+            owner: Some(PowerPlanOwner::AdaptiveProcessorPower),
             target_guid: Some("ADAPTIVE".into()),
             current_guid: Some("adaptive".into()),
             ..PowerPlanStatus::default()
@@ -497,19 +542,22 @@ mod tests {
             active: true,
             managed_adaptive: true,
         };
-        assert!(managed_by_adaptive(&status, &[]));
-        assert!(managed_by_adaptive(
+        assert!(managed_by_adaptive_processor_power(&status, &[]));
+        assert!(managed_by_adaptive_processor_power(
             &status,
             std::slice::from_ref(&active_plan)
         ));
         status.owner = None;
-        assert!(!managed_by_adaptive(
+        assert!(!managed_by_adaptive_processor_power(
             &status,
             std::slice::from_ref(&active_plan)
         ));
-        status.owner = Some(PowerPlanOwner::AdaptiveEngine);
+        status.owner = Some(PowerPlanOwner::AdaptiveProcessorPower);
         active_plan.guid = "other".into();
         active_plan.managed_adaptive = false;
-        assert!(!managed_by_adaptive(&status, &[active_plan]));
+        assert!(!managed_by_adaptive_processor_power(
+            &status,
+            &[active_plan]
+        ));
     }
 }

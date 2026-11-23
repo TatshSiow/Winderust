@@ -17,7 +17,7 @@ pub(super) fn should_skip_foreground_process(
         || foreground_process_group_ids.contains(&process_id)
 }
 
-pub(super) fn focus_process_priority_eligible(
+pub(crate) fn focus_process_priority_eligible(
     process_id: u32,
     process_name: &str,
     current_process_id: u32,
@@ -95,30 +95,6 @@ pub(super) fn adaptive_engine_process_process_decision(
     } else {
         AdaptiveEngineProcessDecision::LowerPriority
     }
-}
-
-pub(super) fn cpu_pressure_restraint_target(
-    settings: &AdaptiveEngineProcessSettings,
-    tier: AdaptiveEngineProcessTier,
-    background_efficiency_managed: bool,
-) -> Option<PressureTargetPolicy> {
-    let (priority, preservation) = process_priority_policy(
-        settings,
-        false,
-        tier == AdaptiveEngineProcessTier::VisibleWindow,
-    );
-    let apply_background_efficiency = !background_efficiency_managed
-        && settings.background_efficiency_enabled
-        && settings.background_efficiency_mode_for(
-            false,
-            tier == AdaptiveEngineProcessTier::VisibleWindow,
-        );
-
-    (priority.is_some() || apply_background_efficiency).then_some(PressureTargetPolicy {
-        priority,
-        preservation,
-        apply_background_efficiency,
-    })
 }
 
 pub(super) fn adaptive_engine_process_candidate(
@@ -263,17 +239,10 @@ pub(super) fn dynamic_resource_zone_masks(
     (foreground_mask != 0 && background_mask != 0).then_some((foreground_mask, background_mask))
 }
 
-pub(super) fn focus_and_launch_profile_eligible(process_id: u32) -> bool {
-    process_age(process_id).is_some_and(|age| {
+pub(crate) fn focus_and_launch_profile_eligible(process_id: u32, creation_time: u64) -> bool {
+    process_age(process_id, creation_time).is_some_and(|age| {
         process_age_in_focus_and_launch_window(age, FOCUS_AND_LAUNCH_PROFILE_WINDOW)
     })
-}
-
-pub(super) fn focus_and_launch_profile_enabled(
-    settings: &AdaptiveEngineProcessSettings,
-    focus_and_launch_profile_target: bool,
-) -> bool {
-    settings.cpu_pressure_restraint_enabled && focus_and_launch_profile_target
 }
 
 pub(super) fn process_age_in_focus_and_launch_window(
@@ -281,64 +250,6 @@ pub(super) fn process_age_in_focus_and_launch_window(
     profile_window: Duration,
 ) -> bool {
     age <= profile_window
-}
-
-pub(super) fn process_priority_policy(
-    settings: &AdaptiveEngineProcessSettings,
-    foreground: bool,
-    visible_window: bool,
-) -> (Option<PriorityClassValue>, PriorityClassPreservation) {
-    let foreground = foreground && settings.process_priority_foreground_detection_enabled;
-    let visible_window =
-        visible_window && settings.process_priority_visible_window_detection_enabled;
-    let (value, preserve) = if foreground {
-        (
-            settings.focus_process_priority,
-            settings.process_priority_preserve_foreground,
-        )
-    } else if visible_window {
-        (
-            settings.visible_window_priority,
-            settings.process_priority_preserve_visible_window,
-        )
-    } else {
-        (
-            settings.background_priority,
-            settings.process_priority_preserve_background,
-        )
-    };
-    let preservation = if !preserve {
-        PriorityClassPreservation::PreserveHighOrRealtime
-    } else if foreground || visible_window {
-        PriorityClassPreservation::PreserveHigherOrHighOrRealtime
-    } else {
-        PriorityClassPreservation::PreserveLowerOrHighOrRealtime
-    };
-    (
-        settings
-            .process_priority_enabled
-            .then(|| adaptive_engine_process_priority_value(value))
-            .flatten(),
-        preservation,
-    )
-}
-
-pub(super) fn memory_priority_policy(
-    settings: &AdaptiveEngineProcessSettings,
-    foreground: bool,
-    visible_window: bool,
-) -> (crate::config::ProcessMemoryPrioritySetting, bool, bool) {
-    let foreground = foreground && settings.memory_priority_foreground_detection_enabled;
-    let visible_window =
-        !foreground && visible_window && settings.memory_priority_visible_window_detection_enabled;
-    let priority = if foreground {
-        settings.focus_process_memory_priority
-    } else if visible_window {
-        settings.visible_window_memory_priority
-    } else {
-        settings.background_memory_priority
-    };
-    (priority, foreground, visible_window)
 }
 
 // Hold/recovery eligibility alone is not evidence of current competing demand.

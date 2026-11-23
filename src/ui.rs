@@ -1,5 +1,6 @@
 mod action_log;
 mod adaptive_engine;
+mod adaptive_processor_power;
 #[cfg(feature = "runtime-benchmark")]
 pub(crate) use adaptive_engine::benchmark as runtime_benchmark;
 mod advanced_power_plan_tuning;
@@ -58,6 +59,7 @@ pub enum Page {
     AdvancedControls,
     ByActivity,
     ByCpuLoad,
+    AdaptiveProcessorPower,
     AdvancedPowerPlanTuning,
     ProcessPriority,
     ThreadPriority,
@@ -97,15 +99,17 @@ pub struct PageSection {
 
 const HOME_PAGES: [Page; 1] = [Page::Home];
 const PROCESS_LIST_PAGES: [Page; 1] = [Page::ProcessList];
-const POWER_PLAN_CONTROL_PAGES: [Page; 6] = [
+const POWER_PLAN_CONTROL_PAGES: [Page; 7] = [
     Page::ByFocus,
     Page::ByRunningApp,
     Page::ByCpuLoad,
     Page::ByActivity,
     Page::ByTime,
+    Page::AdaptiveProcessorPower,
     Page::AdvancedPowerPlanTuning,
 ];
-const CPU_CONTROL_PAGES: [Page; 4] = [
+const CPU_CONTROL_PAGES: [Page; 5] = [
+    Page::AdaptiveEngine,
     Page::CpuLimiter,
     Page::CpuSetsSoft,
     Page::ProcessorAffinityHard,
@@ -119,12 +123,8 @@ const PRIORITY_CONTROL_PAGES: [Page; 6] = [
     Page::GpuPriority,
     Page::MemoryPriority,
 ];
-const WINDERUST_FEATURE_PAGES: [Page; 4] = [
-    Page::AdaptiveEngine,
-    Page::BackgroundEfficiency,
-    Page::MemoryTrim,
-    Page::Watchdog,
-];
+const WINDERUST_FEATURE_PAGES: [Page; 3] =
+    [Page::BackgroundEfficiency, Page::MemoryTrim, Page::Watchdog];
 const ACTION_LOG_PAGES: [Page; 1] = [Page::ActionLog];
 const SETTINGS_PAGES: [Page; 3] = [
     Page::WinderustBehaviour,
@@ -189,6 +189,7 @@ impl Page {
             self,
             Self::ByActivity
                 | Self::ByCpuLoad
+                | Self::AdaptiveProcessorPower
                 | Self::ProcessPriority
                 | Self::ThreadPriority
                 | Self::DynamicPriorityBoost
@@ -221,6 +222,7 @@ impl Page {
             Self::AdvancedControls => t!("nav.advanced"),
             Self::ByActivity => t!("nav.by_activity"),
             Self::ByCpuLoad => t!("nav.by_cpu_load"),
+            Self::AdaptiveProcessorPower => t!("nav.adaptive_processor_power"),
             Self::AdvancedPowerPlanTuning => t!("nav.advanced_power_plan_tuning"),
             Self::ProcessPriority => t!("nav.process_priority"),
             Self::ThreadPriority => t!("nav.thread_priority"),
@@ -264,7 +266,6 @@ impl Page {
             Self::Home => Self::Home,
             Self::ProcessList => Self::ProcessList,
             Self::WinderustFeatures
-            | Self::AdaptiveEngine
             | Self::BackgroundEfficiency
             | Self::Watchdog
             | Self::MemoryTrim => Self::WinderustFeatures,
@@ -274,8 +275,10 @@ impl Page {
             | Self::ByFocus
             | Self::ByRunningApp
             | Self::ByCpuLoad
+            | Self::AdaptiveProcessorPower
             | Self::AdvancedPowerPlanTuning => Self::PowerPlanControl,
             Self::CpuControl
+            | Self::AdaptiveEngine
             | Self::CpuLimiter
             | Self::CpuSetsSoft
             | Self::InstanceBalancing
@@ -337,6 +340,7 @@ mod tests {
     #[test]
     fn power_source_profiles_are_limited_to_configurable_feature_pages() {
         assert!(Page::AdaptiveEngine.supports_power_source_profiles());
+        assert!(Page::AdaptiveProcessorPower.supports_power_source_profiles());
         assert!(Page::ByFocus.supports_power_source_profiles());
         assert!(Page::TimerResolution.supports_power_source_profiles());
         assert!(!Page::Home.supports_power_source_profiles());

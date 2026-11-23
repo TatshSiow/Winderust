@@ -404,16 +404,20 @@ Read the relevant section before changing feature policy, ownership, restoration
   discard cached CPU usage and prime a fresh sampling interval before any CPU rule,
   including a zero-duration rule, can select a plan.
 - The global pause for power-plan switching on A/C and shared restoration policy
-  belong on the Power Plan Control landing page.
+  belong on the Power Plan Control landing page. The A/C pause applies to ordinary
+  plan rules. Adaptive Processor Power uses its own saved enablement for each source.
+- Adaptive Processor Power starts off. Saving an enablement or tuning change for one
+  source preserves the other source's existing values. The former Adaptive Engine
+  processor-power switch has no runtime effect. Previously saved tuning stays readable.
 - The landing-page selector verifies the chosen installed plan through the
   runtime power-plan controller after Save. Manual switching is unavailable
-  while Windows is using the plan owned by Adaptive Engine. A successful manual
+  while Windows is using the plan owned by Adaptive Processor Power. A successful manual
   change ends the current restoration episode and becomes the baseline for later
   automatic changes. If Windows reports the selected plan as active and the
   recovery update remains unconfirmed, Save and Exit keeps the app open. Save
   retries recovery against the current Windows plan before allowing a new switch.
   Enabled rules can switch plans again. The temporary Winderust Adaptive plan
-  is reserved for Adaptive Engine.
+  is reserved for Adaptive Processor Power.
 - Managed adaptive-plan recovery recognizes only the current `Winderust Adaptive` name and description.
   Startup cleanup rechecks the live active GUID after matching metadata and
   verifies restoration before deleting an active managed plan. It preserves
@@ -423,10 +427,8 @@ Read the relevant section before changing feature policy, ownership, restoration
   processor-setting, and effective-power-mode APIs live only in
   `src/platform/windows/power_plan.rs`. Persistent Advanced Power Plan Tuning remains a separate
   explicit application service and never enters the automatic recovery journal. Its optional
-  long/short-running thread scheduling policies stay outside Adaptive Engine processor profiles;
-  built-in presets preserve current policies, and custom presets can select optional overrides.
-  Tuning presets and Adaptive Engine processor profiles store concrete boost modes.
-  Adaptive Engine writes its configured boost modes.
+  long/short-running thread scheduling policies stay outside Adaptive Processor Power.
+  Tuning presets and Adaptive Processor Power profiles store concrete boost modes.
 - Advanced Power Plan Tuning captures the target plan's GUID, live values, and
   normalized draft in the review. The same review gates page Apply and any save
   that includes tuning edits. A fresh read must match the draft's original
@@ -577,7 +579,11 @@ Read the relevant section before changing feature policy, ownership, restoration
 
 - Per-processor placement samples are complete-or-unavailable: invalid intervals never become zero load or shift processor indices. Counter regression, overflow, inconsistent idle deltas and zero-length intervals are unavailable; failed/empty captures clear the baseline and domain-size changes re-prime it.
 
-- Adaptive helpers share a generation-checked foreground descendant workload per observation cycle. Pressure and workload changes invalidate dependent helper schedules. Standalone priority rules retain executable-path matching.
+- Adaptive process policies and Adaptive Processor Power share a generation-checked foreground
+  descendant workload and CPU counter sample per observation cycle. Processor Power keeps its own
+  CPU baseline and sampling schedule, including with every process policy off. It re-primes after
+  power-source and session changes, suspend/resume, or disable. Standalone priority rules retain
+  executable-path matching.
 - Foreground CPU deltas require complete samples of the same exact process generations; missing members and counter regression discard the baseline.
 - CPU Set discovery is lazy and operation-local, including failure caching. Existing explicit and Adaptive claims preserve assignments on discovery failure without suppressing applications; pending handoffs retry on the existing cleanup interval. Guarded Instance Balancing claims withdraw instead.
 - Process enrichment cannot replace the identity generation captured by the cycle. Newly available or changed generations are deferred (non-actionable) until a fresh cycle, preserving consistency with cached Adaptive membership and earlier consumers.
@@ -708,13 +714,19 @@ Read the relevant section before changing feature policy, ownership, restoration
   an older generation cannot rearm it. Other CPU features retain their own
   reapplication contracts. Guard failure withdraws balancing ownership through
   the existing reconciliation/restoration paths without losing pending cleanup.
-- Adaptive Engine uses the same Focus App, Visible Window, then Background ordering across Process, Thread, I/O, GPU, and Memory Priority plus Dynamic Priority Boost. Its Background Efficiency controls own separate foreground and visible-window detection and Efficiency Mode values instead of borrowing the Background Efficiency page's settings.
+- CPU Pressure Restraint qualifies sustained CPU use per exact background process
+  while aggregate pressure is high. It skips the focused group, visible windows,
+  active audio, and exclusions. The only restraint write is temporary Below
+  Normal priority for a process whose current priority is Normal. Background
+  Efficiency and saved Process Priority take precedence on the same process.
+  Thread, I/O, GPU, and Memory Priority and Dynamic Priority Boost use their
+  dedicated settings.
 - Adaptive Engine pauses its process policies and releases their claims when the
   focused process ID or creation time is unavailable. Saved settings, manual
-  ownership, and Adaptive processor power retain their own state.
+  ownership, and Adaptive Processor Power retain their own state.
   Home and the Status panel report paused process policies separately from a
   verified Adaptive power plan. Process counts remain unavailable until observed.
-- Adaptive Engine uses the shared right-rail Status / Presets pattern. Built-in presets are read-only; custom presets capture only Adaptive Engine and Adaptive Engine tuning. Applying a preset never changes master enable switches, custom rules, exclusions, or the separate Background Efficiency feature.
+- Adaptive Engine uses the shared right-rail Status / Presets pattern. Presets apply CPU Behaviour tuning while preserving master switches, exclusions, and Adaptive Processor Power settings.
 
 ## Interrupt Timing
 
@@ -831,15 +843,8 @@ Read the relevant section before changing feature policy, ownership, restoration
   restoration error clears after cleanup while any unrelated application or
   observation error remains visible.
   GPU Priority treats a temporarily unavailable GPU scheduling context as
-  pending and retries without auto-excluding the process. Adaptive Engine keeps
-  Process Priority independent when Power Throttling is unavailable and
-  remembers that unavailable control for the exact process instance so it does
-  not retry-spam.
-- Memory Priority has two simultaneous automatic owners rather than an Adaptive replacement policy: static Memory Priority explicitly outranks an overlapping Adaptive Engine claim, while non-overlapping Adaptive Engine claims remain effective. Both owners retain one shared exact-process baseline and restoration chain.
-  After one owner yields, a surviving policy can take over at the current value
-  or apply its own value. Restoration counts and Action Log entries describe
-  verified writes of the original baseline, including when the surviving
-  policy's preservation rule restores it.
+  pending and retries without auto-excluding the process. Memory Priority
+  restoration counts and Action Log entries describe verified baseline writes.
 
 ## Sleep Prevention
 

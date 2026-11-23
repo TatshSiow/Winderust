@@ -1,6 +1,5 @@
 // Pure tuning semantics extracted from ui/app/shared/presets.rs.
 use crate::config::*;
-use crate::power::{AdaptivePowerBoostValues, ProcessorBoostMode, ProcessorPowerValues};
 use rust_i18n::t;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::ui) enum BuiltInAdaptiveEnginePreset {
@@ -31,47 +30,10 @@ pub(super) fn built_in_adaptive_engine_preset_label(preset: BuiltInAdaptiveEngin
     }
 }
 
-fn built_in_adaptive_engine_processor_policy(
-    preset: BuiltInAdaptiveEnginePreset,
-) -> ProcessorPowerValues {
-    match preset {
-        BuiltInAdaptiveEnginePreset::PowerSave => {
-            ProcessorPowerValues::new_with_boost_mode(0, 5, 45, 0, ProcessorBoostMode::Disabled)
-        }
-        BuiltInAdaptiveEnginePreset::Balanced => ProcessorPowerValues::new_with_boost_mode(
-            25,
-            5,
-            95,
-            60,
-            ProcessorBoostMode::EfficientEnabled,
-        ),
-        BuiltInAdaptiveEnginePreset::Performance => ProcessorPowerValues::new_with_boost_mode(
-            100,
-            25,
-            100,
-            85,
-            ProcessorBoostMode::EfficientAggressive,
-        ),
-        BuiltInAdaptiveEnginePreset::Speed => ProcessorPowerValues::new_with_boost_mode(
-            100,
-            25,
-            100,
-            100,
-            ProcessorBoostMode::Aggressive,
-        ),
-    }
-}
-
 pub(super) fn apply_built_in_adaptive_engine_preset(
     settings: &mut Settings,
     preset: BuiltInAdaptiveEnginePreset,
 ) {
-    settings.adaptive_engine.processor_power_policy_enabled = true;
-    settings.adaptive_engine.base_processor_policy =
-        built_in_adaptive_engine_processor_policy(preset);
-    settings.adaptive_engine.background_pressure_profile =
-        AdaptivePowerBoostValues::BACKGROUND_PRESSURE;
-    settings.adaptive_engine.focus_and_launch_profile = AdaptivePowerBoostValues::FOCUS_AND_LAUNCH;
     apply_adaptive_engine_process_preset(&mut settings.adaptive_engine_process, preset);
 }
 
@@ -81,7 +43,7 @@ pub(super) fn capture_adaptive_engine_preset(
 ) -> AdaptiveEnginePreset {
     AdaptiveEnginePreset {
         name,
-        processor_power_policy_enabled: settings.adaptive_engine.processor_power_policy_enabled,
+        processor_power_policy_enabled: false,
         base_processor_policy: settings.adaptive_engine.base_processor_policy.normalized(),
         background_pressure_profile: settings
             .adaptive_engine
@@ -98,13 +60,6 @@ pub(super) fn capture_adaptive_engine_preset(
 }
 
 pub(super) fn apply_adaptive_engine_preset(settings: &mut Settings, preset: &AdaptiveEnginePreset) {
-    settings.adaptive_engine.processor_power_policy_enabled = preset.processor_power_policy_enabled;
-    settings.adaptive_engine.base_processor_policy = preset.base_processor_policy.normalized();
-    settings.adaptive_engine.background_pressure_profile =
-        preset.background_pressure_profile.normalized();
-    settings.adaptive_engine.focus_and_launch_profile =
-        preset.focus_and_launch_profile.normalized();
-
     let exclusions = std::mem::take(&mut settings.adaptive_engine_process.custom_rules);
     let io_exclusions =
         std::mem::take(&mut settings.adaptive_engine_process.io_priority.exclusions);
@@ -434,6 +389,37 @@ pub(super) fn gpu_priority_preset_values(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn process_presets_leave_live_processor_power_unchanged() {
+        let mut settings = Settings::default();
+        settings.adaptive_engine.enabled = true;
+        settings.adaptive_engine.adaptive_processor_power_enabled = true;
+        settings
+            .adaptive_engine
+            .base_processor_policy
+            .performance_min = 37;
+        settings
+            .adaptive_engine
+            .background_pressure_profile
+            .ac_policy = 13;
+        settings
+            .adaptive_engine
+            .focus_and_launch_profile
+            .battery_policy = 29;
+        let before = settings.adaptive_engine.clone();
+        for built_in in BuiltInAdaptiveEnginePreset::ALL {
+            apply_built_in_adaptive_engine_preset(&mut settings, built_in);
+            assert_eq!(settings.adaptive_engine, before);
+        }
+        let mut custom = capture_adaptive_engine_preset(&Settings::default(), "Saved".into());
+        custom.processor_power_policy_enabled = true;
+        custom.base_processor_policy.performance_min = 7;
+        custom.adaptive_engine_process.reaction_time_ms = 1700;
+        apply_adaptive_engine_preset(&mut settings, &custom);
+        assert_eq!(settings.adaptive_engine, before);
+        assert_eq!(settings.adaptive_engine_process.reaction_time_ms, 1700);
+    }
 
     #[test]
     fn process_and_memory_options_round_trip_in_custom_presets() {

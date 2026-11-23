@@ -497,16 +497,6 @@ impl<P: IoPriorityPlatform> IoPriorityController<P> {
             .count()
     }
 
-    pub(crate) fn policy_managed_processes(
-        &self,
-        owner: ControlOwner,
-    ) -> impl Iterator<Item = &ProcessIdentity> {
-        self.managed
-            .iter()
-            .filter(move |(_, managed)| managed.owner == owner)
-            .map(|(identity, _)| identity)
-    }
-
     pub(crate) fn has_managed_state(&self) -> bool {
         !self.managed.is_empty()
     }

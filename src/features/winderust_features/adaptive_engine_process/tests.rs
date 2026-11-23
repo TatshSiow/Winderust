@@ -1,24 +1,5 @@
 use super::*;
-use crate::config::{AdaptiveEngineProcessSettings, ProcessPrioritySetting};
-use windows_sys::Win32::System::Threading::{
-    ABOVE_NORMAL_PRIORITY_CLASS, BELOW_NORMAL_PRIORITY_CLASS, HIGH_PRIORITY_CLASS,
-    IDLE_PRIORITY_CLASS, NORMAL_PRIORITY_CLASS, REALTIME_PRIORITY_CLASS,
-};
-
-#[test]
-fn adaptive_efficiency_uses_the_configured_process_tier() {
-    let mut settings = AdaptiveEngineProcessSettings {
-        background_efficiency_mode: false,
-        focus_process_background_efficiency_mode: true,
-        visible_window_background_efficiency_mode: true,
-        ..Default::default()
-    };
-    assert!(settings.background_efficiency_mode_for(true, false));
-    assert!(settings.background_efficiency_mode_for(false, true));
-    assert!(!settings.background_efficiency_mode_for(false, false));
-    settings.focus_process_background_efficiency_override_enabled = false;
-    assert!(!settings.background_efficiency_mode_for(true, false));
-}
+use crate::config::AdaptiveEngineProcessSettings;
 
 #[test]
 fn repeated_failures_suppress_future_adaptive_engine_process_attempts_once() {
@@ -42,78 +23,6 @@ fn repeated_failures_suppress_future_adaptive_engine_process_attempts_once() {
 }
 
 #[test]
-fn priority_mapping_matches_configured_classes() {
-    assert_eq!(
-        adaptive_engine_process_priority_value(ProcessPrioritySetting::Normal)
-            .unwrap()
-            .raw(),
-        NORMAL_PRIORITY_CLASS
-    );
-    assert_eq!(
-        adaptive_engine_process_priority_value(ProcessPrioritySetting::BelowNormal)
-            .unwrap()
-            .raw(),
-        BELOW_NORMAL_PRIORITY_CLASS
-    );
-    assert_eq!(
-        adaptive_engine_process_priority_value(ProcessPrioritySetting::Idle)
-            .unwrap()
-            .raw(),
-        IDLE_PRIORITY_CLASS
-    );
-    assert_eq!(
-        adaptive_engine_process_priority_value(ProcessPrioritySetting::AboveNormal)
-            .unwrap()
-            .raw(),
-        ABOVE_NORMAL_PRIORITY_CLASS
-    );
-    assert_eq!(
-        adaptive_engine_process_priority_value(ProcessPrioritySetting::Default),
-        None
-    );
-    assert_eq!(
-        adaptive_engine_process_priority_value(ProcessPrioritySetting::High)
-            .unwrap()
-            .raw(),
-        HIGH_PRIORITY_CLASS
-    );
-    assert_eq!(
-        adaptive_engine_process_priority_value(ProcessPrioritySetting::Realtime)
-            .unwrap()
-            .raw(),
-        REALTIME_PRIORITY_CLASS
-    );
-}
-
-#[test]
-fn cpu_pressure_restraint_respects_tiers_and_existing_ownership() {
-    let settings = AdaptiveEngineProcessSettings {
-        process_priority_enabled: true,
-        background_priority: ProcessPrioritySetting::BelowNormal,
-        visible_window_priority: ProcessPrioritySetting::Normal,
-        background_efficiency_enabled: true,
-        visible_window_background_efficiency_mode: true,
-        background_efficiency_mode: true,
-        ..Default::default()
-    };
-
-    let visible =
-        cpu_pressure_restraint_target(&settings, AdaptiveEngineProcessTier::VisibleWindow, false)
-            .unwrap();
-    assert_eq!(visible.priority.unwrap().raw(), NORMAL_PRIORITY_CLASS);
-    assert!(visible.apply_background_efficiency);
-
-    let background =
-        cpu_pressure_restraint_target(&settings, AdaptiveEngineProcessTier::Background, true)
-            .unwrap();
-    assert_eq!(
-        background.priority.unwrap().raw(),
-        BELOW_NORMAL_PRIORITY_CLASS
-    );
-    assert!(!background.apply_background_efficiency);
-}
-
-#[test]
 fn focus_and_launch_profile_window_includes_new_processes_only() {
     assert!(process_age_in_focus_and_launch_window(
         Duration::from_secs(2),
@@ -126,53 +35,6 @@ fn focus_and_launch_profile_window_includes_new_processes_only() {
     assert!(!process_age_in_focus_and_launch_window(
         FOCUS_AND_LAUNCH_PROFILE_WINDOW + Duration::from_millis(1),
         FOCUS_AND_LAUNCH_PROFILE_WINDOW,
-    ));
-}
-
-#[test]
-fn focus_and_launch_profile_active_runs_for_any_adaptive_engine_process_preset_while_app_is_launching(
-) {
-    let settings = AdaptiveEngineProcessSettings {
-        cpu_pressure_restraint_enabled: true,
-        ..Default::default()
-    };
-
-    assert!(focus_and_launch_profile_enabled(&settings, true));
-    assert!(!focus_and_launch_profile_enabled(&settings, false));
-    assert!(!focus_and_launch_profile_enabled(
-        &AdaptiveEngineProcessSettings {
-            cpu_pressure_restraint_enabled: false,
-            ..settings.clone()
-        },
-        true
-    ));
-}
-
-#[test]
-fn background_apply_summary_message_uses_process_count() {
-    assert_eq!(
-        background_apply_summary_message(1),
-        "Background limits updated for 1 process."
-    );
-    assert_eq!(
-        background_apply_summary_message(3),
-        "Background limits updated for 3 processes."
-    );
-}
-
-#[test]
-fn background_apply_summary_log_is_rate_limited() {
-    let now = Instant::now();
-
-    assert!(background_apply_summary_log_due(None, now));
-    assert!(!background_apply_summary_log_due(Some(now), now));
-    assert!(!background_apply_summary_log_due(
-        Some(now),
-        now + BACKGROUND_APPLY_SUMMARY_LOG_INTERVAL - Duration::from_millis(1)
-    ));
-    assert!(background_apply_summary_log_due(
-        Some(now),
-        now + BACKGROUND_APPLY_SUMMARY_LOG_INTERVAL
     ));
 }
 
@@ -311,6 +173,7 @@ fn adaptive_engine_process_selection_can_replace_cooler_selected_process() {
         tier: AdaptiveEngineProcessTier::Background,
         previous_cpu_time: None,
         last_usage_tenths: Some(100),
+        pressure_restraint: PressureRestraintEpisode::default(),
         below_since: None,
         active_since: Some(now - Duration::from_secs(60)),
         selected: true,
@@ -322,6 +185,7 @@ fn adaptive_engine_process_selection_can_replace_cooler_selected_process() {
         tier: AdaptiveEngineProcessTier::Background,
         previous_cpu_time: None,
         last_usage_tenths: Some(900),
+        pressure_restraint: PressureRestraintEpisode::default(),
         below_since: None,
         active_since: Some(now),
         selected: false,
@@ -358,6 +222,7 @@ fn adaptive_engine_process_candidate_score_uses_only_cpu_and_selection_stickines
         tier: AdaptiveEngineProcessTier::Background,
         previous_cpu_time: None,
         last_usage_tenths: Some(100),
+        pressure_restraint: PressureRestraintEpisode::default(),
         below_since: None,
         active_since: Some(now),
         selected,
@@ -693,6 +558,36 @@ struct AdaptiveCpuObservations {
     tier: AdaptiveEngineProcessTier,
 }
 
+#[test]
+fn pressure_restraint_requires_sustained_hot_samples_and_clears_after_cooling() {
+    let settings = AdaptiveEngineProcessSettings {
+        background_app_cpu_threshold_percent: 30,
+        cpu_recovery_threshold_percent: 10,
+        reaction_time_ms: 500,
+        cpu_restraint_time_seconds: 1,
+        cpu_recovery_time_seconds: 1,
+        ..Default::default()
+    };
+    let start = Instant::now();
+    let at = |millis| start + Duration::from_millis(millis);
+    let mut episode = PressureRestraintEpisode::default();
+
+    assert!(!episode.qualifies(&settings, at(0), 600));
+    assert!(!episode.qualifies(&settings, at(500), 0));
+    assert!(!episode.qualifies(&settings, at(1000), 600));
+    assert!(!episode.qualifies(&settings, at(1499), 600));
+    assert!(episode.qualifies(&settings, at(1500), 600));
+    episode.selected_since = Some(at(1500));
+
+    assert!(episode.qualifies(&settings, at(2000), 0));
+    assert!(episode.qualifies(&settings, at(2500), 0));
+    assert!(episode.qualifies(&settings, at(3000), 600));
+    assert!(episode.qualifies(&settings, at(3500), 0));
+    assert!(episode.qualifies(&settings, at(4000), 0));
+    assert!(!episode.qualifies(&settings, at(4500), 0));
+    assert!(!episode.qualifies(&settings, at(5000), 600));
+}
+
 impl AdaptiveCpuObservations {
     fn new(settings: AdaptiveEngineProcessSettings) -> Self {
         Self {
@@ -744,13 +639,13 @@ fn reset_pressure_observations_requires_fresh_cpu_intervals() {
         ..Default::default()
     });
     let started_at = observations.started_at;
-    observations.manager.foreground_cpu_sample = Some((
-        vec![(21, 1)],
-        ProcessCpuSample {
+    observations.manager.foreground_cpu_history.update(
+        [(21, 1)].into_iter().collect::<BTreeMap<_, _>>().into(),
+        Some(ProcessCpuSample {
             cpu_time_100ns: 10_000_000,
             sampled_at: started_at,
-        },
-    ));
+        }),
+    );
     assert!(observations.manager.update_background_pressure(
         &observations.settings,
         Some(80.0),
@@ -775,7 +670,10 @@ fn reset_pressure_observations_requires_fresh_cpu_intervals() {
     assert!(monitor.sample_busy_processor_for_test(200).is_none());
     assert!(monitor.sample_busy_processor_for_test(300).is_some());
 
-    assert!(observations.manager.foreground_cpu_sample.is_none());
+    assert_eq!(
+        observations.manager.foreground_cpu_history,
+        ForegroundCpuHistory::default()
+    );
     assert!(!observations
         .manager
         .update_background_pressure(&observations.settings, None, None));
@@ -986,84 +884,6 @@ fn adaptive_complete_cpu_intervals_preserve_hold_then_priority_only_recovery() {
 }
 
 #[test]
-fn process_detection_falls_through_and_preservation_follows_selected_tier() {
-    let mut settings = AdaptiveEngineProcessSettings {
-        process_priority_preserve_foreground: true,
-        process_priority_preserve_visible_window: true,
-        process_priority_preserve_background: true,
-        ..Default::default()
-    };
-    assert_eq!(
-        process_priority_policy(&settings, true, true),
-        (
-            Some(PriorityClassValue::AboveNormal),
-            PriorityClassPreservation::PreserveHigherOrHighOrRealtime
-        )
-    );
-    settings.process_priority_foreground_detection_enabled = false;
-    assert_eq!(
-        process_priority_policy(&settings, true, true),
-        (
-            Some(PriorityClassValue::Normal),
-            PriorityClassPreservation::PreserveHigherOrHighOrRealtime
-        )
-    );
-    settings.process_priority_visible_window_detection_enabled = false;
-    assert_eq!(
-        process_priority_policy(&settings, true, true),
-        (
-            Some(PriorityClassValue::BelowNormal),
-            PriorityClassPreservation::PreserveLowerOrHighOrRealtime
-        )
-    );
-    let pressure =
-        cpu_pressure_restraint_target(&settings, AdaptiveEngineProcessTier::VisibleWindow, true)
-            .unwrap();
-    assert_eq!(pressure.priority, Some(PriorityClassValue::BelowNormal));
-    assert_eq!(
-        pressure.preservation,
-        PriorityClassPreservation::PreserveLowerOrHighOrRealtime
-    );
-    settings.process_priority_preserve_background = false;
-    assert_eq!(
-        process_priority_policy(&settings, true, true).1,
-        PriorityClassPreservation::PreserveHighOrRealtime
-    );
-    settings.process_priority_enabled = false;
-    assert_eq!(process_priority_policy(&settings, true, true).0, None);
-}
-
-#[test]
-fn memory_detection_falls_through_without_changing_default_semantics() {
-    use crate::config::ProcessMemoryPrioritySetting as Memory;
-    let mut settings = AdaptiveEngineProcessSettings {
-        focus_process_memory_priority: Memory::Normal,
-        visible_window_memory_priority: Memory::Medium,
-        background_memory_priority: Memory::Low,
-        ..Default::default()
-    };
-    assert_eq!(
-        memory_priority_policy(&settings, true, true),
-        (Memory::Normal, true, false)
-    );
-    settings.memory_priority_foreground_detection_enabled = false;
-    assert_eq!(
-        memory_priority_policy(&settings, true, true),
-        (Memory::Medium, false, true)
-    );
-    settings.memory_priority_visible_window_detection_enabled = false;
-    assert_eq!(
-        memory_priority_policy(&settings, true, true),
-        (Memory::Low, false, false)
-    );
-    settings.background_memory_priority = Memory::Default;
-    assert!(memory_priority_policy(&settings, false, true)
-        .0
-        .priority()
-        .is_none());
-}
-
-#[test]
 fn zoning_alone_reads_pressure_and_masks_never_create_empty_partitions() {
     let settings = AdaptiveEngineProcessSettings {
         dynamic_resource_zones_enabled: true,
@@ -1076,7 +896,6 @@ fn zoning_alone_reads_pressure_and_masks_never_create_empty_partitions() {
         None
     ));
     assert!(!cpu_pressure_restraint_should_run(&settings, None, None));
-    assert!(!focus_and_launch_profile_enabled(&settings, true));
     for count in [1, 2, 3, 8, 12, 16, 24] {
         let processors = (0..count)
             .map(|index| LogicalProcessorInfo {
@@ -1118,21 +937,4 @@ fn foreground_capacity_is_not_held_by_stale_or_idle_background_demand() {
     assert!(!fresh_background_competition(Some(0), 0));
     assert!(!fresh_background_competition(Some(39), 4));
     assert!(fresh_background_competition(Some(40), 4));
-}
-
-#[test]
-fn denial_is_not_cleared_by_another_propertys_success() {
-    let mut manager = AdaptiveEngineProcessManager::default();
-    let path = r"C:\Apps\denied.exe";
-    for hard_failure in [false, true] {
-        manager.failure_suppression.suppress_process_failure(path);
-        manager.finish_background_attempt(path, hard_failure, true);
-        assert!(manager
-            .failure_suppression
-            .is_key_suppressed(&process_failure_key(path)));
-    }
-    manager.finish_background_attempt(path, false, false);
-    assert!(!manager
-        .failure_suppression
-        .is_key_suppressed(&process_failure_key(path)));
 }

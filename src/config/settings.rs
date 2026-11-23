@@ -455,10 +455,25 @@ pub struct BackgroundEfficiencySettings {
 #[serde(deny_unknown_fields)]
 pub struct AdaptiveEngineSettings {
     pub enabled: bool,
-    pub processor_power_policy_enabled: bool,
+    #[serde(default)]
+    pub adaptive_processor_power_enabled: bool,
     pub base_processor_policy: ProcessorPowerValues,
     pub background_pressure_profile: AdaptivePowerBoostValues,
     pub focus_and_launch_profile: AdaptivePowerBoostValues,
+    // Previously saved tuning included this switch. Only the independent opt-in has an effect.
+    #[serde(
+        default,
+        rename = "processor_power_policy_enabled",
+        skip_serializing,
+        deserialize_with = "read_retired_processor_power_switch"
+    )]
+    _retired_processor_power_switch: (),
+}
+
+fn read_retired_processor_power_switch<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<(), D::Error> {
+    bool::deserialize(deserializer).map(drop)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -476,10 +491,11 @@ impl Default for AdaptiveEngineSettings {
     fn default() -> Self {
         Self {
             enabled: false,
-            processor_power_policy_enabled: true,
+            adaptive_processor_power_enabled: false,
             base_processor_policy: default_adaptive_engine_base_processor_policy(),
             background_pressure_profile: default_adaptive_background_pressure_profile(),
             focus_and_launch_profile: default_adaptive_focus_and_launch_profile(),
+            _retired_processor_power_switch: (),
         }
     }
 }
@@ -2700,16 +2716,6 @@ impl AdaptiveEngineProcessSettings {
         self.cpu_pressure_restraint_enabled
             || self.limit_background_processors_enabled
             || self.dynamic_resource_zones_enabled
-    }
-
-    pub const fn background_efficiency_mode_for(&self, focus: bool, visible_window: bool) -> bool {
-        if focus && self.focus_process_background_efficiency_override_enabled {
-            self.focus_process_background_efficiency_mode
-        } else if visible_window && self.visible_window_background_efficiency_override_enabled {
-            self.visible_window_background_efficiency_mode
-        } else {
-            self.background_efficiency_mode
-        }
     }
 
     pub fn custom_rule_enabled_for(&self, process_name: &str) -> bool {

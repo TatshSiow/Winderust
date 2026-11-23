@@ -336,6 +336,7 @@ pub(super) fn rail_item<'a, Message: Clone + 'a>(
 pub(super) fn page_feature_info_intro(page: Page) -> Option<(&'static str, u8)> {
     Some(match page {
         Page::AdaptiveEngine => ("adaptive_engine", 3),
+        Page::AdaptiveProcessorPower => ("adaptive_processor_power", 2),
         Page::BackgroundEfficiency => ("background_efficiency", 3),
         Page::MemoryTrim => ("memory_trim", 3),
         Page::Watchdog => ("watchdog", 3),
@@ -461,6 +462,7 @@ pub(super) fn icon_path(page: Page) -> &'static str {
         Page::AdvancedControls => "icons/cog.svg",
         Page::ByActivity => "icons/square-activity.svg",
         Page::ByCpuLoad => "icons/chart-column.svg",
+        Page::AdaptiveProcessorPower => "icons/zap.svg",
         Page::AdvancedPowerPlanTuning => "icons/drill.svg",
         Page::ProcessPriority => "icons/panels-top-left.svg",
         Page::ThreadPriority => "icons/spline.svg",
@@ -496,6 +498,7 @@ pub(super) fn icon_path(page: Page) -> &'static str {
 pub(super) fn feature_page_enabled(settings: &Settings, page: Page) -> Option<bool> {
     Some(match page {
         Page::AdaptiveEngine => settings.adaptive_engine.enabled,
+        Page::AdaptiveProcessorPower => settings.adaptive_engine.adaptive_processor_power_enabled,
         Page::BackgroundEfficiency => settings.background_efficiency.enabled,
         Page::MemoryTrim => settings.memory_trim.enabled,
         Page::Watchdog => settings.watchdog.enabled,
@@ -526,6 +529,9 @@ pub(super) fn feature_page_enabled(settings: &Settings, page: Page) -> Option<bo
 pub(super) fn feature_toggle(page: Page) -> Option<fn(&mut Settings) -> &mut bool> {
     Some(match page {
         Page::AdaptiveEngine => |settings| &mut settings.adaptive_engine.enabled,
+        Page::AdaptiveProcessorPower => {
+            |settings| &mut settings.adaptive_engine.adaptive_processor_power_enabled
+        }
         Page::BackgroundEfficiency => |settings| &mut settings.background_efficiency.enabled,
         Page::MemoryTrim => |settings| &mut settings.memory_trim.enabled,
         Page::Watchdog => |settings| &mut settings.watchdog.enabled,
@@ -640,10 +646,10 @@ pub(super) fn dashboard_page_search_text(page: Page) -> String {
             t!("power_plan_control.restore_previous_plan_help"),
         ),
         Page::WinderustFeatures => format!(
-            "{label} {section} winderust features background efficiency background_efficiency Adaptive Engine foreground interactivity memory trim working set memory ram background restraint",
+            "{label} {section} winderust features background efficiency background_efficiency memory trim working set memory ram",
         ),
         Page::CpuControl => format!(
-            "{label} {section} processor cpu controls core parking limiter background restriction affinity steering power boost ac dc battery e cores p cores",
+            "{label} {section} processor cpu controls limiter background restriction affinity steering e cores p cores",
         ),
         Page::PriorityControl => format!(
             "{label} {section} priority control process thread dynamic boost io gpu memory launch registry ifeo scheduler base priority",
@@ -682,6 +688,11 @@ pub(super) fn dashboard_page_search_text(page: Page) -> String {
             t!("by_cpu_load.intro_1"),
             t!("by_cpu_load.intro_2"),
             t!("by_cpu_load.enable"),
+        ),
+        Page::AdaptiveProcessorPower => format!(
+            "{label} {section} {} {} adaptive processor power core parking boost processor min max ac dc battery temporary power plan background pressure focus launch",
+            t!("adaptive_processor_power.intro_1"),
+            t!("adaptive_processor_power.intro_2"),
         ),
         Page::AdvancedPowerPlanTuning => format!(
             "{label} {section} {} {} {} {} core parking processor power boost min max ac dc battery plugged performance saver balanced scheduling hybrid long short thread policy schedpolicy shortschedpolicy",
@@ -728,7 +739,7 @@ pub(super) fn dashboard_page_search_text(page: Page) -> String {
             t!("process_list.title"),
         ),
         Page::AdaptiveEngine => format!(
-            "{label} {section} {} {} {} adaptive engine power saving background_efficiency Adaptive Engine cpu scheduling uperf powersave balanced performance speed foreground boost background priority cpu spike stutter battery background",
+            "{label} {section} {} {} {} adaptive engine cpu scheduling foreground background priority cpu spike stutter restraint processor placement",
             t!("adaptive_engine.intro_1"),
             t!("adaptive_engine.intro_2"),
             t!("adaptive_engine.intro_3"),
@@ -894,7 +905,7 @@ mod tests {
         assert_eq!(breadcrumb_path(Page::Home), vec![Page::Home]);
         assert_eq!(
             breadcrumb_path(Page::AdaptiveEngine),
-            vec![Page::Home, Page::WinderustFeatures, Page::AdaptiveEngine]
+            vec![Page::Home, Page::CpuControl, Page::AdaptiveEngine]
         );
     }
 
@@ -1099,6 +1110,25 @@ mod tests {
             section_enabled_feature_count(&settings, Page::PriorityControl),
             Some(1)
         );
+        settings.adaptive_engine.enabled = false;
+        let cpu_count = section_enabled_feature_count(&settings, Page::CpuControl).unwrap();
+        let feature_count = section_enabled_feature_count(&settings, Page::WinderustFeatures);
+        settings.adaptive_engine.enabled = true;
+        assert_eq!(
+            Page::CpuControl.child_pages().unwrap().first(),
+            Some(&Page::AdaptiveEngine)
+        );
+        assert_eq!(
+            section_enabled_feature_count(&settings, Page::CpuControl),
+            Some(cpu_count + 1)
+        );
+        assert_eq!(
+            section_enabled_feature_count(&settings, Page::WinderustFeatures),
+            feature_count
+        );
+        let search_results = dashboard_search_pages("adaptive engine", false);
+        assert!(search_results.contains(&Page::AdaptiveEngine));
+        assert!(!search_results.contains(&Page::WinderustFeatures));
         assert!(!dashboard_search_pages("suspension", false).contains(&Page::AppSuspension));
         assert!(dashboard_search_pages("suspension", true).contains(&Page::AppSuspension));
     }

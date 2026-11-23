@@ -2,9 +2,9 @@
 #Requires -RunAsAdministrator
 param(
     [string]$WinderustExePath = '.\target\release\winderust.exe',
-    [ValidateSet('Default', 'DefaultPCores', 'Balanced', 'Speed', 'SpeedThreadDefault', 'SpeedThreadDefaultPowerOff', 'SpeedRestraint', 'SpeedRestraintThreadDefault')]
-    [string[]]$Cases = @('Default', 'Speed', 'SpeedThreadDefault', 'SpeedThreadDefaultPowerOff'),
-    [ValidateRange(1, 10)][int]$Passes = 4,
+    [ValidateSet('Default', 'DefaultPCores', 'Balanced', 'Speed', 'SpeedPowerOff', 'SpeedRestraint')]
+    [string[]]$Cases = @('Default', 'Speed', 'SpeedPowerOff'),
+    [ValidateRange(1, 10)][int]$Passes = 3,
     [ValidateRange(1, 30)][int]$Seconds = 10,
     [ValidateRange(1, 30)][int]$WarmupSeconds = 5,
     [ValidateRange(0, 60)][int]$CooldownSeconds = 10,
@@ -38,7 +38,7 @@ $baselineGuid = $null
 Start-Transcript -LiteralPath (Join-Path $output 'transcript.txt') | Out-Null
 try {
     for ($pass = 0; $pass -lt $Passes; $pass++) {
-        # Rotate case positions; four passes balance a four-case matrix.
+        # One complete rotation gives each case every position.
         for ($position = 0; $position -lt $Cases.Count; $position++) {
             $case = $Cases[($position + $pass) % $Cases.Count]
             $directory = [IO.Directory]::CreateDirectory((Join-Path $output ("{0}-{1}" -f ($pass + 1), $case))).FullName

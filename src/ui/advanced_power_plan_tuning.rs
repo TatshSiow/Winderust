@@ -1089,7 +1089,7 @@ impl Editor {
             status.active_plan_read_error.is_none() && !guid.eq_ignore_ascii_case(&review.guid)
         });
         if let Some(guid) = active {
-            let plan = if power_plan_control::managed_by_adaptive(status, plans) {
+            let plan = if power_plan_control::managed_by_adaptive_processor_power(status, plans) {
                 ADAPTIVE_PLAN_NAME.to_owned()
             } else {
                 power_plan_control::plan_name(plans, guid)

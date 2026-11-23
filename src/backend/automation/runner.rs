@@ -1,9 +1,12 @@
 use super::*;
 use crate::features::winderust_features::memory_trim::MemoryTrimStatus;
-use crate::runtime::observations::CycleObservations;
+use crate::runtime::observations::{CycleObservations, ForegroundCpuHistory};
 use crate::{
     action_log::{ActionLogFeature, ActionLogResult},
+    adaptive_engine_process::{focus_and_launch_profile_eligible, focus_process_priority_eligible},
     control::memory_priority::MemoryPriorityReleaseOwner,
+    foreground::{process_session_id, ProcessInfo},
+    platform::windows::process::current_process_id,
     rules::decision_engine::{matching_by_focus_rules, ordinary_power_plan_stop},
 };
 use std::{
@@ -36,7 +39,7 @@ pub(super) fn app_suspension_release_status(
 }
 
 pub(super) fn adaptive_power_plan_required(settings: &Settings) -> bool {
-    settings.adaptive_engine.enabled && settings.adaptive_engine.processor_power_policy_enabled
+    settings.adaptive_engine.adaptive_processor_power_enabled
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq)]
@@ -93,6 +96,7 @@ impl ObservedSettings {
 
 #[derive(Default)]
 pub(super) struct RuntimeCore {
+    adaptive_processor_power_error: Option<String>,
     shutdown_started: bool,
     last_settings: Option<ObservedSettings>,
     power_plan_controller: PowerPlanController,
@@ -106,7 +110,8 @@ pub(super) struct RuntimeCore {
     adaptive_processor_topology: Vec<LogicalProcessorInfo>,
     adaptive_io_usage: IoUsageSnapshot,
     next_adaptive_io_refresh: Option<Instant>,
-    adaptive_foreground_process_id: Option<u32>,
+    adaptive_foreground_identity: Option<(u32, u64)>,
+    adaptive_foreground_cpu_history: ForegroundCpuHistory,
     controller_activity_detector: ControllerActivityDetector,
     controller_observed_since: Option<Instant>,
     pub(super) input_activity: InputActivityTracker,
@@ -125,11 +130,6 @@ pub(super) struct RuntimeCore {
     pub(super) action_log: ActionLog,
     action_log_session: Option<Arc<SharedAutomationState>>,
     adaptive_engine_process_manager: AdaptiveEngineProcessManager,
-    focus_and_launch_profile_active: bool,
-    cpu_pressure_restraint_active: bool,
-    helper_workload: Vec<(u32, u64)>,
-    helper_dependencies_changed: bool,
-    adaptive_engine_process_foreground_cpu_usage_tenths: Option<u16>,
     process_priority_manager: ProcessPriorityManager,
     priority_efficiency_controller: PriorityEfficiencyController,
     thread_priority_manager: ThreadPriorityManager,
@@ -636,6 +636,16 @@ impl RuntimeCore {
             self.adaptive_engine_process_manager
                 .reset_pressure_observations();
         }
+        if source_changed
+            || events.suspend_resume
+            || events.session_changed
+            || events.windows_event_watcher_changed
+        {
+            self.reset_adaptive_power_demand();
+        }
+        if events.suspend_resume || events.session_changed {
+            self.adaptive_foreground_identity = None;
+        }
         // A watcher transition invalidates the coverage behind accepted requests.
         if events.suspend_resume
             || (events.windows_event_watcher_changed
@@ -1043,7 +1053,7 @@ impl RuntimeCore {
         let foreground_process_id = observations.foreground_process_id();
         let excluded_process_ids = self.by_running_app_manager.active_process_ids();
         let explicit_cpu_allocation_paths = explicit_cpu_allocation_paths(settings);
-        let snapshot = self.adaptive_engine_process_manager.update(
+        self.adaptive_engine_process_manager.update(
             AdaptiveEngineProcessUpdate {
                 settings: &settings.adaptive_engine_process,
                 automation_enabled: settings.general.enabled && settings.adaptive_engine.enabled,
@@ -1052,39 +1062,14 @@ impl RuntimeCore {
                     .allow_cross_session_process_control,
                 foreground_process_id,
                 total_cpu_usage_percent: self.cpu_usage.percent,
-                background_efficiency_managed: settings.background_efficiency.enabled,
                 excluded_process_ids: &excluded_process_ids,
                 explicit_cpu_allocation_paths: &explicit_cpu_allocation_paths,
                 observations,
             },
             &mut self.cpu_allocation_coordinator,
             &mut self.priority_efficiency_controller,
-            &mut self.memory_priority_controller,
             &mut self.action_log,
-        );
-        self.focus_and_launch_profile_active = snapshot.focus_and_launch_profile_active;
-        let workload = if foreground_process_id.is_some()
-            && settings.general.enabled
-            && adaptive_engine_process_required(settings)
-        {
-            observations
-                .processes()
-                .ok()
-                .map(|processes| observations.adaptive_workload(&processes))
-                .map(|group| {
-                    group
-                        .iter()
-                        .map(|(&id, &creation)| (id, creation))
-                        .collect()
-                })
-                .unwrap_or_default()
-        } else {
-            Vec::new()
-        };
-        self.note_helper_dependencies(snapshot.cpu_pressure_restraint_active, workload);
-        self.adaptive_engine_process_foreground_cpu_usage_tenths =
-            snapshot.foreground_cpu_usage_tenths;
-        snapshot
+        )
     }
 
     pub(super) fn publish_adaptive_engine_process_status(
@@ -1098,42 +1083,13 @@ impl RuntimeCore {
                 .priority_efficiency_controller
                 .policy_managed_processes(owner)
                 .chain(
-                    self.priority_efficiency_controller
-                        .policy_managed_processes(ControlOwner::AdaptiveEngineProcessFocusPriority),
-                )
-                .chain(
                     self.cpu_allocation_coordinator
                         .policy_managed_processes(owner),
                 )
-                .chain(
-                    self.memory_priority_controller
-                        .policy_managed_processes(owner),
-                )
-                .chain(self.io_priority_controller.policy_managed_processes(owner))
-                .chain(
-                    self.thread_priority_controller
-                        .policy_managed_processes(owner),
-                )
-                .chain(
-                    self.dynamic_priority_boost_controller
-                        .policy_managed_processes(owner),
-                )
-                .chain(self.gpu_priority_controller.policy_managed_processes(owner))
                 .collect::<BTreeSet<_>>()
                 .len();
         }
         update_adaptive_engine_process_status(shared, status);
-    }
-
-    pub(super) fn note_helper_dependencies(&mut self, pressure: bool, workload: Vec<(u32, u64)>) {
-        self.helper_dependencies_changed |=
-            self.cpu_pressure_restraint_active != pressure || self.helper_workload != workload;
-        self.cpu_pressure_restraint_active = pressure;
-        self.helper_workload = workload;
-    }
-
-    pub(super) fn take_helper_dependency_change(&mut self) -> bool {
-        std::mem::take(&mut self.helper_dependencies_changed)
     }
 
     pub(super) fn run_bottleneck_classifier_update(
@@ -1151,37 +1107,78 @@ impl RuntimeCore {
         &mut self,
         settings: &Settings,
         observations: &mut CycleObservations,
-    ) -> Result<(), String> {
-        if cpu_usage_required(settings) {
+    ) {
+        let result = if adaptive_power_plan_required(settings) && settings.general.enabled {
             self.refresh_cpu_usage();
-        }
-        let foreground_process_id = observations.foreground_process_id();
-        if adaptive_power_plan_required(settings) && settings.general.enabled {
-            let foreground_changed = foreground_process_id.is_some()
-                && self.adaptive_foreground_process_id != foreground_process_id;
-            self.adaptive_foreground_process_id = foreground_process_id;
+            let (focus_or_launch, foreground_cpu_percent) =
+                self.sample_adaptive_power_foreground(observations);
             self.update_adaptive_power_plan(
                 settings.adaptive_engine.base_processor_policy.normalized(),
                 settings.adaptive_engine.background_pressure_profile,
                 settings.adaptive_engine.focus_and_launch_profile,
-                foreground_changed,
-            )?;
-            Ok(())
+                focus_or_launch,
+                foreground_cpu_percent,
+            )
         } else {
-            self.adaptive_foreground_process_id = None;
-            self.power_plan_controller
-                .release_adaptive(Instant::now())?;
-            Ok(())
-        }
+            self.reset_adaptive_power_demand();
+            self.adaptive_foreground_identity = None;
+            if self.power_plan_controller.has_pending_cleanup() {
+                self.power_plan_controller.release_adaptive(Instant::now())
+            } else {
+                Ok(())
+            }
+        };
+        self.adaptive_processor_power_error = result.err();
     }
 
-    pub(super) fn update_adaptive_power_plan(
+    fn reset_adaptive_power_demand(&mut self) {
+        self.adaptive_foreground_cpu_history = ForegroundCpuHistory::default();
+        self.per_processor_cpu_monitor = PerProcessorUsageMonitor::default();
+        self.io_monitor = IoUsageMonitor::default();
+        self.adaptive_io_usage = IoUsageSnapshot::default();
+        self.next_adaptive_io_refresh = None;
+    }
+
+    fn sample_adaptive_power_foreground(
+        &mut self,
+        observations: &mut CycleObservations,
+    ) -> (bool, Option<f32>) {
+        let Some(id) = observations.foreground_process_id() else {
+            self.adaptive_foreground_identity = None;
+            self.adaptive_foreground_cpu_history = ForegroundCpuHistory::default();
+            return (false, None);
+        };
+        let Ok(processes) = observations.foreground_process_ancestry(id) else {
+            self.adaptive_foreground_cpu_history = ForegroundCpuHistory::default();
+            return (false, None);
+        };
+        let workload = observations.adaptive_workload(&processes);
+        let cpu_sample = observations.adaptive_cpu_sample(&workload);
+        let identity = workload.get(&id).map(|&creation| (id, creation));
+        let foreground_cpu_percent = self
+            .adaptive_foreground_cpu_history
+            .update(workload, cpu_sample);
+        let changed = identity.is_some() && identity != self.adaptive_foreground_identity;
+        if identity.is_some() {
+            self.adaptive_foreground_identity = identity;
+        }
+        let launch = identity.is_some_and(|(_, creation)| {
+            processes
+                .iter()
+                .find(|process| process.id == id)
+                .is_some_and(|process| adaptive_power_launch_eligible(process, creation))
+        });
+        (changed || launch, foreground_cpu_percent)
+    }
+
+    fn update_adaptive_power_plan(
         &mut self,
         baseline: ProcessorPowerValues,
         background_pressure_profile: AdaptivePowerBoostValues,
         focus_and_launch_profile: AdaptivePowerBoostValues,
-        foreground_changed: bool,
-    ) -> Result<String, String> {
+        focus_or_launch: bool,
+        foreground_cpu_percent: Option<f32>,
+    ) -> Result<(), String> {
         let now = Instant::now();
         if self.adaptive_processor_topology.is_empty() {
             self.adaptive_processor_topology = cpu_allocation::logical_processors();
@@ -1192,16 +1189,12 @@ impl RuntimeCore {
             .map(|usage| adaptive_processor_demand(&usage, &self.adaptive_processor_topology))
             .unwrap_or_default();
         let demand = AdaptivePowerDemand {
-            focus_and_launch_profile_active: self.focus_and_launch_profile_active
-                || foreground_changed,
-            background_pressure_active: self.cpu_pressure_restraint_active,
+            focus_and_launch_profile_active: focus_or_launch,
             total_cpu_percent: self.cpu_usage.percent,
             peak_cpu_percent: processor_demand.peak_cpu_percent,
             performance_peak_cpu_percent: processor_demand.performance_peak_cpu_percent,
             efficiency_peak_cpu_percent: processor_demand.efficiency_peak_cpu_percent,
-            foreground_cpu_percent: self
-                .adaptive_engine_process_foreground_cpu_usage_tenths
-                .map(|usage| f32::from(usage) / 10.0),
+            foreground_cpu_percent,
             io_bytes_per_second: None,
         };
         let mut desired_profile = AdaptivePowerProfile::for_demand(demand);
@@ -1229,17 +1222,18 @@ impl RuntimeCore {
             .iter()
             .any(|processor| processor.kind == LogicalProcessorKind::Efficiency);
 
-        let profile = self.power_plan_controller.reconcile_adaptive(
-            AdaptivePowerPlanRequest {
-                profile: desired_profile,
-                baseline,
-                has_efficiency_cores,
-                background_pressure_profile,
-                focus_and_launch_profile,
-            },
-            now,
-        )?;
-        Ok(profile.label().to_owned())
+        self.power_plan_controller
+            .reconcile_adaptive(
+                AdaptivePowerPlanRequest {
+                    profile: desired_profile,
+                    baseline,
+                    has_efficiency_cores,
+                    background_pressure_profile,
+                    focus_and_launch_profile,
+                },
+                now,
+            )
+            .map(|_| ())
     }
 
     pub(super) fn run_io_priority_update(
@@ -1247,13 +1241,9 @@ impl RuntimeCore {
         settings: &Settings,
         observations: &mut CycleObservations,
     ) -> IoPrioritySnapshot {
-        let io_priority_settings =
-            effective_io_priority_settings(settings, self.cpu_pressure_restraint_active);
-        let owner = io_priority_control_owner(settings, self.cpu_pressure_restraint_active);
         self.io_priority_manager.update(
             &mut self.io_priority_controller,
-            owner,
-            &io_priority_settings,
+            &settings.io_priority,
             settings.general.enabled,
             settings.general.allow_cross_session_process_control,
             observations.foreground_process_id(),
@@ -1267,20 +1257,12 @@ impl RuntimeCore {
         settings: &Settings,
         observations: &mut CycleObservations,
     ) -> ProcessPrioritySnapshot {
-        let excluded_process_ids = self
-            .priority_efficiency_controller
-            .policy_target_process_ids(&[
-                ControlOwner::BackgroundEfficiency,
-                ControlOwner::AdaptiveEngine,
-                ControlOwner::AdaptiveEngineProcessFocusPriority,
-            ]);
         self.process_priority_manager.update(
             &mut self.priority_efficiency_controller,
             &settings.process_priority,
             settings.general.enabled,
             settings.general.allow_cross_session_process_control,
             observations.foreground_process_id(),
-            &excluded_process_ids,
             observations,
             &mut self.action_log,
         )
@@ -1291,13 +1273,9 @@ impl RuntimeCore {
         settings: &Settings,
         observations: &mut CycleObservations,
     ) -> ThreadPrioritySnapshot {
-        let thread_priority_settings =
-            effective_thread_priority_settings(settings, self.cpu_pressure_restraint_active);
-        let owner = thread_priority_control_owner(settings, self.cpu_pressure_restraint_active);
         self.thread_priority_manager.update(
             &mut self.thread_priority_controller,
-            owner,
-            &thread_priority_settings,
+            &settings.thread_priority,
             settings.general.enabled,
             settings.general.allow_cross_session_process_control,
             observations.foreground_process_id(),
@@ -1311,14 +1289,9 @@ impl RuntimeCore {
         settings: &Settings,
         observations: &mut CycleObservations,
     ) -> DynamicPriorityBoostSnapshot {
-        let dynamic_priority_boost_settings =
-            effective_dynamic_priority_boost_settings(settings, self.cpu_pressure_restraint_active);
-        let owner =
-            dynamic_priority_boost_control_owner(settings, self.cpu_pressure_restraint_active);
         self.dynamic_priority_boost_manager.update(
             &mut self.dynamic_priority_boost_controller,
-            owner,
-            &dynamic_priority_boost_settings,
+            &settings.dynamic_priority_boost,
             settings.general.enabled,
             settings.general.allow_cross_session_process_control,
             observations.foreground_process_id(),
@@ -1587,7 +1560,7 @@ impl RuntimeCore {
                     self.keep_running.resume(&executable_path);
                 }
                 ProcessControlCommand::SwitchPowerPlan { guid, result } => {
-                    let _ = result.try_send(self.switch_power_plan(&guid));
+                    let _ = result.try_send(self.switch_power_plan(settings, &guid));
                 }
             }
         }
@@ -1761,7 +1734,8 @@ impl RuntimeCore {
             );
         }
         if let Err(error) = self.power_plan_controller.retry_pending_cleanup(now) {
-            errors.push(format!("Adaptive plan cleanup failed: {error}"));
+            self.adaptive_processor_power_error =
+                Some(format!("Adaptive plan cleanup failed: {error}"));
         }
         (!errors.is_empty()).then(|| errors.join("; "))
     }
@@ -1821,8 +1795,8 @@ impl RuntimeCore {
             })
     }
 
-    pub(super) fn adaptive_power_plan_active(&self) -> bool {
-        self.power_plan_controller.adaptive_active()
+    pub(super) fn adaptive_power_plan_managed(&self) -> bool {
+        self.power_plan_controller.has_pending_cleanup()
     }
 
     pub(super) fn has_temporary_power_plan(&self) -> bool {
@@ -1838,13 +1812,9 @@ impl RuntimeCore {
         settings: &Settings,
         observations: &mut CycleObservations,
     ) -> GpuPrioritySnapshot {
-        let gpu_priority_settings =
-            effective_gpu_priority_settings(settings, self.cpu_pressure_restraint_active);
-        let owner = gpu_priority_control_owner(settings, self.cpu_pressure_restraint_active);
         self.gpu_priority_manager.update(
             &mut self.gpu_priority_controller,
-            owner,
-            &gpu_priority_settings,
+            &settings.gpu_priority,
             settings.general.enabled,
             settings.general.allow_cross_session_process_control,
             observations.foreground_process_id(),
@@ -2159,7 +2129,11 @@ impl RuntimeCore {
         }
     }
 
-    fn switch_power_plan(&mut self, guid: &str) -> Result<(), RuntimeCommandError> {
+    fn switch_power_plan(
+        &mut self,
+        settings: &Settings,
+        guid: &str,
+    ) -> Result<(), RuntimeCommandError> {
         let plans = crate::power::list_plans().map_err(RuntimeCommandError::CommandFailed)?;
         let Some(plan) = plans
             .into_iter()
@@ -2170,9 +2144,16 @@ impl RuntimeCore {
         if plan.managed_adaptive {
             return Err(ManualPowerPlanError::ManagedTarget.into());
         }
-        let result = self
-            .power_plan_controller
-            .switch_manual(&plan.guid, Instant::now());
+        let now = Instant::now();
+        // Save can disable Adaptive Processor Power and submit a staged selection together.
+        if !(settings.general.enabled && adaptive_power_plan_required(settings))
+            && self.power_plan_controller.has_pending_cleanup()
+        {
+            self.power_plan_controller
+                .release_adaptive(now)
+                .map_err(ManualPowerPlanError::SwitchFailed)?;
+        }
+        let result = self.power_plan_controller.switch_manual(&plan.guid, now);
         if matches!(
             result,
             Ok(true) | Err(ManualPowerPlanError::ActiveRecoveryPending(_))
@@ -2209,7 +2190,8 @@ impl RuntimeCore {
     }
 
     pub(super) fn power_plan_status(&mut self) -> (PowerPlanStatus, Option<&PowerPlanRuleContext>) {
-        let status = self.power_plan_controller.status();
+        let mut status = self.power_plan_controller.status();
+        status.adaptive_processor_power_error = self.adaptive_processor_power_error.clone();
         let stop_state = self.last_settings.as_ref().and_then(|settings| {
             ordinary_power_plan_stop(settings.effective(), settings.plugged_in)
                 .map(|(state, _)| state)
@@ -2231,6 +2213,7 @@ impl RuntimeCore {
             return (
                 PowerPlanStatus {
                     active_plan_read_error: status.active_plan_read_error,
+                    adaptive_processor_power_error: status.adaptive_processor_power_error,
                     current_guid: status.current_guid,
                     decision_state: Some(decision_state),
                     ..Default::default()
@@ -2245,6 +2228,15 @@ impl RuntimeCore {
     pub(super) fn clear_ordinary_power_plan_decision(&mut self) {
         self.power_plan_controller.clear_ordinary_decision();
     }
+}
+
+fn adaptive_power_launch_eligible(process: &ProcessInfo, creation: u64) -> bool {
+    let self_id = current_process_id();
+    let Some(session) = process_session_id(self_id) else {
+        return false;
+    };
+    focus_process_priority_eligible(process.id, &process.name, self_id, session)
+        && focus_and_launch_profile_eligible(process.id, creation)
 }
 
 fn ordinary_power_plan_choice_matches(
@@ -2363,6 +2355,80 @@ impl Drop for RuntimeCore {
 #[cfg(test)]
 mod settings_tests {
     use super::*;
+
+    #[test]
+    fn power_only_samples_foreground_demand_and_reprimes_on_power_source_change() {
+        let mut runner = RuntimeCore::default();
+        runner.shutdown_started = true;
+        let mut settings = Settings::default();
+        settings.adaptive_engine.adaptive_processor_power_enabled = true;
+        let _ = settings.battery_profile_mut();
+        let settings = Arc::new(settings);
+        assert!(!adaptive_engine_process_required(&settings));
+        assert!(adaptive_power_plan_required(&settings));
+        assert!(runner.note_settings(&settings, AutomationWakeEvents::default(), Some(true)));
+
+        let id = u32::MAX;
+        let start = Instant::now();
+        let sample = |second, generation, cpu_time_100ns: Option<u64>| {
+            CycleObservations::with_adaptive_cpu_sample(
+                vec![ProcessInfo {
+                    id,
+                    name: "csrss.exe".into(),
+                    creation_time: Some(generation),
+                    parent_id: None,
+                    session_id: None,
+                    user_name: None,
+                    is_service_account: None,
+                    is_critical: None,
+                    can_set_information: false,
+                    image_path: None,
+                }],
+                Some(id),
+                cpu_time_100ns.map(|cpu_time_100ns| crate::cpu::ProcessCpuSample {
+                    cpu_time_100ns,
+                    sampled_at: start + Duration::from_secs(second),
+                }),
+            )
+        };
+        let work = 1_000_000_000_000;
+        assert_eq!(
+            runner.sample_adaptive_power_foreground(&mut sample(0, 1, Some(0))),
+            (true, None)
+        );
+        assert_eq!(
+            runner.sample_adaptive_power_foreground(&mut sample(1, 1, Some(work))),
+            (false, Some(100.0))
+        );
+        assert!(runner.note_settings(&settings, AutomationWakeEvents::default(), Some(false)));
+        assert_eq!(
+            runner.sample_adaptive_power_foreground(&mut sample(2, 1, Some(work * 2))),
+            (false, None)
+        );
+        assert_eq!(
+            runner.sample_adaptive_power_foreground(&mut sample(3, 1, Some(work * 3))),
+            (false, Some(100.0))
+        );
+        for (second, generation, counter, expected) in [
+            (4, 1, None, (false, None)),
+            (5, 1, Some(work * 5), (false, None)),
+            (6, 2, Some(0), (true, None)),
+        ] {
+            assert_eq!(
+                runner.sample_adaptive_power_foreground(&mut sample(second, generation, counter)),
+                expected
+            );
+        }
+        let mut missing_root = CycleObservations::with_adaptive_cpu_sample(vec![], Some(id), None);
+        assert_eq!(
+            runner.sample_adaptive_power_foreground(&mut missing_root),
+            (false, None)
+        );
+        assert_eq!(
+            runner.sample_adaptive_power_foreground(&mut sample(7, 2, Some(work))),
+            (false, None)
+        );
+    }
 
     #[test]
     #[allow(clippy::field_reassign_with_default)] // RuntimeCore implements Drop.

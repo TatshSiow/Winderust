@@ -169,7 +169,7 @@ check_interval_ms = 1000
 
 [adaptive_engine]
 enabled = false
-processor_power_policy_enabled = false
+adaptive_processor_power_enabled = false
 
 [adaptive_engine.base_processor_policy]
 core_parking_min = 100

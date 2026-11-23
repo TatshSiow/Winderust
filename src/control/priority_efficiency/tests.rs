@@ -15,6 +15,7 @@ use crate::platform::windows::priority_efficiency::{
     PRIORITY_ABOVE_NORMAL as ABOVE_NORMAL_PRIORITY_CLASS,
     PRIORITY_BELOW_NORMAL as BELOW_NORMAL_PRIORITY_CLASS, PRIORITY_HIGH as HIGH_PRIORITY_CLASS,
     PRIORITY_IDLE as IDLE_PRIORITY_CLASS, PRIORITY_NORMAL as NORMAL_PRIORITY_CLASS,
+    PRIORITY_REALTIME as REALTIME_PRIORITY_CLASS,
 };
 
 #[derive(Clone)]
@@ -299,15 +300,10 @@ fn priority_claim(
     }
 }
 
-fn power_claim(
-    id: u32,
-    creation_time: u64,
-    owner: ControlOwner,
-    ignore_timer_resolution: bool,
-) -> PowerThrottlingClaim {
+fn power_claim(id: u32, creation_time: u64, ignore_timer_resolution: bool) -> PowerThrottlingClaim {
     PowerThrottlingClaim {
         target: target(id, creation_time),
-        owner,
+        owner: ControlOwner::BackgroundEfficiency,
         ignore_timer_resolution,
     }
 }
@@ -320,8 +316,19 @@ fn efficiency_claim(id: u32, creation_time: u64) -> EfficiencyModeClaim {
     }
 }
 
+fn restraint_claim(id: u32, creation_time: u64) -> PriorityClassClaim {
+    let mut claim = priority_claim(
+        id,
+        creation_time,
+        ControlOwner::AdaptiveEngine,
+        PriorityClassValue::BelowNormal,
+    );
+    claim.preservation = PriorityClassPreservation::OnlyNormal;
+    claim
+}
+
 #[test]
-fn adaptive_priority_temporarily_overrides_static_without_losing_the_baseline() {
+fn stored_priority_shadows_restraint_and_hands_back_to_it_when_released() {
     let mut controller =
         PriorityEfficiencyController::with_platform(platform_with(7, 1, NORMAL_PRIORITY_CLASS));
     controller
@@ -330,56 +337,34 @@ fn adaptive_priority_temporarily_overrides_static_without_losing_the_baseline() 
                 7,
                 1,
                 ControlOwner::ProcessPriority,
-                PriorityClassValue::BelowNormal,
+                PriorityClassValue::AboveNormal,
             ),
             true,
         )
         .unwrap();
-    controller
-        .apply_priority_claim(
-            priority_claim(7, 1, ControlOwner::AdaptiveEngine, PriorityClassValue::Idle),
-            true,
-        )
-        .unwrap();
+    assert_eq!(
+        controller.can_apply_adaptive_restraint(&target(7, 1), true),
+        Ok(false)
+    );
+    assert_eq!(
+        controller.apply_priority_claim(restraint_claim(7, 1), true),
+        Ok(ProcessPropertyApplyOutcome::Shadowed)
+    );
+    assert_eq!(
+        controller.platform.processes[&7].priority,
+        ABOVE_NORMAL_PRIORITY_CLASS
+    );
 
-    controller.release_all_priority_policy(ControlOwner::AdaptiveEngine);
+    controller.release_all_priority_policy(ControlOwner::ProcessPriority);
     assert_eq!(
         controller.platform.processes[&7].priority,
         BELOW_NORMAL_PRIORITY_CLASS
     );
-    controller.release_all_priority_policy(ControlOwner::ProcessPriority);
+    controller.release_all_priority_policy(ControlOwner::AdaptiveEngine);
     assert_eq!(
         controller.platform.processes[&7].priority,
         NORMAL_PRIORITY_CLASS
     );
-}
-
-#[test]
-fn managed_process_count_deduplicates_properties_only_for_the_same_owner() {
-    let static_owner = ControlOwner::ProcessPriority;
-    let adaptive_owner = ControlOwner::AdaptiveEngine;
-    let mut controller =
-        PriorityEfficiencyController::with_platform(platform_with(7, 1, NORMAL_PRIORITY_CLASS));
-    controller
-        .apply_priority_claim(
-            priority_claim(7, 1, static_owner, PriorityClassValue::BelowNormal),
-            true,
-        )
-        .unwrap();
-    controller
-        .apply_power_claim(power_claim(7, 1, adaptive_owner, true), true)
-        .unwrap();
-    assert_eq!(controller.policy_managed_process_count(static_owner), 1);
-    assert_eq!(controller.policy_managed_process_count(adaptive_owner), 1);
-
-    controller
-        .apply_priority_claim(
-            priority_claim(7, 1, adaptive_owner, PriorityClassValue::Idle),
-            true,
-        )
-        .unwrap();
-    assert_eq!(controller.policy_managed_process_count(static_owner), 0);
-    assert_eq!(controller.policy_managed_process_count(adaptive_owner), 1);
 }
 
 #[test]
@@ -398,9 +383,6 @@ fn background_efficiency_overrides_then_reveals_adaptive_claims() {
         )
         .unwrap();
     controller
-        .apply_power_claim(power_claim(7, 1, ControlOwner::AdaptiveEngine, true), true)
-        .unwrap();
-    controller
         .apply_efficiency_claim(efficiency_claim(7, 1), true)
         .unwrap();
 
@@ -417,12 +399,13 @@ fn background_efficiency_overrides_then_reveals_adaptive_claims() {
         controller.platform.processes[&7].priority,
         BELOW_NORMAL_PRIORITY_CLASS
     );
-    assert!(controller.platform.processes[&7]
-        .power
-        .ignore_timer_resolution_enabled());
+    assert_eq!(controller.platform.processes[&7].power, baseline_power());
+    assert_eq!(
+        controller.policy_managed_process_count(ControlOwner::BackgroundEfficiency),
+        0
+    );
 
     controller.release_all_priority_policy(ControlOwner::AdaptiveEngine);
-    controller.release_all_power_policy(ControlOwner::AdaptiveEngine);
     assert_eq!(
         controller.platform.processes[&7].priority,
         NORMAL_PRIORITY_CLASS
@@ -431,55 +414,15 @@ fn background_efficiency_overrides_then_reveals_adaptive_claims() {
 }
 
 #[test]
-fn foreground_boost_outranks_adaptive_but_not_background_efficiency() {
-    let mut controller =
-        PriorityEfficiencyController::with_platform(platform_with(7, 1, NORMAL_PRIORITY_CLASS));
-    controller
-        .apply_priority_claim(
-            priority_claim(7, 1, ControlOwner::AdaptiveEngine, PriorityClassValue::Idle),
-            true,
-        )
-        .unwrap();
-    controller
-        .apply_priority_claim(
-            priority_claim(
-                7,
-                1,
-                ControlOwner::AdaptiveEngineProcessFocusPriority,
-                PriorityClassValue::AboveNormal,
-            ),
-            true,
-        )
-        .unwrap();
-    assert_eq!(
-        controller.platform.processes[&7].priority,
-        ABOVE_NORMAL_PRIORITY_CLASS
-    );
-
-    controller
-        .apply_efficiency_claim(efficiency_claim(7, 1), true)
-        .unwrap();
-    assert_eq!(
-        controller.platform.processes[&7].priority,
-        IDLE_PRIORITY_CLASS
-    );
-    controller.release_all_efficiency_policy(ControlOwner::BackgroundEfficiency);
-    assert_eq!(
-        controller.platform.processes[&7].priority,
-        ABOVE_NORMAL_PRIORITY_CLASS
-    );
-    controller.release_all_priority_policy(ControlOwner::AdaptiveEngineProcessFocusPriority);
-    assert_eq!(
-        controller.platform.processes[&7].priority,
-        IDLE_PRIORITY_CLASS
-    );
-}
-
-#[test]
 fn process_list_action_is_immediate_then_automatic_policy_supersedes_it() {
     let mut controller =
         PriorityEfficiencyController::with_platform(platform_with(7, 1, NORMAL_PRIORITY_CLASS));
-    let automatic = priority_claim(7, 1, ControlOwner::AdaptiveEngine, PriorityClassValue::Idle);
+    let automatic = priority_claim(
+        7,
+        1,
+        ControlOwner::ProcessPriority,
+        PriorityClassValue::Idle,
+    );
     controller
         .apply_priority_claim(automatic.clone(), true)
         .unwrap();
@@ -508,13 +451,111 @@ fn process_list_action_is_immediate_then_automatic_policy_supersedes_it() {
 }
 
 #[test]
+fn process_list_priority_yields_restraint_for_the_current_target_episode() {
+    let mut controller =
+        PriorityEfficiencyController::with_platform(platform_with(7, 1, NORMAL_PRIORITY_CLASS));
+    let restraint = restraint_claim(7, 1);
+    assert_eq!(
+        controller.can_apply_adaptive_restraint(&restraint.target, true),
+        Ok(true)
+    );
+    assert_eq!(
+        controller.apply_priority_claim(restraint.clone(), true),
+        Ok(ProcessPropertyApplyOutcome::Applied)
+    );
+    controller
+        .apply_process_list_priority(&action_target(7, 1), ProcessPrioritySetting::Normal, true)
+        .unwrap();
+    controller.reconcile_adaptive_restraint_targets(
+        &BTreeSet::new(),
+        &BTreeSet::from([restraint.target.key()]),
+    );
+    assert_eq!(
+        controller.can_apply_adaptive_restraint(&restraint.target, true),
+        Ok(false)
+    );
+    assert_eq!(
+        controller.apply_priority_claim(restraint.clone(), true),
+        Ok(ProcessPropertyApplyOutcome::Preserved)
+    );
+    assert_eq!(
+        controller.platform.processes[&7].priority,
+        NORMAL_PRIORITY_CLASS
+    );
+
+    controller.release_all_priority_policy(ControlOwner::AdaptiveEngine);
+    assert_eq!(
+        controller.apply_priority_claim(restraint, true),
+        Ok(ProcessPropertyApplyOutcome::Applied)
+    );
+    assert_eq!(
+        controller.platform.processes[&7].priority,
+        BELOW_NORMAL_PRIORITY_CLASS
+    );
+}
+
+#[test]
+fn choosing_the_current_restrained_priority_holds_it_until_exit() {
+    let mut controller =
+        PriorityEfficiencyController::with_platform(platform_with(7, 1, NORMAL_PRIORITY_CLASS));
+    controller
+        .apply_priority_claim(restraint_claim(7, 1), true)
+        .unwrap();
+    assert_eq!(
+        controller.apply_process_list_priority(
+            &action_target(7, 1),
+            ProcessPrioritySetting::BelowNormal,
+            true,
+        ),
+        Ok(ProcessPropertyApplyOutcome::Unchanged)
+    );
+    controller.release_all_priority_policy(ControlOwner::AdaptiveEngine);
+    assert_eq!(
+        controller.platform.processes[&7].priority,
+        BELOW_NORMAL_PRIORITY_CLASS
+    );
+    controller.shutdown().unwrap();
+    assert_eq!(
+        controller.platform.processes[&7].priority,
+        NORMAL_PRIORITY_CLASS
+    );
+}
+
+#[test]
+fn restraint_does_not_write_a_priority_class_other_than_normal() {
+    for original in [
+        IDLE_PRIORITY_CLASS,
+        BELOW_NORMAL_PRIORITY_CLASS,
+        ABOVE_NORMAL_PRIORITY_CLASS,
+        HIGH_PRIORITY_CLASS,
+        REALTIME_PRIORITY_CLASS,
+    ] {
+        let mut controller =
+            PriorityEfficiencyController::with_platform(platform_with(7, 1, original));
+        assert_eq!(
+            controller.can_apply_adaptive_restraint(&target(7, 1), true),
+            Ok(false)
+        );
+        assert_eq!(
+            controller.apply_priority_claim(restraint_claim(7, 1), true),
+            Ok(ProcessPropertyApplyOutcome::Preserved),
+        );
+        assert_eq!(controller.platform.processes[&7].priority, original);
+        assert_eq!(
+            controller.policy_managed_process_count(ControlOwner::AdaptiveEngine),
+            0
+        );
+    }
+}
+
+#[test]
 fn unavailable_power_state_does_not_block_an_independent_priority_claim() {
     let mut platform = platform_with(7, 1, NORMAL_PRIORITY_CLASS);
     platform.power_unavailable = true;
     let mut controller = PriorityEfficiencyController::with_platform(platform);
 
     assert!(matches!(
-        controller.apply_power_claim(power_claim(7, 1, ControlOwner::AdaptiveEngine, false), true,),
+        controller.apply_effective_power(power_claim(7, 1, false), true,),
         Err(ProcessControlError::Unavailable(_))
     ));
     assert_eq!(
@@ -622,7 +663,7 @@ fn compound_commit_failure_preserves_prior_priority_and_power_baselines() {
         )
         .unwrap();
     controller
-        .apply_power_claim(power_claim(7, 1, ControlOwner::AdaptiveEngine, false), true)
+        .apply_effective_power(power_claim(7, 1, false), true)
         .unwrap();
     controller.platform.events.clear();
     controller.platform.fail_next_priority_commit = true;
@@ -670,12 +711,12 @@ fn power_commit_failure_preserves_the_prior_power_baseline() {
     let mut controller =
         PriorityEfficiencyController::with_platform(platform_with(7, 1, NORMAL_PRIORITY_CLASS));
     controller
-        .apply_power_claim(power_claim(7, 1, ControlOwner::AdaptiveEngine, false), true)
+        .apply_effective_power(power_claim(7, 1, false), true)
         .unwrap();
     controller.platform.events.clear();
     controller.platform.fail_next_power_commit = true;
     assert!(controller
-        .apply_power_claim(power_claim(7, 1, ControlOwner::AdaptiveEngine, true), true)
+        .apply_effective_power(power_claim(7, 1, true), true)
         .is_err());
     let desired_power = baseline_power().with_efficiency_enabled(true);
     let process = identity(7, 1);
@@ -709,7 +750,7 @@ fn uncertain_priority_compensation_keeps_both_compound_baselines() {
         )
         .unwrap();
     controller
-        .apply_power_claim(power_claim(7, 1, ControlOwner::AdaptiveEngine, false), true)
+        .apply_effective_power(power_claim(7, 1, false), true)
         .unwrap();
     controller.platform.events.clear();
     controller.platform.priority_query_failures = VecDeque::from([false, true, true]);
@@ -764,7 +805,7 @@ fn compound_rollback_commit_failure_tracks_the_verified_rollback_target() {
         )
         .unwrap();
     controller
-        .apply_power_claim(power_claim(7, 1, ControlOwner::AdaptiveEngine, false), true)
+        .apply_effective_power(power_claim(7, 1, false), true)
         .unwrap();
     controller.platform.events.clear();
     controller.platform.fail_next_priority_apply = true;
@@ -905,21 +946,6 @@ fn session_metadata_drift_does_not_create_a_second_process_identity() {
         .platform
         .events
         .contains(&FakeEvent::RelinquishPriority(7, 1)));
-}
-
-#[test]
-fn high_or_realtime_preservation_uses_the_original_baseline() {
-    let mut controller =
-        PriorityEfficiencyController::with_platform(platform_with(7, 1, HIGH_PRIORITY_CLASS));
-    let mut claim = priority_claim(7, 1, ControlOwner::AdaptiveEngine, PriorityClassValue::Idle);
-    claim.preservation = PriorityClassPreservation::PreserveHighOrRealtime;
-
-    assert_eq!(
-        controller.apply_priority_claim(claim, true).unwrap(),
-        ProcessPropertyApplyOutcome::Preserved
-    );
-    assert!(!controller.has_managed_state());
-    assert!(controller.platform.events.is_empty());
 }
 
 #[test]
@@ -1179,26 +1205,21 @@ fn pending_release_reconciles_the_current_claim_instead_of_restoring_over_it() {
     let mut controller =
         PriorityEfficiencyController::with_platform(platform_with(7, 1, NORMAL_PRIORITY_CLASS));
     controller
-        .apply_priority_claim(
-            priority_claim(
-                7,
-                1,
-                ControlOwner::ProcessPriority,
-                PriorityClassValue::BelowNormal,
-            ),
-            true,
-        )
+        .apply_priority_claim(restraint_claim(7, 1), true)
         .unwrap();
+    let stored = priority_claim(
+        7,
+        1,
+        ControlOwner::ProcessPriority,
+        PriorityClassValue::AboveNormal,
+    );
     controller
-        .apply_priority_claim(
-            priority_claim(7, 1, ControlOwner::AdaptiveEngine, PriorityClassValue::Idle),
-            true,
-        )
+        .apply_priority_claim(stored.clone(), true)
         .unwrap();
     controller.platform.fail_next_priority_apply = true;
     assert_eq!(
         controller
-            .release_all_priority_policy(ControlOwner::AdaptiveEngine)
+            .release_all_priority_policy(ControlOwner::ProcessPriority)
             .failures
             .len(),
         1
@@ -1207,12 +1228,14 @@ fn pending_release_reconciles_the_current_claim_instead_of_restoring_over_it() {
     let retries = controller.retry_pending_releases(due);
     assert!(retries.other.failures.is_empty());
     assert!(retries.background_efficiency.is_none());
-    assert_eq!(retries.process_priority_restored, None);
+    assert_eq!(retries.process_priority_restored, Some(0));
     assert_eq!(
         controller.platform.processes[&7].priority,
         BELOW_NORMAL_PRIORITY_CLASS
     );
     assert_eq!(controller.release_retry_delay(due), None);
+    controller.release_all_priority_policy(ControlOwner::AdaptiveEngine);
+    controller.apply_priority_claim(stored, true).unwrap();
     controller.platform.fail_next_priority_apply = true;
     let failed = controller.release_all_priority_policy(ControlOwner::ProcessPriority);
     assert_eq!(failed.failures.len(), 1);

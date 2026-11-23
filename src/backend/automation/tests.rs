@@ -6,9 +6,8 @@ use crate::action_log::{ActionLogFeature, ActionLogResult};
 use crate::application::settings::{RuntimeSettingsSnapshot, SettingsRevision};
 use crate::config::{
     AppSuspensionRule, ByFocusRule, ByRunningAppRule, ByTimeRule, CpuAllocationRule,
-    CpuLimiterRule, ExecutableSelector, ProcessDynamicPriorityBoostSetting, ProcessExclusionRule,
-    ProcessGpuPrioritySetting, ProcessRuleMode, ProcessThreadPrioritySetting, TimerResolutionRule,
-    WeekdaySetting,
+    CpuLimiterRule, ExecutableSelector, ProcessRuleMode, ProcessThreadPrioritySetting,
+    TimerResolutionRule, WeekdaySetting,
 };
 
 fn runtime_settings(snapshot: Settings) -> RuntimeSettingsSnapshot {
@@ -238,6 +237,7 @@ fn power_plan_status_is_published_as_an_independent_runtime_segment() {
     let automation = RuntimeHandle::start(&runtime_settings(Settings::default()));
     let status = PowerPlanStatus {
         active_plan_read_error: None,
+        adaptive_processor_power_error: None,
         apply_failed: false,
         restoring_previous: false,
         rule_index: Some(0),
@@ -1250,12 +1250,62 @@ fn explicit_cpu_allocation_paths_exclude_only_active_usable_rules() {
 #[test]
 fn automation_worker_runs_for_adaptive_power_plan_alone() {
     let mut settings = Settings::default();
-    settings.by_activity.enabled = false;
-    settings.by_focus.enabled = false;
-    settings.adaptive_engine.enabled = true;
-    settings.adaptive_engine.processor_power_policy_enabled = true;
+    settings.general.theme_mode = AppThemeMode::Dark;
+    settings.general.accent.source = AccentColorSource::Custom;
+    settings.adaptive_engine.adaptive_processor_power_enabled = true;
 
     assert!(automation_worker_required(&settings));
+    assert!(!adaptive_engine_process_required(&settings));
+    assert!(!process_appearance_scan_required(&settings));
+    assert!(!bottleneck_classifier_required(&settings));
+    assert_eq!(
+        windows_event_watcher_mode(&settings),
+        Some(WindowsEventWatcherMode::SuspendResumeOnly)
+    );
+    assert!(windows_event_wake_required(
+        &settings,
+        WindowsAutomationEvent::SuspendResume
+    ));
+
+    settings
+        .battery_profile_mut()
+        .adaptive_engine
+        .adaptive_processor_power_enabled = false;
+    assert_eq!(
+        windows_event_watcher_mode(&settings),
+        Some(WindowsEventWatcherMode::Full)
+    );
+    assert!(windows_event_wake_required(
+        &settings,
+        WindowsAutomationEvent::PowerChanged
+    ));
+    assert!(adaptive_power_plan_required(active_power_source_settings(
+        &settings,
+        Some(true)
+    )));
+    assert!(!adaptive_power_plan_required(active_power_source_settings(
+        &settings,
+        Some(false)
+    )));
+
+    settings.adaptive_engine.adaptive_processor_power_enabled = false;
+    settings
+        .battery_profile_mut()
+        .adaptive_engine
+        .adaptive_processor_power_enabled = true;
+    assert_eq!(
+        windows_event_watcher_mode(&settings),
+        Some(WindowsEventWatcherMode::Full)
+    );
+    assert!(automation_worker_required(&settings));
+    assert!(!adaptive_power_plan_required(active_power_source_settings(
+        &settings,
+        Some(true)
+    )));
+    assert!(adaptive_power_plan_required(active_power_source_settings(
+        &settings,
+        Some(false)
+    )));
 }
 
 #[test]
@@ -1264,7 +1314,7 @@ fn automation_worker_runs_for_bottleneck_classifier_alone() {
     settings.by_activity.enabled = false;
     settings.by_focus.enabled = false;
     settings.adaptive_engine.enabled = true;
-    settings.adaptive_engine.processor_power_policy_enabled = false;
+    settings.adaptive_engine.adaptive_processor_power_enabled = false;
 
     assert!(bottleneck_classifier_required(&settings));
     assert!(automation_worker_required(&settings));
@@ -1719,183 +1769,6 @@ fn automation_worker_runs_for_enabled_memory_trim() {
 }
 
 #[test]
-fn adaptive_engine_process_io_assist_waits_for_pressure() {
-    let mut settings = Settings::default();
-    settings.adaptive_engine.enabled = true;
-    settings.adaptive_engine_process.io_priority.enabled = true;
-    settings
-        .adaptive_engine_process
-        .io_priority
-        .foreground_priority = ProcessIoPriority::Normal.into();
-    settings
-        .adaptive_engine_process
-        .io_priority
-        .background_priority = ProcessIoPriority::Low.into();
-
-    assert!(!effective_io_priority_settings(&settings, false).enabled);
-
-    let io_priority = effective_io_priority_settings(&settings, true);
-
-    assert!(io_priority.enabled);
-    assert_eq!(
-        io_priority_control_owner(&settings, true),
-        ControlOwner::AdaptiveEngine
-    );
-    assert_eq!(
-        io_priority_control_owner(&settings, false),
-        ControlOwner::IoPriority
-    );
-    assert!(io_priority.foreground_detection_enabled);
-    assert_eq!(
-        io_priority.foreground_priority.priority(),
-        Some(ProcessIoPriority::Normal)
-    );
-    assert_eq!(
-        io_priority.background_priority.priority(),
-        Some(ProcessIoPriority::Low)
-    );
-}
-
-#[test]
-fn adaptive_engine_process_pressure_feeds_priority_defaults() {
-    let mut settings = Settings::default();
-    settings.adaptive_engine.enabled = true;
-    settings
-        .adaptive_engine_process
-        .cpu_pressure_restraint_enabled = true;
-    settings.adaptive_engine_process.io_priority.enabled = true;
-    settings
-        .adaptive_engine_process
-        .io_priority
-        .foreground_detection_enabled = false;
-    settings
-        .adaptive_engine_process
-        .io_priority
-        .preserve_foreground_priority = false;
-    settings
-        .adaptive_engine_process
-        .io_priority
-        .preserve_background_priority = false;
-    settings
-        .adaptive_engine_process
-        .io_priority
-        .background_priority = ProcessIoPriority::Low.into();
-    settings
-        .adaptive_engine_process
-        .thread_priority
-        .foreground_detection_enabled = false;
-    settings
-        .adaptive_engine_process
-        .thread_priority
-        .preserve_foreground_priority = false;
-    settings
-        .adaptive_engine_process
-        .thread_priority
-        .preserve_background_priority = false;
-    settings
-        .adaptive_engine_process
-        .dynamic_priority_boost
-        .foreground_detection_enabled = false;
-    settings
-        .adaptive_engine_process
-        .gpu_priority
-        .foreground_detection_enabled = false;
-    settings
-        .adaptive_engine_process
-        .gpu_priority
-        .preserve_foreground_priority = false;
-    settings
-        .adaptive_engine_process
-        .gpu_priority
-        .preserve_background_priority = false;
-    settings.adaptive_engine_process.custom_rules = vec![ProcessExclusionRule {
-        executable_path: "game.exe".to_owned(),
-        ..Default::default()
-    }];
-
-    assert!(thread_priority_required(&settings));
-    assert!(dynamic_priority_boost_required(&settings));
-    assert!(gpu_priority_required(&settings));
-    assert_eq!(
-        thread_priority_control_owner(&settings, true),
-        ControlOwner::AdaptiveEngine
-    );
-    assert_eq!(
-        thread_priority_control_owner(&settings, false),
-        ControlOwner::ThreadPriority
-    );
-
-    let thread_priority = effective_thread_priority_settings(&settings, true);
-    assert!(thread_priority.enabled);
-    assert!(thread_priority.foreground_detection_enabled);
-    assert!(thread_priority.preserve_foreground_priority);
-    assert!(thread_priority.preserve_background_priority);
-    assert_eq!(
-        thread_priority.background_priority,
-        ProcessThreadPrioritySetting::BelowNormal
-    );
-    assert_eq!(
-        thread_priority.exclusions,
-        settings.adaptive_engine_process.custom_rules
-    );
-
-    let dynamic_priority_boost = effective_dynamic_priority_boost_settings(&settings, true);
-    assert!(dynamic_priority_boost.enabled);
-    assert!(dynamic_priority_boost.foreground_detection_enabled);
-    assert_eq!(
-        dynamic_priority_boost.foreground_boost,
-        ProcessDynamicPriorityBoostSetting::Enabled
-    );
-    assert_eq!(
-        dynamic_priority_boost.background_boost,
-        ProcessDynamicPriorityBoostSetting::Disabled
-    );
-    assert_eq!(
-        dynamic_priority_boost.exclusions,
-        settings.adaptive_engine_process.custom_rules
-    );
-
-    let io_priority = effective_io_priority_settings(&settings, true);
-    assert_eq!(
-        io_priority_control_owner(&settings, true),
-        ControlOwner::AdaptiveEngine
-    );
-    assert_eq!(
-        io_priority.background_priority.priority(),
-        Some(ProcessIoPriority::Low)
-    );
-    assert!(io_priority.foreground_detection_enabled);
-    assert!(io_priority.preserve_foreground_priority);
-    assert!(io_priority.preserve_background_priority);
-    assert_eq!(
-        io_priority.exclusions,
-        settings.adaptive_engine_process.custom_rules
-    );
-
-    let gpu_priority = effective_gpu_priority_settings(&settings, true);
-    assert_eq!(
-        gpu_priority_control_owner(&settings, true),
-        ControlOwner::AdaptiveEngine
-    );
-    assert_eq!(
-        gpu_priority_control_owner(&settings, false),
-        ControlOwner::GpuPriority
-    );
-    assert!(gpu_priority.enabled);
-    assert!(gpu_priority.foreground_detection_enabled);
-    assert!(gpu_priority.preserve_foreground_priority);
-    assert!(gpu_priority.preserve_background_priority);
-    assert_eq!(
-        gpu_priority.background_priority,
-        ProcessGpuPrioritySetting::BelowNormal
-    );
-    assert_eq!(
-        gpu_priority.exclusions,
-        settings.adaptive_engine_process.custom_rules
-    );
-}
-
-#[test]
 fn adaptive_engine_process_behaviours_independently_drive_polling() {
     let mut settings = Settings::default();
     settings.adaptive_engine.enabled = true;
@@ -1958,85 +1831,6 @@ fn active_power_source_selects_the_matching_feature_profile() {
             .process_priority
             .enabled
     );
-}
-
-#[test]
-fn adaptive_engine_process_priority_assist_temporarily_overrides_global_priority_defaults() {
-    let mut settings = Settings::default();
-    settings.adaptive_engine.enabled = true;
-    settings
-        .adaptive_engine_process
-        .cpu_pressure_restraint_enabled = true;
-    settings.thread_priority.enabled = true;
-    settings.thread_priority.background_priority = ProcessThreadPrioritySetting::Idle;
-    settings.dynamic_priority_boost.enabled = true;
-    settings.dynamic_priority_boost.background_boost = ProcessDynamicPriorityBoostSetting::Enabled;
-    settings.gpu_priority.enabled = true;
-    settings.gpu_priority.background_priority = ProcessGpuPrioritySetting::Idle;
-    settings
-        .adaptive_engine_process
-        .thread_priority
-        .background_priority = ProcessThreadPrioritySetting::BelowNormal;
-    settings
-        .adaptive_engine_process
-        .dynamic_priority_boost
-        .background_boost = ProcessDynamicPriorityBoostSetting::Disabled;
-    settings
-        .adaptive_engine_process
-        .gpu_priority
-        .background_priority = ProcessGpuPrioritySetting::BelowNormal;
-
-    assert_eq!(
-        effective_thread_priority_settings(&settings, true).background_priority,
-        ProcessThreadPrioritySetting::BelowNormal
-    );
-    assert_eq!(
-        effective_dynamic_priority_boost_settings(&settings, true).background_boost,
-        ProcessDynamicPriorityBoostSetting::Disabled
-    );
-    assert_eq!(
-        dynamic_priority_boost_control_owner(&settings, true),
-        ControlOwner::AdaptiveEngine
-    );
-    assert_eq!(
-        effective_gpu_priority_settings(&settings, true).background_priority,
-        ProcessGpuPrioritySetting::BelowNormal
-    );
-    assert_eq!(
-        gpu_priority_control_owner(&settings, true),
-        ControlOwner::AdaptiveEngine
-    );
-    assert_eq!(
-        effective_thread_priority_settings(&settings, false).background_priority,
-        ProcessThreadPrioritySetting::Idle
-    );
-    assert_eq!(
-        effective_dynamic_priority_boost_settings(&settings, false).background_boost,
-        ProcessDynamicPriorityBoostSetting::Enabled
-    );
-    assert_eq!(
-        dynamic_priority_boost_control_owner(&settings, false),
-        ControlOwner::DynamicPriorityBoost
-    );
-    assert_eq!(
-        effective_gpu_priority_settings(&settings, false).background_priority,
-        ProcessGpuPrioritySetting::Idle
-    );
-    assert_eq!(
-        gpu_priority_control_owner(&settings, false),
-        ControlOwner::GpuPriority
-    );
-}
-
-#[test]
-fn adaptive_engine_process_without_io_assist_does_not_require_io_refresh() {
-    let mut settings = Settings::default();
-    settings.adaptive_engine.enabled = true;
-    settings
-        .adaptive_engine_process
-        .cpu_pressure_restraint_enabled = true;
-
-    assert!(!io_priority_required(&settings));
 }
 
 #[test]
@@ -2183,6 +1977,7 @@ fn system_appearance_uses_windows_events_without_power_automation() {
 fn adaptive_engine_skips_appearance_only_windows_events() {
     let mut settings = Settings::default();
     settings.adaptive_engine.enabled = true;
+    settings.adaptive_engine.adaptive_processor_power_enabled = false;
     settings.general.accent.source = AccentColorSource::Windows;
 
     assert_eq!(windows_event_watcher_mode(&settings), None);
@@ -2381,15 +2176,20 @@ fn disabled_automation_suppresses_worker_refreshes() {
 }
 
 #[test]
-fn adaptive_plan_follows_adaptive_engine_processor_policy() {
+fn adaptive_processor_power_and_process_policies_can_run_independently() {
     let mut settings = Settings::default();
-    settings.adaptive_engine.enabled = true;
-    settings.adaptive_engine.processor_power_policy_enabled = true;
+    settings.adaptive_engine.adaptive_processor_power_enabled = true;
+    settings
+        .adaptive_engine_process
+        .cpu_pressure_restraint_enabled = true;
 
     assert!(adaptive_power_plan_required(&settings));
+    assert!(!adaptive_engine_process_required(&settings));
 
-    settings.adaptive_engine.processor_power_policy_enabled = false;
+    settings.adaptive_engine.adaptive_processor_power_enabled = false;
+    settings.adaptive_engine.enabled = true;
     assert!(!adaptive_power_plan_required(&settings));
+    assert!(adaptive_engine_process_required(&settings));
 }
 
 #[test]
@@ -2420,7 +2220,7 @@ fn adaptive_processor_demand_separates_hybrid_core_classes() {
 fn workload_reaction_interval_is_independent_from_adaptive_power_sampling() {
     let mut settings = Settings::default();
     settings.adaptive_engine.enabled = true;
-    settings.adaptive_engine.processor_power_policy_enabled = true;
+    settings.adaptive_engine.adaptive_processor_power_enabled = true;
     settings.adaptive_engine_process.reaction_time_ms = 1_500;
 
     assert_eq!(
@@ -2449,11 +2249,9 @@ fn adaptive_engine_process_requires_adaptive_engine() {
         .cpu_pressure_restraint_enabled = true;
 
     assert!(!adaptive_engine_process_required(&settings));
-    assert!(!adaptive_engine_process_priority_assist_required(&settings));
 
     settings.adaptive_engine.enabled = true;
     assert!(adaptive_engine_process_required(&settings));
-    assert!(adaptive_engine_process_priority_assist_required(&settings));
 
     settings
         .adaptive_engine_process
@@ -2462,7 +2260,6 @@ fn adaptive_engine_process_requires_adaptive_engine() {
         .adaptive_engine_process
         .limit_background_processors_enabled = true;
     assert!(adaptive_engine_process_required(&settings));
-    assert!(!adaptive_engine_process_priority_assist_required(&settings));
 }
 #[test]
 fn automation_feature_execution_order_is_characterized() {
@@ -2472,10 +2269,9 @@ fn automation_feature_execution_order_is_characterized() {
         "runner.publish_action_log_if_changed(&shared);",
         &[
             "runner.run_background_efficiency_update(",
-            "runner.run_adaptive_engine_process_update(",
-            "runner.run_adaptive_power_plan_update(",
-            "runner.run_io_priority_update(",
             "runner.run_process_priority_update(",
+            "runner.run_adaptive_engine_process_update(",
+            "runner.run_io_priority_update(",
             "runner.run_thread_priority_update(",
             "runner.run_dynamic_priority_boost_update(",
             "runner.run_gpu_priority_update(",
@@ -2491,6 +2287,8 @@ fn automation_feature_execution_order_is_characterized() {
             "runner.run_memory_trim_",
             "runner.run_timer_resolution_update(",
             "runner.run_sleep_prevention_update(",
+            "runner.run_adaptive_power_plan_update(",
+            "runner.run_check(",
         ],
     );
 }
@@ -2526,9 +2324,6 @@ fn shared_property_precedence_inputs_are_characterized() {
         "pub(super) fn run_thread_priority_update",
     );
     assert!(process_priority.contains("priority_efficiency_controller"));
-    assert!(process_priority.contains("ControlOwner::BackgroundEfficiency"));
-    assert!(process_priority.contains("ControlOwner::AdaptiveEngine"));
-    assert!(process_priority.contains("ControlOwner::AdaptiveEngineProcessFocusPriority"));
 
     let cpu_limiter = source_scope(
         source,
@@ -2902,7 +2697,7 @@ fn all_adaptive_allocation_gates_and_battery_only_zones_schedule_independently()
             let mut settings = Settings::default();
             settings.general.enabled = master;
             settings.adaptive_engine.enabled = true;
-            settings.adaptive_engine.processor_power_policy_enabled = false;
+            settings.adaptive_engine.adaptive_processor_power_enabled = false;
             let process = &mut settings.adaptive_engine_process;
             process.cpu_pressure_restraint_enabled = bits & 1 != 0;
             process.limit_background_processors_enabled = bits & 2 != 0;
@@ -2919,7 +2714,7 @@ fn all_adaptive_allocation_gates_and_battery_only_zones_schedule_independently()
     settings.adaptive_engine.enabled = false;
     let battery = settings.battery_profile_mut();
     battery.adaptive_engine.enabled = true;
-    battery.adaptive_engine.processor_power_policy_enabled = false;
+    battery.adaptive_engine.adaptive_processor_power_enabled = false;
     battery
         .adaptive_engine_process
         .dynamic_resource_zones_enabled = true;
@@ -2931,19 +2726,4 @@ fn all_adaptive_allocation_gates_and_battery_only_zones_schedule_independently()
     assert!(adaptive_engine_process_required(
         active_power_source_settings(&settings, Some(false))
     ));
-}
-
-#[test]
-fn adaptive_dependency_changes_are_coalesced_and_include_process_generation() {
-    let mut runner = RuntimeCore::default();
-    runner.note_helper_dependencies(false, vec![(42, 1)]);
-    assert!(runner.take_helper_dependency_change());
-    runner.note_helper_dependencies(false, vec![(42, 1)]);
-    assert!(!runner.take_helper_dependency_change());
-    runner.note_helper_dependencies(true, vec![(42, 1)]);
-    assert!(runner.take_helper_dependency_change());
-    runner.note_helper_dependencies(true, vec![(42, 2)]);
-    assert!(runner.take_helper_dependency_change());
-    runner.note_helper_dependencies(false, vec![(42, 2)]);
-    assert!(runner.take_helper_dependency_change());
 }

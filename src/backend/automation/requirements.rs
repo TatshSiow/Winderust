@@ -142,199 +142,6 @@ pub(super) fn sleep_prevention_required(settings: &Settings) -> bool {
             .any(|rule| enabled_executable_path_rule(rule.enabled, &rule.executable_path))
 }
 
-pub(super) fn io_priority_required(settings: &Settings) -> bool {
-    settings.io_priority.enabled
-        || (settings.adaptive_engine.enabled
-            && settings
-                .adaptive_engine_process
-                .cpu_pressure_restraint_enabled
-            && settings.adaptive_engine_process.io_priority.enabled)
-}
-
-pub(super) fn adaptive_engine_process_priority_assist_required(settings: &Settings) -> bool {
-    settings.adaptive_engine.enabled
-        && settings
-            .adaptive_engine_process
-            .cpu_pressure_restraint_enabled
-}
-
-pub(super) fn thread_priority_required(settings: &Settings) -> bool {
-    settings.thread_priority.enabled
-        || (adaptive_engine_process_priority_assist_required(settings)
-            && settings.adaptive_engine_process.thread_priority.enabled)
-}
-
-pub(super) fn dynamic_priority_boost_required(settings: &Settings) -> bool {
-    settings.dynamic_priority_boost.enabled
-        || (adaptive_engine_process_priority_assist_required(settings)
-            && settings
-                .adaptive_engine_process
-                .dynamic_priority_boost
-                .enabled)
-}
-
-pub(super) fn gpu_priority_required(settings: &Settings) -> bool {
-    settings.gpu_priority.enabled
-        || (adaptive_engine_process_priority_assist_required(settings)
-            && settings.adaptive_engine_process.gpu_priority.enabled)
-}
-
-pub(super) fn effective_io_priority_settings(
-    settings: &Settings,
-    cpu_pressure_restraint_active: bool,
-) -> crate::config::IoPrioritySettings {
-    if !adaptive_io_priority_active(settings, cpu_pressure_restraint_active) {
-        return settings.io_priority.clone();
-    }
-    let mut io_priority = io_priority_settings(settings);
-    io_priority
-        .exclusions
-        .extend_from_slice(&settings.adaptive_engine_process.custom_rules);
-    io_priority
-}
-
-pub(super) fn io_priority_control_owner(
-    settings: &Settings,
-    cpu_pressure_restraint_active: bool,
-) -> ControlOwner {
-    if adaptive_io_priority_active(settings, cpu_pressure_restraint_active) {
-        ControlOwner::AdaptiveEngine
-    } else {
-        ControlOwner::IoPriority
-    }
-}
-
-fn adaptive_io_priority_active(settings: &Settings, cpu_pressure_restraint_active: bool) -> bool {
-    cpu_pressure_restraint_active && settings.adaptive_engine_process.io_priority.enabled
-}
-
-pub(super) fn io_priority_settings(settings: &Settings) -> crate::config::IoPrioritySettings {
-    let mut io_priority = settings.adaptive_engine_process.io_priority.clone();
-    io_priority.foreground_detection_enabled = true;
-    io_priority.visible_window_detection_enabled = true;
-    io_priority.preserve_foreground_priority = true;
-    io_priority.preserve_visible_window_priority = true;
-    io_priority.preserve_background_priority = true;
-    io_priority
-}
-
-pub(super) fn effective_thread_priority_settings(
-    settings: &Settings,
-    cpu_pressure_restraint_active: bool,
-) -> crate::config::ThreadPrioritySettings {
-    if !adaptive_thread_priority_active(settings, cpu_pressure_restraint_active) {
-        return settings.thread_priority.clone();
-    }
-    let mut thread_priority = settings.adaptive_engine_process.thread_priority.clone();
-    thread_priority.foreground_detection_enabled = true;
-    thread_priority.visible_window_detection_enabled = true;
-    thread_priority.preserve_foreground_priority = true;
-    thread_priority.preserve_visible_window_priority = true;
-    thread_priority.preserve_background_priority = true;
-    thread_priority
-        .exclusions
-        .extend_from_slice(&settings.adaptive_engine_process.custom_rules);
-    thread_priority
-}
-
-pub(super) fn thread_priority_control_owner(
-    settings: &Settings,
-    cpu_pressure_restraint_active: bool,
-) -> ControlOwner {
-    if adaptive_thread_priority_active(settings, cpu_pressure_restraint_active) {
-        ControlOwner::AdaptiveEngine
-    } else {
-        ControlOwner::ThreadPriority
-    }
-}
-
-fn adaptive_thread_priority_active(
-    settings: &Settings,
-    cpu_pressure_restraint_active: bool,
-) -> bool {
-    cpu_pressure_restraint_active
-        && adaptive_engine_process_priority_assist_required(settings)
-        && settings.adaptive_engine_process.thread_priority.enabled
-}
-
-pub(super) fn effective_dynamic_priority_boost_settings(
-    settings: &Settings,
-    cpu_pressure_restraint_active: bool,
-) -> crate::config::DynamicPriorityBoostSettings {
-    if !adaptive_dynamic_priority_boost_active(settings, cpu_pressure_restraint_active) {
-        return settings.dynamic_priority_boost.clone();
-    }
-    let mut dynamic_priority_boost = settings
-        .adaptive_engine_process
-        .dynamic_priority_boost
-        .clone();
-    dynamic_priority_boost.foreground_detection_enabled = true;
-    dynamic_priority_boost.visible_window_detection_enabled = true;
-    dynamic_priority_boost
-        .exclusions
-        .extend_from_slice(&settings.adaptive_engine_process.custom_rules);
-    dynamic_priority_boost
-}
-
-pub(super) fn dynamic_priority_boost_control_owner(
-    settings: &Settings,
-    cpu_pressure_restraint_active: bool,
-) -> ControlOwner {
-    if adaptive_dynamic_priority_boost_active(settings, cpu_pressure_restraint_active) {
-        ControlOwner::AdaptiveEngine
-    } else {
-        ControlOwner::DynamicPriorityBoost
-    }
-}
-
-fn adaptive_dynamic_priority_boost_active(
-    settings: &Settings,
-    cpu_pressure_restraint_active: bool,
-) -> bool {
-    cpu_pressure_restraint_active
-        && adaptive_engine_process_priority_assist_required(settings)
-        && settings
-            .adaptive_engine_process
-            .dynamic_priority_boost
-            .enabled
-}
-
-pub(super) fn effective_gpu_priority_settings(
-    settings: &Settings,
-    cpu_pressure_restraint_active: bool,
-) -> crate::config::GpuPrioritySettings {
-    if !adaptive_gpu_priority_active(settings, cpu_pressure_restraint_active) {
-        return settings.gpu_priority.clone();
-    }
-    let mut gpu_priority = settings.adaptive_engine_process.gpu_priority.clone();
-    gpu_priority.foreground_detection_enabled = true;
-    gpu_priority.visible_window_detection_enabled = true;
-    gpu_priority.preserve_foreground_priority = true;
-    gpu_priority.preserve_visible_window_priority = true;
-    gpu_priority.preserve_background_priority = true;
-    gpu_priority
-        .exclusions
-        .extend_from_slice(&settings.adaptive_engine_process.custom_rules);
-    gpu_priority
-}
-
-pub(super) fn gpu_priority_control_owner(
-    settings: &Settings,
-    cpu_pressure_restraint_active: bool,
-) -> ControlOwner {
-    if adaptive_gpu_priority_active(settings, cpu_pressure_restraint_active) {
-        ControlOwner::AdaptiveEngine
-    } else {
-        ControlOwner::GpuPriority
-    }
-}
-
-fn adaptive_gpu_priority_active(settings: &Settings, cpu_pressure_restraint_active: bool) -> bool {
-    cpu_pressure_restraint_active
-        && adaptive_engine_process_priority_assist_required(settings)
-        && settings.adaptive_engine_process.gpu_priority.enabled
-}
-
 pub(super) fn process_appearance_scan_required(settings: &Settings) -> bool {
     settings.general.enabled
         && (settings.background_efficiency.enabled
@@ -344,10 +151,10 @@ pub(super) fn process_appearance_scan_required(settings: &Settings) -> bool {
             || by_running_app_required(settings)
             || adaptive_engine_process_required(settings)
             || settings.process_priority.enabled
-            || thread_priority_required(settings)
-            || dynamic_priority_boost_required(settings)
-            || io_priority_required(settings)
-            || gpu_priority_required(settings)
+            || settings.thread_priority.enabled
+            || settings.dynamic_priority_boost.enabled
+            || settings.io_priority.enabled
+            || settings.gpu_priority.enabled
             || settings.memory_priority.enabled
             || settings.memory_trim.enabled)
 }
@@ -423,16 +230,31 @@ pub(super) fn instance_balancing_required(settings: &Settings) -> bool {
 }
 
 pub(super) fn windows_event_watcher_mode(settings: &Settings) -> Option<WindowsEventWatcherMode> {
-    if windows_event_watcher_required(settings) {
+    if windows_event_watcher_required(settings) || adaptive_power_enabled_varies_by_source(settings)
+    {
         Some(WindowsEventWatcherMode::Full)
     } else if std::iter::once(settings)
         .chain(settings.on_battery.as_deref())
-        .any(|profile| feature_refresh_required(profile, adaptive_engine_process_required(profile)))
+        .any(|profile| {
+            feature_refresh_required(
+                profile,
+                adaptive_engine_process_required(profile) || adaptive_power_plan_required(profile),
+            )
+        })
     {
         Some(WindowsEventWatcherMode::SuspendResumeOnly)
     } else {
         None
     }
+}
+
+pub(super) fn adaptive_power_enabled_varies_by_source(settings: &Settings) -> bool {
+    let enabled =
+        |profile| feature_refresh_required(profile, adaptive_power_plan_required(profile));
+    settings
+        .on_battery
+        .as_deref()
+        .is_some_and(|battery| enabled(settings) != enabled(battery))
 }
 
 // Full Windows event coverage is required by the existing event-driven features.

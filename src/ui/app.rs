@@ -1668,7 +1668,10 @@ impl WinderustApp {
                 let status = &self.status.power_plan_status;
                 if self.power_plans_loaded
                     && self.power_plan_control.pending.is_none()
-                    && !power_plan_control::managed_by_adaptive(status, &self.power_plans)
+                    && !power_plan_control::managed_by_adaptive_processor_power(
+                        status,
+                        &self.power_plans,
+                    )
                     && power_plan_control::is_selectable(&self.power_plans, &guid)
                 {
                     let current = power_plan_control::current_plan_guid(status, &self.power_plans);
@@ -1677,7 +1680,7 @@ impl WinderustApp {
                     .then_some(guid);
                 }
             }
-            Message::PowerPlanControl(power_plan_control::Message::ProcessorPower) => {
+            Message::PowerPlanControl(power_plan_control::Message::AdaptiveProcessorPower) => {
                 let profile = if crate::backend::power_source::is_plugged_in() == Some(false) {
                     PowerSourceProfile::OnBattery
                 } else {
@@ -1686,8 +1689,7 @@ impl WinderustApp {
                 if !self.select_power_source(profile) {
                     return Task::none();
                 }
-                self.adaptive.show_processor_power();
-                return self.update(Message::Page(Page::AdaptiveEngine));
+                return self.update(Message::Page(Page::AdaptiveProcessorPower));
             }
             Message::PowerPlanSwitchFinished(result) => {
                 let after_save = self.power_plan_control.pending.take();
@@ -2651,6 +2653,7 @@ impl WinderustApp {
                     let items: Vec<_> = section
                         .pages
                         .iter()
+                        .filter(|page| **page != Page::AdaptiveProcessorPower)
                         .filter_map(|page| {
                             navigation::feature_page_enabled(
                                 if matches!(
@@ -3235,6 +3238,12 @@ impl WinderustApp {
             profile_controls.map(Into::into),
             panel_button,
         );
+        let settings_are_pending = self.pending_settings_changes();
+        let save_notice_visible =
+            settings_are_pending || self.power_plan_control.selected_guid.is_some();
+        let save_notice_in_editor = self.page == Page::AdaptiveProcessorPower;
+        let save_card =
+            || widgets::settings_card(self.save_notice(settings_are_pending)).width(360);
         let content = container(super::motion::wrap(
             super::motion::wrap(
                 super::scrolling::repaint_group(self.page_view()),
@@ -3246,7 +3255,19 @@ impl WinderustApp {
         ))
         .width(Fill)
         .height(Fill);
-        let body = page_canvas(shield(heading), content.into());
+        let content =
+            if save_notice_in_editor && save_notice_visible && !self.navigation_search_open {
+                column![
+                    content,
+                    container(save_card()).width(Fill).align_x(iced::Right)
+                ]
+                .spacing(design::space::MEDIUM)
+                .height(Fill)
+                .into()
+            } else {
+                content.into()
+            };
+        let body = page_canvas(shield(heading), content);
         let panel_visible = side_panel.is_some();
         let layout = row![
             navigation,
@@ -3428,13 +3449,15 @@ impl WinderustApp {
         if let Some(modal) = modal {
             return centered_modal(layout, modal);
         }
-        let settings_are_pending = self.pending_settings_changes();
+        if save_notice_in_editor {
+            return layout;
+        }
         iced::widget::stack![
             layout,
             shield(
                 container(super::motion::wrap(
-                    widgets::settings_card(self.save_notice(settings_are_pending)).width(360),
-                    settings_are_pending || self.power_plan_control.selected_guid.is_some(),
+                    save_card(),
+                    save_notice_visible,
                     super::motion::Effect::Visible
                 ))
                 .padding(iced::Padding {
@@ -3573,6 +3596,10 @@ impl WinderustApp {
                 .priority_separation
                 .view()
                 .map(Message::PrioritySeparation),
+            Page::AdaptiveProcessorPower => self
+                .adaptive
+                .processor_power_view(&self.settings)
+                .map(Message::Adaptive),
             Page::AdvancedPowerPlanTuning => self
                 .power_tuning
                 .view(
