@@ -2031,6 +2031,7 @@ fn run_background_automation(
                         windows_event_watcher_active,
                         activity.idle_for,
                         wall_time,
+                        runner.paused_cpu_load_readback_delay(settings, plugged_in, wait_now),
                     )
                 };
                 runner

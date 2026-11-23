@@ -1876,6 +1876,23 @@ impl RuntimeCore {
         self.power_plan_controller.has_temporary_plan()
     }
 
+    pub(super) fn paused_cpu_load_readback_delay(
+        &self,
+        settings: &Settings,
+        plugged_in: Option<bool>,
+        now: Instant,
+    ) -> Option<Duration> {
+        if matches!(
+            ordinary_power_plan_stop(settings, plugged_in),
+            Some((DecisionState::PausedWhilePluggedIn, _))
+        ) {
+            self.power_plan_controller
+                .idle_active_plan_refresh_delay(now)
+        } else {
+            None
+        }
+    }
+
     pub(super) fn temporary_power_plan_retry_delay(&self) -> Option<Duration> {
         self.power_plan_controller.temporary_release_retry_delay()
     }

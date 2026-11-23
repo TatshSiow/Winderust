@@ -519,6 +519,7 @@ pub(super) fn power_plan_check_delay(
     windows_event_watcher_active: bool,
     activity_idle_for: Option<Duration>,
     wall_time: DateTime<Local>,
+    paused_cpu_load_readback_delay: Option<Duration>,
 ) -> Option<Duration> {
     if !windows_event_watcher_active {
         return Some(configured_check_interval(settings));
@@ -526,7 +527,8 @@ pub(super) fn power_plan_check_delay(
 
     let mut delay = None;
     if by_cpu_load_rules_required(settings) {
-        delay = Some(min_worker_wait(delay, CPU_USAGE_REFRESH_INTERVAL));
+        let cpu_delay = paused_cpu_load_readback_delay.unwrap_or(CPU_USAGE_REFRESH_INTERVAL);
+        delay = Some(min_worker_wait(delay, cpu_delay));
     }
     if by_time_rules_required(settings) {
         let schedule_delay = bounded_by_time_check_delay(

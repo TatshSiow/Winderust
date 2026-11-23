@@ -2268,8 +2268,46 @@ fn event_driven_power_checks_drop_idle_polling_for_focus_only_rules() {
     assert!(power_plan_checks_required(&settings));
     assert!(windows_event_watcher_required(&settings));
     let wall_time = Local::now();
-    assert!(power_plan_check_delay(&settings, true, None, wall_time).is_none());
-    assert!(power_plan_check_delay(&settings, false, None, wall_time).is_some());
+    assert!(power_plan_check_delay(&settings, true, None, wall_time, None).is_none());
+    assert!(power_plan_check_delay(&settings, false, None, wall_time, None).is_some());
+}
+
+#[test]
+fn paused_cpu_load_readback_keeps_earlier_deadlines_and_watcher_fallback() {
+    let mut settings = Settings::default();
+    settings.by_activity.enabled = false;
+    settings.by_cpu_load.enabled = true;
+    settings
+        .by_cpu_load
+        .rules
+        .push(crate::config::ByCpuLoadRule {
+            enabled: true,
+            power_plan_guid: Some("cpu-plan".into()),
+            ..Default::default()
+        });
+    let wall_time = Local::now();
+    let readback = Some(Duration::from_secs(10));
+    assert_eq!(
+        power_plan_check_delay(&settings, true, None, wall_time, readback),
+        readback
+    );
+    assert_eq!(
+        power_plan_check_delay(&settings, false, None, wall_time, readback),
+        Some(configured_check_interval(&settings))
+    );
+    assert_eq!(
+        power_plan_check_delay(&settings, true, None, wall_time, None),
+        Some(CPU_USAGE_REFRESH_INTERVAL)
+    );
+
+    settings.by_activity.enabled = true;
+    settings.by_activity.power_plans.power_save_guid = Some("idle-plan".into());
+    let earlier = Duration::from_millis(250);
+    let idle_for = Duration::from_secs(settings.by_activity.idle_timeout_seconds) - earlier;
+    assert_eq!(
+        power_plan_check_delay(&settings, true, Some(idle_for), wall_time, readback),
+        Some(earlier)
+    );
 }
 
 #[test]
@@ -2281,8 +2319,8 @@ fn activity_input_resume_waits_for_hook_event() {
     assert!(power_plan_checks_required(&settings));
     assert!(windows_event_watcher_required(&settings));
     let wall_time = Local::now();
-    assert!(power_plan_check_delay(&settings, true, None, wall_time).is_none());
-    assert!(power_plan_check_delay(&settings, false, None, wall_time).is_some());
+    assert!(power_plan_check_delay(&settings, true, None, wall_time, None).is_none());
+    assert!(power_plan_check_delay(&settings, false, None, wall_time, None).is_some());
 }
 
 #[test]
@@ -2337,7 +2375,7 @@ fn schedule_checks_recheck_within_a_minute_without_clock_events() {
         power_plan_guid: Some("scheduled-guid".to_owned()),
     }];
 
-    let delay = power_plan_check_delay(&settings, true, None, wall_time).unwrap();
+    let delay = power_plan_check_delay(&settings, true, None, wall_time, None).unwrap();
     assert_eq!(delay, Duration::from_secs(60));
     let now = Instant::now();
     let mut scheduler = RefreshScheduler::new(now);

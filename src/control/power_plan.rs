@@ -323,6 +323,19 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
         .then_some(Duration::from_secs(1))
     }
 
+    pub(crate) fn idle_active_plan_refresh_delay(&self, now: Instant) -> Option<Duration> {
+        if self.has_pending_cleanup()
+            || self.temporary_plan.is_some()
+            || self.ownership_release_pending
+            || self.uncertain_switch.is_some()
+        {
+            return None;
+        }
+        self.next_active_plan_refresh
+            .filter(|&refresh_at| refresh_at > now)
+            .map(|refresh_at| refresh_at - now)
+    }
+
     pub(crate) fn cleanup_retry_delay(&self, now: Instant) -> Option<Duration> {
         self.setup_cleanup_due
             .map(|due| due.saturating_duration_since(now))

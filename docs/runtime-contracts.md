@@ -430,9 +430,12 @@ Read the relevant section before changing feature policy, ownership, restoration
 - The global pause for power-plan switching on A/C and shared restoration policy
   belong on the Power Plan Control landing page. The A/C pause applies to ordinary
   plan rules. By CPU Load skips CPU sampling and By Focus skips foreground
-  observation while paused. Independent consumers can still sample CPU usage
-  or observe the foreground. Adaptive Processor Power uses its own saved
-  enablement for each source.
+  observation while paused. With full Windows event coverage and no pending
+  power-plan work, a paused By CPU Load check waits for the active-plan read
+  deadline or an earlier deadline required by another rule. Windows events
+  still wake it, and failed reads and restoration retain their retry cadence.
+  Independent consumers can still sample CPU usage or observe the foreground.
+  Adaptive Processor Power uses its own saved enablement for each source.
 - Adaptive Processor Power starts off. Saving an enablement or tuning change for one
   source preserves the other source's existing values. The former Adaptive Engine
   processor-power switch has no runtime effect. Previously saved tuning stays readable.
