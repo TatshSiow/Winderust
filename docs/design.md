@@ -74,8 +74,8 @@ Prefer visible state, compact controls, and predictable rows. Use restrained acc
   pointer/touch actions, scrolling, typing, focus operations, and existing background
   overlays. Outside presses may dismiss a popup but must never activate the content
   behind it. Keep window chrome usable and preserve background scroll/input state.
-- Unhandled Escape cancels By Time, By CPU Load, and Watchdog rule dialogs without
-  saving their drafts. Open pickers and focused controls handle Escape first.
+- Unhandled Escape cancels By Time and By CPU Load rule dialogs without saving
+  their drafts. Open pickers and focused controls handle Escape first.
 - Use shared 10px surface and 6px control corner radii consistently. Do not introduce large rounded marketing panels.
 - Use the shared scroll helpers and scrollbar settings for both axes. Keep a permanent gutter for page, tab, and table scrolling, including when the thumb is hidden, so page/tab changes cannot shift content; never paint tracks over cards, controls, or table cells. Use a transparent track and a slim rounded neutral thumb, with stronger hover/drag contrast and no accent-colored strip.
 - Floating menus and hover popups use balanced surface padding. Reserve scrollbar
@@ -290,7 +290,8 @@ hover/press; background shading supplies feedback.
   and critical thresholds, and the Memory column identifies the selected metric.
   Pencil dialogs show app identity and an optional sustained duration shared by
   the CPU / Memory tabs. A blank duration inherits the page default. Drafts apply
-  only on OK. Cancel, Close, and Escape discard.
+  only on OK. Cancel, Close, and Escape discard, including when a numeric field
+  has focus. If a picker is open, Escape closes the picker first.
 - Choose Executable path to use the app picker or Executable name to enter an
   exact filename such as `worker.exe`. Executable name rules send notifications
   and evaluate each resolved path separately. Choose Combined by path or Per

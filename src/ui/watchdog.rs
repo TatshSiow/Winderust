@@ -842,7 +842,7 @@ impl Editor {
             ),
             _ => None,
         };
-        Some(widgets::modal_frame(
+        let frame = widgets::modal_frame(
             row![
                 widgets::heading(
                     t!(if draft.index.is_some() {
@@ -926,7 +926,8 @@ impl Editor {
             ]
             .spacing(design::space::SMALL),
             (760, 840),
-        ))
+        );
+        Some(super::modal::dismiss_on_escape(frame, Message::CancelRule))
     }
 }
 
