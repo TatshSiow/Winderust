@@ -1084,7 +1084,7 @@ cpu_allocation:
   selection_invalid: "此選取範圍包含無效或重複的 CPU 識別資料。"
   selection_unavailable: "此選擇包含目前 CPU 配置中無法使用的 CPU。請選取有效預設或檢查已選取的 CPU。"
   unavailable_selection: "無法使用的選擇"
-  topology_changed: "開啟此預設後 CPU 拓撲已變更。請關閉並重新開啟，以檢查目前的 CPU。"
+  topology_changed: "開啟此預設後 CPU 拓撲已變更。請先檢查目前的 CPU 配置，再儲存預設。"
   topology_summary: "偵測到 %{processors} 個邏輯 CPU、%{cores} 個實體核心、%{groups} 個處理器群組及 %{numa_nodes} 個 NUMA 節點。"
   preset_topology_unavailable: "無法驗證 CPU 拓撲：%{error}。儲存前請關閉並重新開啟此預設。"
   topology_unavailable: "無法驗證 CPU 拓樸：%{error}。"

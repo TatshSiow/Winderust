@@ -1081,7 +1081,7 @@ cpu_allocation:
   selection_invalid: "This selection contains invalid or repeated CPU identities."
   selection_unavailable: "This selection includes CPUs unavailable in the current CPU layout. Choose a valid preset or review the selected CPUs."
   unavailable_selection: "Unavailable selection"
-  topology_changed: "CPU topology changed while this preset was open. Close and reopen it to review the current CPUs."
+  topology_changed: "CPU topology changed while this preset was open. Review the current CPU layout before saving."
   topology_summary: "%{processors} logical CPUs; %{cores} physical cores; %{groups} processor groups; %{numa_nodes} NUMA nodes reported."
   preset_topology_unavailable: "Cannot verify CPU topology: %{error}. Close and reopen this preset before saving."
   topology_unavailable: "Cannot verify CPU topology: %{error}."
