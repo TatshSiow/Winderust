@@ -2,6 +2,7 @@ use super::design;
 use super::widgets::{checkbox, text_input};
 use crate::application::SettingsEditor;
 use crate::config::MemoryTrimSettings;
+use crate::memory_trim::{MemoryTrimSnapshot, MemoryTrimStatus};
 use crate::ui::process_rules::{
     can_add_memory_trim_exclusion, exact_path_input, new_process_exclusion_rule, picked_path_input,
 };
@@ -9,6 +10,33 @@ use crate::ui::scrolling::scrollable;
 use iced::widget::column;
 use iced::{Element, Fill};
 use rust_i18n::t;
+
+pub(super) fn manual_result(result: MemoryTrimSnapshot) -> Result<(), String> {
+    let key = match result.status {
+        MemoryTrimStatus::AutomationDisabled => "memory_trim.manual_automation_disabled",
+        MemoryTrimStatus::Disabled => "memory_trim.manual_disabled",
+        MemoryTrimStatus::ForegroundUnknown => "memory_trim.manual_foreground_unknown",
+        MemoryTrimStatus::ManualCompleted => {
+            if result.failed_processes == 0 {
+                return result.last_error.map_or(Ok(()), Err);
+            }
+            let summary = t!(
+                "memory_trim.manual_failed",
+                trimmed = result.trimmed_processes,
+                failed = result.failed_processes
+            );
+            return Err(match result.last_error {
+                Some(error) => format!("{summary}\n{error}"),
+                None => summary.into_owned(),
+            });
+        }
+        MemoryTrimStatus::Error(error) => return Err(error),
+        MemoryTrimStatus::WaitingForMemoryLoad { .. } | MemoryTrimStatus::Active => {
+            "memory_trim.manual_result_unavailable"
+        }
+    };
+    Err(t!(key).into_owned())
+}
 
 #[derive(Default)]
 pub(super) struct Editor {

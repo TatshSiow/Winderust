@@ -664,7 +664,7 @@ enum Message {
     Suspension(app_suspension::Message),
     SleepPrevention(sleep_prevention::Message),
     Trim(memory_trim::Message),
-    TrimFinished(Result<(), String>),
+    TrimFinished(Result<crate::memory_trim::MemoryTrimSnapshot, String>),
     Watchdog(watchdog::Message),
     KeepRunning(keep_running::Message),
     InstanceLimits(instance_limits::Message),
@@ -1426,7 +1426,6 @@ impl WinderustApp {
                     receiver
                         .recv()
                         .map_err(|error| error.to_string())?
-                        .map(|_| ())
                         .map_err(|error| error.to_string())
                 }) {
                     Ok(task) => task,
@@ -1445,7 +1444,7 @@ impl WinderustApp {
             }
             Message::TrimFinished(result) => {
                 self.manual_trim_pending = false;
-                if let Err(error) = result {
+                if let Err(error) = result.and_then(memory_trim::manual_result) {
                     self.error_message = error;
                 }
             }

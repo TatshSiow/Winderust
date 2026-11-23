@@ -527,6 +527,8 @@ Read the relevant section before changing feature policy, ownership, restoration
   three seconds. Each pass checks current pressure and eligibility, and starts
   after the last attempted PID before wrapping to lower PIDs. Trim Now can
   attempt all eligible processes in one pass.
+- The manual reply keeps the trim outcome. The UI reports skipped commands and
+  failed attempts. A completed pass with no eligible processes needs no notice.
 - Failure suppression is tracked by executable path. Native paths that cannot
   be represented in settings keep runtime suppression and an Action Log entry.
   Saved exclusions and auto-exclusions require a representable path. A successful

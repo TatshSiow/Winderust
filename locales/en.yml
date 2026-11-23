@@ -1039,6 +1039,11 @@ memory_trim:
   idle_time: "Idle Time"
   invalid_threshold: "%{setting} must be a whole number from 1 to %{maximum}."
   trim_now: "Trim now"
+  manual_automation_disabled: "Memory Trim could not run because the Winderust master switch is off."
+  manual_disabled: "Memory Trim is disabled for the current power source."
+  manual_foreground_unknown: "Memory Trim could not verify the foreground app."
+  manual_failed: "Memory Trim completed with %{trimmed} successful and %{failed} failed attempts."
+  manual_result_unavailable: "Memory Trim did not return a manual result."
   waiting_for_memory_load: "Memory load is %{load}%, below the %{threshold}% threshold."
   no_exclusions: "No custom rules are configured."
 

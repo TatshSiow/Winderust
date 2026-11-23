@@ -1042,6 +1042,11 @@ memory_trim:
   idle_time: "閒置時間"
   invalid_threshold: "%{setting}必須是 1 到 %{maximum} 之間的整數。"
   trim_now: "立即修剪"
+  manual_automation_disabled: "Winderust 總開關已關閉，無法執行記憶體修剪。"
+  manual_disabled: "目前的電源來源已停用記憶體修剪。"
+  manual_foreground_unknown: "記憶體修剪無法確認前景應用程式。"
+  manual_failed: "記憶體修剪已完成，成功 %{trimmed} 次，失敗 %{failed} 次。"
+  manual_result_unavailable: "記憶體修剪未回報手動執行結果。"
   waiting_for_memory_load: "系統記憶體使用率為 %{load}%，低於 %{threshold}% 的門檻。"
   no_exclusions: "尚未設定自訂規則。"
 
