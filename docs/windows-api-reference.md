@@ -685,8 +685,10 @@ CPU Sets (Soft), and Processor Affinity (Hard) classify each matched process as 
 Window, or Background and select that tier's policy. Foreground
 resolution starts from the active window; visible-window detection keeps top-level windows that are
 visible, not minimized, and not DWM-cloaked. Both classifications include sibling processes with
-the same executable path. A fully covered window still qualifies because `IsWindowVisible` reports
-window style state rather than pixel occlusion. CPU allocation requires a verified foreground
+the same executable path. Visible Window sibling matching requires an absolute image tied to the
+captured process generation. A missing or stale image leaves the directly observed PID in the
+window inventory. A fully covered window still qualifies because `IsWindowVisible` reports window
+style state rather than pixel occlusion. CPU allocation requires a verified foreground
 executable when the Focus selection differs from either Visible Window or Background. It requires
 a visible-window observation when the Visible Window and Background selections differ.
 

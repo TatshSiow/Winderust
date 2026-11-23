@@ -841,7 +841,8 @@ impl ProtectedProcesses {
                 visible_window_process_ids.contains(&process.id)
                     || foreground_process_id == Some(process.id)
             })
-            .filter_map(process_executable_path)
+            .filter_map(verified_process_executable_path)
+            .map(Cow::into_owned)
             .collect();
         Self {
             process_ids: visible_window_process_ids,
@@ -1045,6 +1046,10 @@ pub(crate) fn catalog_process_executable_path(
     process_id: u32,
 ) -> Option<Cow<'_, Path>> {
     let process = processes.iter().find(|process| process.id == process_id)?;
+    verified_process_executable_path(process)
+}
+
+fn verified_process_executable_path(process: &ProcessInfo) -> Option<Cow<'_, Path>> {
     process.creation_time?;
     process
         .image_path
@@ -1585,7 +1590,7 @@ mod tests {
     }
 
     #[test]
-    fn observed_image_requires_the_captured_process_creation_time() {
+    fn observed_image_and_visible_siblings_require_the_captured_generation() {
         let id = std::process::id();
         let handle = open_process_for_query(id).expect("current process should be queryable");
         let creation_time = handle
@@ -1606,11 +1611,37 @@ mod tests {
             image_path: Some(PathBuf::from("cached.exe")),
         };
 
-        assert_eq!(observed_process_executable_path(&observed), Some(path));
+        assert_eq!(
+            observed_process_executable_path(&observed),
+            Some(path.clone())
+        );
+
+        let sibling_id = id ^ 1;
+        let capture = |process: &ProcessInfo| {
+            ProtectedProcesses::capture(
+                std::slice::from_ref(process),
+                false,
+                None,
+                BTreeSet::from([id]),
+            )
+        };
+        observed.image_path = None;
+        assert!(capture(&observed).contains(sibling_id, &path));
+
         observed.creation_time = Some(creation_time ^ 1);
         assert_eq!(observed_process_executable_path(&observed), None);
+        let stale = capture(&observed);
+        assert!(stale.contains(id, &path));
+        assert!(!stale.contains(sibling_id, &path));
+
         observed.creation_time = None;
         assert_eq!(observed_process_executable_path(&observed), None);
+        let cached_path = PathBuf::from(r"C:\Apps\cached.exe");
+        observed.image_path = Some(cached_path.clone());
+        assert!(!capture(&observed).contains(sibling_id, &cached_path));
+
+        observed.creation_time = Some(creation_time);
+        assert!(capture(&observed).contains(sibling_id, &cached_path));
     }
 
     #[test]
