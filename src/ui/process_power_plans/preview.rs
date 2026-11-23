@@ -307,8 +307,12 @@ fn focus_matches(matches: &[FocusMatch], plans: &[PowerPlan]) -> Element<'static
             .wrapping(text::Wrapping::WordOrGlyph)
             .into();
     };
-    let featured = text(winner_label(&winner.rule, Some(&winner.plan_guid), plans))
-        .wrapping(text::Wrapping::WordOrGlyph);
+    let featured = text(winner_label(
+        &focus_rule_label(winner),
+        Some(&winner.plan_guid),
+        plans,
+    ))
+    .wrapping(text::Wrapping::WordOrGlyph);
     if others.is_empty() {
         return featured.into();
     }
@@ -329,11 +333,15 @@ fn focus_matches(matches: &[FocusMatch], plans: &[PowerPlan]) -> Element<'static
     .into()
 }
 
+fn focus_rule_label(matched: &FocusMatch) -> String {
+    let position = t!("common.rule", number = matched.rule_index + 1);
+    format!("{position} · {}", matched.rule.trim_start())
+}
+
 fn alternate_focus_match_label(matched: &FocusMatch, plans: &[PowerPlan]) -> String {
-    let rule_number = t!("common.rule", number = matched.rule_index + 1);
-    let rule = matched.rule.trim_start();
+    let rule = focus_rule_label(matched);
     let plan = preview_plan_label(Some(&matched.plan_guid), plans);
-    format!("{rule_number} · {rule} ({plan})")
+    format!("{rule} ({plan})")
 }
 
 fn winner_label(rule: &str, plan_guid: Option<&str>, plans: &[PowerPlan]) -> String {

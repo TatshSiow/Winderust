@@ -272,7 +272,14 @@ impl Editor {
                         )
                     };
                     let mut card = column![widgets::process_rule_header_with_target(
-                        app,
+                        column![
+                            text(t!("common.rule", number = index + 1).to_string())
+                                .size(design::typography::CAPTION)
+                                .style(text::secondary),
+                            app,
+                        ]
+                        .spacing(design::space::TINY)
+                        .into(),
                         location,
                         checkbox(rule.enabled)
                             .on_toggle_maybe(Some(move |value| {
