@@ -1,5 +1,7 @@
+use std::time::{SystemTime, UNIX_EPOCH};
 use std::{collections::BTreeMap, ops::RangeInclusive, ptr::null, sync::mpsc::Sender};
 
+use chrono::{DateTime, SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
 use windows_sys::{
     core::GUID,
@@ -61,7 +63,35 @@ pub(crate) struct InterruptTimingSecond {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub(crate) struct InterruptTimingCaptureStart {
+    utc_sample: String,
+    qpc_sample_span_ns: u64,
+}
+
+pub(super) struct CaptureClockSample {
+    pub(super) utc: SystemTime,
+    pub(super) after_tick: i64,
+}
+
+impl CaptureClockSample {
+    fn with_origin(self, start_tick: i64, frequency: i64) -> Option<InterruptTimingCaptureStart> {
+        let span = u128::try_from(self.after_tick.checked_sub(start_tick)?).ok()?;
+        let frequency = u128::try_from(frequency).ok().filter(|value| *value != 0)?;
+        let qpc_sample_span_ns = u64::try_from((span * 1_000_000_000).div_ceil(frequency)).ok()?;
+        let utc = self.utc.duration_since(UNIX_EPOCH).ok()?;
+        let utc =
+            DateTime::<Utc>::from_timestamp(utc.as_secs().try_into().ok()?, utc.subsec_nanos())?;
+        Some(InterruptTimingCaptureStart {
+            utc_sample: utc.to_rfc3339_opts(SecondsFormat::AutoSi, true),
+            qpc_sample_span_ns,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct InterruptTimingReport {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) capture_start: Option<Box<InterruptTimingCaptureStart>>,
     pub(crate) events_lost: u32,
     pub(crate) buffers_lost: u32,
     pub(crate) invalid_intervals: usize,
@@ -91,6 +121,7 @@ pub(super) fn decode_live(
     session_name: &str,
     ready: Sender<()>,
     capture_start: i64,
+    clock: Option<CaptureClockSample>,
     cpu_count: Option<u16>,
 ) -> Result<InterruptTimingReport, DecodeError> {
     let mut frequency = 0;
@@ -132,7 +163,11 @@ pub(super) fn decode_live(
         return Err(DecodeError::Clock);
     }
     drop(handle);
-    events.report(capture_start..=capture_end, drain_end, frequency, cpu_count)
+    let mut report = events.report(capture_start..=capture_end, drain_end, frequency, cpu_count)?;
+    report.capture_start = clock
+        .and_then(|clock| clock.with_origin(capture_start, frequency))
+        .map(Box::new);
+    Ok(report)
 }
 
 struct TraceHandle(PROCESSTRACE_HANDLE);
@@ -410,6 +445,7 @@ impl Events {
                 .collect()
         });
         Ok(InterruptTimingReport {
+            capture_start: None,
             events_lost: 0,
             buffers_lost: 0,
             invalid_intervals,

@@ -805,10 +805,15 @@ Read the relevant section before changing feature policy, ownership, restoration
   export includes module basenames, aggregate durations, loss and attribution
   counts, and per-CPU totals when available. Its `timeline` array has five rows
   in elapsed-second order, starting at 0–1 seconds. It does not include raw trace
-  events, addresses, or driver paths. Cancelling or failing an export leaves
-  the completed report available for another attempt. Once a destination is
-  selected, the Exit prompt shows export progress and enables Exit after the
-  write finishes. Closing the prompt lets the export continue. A failure
+  events, addresses, or driver paths. When available, `capture_start` includes
+  a UTC sample for approximate log correlation and the span in nanoseconds
+  between the QPC sample that starts the first bucket and the QPC sample
+  immediately after the UTC read. The wall clock can change during the
+  capture. Use elapsed seconds for timing within the report.
+  Cancelling or failing an export leaves the completed report available for
+  another attempt. Once a destination is selected, the Exit prompt shows export
+  progress and enables Exit after the write finishes. Closing the prompt lets
+  the export continue. A failure
   during an open Exit prompt also appears in the prompt.
 - Cancel and app exit close the capture helper's lifetime pipe. The helper
   records the capture ID in an administrator-only, volatile Windows registry

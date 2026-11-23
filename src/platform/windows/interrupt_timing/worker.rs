@@ -4,7 +4,7 @@ use std::{
     mem::{offset_of, size_of},
     sync::mpsc::{self, Receiver, RecvTimeoutError, TryRecvError},
     thread,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime},
 };
 
 use windows_sys::{
@@ -31,7 +31,7 @@ use windows_sys::{
 use crate::platform::windows::cpu_allocation::topology;
 
 use super::{
-    decode::{decode_live, CAPTURE_SECONDS},
+    decode::{decode_live, CaptureClockSample, CAPTURE_SECONDS},
     InterruptTimingError, Outcome,
 };
 
@@ -48,6 +48,7 @@ pub(super) fn capture(name: &str, cancelled: &Receiver<()>) -> Outcome {
     let cpu_count = single_group_cpu_count();
     let (mut session, start_tick) = Session::start(name)?;
     let started = Instant::now();
+    let clock = capture_clock_sample();
     let (ready_sender, ready) = mpsc::channel();
     let (done_sender, done) = mpsc::channel();
     let consumer_name = name.to_owned();
@@ -58,6 +59,7 @@ pub(super) fn capture(name: &str, cancelled: &Receiver<()>) -> Outcome {
                 &consumer_name,
                 ready_sender,
                 start_tick,
+                clock,
                 cpu_count,
             ));
         });
@@ -110,6 +112,14 @@ pub(super) fn capture(name: &str, cancelled: &Receiver<()>) -> Outcome {
             .saturating_add(statistics.RealTimeBuffersLost),
     );
     Ok(report)
+}
+
+fn capture_clock_sample() -> Option<CaptureClockSample> {
+    let utc = SystemTime::now();
+    let mut after_tick = 0;
+    // SAFETY: The output points to writable i64 storage.
+    (unsafe { QueryPerformanceCounter(&raw mut after_tick) } != 0)
+        .then_some(CaptureClockSample { utc, after_tick })
 }
 
 fn single_group_cpu_count() -> Option<u16> {

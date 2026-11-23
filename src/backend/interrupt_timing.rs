@@ -50,6 +50,10 @@ mod tests {
             || serde_json::from_slice::<serde_json::Value>(&fs::read(&path).unwrap()).unwrap();
         assert_eq!(saved(), fixture);
 
+        fixture["capture_start"] = serde_json::json!({
+            "utc_sample": "2026-11-24T04:15:30.123456700Z",
+            "qpc_sample_span_ns": 700,
+        });
         fixture["per_cpu"] = serde_json::json!([
             {"cpu": 0, "dpc_count": 0, "isr_count": 0, "dpc_ms": 0.0, "isr_ms": 0.0},
             {"cpu": 1, "dpc_count": 0, "isr_count": 1, "dpc_ms": 0.0, "isr_ms": 0.25}

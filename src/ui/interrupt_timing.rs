@@ -561,6 +561,7 @@ mod tests {
 
     fn report(events_lost: u32) -> InterruptTimingReport {
         InterruptTimingReport {
+            capture_start: None,
             events_lost,
             buffers_lost: 0,
             invalid_intervals: 0,
