@@ -12,8 +12,8 @@ use crate::control::power_plan::PowerPlanStatus;
 use crate::power::{
     AdvancedPowerPlanTuningReadback, AdvancedPowerPlanTuningSourceValues,
     AdvancedPowerPlanTuningValues, EditableTuningValues, EffectivePowerMode, PowerPlan,
-    PowerPlanPersonality, PowerSettingReadback, ProcessorBoostMode, ProcessorPowerPreset,
-    ProcessorPowerValues, ProcessorSchedulingPolicy, ADAPTIVE_PLAN_NAME,
+    PowerPlanPersonality, PowerSettingReadback, ProcessorBoostMode, ProcessorPowerApplyError,
+    ProcessorPowerPreset, ProcessorPowerValues, ProcessorSchedulingPolicy, ADAPTIVE_PLAN_NAME,
 };
 use crate::ui::scrolling::scrollable;
 use iced::widget::{column, row, text};
@@ -422,7 +422,7 @@ impl Editor {
         let personality = self.service.read_personality(guid).ok();
         let readback = self.service.read_values(guid);
         if let (true, Err(error)) = (retain_draft_on_error, &readback) {
-            self.set_failure(error.to_string());
+            self.set_failure(tuning_error_message(error));
             return;
         }
 
@@ -463,7 +463,7 @@ impl Editor {
             }
             Err(error) => {
                 self.set_readback(None);
-                self.set_failure(error.to_string());
+                self.set_failure(tuning_error_message(&error));
             }
         }
         self.update_dirty();
@@ -512,7 +512,7 @@ impl Editor {
         let current = self
             .service
             .read_values(guid)
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| tuning_error_message(&error))?;
         self.begin_apply_review(ApplyReview {
             guid: guid.clone(),
             name: plan.name.clone(),
@@ -570,7 +570,7 @@ impl Editor {
         let current = self
             .service
             .read_values(&plan.guid)
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| tuning_error_message(&error))?;
         if current != point.applied {
             self.set_readback(Some(current));
             return Err(t!("processor_power.restore_values_changed").to_string());
@@ -661,7 +661,7 @@ impl Editor {
                 false
             }
             Err(error) => {
-                self.status = error.to_string().into();
+                self.status = tuning_error_message(&error).into();
                 false
             }
         }
@@ -690,7 +690,7 @@ impl Editor {
                     return false;
                 }
                 Err(error) => {
-                    self.status = error.to_string().into();
+                    self.status = tuning_error_message(&error).into();
                     return false;
                 }
             };
@@ -725,10 +725,7 @@ impl Editor {
             "processor_power.apply_not_verified"
         };
         let error = match (outcome.error, self.readback) {
-            (Some(AdvancedPowerPlanTuningApplyError::Verification), _) => {
-                Some(t!(mismatch_summary).to_string())
-            }
-            (Some(error), _) => Some(error.to_string()),
+            (Some(error), _) => Some(tuning_apply_error_message(&error, mismatch_summary)),
             (None, Some(actual))
                 if (!retry || actual == original.expected_readback())
                     && self.remember_verified_write(original, actual) =>
@@ -1437,6 +1434,86 @@ const BUILT_INS: [ProcessorPowerPreset; 3] = [
     ProcessorPowerPreset::Balanced,
     ProcessorPowerPreset::Saver,
 ];
+fn tuning_error_message(error: &AdvancedPowerPlanTuningError) -> String {
+    let (key, detail) = match error {
+        AdvancedPowerPlanTuningError::ReadValues(detail) => {
+            ("processor_power.read_values_failed", detail)
+        }
+        AdvancedPowerPlanTuningError::ReadPersonality(detail) => {
+            ("processor_power.read_personality_failed", detail)
+        }
+        AdvancedPowerPlanTuningError::ValuesChanged => {
+            return t!("processor_power.review_refresh_required").into_owned();
+        }
+        AdvancedPowerPlanTuningError::SettingUnavailable => {
+            return t!("processor_power.requested_setting_unavailable").into_owned();
+        }
+    };
+    t!(key, detail = detail).into_owned()
+}
+
+fn tuning_apply_error_message(
+    error: &AdvancedPowerPlanTuningApplyError,
+    mismatch_summary: &'static str,
+) -> String {
+    match error {
+        AdvancedPowerPlanTuningApplyError::Apply(error) => tuning_stage_error_message(error),
+        AdvancedPowerPlanTuningApplyError::Readback(error) => t!(
+            "processor_power.write_readback_failed",
+            detail = tuning_error_message(error)
+        )
+        .into_owned(),
+        AdvancedPowerPlanTuningApplyError::Verification => t!(mismatch_summary).into_owned(),
+        AdvancedPowerPlanTuningApplyError::ApplyAndReadback { apply, readback } => format!(
+            "{}\n{}",
+            tuning_stage_error_message(apply),
+            tuning_error_message(readback)
+        ),
+    }
+}
+
+fn tuning_stage_error_message(error: &ProcessorPowerApplyError) -> String {
+    use crate::power::powercfg::ProcessorPowerApplyStage::*;
+
+    let ProcessorPowerApplyError::Stage { stage, detail } = error else {
+        return t!("common.selected_plan_unavailable").into_owned();
+    };
+    let (source, setting) = match stage {
+        ValidatePlan => {
+            return t!("processor_power.validate_plan_failed", detail = detail).into_owned()
+        }
+        QueryActivePlan => {
+            return t!("processor_power.query_active_plan_failed", detail = detail).into_owned()
+        }
+        ReactivatePlan => {
+            return t!("processor_power.reactivate_plan_failed", detail = detail).into_owned()
+        }
+        AcCoreParkingMinimum => (Source::Ac, "processor_power.core_parking_min"),
+        BatteryCoreParkingMinimum => (Source::Battery, "processor_power.core_parking_min"),
+        AcPerformanceMinimum => (Source::Ac, "processor_power.processor_min"),
+        BatteryPerformanceMinimum => (Source::Battery, "processor_power.processor_min"),
+        AcPerformanceMaximum => (Source::Ac, "processor_power.processor_max"),
+        BatteryPerformanceMaximum => (Source::Battery, "processor_power.processor_max"),
+        AcBoostPolicy => (Source::Ac, "processor_power.boost_policy"),
+        BatteryBoostPolicy => (Source::Battery, "processor_power.boost_policy"),
+        AcBoostMode => (Source::Ac, "processor_power.boost_mode"),
+        BatteryBoostMode => (Source::Battery, "processor_power.boost_mode"),
+        AcSchedulingPolicy => (Source::Ac, "processor_power.scheduling_policy"),
+        BatterySchedulingPolicy => (Source::Battery, "processor_power.scheduling_policy"),
+        AcShortSchedulingPolicy => (Source::Ac, "processor_power.short_scheduling_policy"),
+        BatteryShortSchedulingPolicy => {
+            (Source::Battery, "processor_power.short_scheduling_policy")
+        }
+    };
+    t!(
+        "processor_power.write_setting_failed",
+        source = t!(source.label()),
+        setting = t!(setting),
+        detail = detail
+    )
+    .into_owned()
+}
+
 fn source_values(
     values: &mut AdvancedPowerPlanTuningSourceValues,
     source: Source,
@@ -2746,9 +2823,13 @@ mod tests {
             Some("")
         );
         assert_eq!(editor.review_origin(), Some(ApplyOrigin::Page));
-        assert!(editor
-            .status()
-            .contains("Failed to read processor power values"));
+        assert_eq!(
+            editor.status(),
+            t!(
+                "processor_power.read_values_failed",
+                detail = "Invalid power plan GUID."
+            )
+        );
 
         editor.discard_values(&plans);
         assert!(editor.readback.is_none() && editor.values.is_none());

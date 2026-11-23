@@ -233,42 +233,51 @@ impl std::fmt::Display for ProcessorPowerApplyStage {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ProcessorPowerApplyError {
-    stage: ProcessorPowerApplyStage,
-    source: String,
+pub(crate) enum ProcessorPowerApplyError {
+    PlanUnavailable,
+    Stage {
+        stage: ProcessorPowerApplyStage,
+        detail: String,
+    },
 }
 
 impl ProcessorPowerApplyError {
-    pub(crate) fn at(stage: ProcessorPowerApplyStage, source: String) -> Self {
-        Self { stage, source }
+    pub(crate) fn at(stage: ProcessorPowerApplyStage, detail: String) -> Self {
+        Self::Stage { stage, detail }
     }
 
     pub(crate) fn stage(&self) -> ProcessorPowerApplyStage {
-        self.stage
+        match self {
+            Self::PlanUnavailable => ProcessorPowerApplyStage::ValidatePlan,
+            Self::Stage { stage, .. } => *stage,
+        }
     }
 }
 
 impl std::fmt::Display for ProcessorPowerApplyError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(formatter, "Failed to {}: {}", self.stage, self.source)
+        match self {
+            Self::PlanUnavailable => formatter.write_str(
+                "Failed to validate plan: The selected plan is unavailable for persistent tuning.",
+            ),
+            Self::Stage { stage, detail } => write!(formatter, "Failed to {stage}: {detail}"),
+        }
     }
 }
 
 impl std::error::Error for ProcessorPowerApplyError {}
 
 pub(crate) fn validate_tuning_plan(guid: &str) -> Result<(), ProcessorPowerApplyError> {
-    let error =
-        |source| ProcessorPowerApplyError::at(ProcessorPowerApplyStage::ValidatePlan, source);
     if list_plans()
-        .map_err(error)?
+        .map_err(|detail| {
+            ProcessorPowerApplyError::at(ProcessorPowerApplyStage::ValidatePlan, detail)
+        })?
         .iter()
         .any(|plan| !plan.managed_adaptive && plan.guid.eq_ignore_ascii_case(guid))
     {
         Ok(())
     } else {
-        Err(error(
-            "The selected plan is unavailable for persistent tuning.".to_owned(),
-        ))
+        Err(ProcessorPowerApplyError::PlanUnavailable)
     }
 }
 
