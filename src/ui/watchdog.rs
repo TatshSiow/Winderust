@@ -270,7 +270,7 @@ impl Editor {
         let request = Arc::new(());
         draft.match_preview = MatchPreview::Loading(request.clone());
         let selector = draft.rule.selector.clone();
-        let others = preview::other_enabled_selectors(&settings.rules, draft.index);
+        let others = preview::other_enabled_rules(&settings.rules, draft.index);
         super::tasks::run(move || preview::load(&selector, &others)).map(move |result| {
             Message::MatchPreviewLoaded(request.clone(), result.and_then(|result| result))
         })
@@ -451,7 +451,14 @@ impl Editor {
                     widgets::stable_key(&format!("{index}:{value}")),
                     column![
                         widgets::process_rule_header_with_target(
-                            app_picker::app_name(value, candidates),
+                            column![
+                                text(t!("common.rule", number = index + 1).to_string())
+                                    .size(design::typography::CAPTION)
+                                    .style(text::secondary),
+                                app_picker::app_name(value, candidates),
+                            ]
+                            .spacing(design::space::TINY)
+                            .into(),
                             target,
                             widgets::checkbox(rule.enabled)
                                 .on_toggle(move |value| Message::RuleEnabled(index, value))
@@ -720,10 +727,18 @@ impl Editor {
             .width(Fill);
             let detail = match reason.filter(|_| entry.path.is_some()) {
                 Some(reason) => Some(t!(reason.label_key())),
-                None if entry.other_matching_rules > 0 => Some(t!(
-                    "watchdog.preview_other_enabled_rules",
-                    count = entry.other_matching_rules
-                )),
+                None if !entry.other_matching_rules.is_empty() => {
+                    let numbers = entry
+                        .other_matching_rules
+                        .iter()
+                        .map(|index| (index + 1).to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    Some(t!(
+                        "watchdog.preview_other_enabled_rules",
+                        numbers = numbers
+                    ))
+                }
                 None => None,
             };
             if let Some(detail) = detail {

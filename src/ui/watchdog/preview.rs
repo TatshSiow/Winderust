@@ -45,29 +45,29 @@ pub(crate) struct MatchRow {
     pub(crate) pid: u32,
     pub(crate) path: Option<PathBuf>,
     pub(crate) kind: MatchKind,
-    pub(super) other_matching_rules: usize,
+    pub(super) other_matching_rules: Vec<usize>,
 }
 
-pub(super) fn other_enabled_selectors(
+pub(super) fn other_enabled_rules(
     rules: &[WatchdogRule],
     edited: Option<usize>,
-) -> Vec<WatchdogSelector> {
+) -> Vec<(usize, WatchdogSelector)> {
     rules
         .iter()
         .enumerate()
         .filter(|(index, rule)| Some(*index) != edited && rule.enabled)
-        .map(|(_, rule)| rule.selector.clone())
+        .map(|(index, rule)| (index, rule.selector.clone()))
         .collect()
 }
 
 pub(super) fn load(
     selector: &WatchdogSelector,
-    other_selectors: &[WatchdogSelector],
+    other_rules: &[(usize, WatchdogSelector)],
 ) -> Result<Vec<MatchRow>, String> {
     let processes = CycleObservations::default().processes_with_paths()?;
     Ok(classify(
         selector,
-        other_selectors,
+        other_rules,
         &processes,
         std::process::id(),
     ))
@@ -75,7 +75,7 @@ pub(super) fn load(
 
 fn classify(
     selector: &WatchdogSelector,
-    other_selectors: &[WatchdogSelector],
+    other_rules: &[(usize, WatchdogSelector)],
     processes: &[ProcessInfo],
     current_pid: u32,
 ) -> Vec<MatchRow> {
@@ -121,12 +121,12 @@ fn classify(
             Some(_) => MatchKind::Matched,
         };
         let other_matching_rules = if kind == MatchKind::Matched {
-            other_selectors
+            other_rules
                 .iter()
-                .filter(|selector| matching_path(selector, process).is_some())
-                .count()
+                .filter_map(|(index, selector)| matching_path(selector, process).map(|_| *index))
+                .collect()
         } else {
-            0
+            Vec::new()
         };
         rows.push(MatchRow {
             pid: process.id,
@@ -187,7 +187,11 @@ mod tests {
         disabled.enabled = false;
         let edited = WatchdogRule::with_selector(selector.clone());
         let elsewhere = WatchdogRule::new(other_path.into());
-        let others = other_enabled_selectors(&[enabled, disabled, edited, elsewhere], Some(2));
+        let overlapping = WatchdogRule::new(path.into());
+        let others = other_enabled_rules(
+            &[enabled, disabled, edited, elsewhere, overlapping],
+            Some(2),
+        );
         let rows = classify(&selector, &others, &processes, 7);
         assert_eq!(
             rows.iter()
@@ -206,9 +210,9 @@ mod tests {
         );
         assert_eq!(
             rows.iter()
-                .map(|row| row.other_matching_rules)
+                .map(|row| row.other_matching_rules.as_slice())
                 .collect::<Vec<_>>(),
-            [1, 1, 0, 0, 0, 0, 0, 0]
+            [&[0, 4][..], &[0, 4], &[], &[], &[], &[], &[], &[]]
         );
         assert_eq!(rows[2].path.as_deref(), Some(Path::new(other_path)));
         assert_eq!(rows[3].path, None);
@@ -231,7 +235,7 @@ mod tests {
             executable_name: "worker.exe".into(),
         };
 
-        let others = other_enabled_selectors(&[WatchdogRule::new(path.into())], None);
+        let others = other_enabled_rules(&[WatchdogRule::new(path.into())], None);
         let rows = classify(&selector, &others, &processes, 0);
         assert_eq!(
             rows.iter()
@@ -247,9 +251,9 @@ mod tests {
         );
         assert_eq!(
             rows.iter()
-                .map(|row| row.other_matching_rules)
+                .map(|row| row.other_matching_rules.as_slice())
                 .collect::<Vec<_>>(),
-            [1, 0, 0, 0, 0]
+            [&[0][..], &[], &[], &[], &[]]
         );
         assert_eq!(rows[0].path.as_deref(), Some(Path::new(path)));
         assert_eq!(rows[1].path.as_deref(), Some(Path::new(other_path)));

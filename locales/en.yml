@@ -1250,7 +1250,7 @@ watchdog:
   preview_criticality_unknown: "Could not verify whether the process is critical"
   preview_critical_process: "Windows critical process"
   preview_self_skipped: "Winderust skips its own process"
-  preview_other_enabled_rules: "Other enabled matching rules (%{count})"
+  preview_other_enabled_rules: "Other matching rules · %{numbers}"
   preview_pid: "PID %{pid}"
   monitor_cpu: "Enable CPU Watchdog"
   monitor_cpu_help: "Measure CPU usage as a percentage of total system capacity."
