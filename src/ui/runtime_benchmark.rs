@@ -287,9 +287,10 @@ fn run(path: &Path, case: &str) -> Result<(), String> {
                     .power_plan_status
                     .adaptive_processor_power_error
                     .as_ref()
-                    .or(status.worker_error.as_ref())
+                    .map(ToString::to_string)
+                    .or_else(|| status.worker_error.clone())
                 {
-                    return Err(error.clone());
+                    return Err(error);
                 }
                 let adaptive = &status.feature_status.adaptive_engine_process;
                 samples.push_str(&format!(

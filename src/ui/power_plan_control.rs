@@ -1,10 +1,11 @@
 use iced::widget::{column, container, responsive, row, text};
 use iced::{Element, Fill};
 use rust_i18n::t;
+use std::borrow::Cow;
 
 use super::{design, widgets};
 use crate::{
-    control::power_plan::{PowerPlanOwner, PowerPlanStatus},
+    control::power_plan::{AdaptiveProcessorPowerError, PowerPlanOwner, PowerPlanStatus},
     features::power_plan_control::ByCpuLoadMatch,
     power::{PowerPlan, ADAPTIVE_PLAN_NAME},
     rules::DecisionState,
@@ -97,12 +98,18 @@ pub(super) fn status_view<M: 'static>(
     .spacing(design::space::SMALL);
     if let Some(error) = status
         .active_plan_read_error
-        .as_ref()
-        .or(status.adaptive_processor_power_error.as_ref())
+        .as_deref()
+        .map(Cow::Borrowed)
+        .or_else(|| {
+            status
+                .adaptive_processor_power_error
+                .as_ref()
+                .map(adaptive_error_message)
+        })
     {
         summary = summary
             .push(widgets::setting_title("sidebar_status.current_error"))
-            .push(text(error.clone()).wrapping(text::Wrapping::WordOrGlyph));
+            .push(text(error.into_owned()).wrapping(text::Wrapping::WordOrGlyph));
     }
     let mut body = column![widgets::settings_card(summary)].spacing(widgets::CARD_GAP);
     if !status.competing_modes.is_empty() {
@@ -133,6 +140,18 @@ pub(super) fn status_view<M: 'static>(
         body = body.push(widgets::settings_card(matches));
     }
     super::scrolling::scrollable(body).height(Fill).into()
+}
+
+pub(super) fn adaptive_error_message(error: &AdaptiveProcessorPowerError) -> Cow<'_, str> {
+    match error {
+        AdaptiveProcessorPowerError::Operation(detail) => Cow::Borrowed(detail),
+        AdaptiveProcessorPowerError::CleanupRetry(detail) => {
+            t!(
+                "adaptive_processor_power.cleanup_retry_failed",
+                detail = detail
+            )
+        }
+    }
 }
 
 pub(super) fn current_plan_guid<'a>(

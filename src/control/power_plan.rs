@@ -50,10 +50,18 @@ impl From<ActivePlanCheckError> for String {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub(crate) enum AdaptiveProcessorPowerError {
+    #[error("{0}")]
+    Operation(String),
+    #[error("Adaptive plan cleanup failed: {0}")]
+    CleanupRetry(String),
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct PowerPlanStatus {
     pub(crate) active_plan_read_error: Option<String>,
-    pub(crate) adaptive_processor_power_error: Option<String>,
+    pub(crate) adaptive_processor_power_error: Option<AdaptiveProcessorPowerError>,
     pub(crate) adaptive_processor_power_waiting_for_source: bool,
     pub(crate) apply_failed: bool,
     pub(crate) restoring_previous: bool,

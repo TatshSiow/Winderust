@@ -21,6 +21,7 @@ use crate::{
 use iced::widget::{column, container, row, text};
 use iced::{Element, Fill};
 use rust_i18n::t;
+use std::borrow::Cow;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum FeatureRunState {
@@ -571,7 +572,10 @@ fn adaptive_processor_power_view(
     }
     let mut body = status_body(label, t!(detail).into_owned(), color);
     if let Some(error) = error {
-        body = body.push(detail_row("sidebar_status.current_error", error.to_owned()));
+        body = body.push(detail_row(
+            "sidebar_status.current_error",
+            error.into_owned(),
+        ));
     }
     let plan = power_plan_control::current_plan_name(plan_status, plans);
     body = body.push(section(
@@ -585,14 +589,20 @@ fn adaptive_processor_power_state<'a>(
     enabled: bool,
     runtime: &'a RuntimeStatusSnapshot,
     plans: &[PowerPlan],
-) -> (FeatureRunState, Option<&'a str>) {
+) -> (FeatureRunState, Option<Cow<'a, str>>) {
     let plan = &runtime.power_plan_status;
     let managed = power_plan_control::managed_by_adaptive_processor_power(plan, plans);
     let waiting_for_source = plan.adaptive_processor_power_waiting_for_source;
-    let error = plan.adaptive_processor_power_error.as_deref().or(plan
-        .active_plan_read_error
-        .as_deref()
-        .filter(|_| managed || (enabled && !waiting_for_source)));
+    let error = plan
+        .adaptive_processor_power_error
+        .as_ref()
+        .map(power_plan_control::adaptive_error_message)
+        .or_else(|| {
+            plan.active_plan_read_error
+                .as_deref()
+                .filter(|_| managed || (enabled && !waiting_for_source))
+                .map(Cow::Borrowed)
+        });
     let state = if error.is_some() {
         FeatureRunState::Error
     } else if waiting_for_source {
@@ -1271,12 +1281,16 @@ mod tests {
         );
 
         let plan = std::sync::Arc::make_mut(&mut runtime.power_plan_status);
-        plan.adaptive_processor_power_error = Some("Could not restore previous plan".to_owned());
+        plan.adaptive_processor_power_error = Some(
+            crate::control::power_plan::AdaptiveProcessorPowerError::Operation(
+                "Could not restore previous plan".to_owned(),
+            ),
+        );
         assert_eq!(
             adaptive_processor_power_state(false, &runtime, &[]),
             (
                 FeatureRunState::Error,
-                Some("Could not restore previous plan")
+                Some(Cow::Borrowed("Could not restore previous plan"))
             )
         );
 

@@ -4,7 +4,10 @@ use crate::runtime::observations::{CycleObservations, ForegroundCpuHistory};
 use crate::{
     action_log::{ActionLogFeature, ActionLogResult},
     adaptive_engine_process::{focus_and_launch_profile_eligible, focus_process_priority_eligible},
-    control::{memory_priority::MemoryPriorityReleaseOwner, power_plan::PowerPlanOwner},
+    control::{
+        memory_priority::MemoryPriorityReleaseOwner,
+        power_plan::{AdaptiveProcessorPowerError, PowerPlanOwner},
+    },
     foreground::{for_each_process_id, process_session_id, ProcessInfo},
     platform::windows::process::current_process_id,
     rules::decision_engine::{matching_by_focus_rules, ordinary_power_plan_stop},
@@ -122,7 +125,7 @@ impl ObservedSettings {
 
 #[derive(Default)]
 pub(super) struct RuntimeCore {
-    adaptive_processor_power_error: Option<String>,
+    adaptive_processor_power_error: Option<AdaptiveProcessorPowerError>,
     shutdown_started: bool,
     last_settings: Option<ObservedSettings>,
     power_plan_controller: PowerPlanController,
@@ -1180,7 +1183,8 @@ impl RuntimeCore {
                 Ok(())
             }
         };
-        self.adaptive_processor_power_error = result.err();
+        self.adaptive_processor_power_error =
+            result.err().map(AdaptiveProcessorPowerError::Operation);
     }
 
     fn reset_adaptive_power_demand(&mut self) {
@@ -1801,7 +1805,7 @@ impl RuntimeCore {
         }
         if let Err(error) = self.power_plan_controller.retry_pending_cleanup(now) {
             self.adaptive_processor_power_error =
-                Some(format!("Adaptive plan cleanup failed: {error}"));
+                Some(AdaptiveProcessorPowerError::CleanupRetry(error));
         }
         (!errors.is_empty()).then(|| errors.join("; "))
     }
@@ -2470,7 +2474,7 @@ mod settings_tests {
     #[test]
     #[allow(clippy::field_reassign_with_default)] // Keep this status-only fixture free of native shutdown.
     fn inactive_adaptive_power_clears_errors_after_the_managed_plan_is_released() {
-        const CLEANUP_ERROR: &str = "Adaptive plan cleanup failed";
+        const CLEANUP_ERROR: &str = "Access is denied. (0x00000005)";
         const APPLY_ERROR: &str = "Adaptive plan apply failed";
         let profiles = |master, ac, battery| {
             let mut settings = Settings::default();
@@ -2495,14 +2499,14 @@ mod settings_tests {
                 plugged_in,
             });
             runner.power_plan_controller = PowerPlanController::temporary_adaptive_fixture();
-            runner.adaptive_processor_power_error = Some(CLEANUP_ERROR.into());
+            runner.adaptive_processor_power_error = Some(
+                AdaptiveProcessorPowerError::CleanupRetry(CLEANUP_ERROR.into()),
+            );
             assert_eq!(
-                runner
-                    .power_plan_status()
-                    .0
-                    .adaptive_processor_power_error
-                    .as_deref(),
-                Some(CLEANUP_ERROR)
+                runner.power_plan_status().0.adaptive_processor_power_error,
+                Some(AdaptiveProcessorPowerError::CleanupRetry(
+                    CLEANUP_ERROR.into()
+                ))
             );
 
             runner.power_plan_controller = PowerPlanController::default();
@@ -2521,14 +2525,11 @@ mod settings_tests {
                 .adaptive_processor_power_error
                 .is_none());
 
-            runner.adaptive_processor_power_error = Some(APPLY_ERROR.into());
+            runner.adaptive_processor_power_error =
+                Some(AdaptiveProcessorPowerError::Operation(APPLY_ERROR.into()));
             assert_eq!(
-                runner
-                    .power_plan_status()
-                    .0
-                    .adaptive_processor_power_error
-                    .as_deref(),
-                Some(APPLY_ERROR)
+                runner.power_plan_status().0.adaptive_processor_power_error,
+                Some(AdaptiveProcessorPowerError::Operation(APPLY_ERROR.into()))
             );
         }
     }

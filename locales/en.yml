@@ -751,6 +751,7 @@ adaptive_processor_power:
   enable_help: "Uses a temporary Windows power plan for the selected power source."
   waiting_for_power_source: "Waiting for Windows to report the power source."
   releasing_plan: "Restoring the previous power plan."
+  cleanup_retry_failed: "Could not clean up the temporary power plan. %{detail}"
   preset_help: "Select a preset to review its tuning for the chosen power source. Save to apply it."
   preset_preview: "Preset preview"
   use_preset: "Use preset"
