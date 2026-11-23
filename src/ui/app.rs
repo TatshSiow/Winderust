@@ -1892,6 +1892,7 @@ impl WinderustApp {
                         .set_power_source(home::PowerSourceReading::Collecting);
                 }
                 self.page = page;
+                self.sync_visible_process_list_suspensions();
                 self.navigation_search_open = false;
                 self.navigation_search.clear();
                 self.navigation.dismiss();
@@ -2044,13 +2045,8 @@ impl WinderustApp {
                     {
                         self.appearance = settings_pages::theme(&self.settings.global().general);
                     }
-                    self.processes.sync_suspended_processes(
-                        &status
-                            .feature_status
-                            .app_suspension
-                            .suspended_process_instances,
-                    );
                     self.status = status;
+                    self.sync_visible_process_list_suspensions();
                 }
                 if let Some(patch) = self
                     .runtime
@@ -2435,12 +2431,26 @@ impl WinderustApp {
             || !self.time_rules.valid()
             || !self.cpu_rules.valid()
     }
+
+    fn sync_visible_process_list_suspensions(&mut self) {
+        if self.page == Page::ProcessList && !self.hidden {
+            self.processes.sync_suspended_processes(
+                &self
+                    .status
+                    .feature_status
+                    .app_suspension
+                    .suspended_process_instances,
+            );
+        }
+    }
+
     fn show_window(&mut self) -> Task<Message> {
         if self.hidden && self.page == Page::Home {
             self.home
                 .set_power_source(home::PowerSourceReading::Collecting);
         }
         self.hidden = false;
+        self.sync_visible_process_list_suspensions();
         tray::set_hidden_to_tray(false);
         if let Some(hwnd) = self.hwnd {
             tray::show_window(hwnd as windows_sys::Win32::Foundation::HWND);
