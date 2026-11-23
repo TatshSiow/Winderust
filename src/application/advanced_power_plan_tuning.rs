@@ -1,7 +1,8 @@
 use crate::power::{
-    apply_processor_power_values_staged, powercfg::validate_tuning_plan, read_plan_personality,
-    read_processor_power_values, AdvancedPowerPlanTuningReadback,
-    AdvancedPowerPlanTuningSourceValues, PowerPlanPersonality, ProcessorPowerApplyError,
+    apply_processor_power_values_staged, powercfg::validate_tuning_plan,
+    powercfg::ProcessorPowerApplyStage, read_plan_personality, read_processor_power_values,
+    AdvancedPowerPlanTuningReadback, AdvancedPowerPlanTuningSourceValues, PowerPlanPersonality,
+    ProcessorPowerApplyError,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -29,6 +30,19 @@ pub(crate) enum AdvancedPowerPlanTuningApplyError {
         apply: ProcessorPowerApplyError,
         readback: AdvancedPowerPlanTuningError,
     },
+}
+
+impl AdvancedPowerPlanTuningApplyError {
+    pub(crate) fn failed_to_refresh_active_plan(&self) -> bool {
+        let error = match self {
+            Self::Apply(error) | Self::ApplyAndReadback { apply: error, .. } => error,
+            _ => return false,
+        };
+        matches!(
+            error.stage(),
+            ProcessorPowerApplyStage::QueryActivePlan | ProcessorPowerApplyStage::ReactivatePlan
+        )
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

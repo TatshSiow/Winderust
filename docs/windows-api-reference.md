@@ -538,6 +538,13 @@ unavailable scheduling policies stay untouched. Unavailable or out-of-range
 percentages fail the plan read. Persistent tuning stays outside the automatic
 power-plan recovery journal and claim ledger.
 
+If the active-plan query or reactivation fails after values were stored, Apply
+can retry once the full readback matches the reviewed result. The retry checks
+the stored values again and skips unchanged setting writes. It calls
+[PowerSetActiveScheme](https://learn.microsoft.com/en-us/windows/win32/api/powersetting/nf-powersetting-powersetactivescheme)
+only when a fresh query identifies the selected plan as active. After a verified
+Apply retry, Restore previous values uses the original pre-write snapshot.
+
 | API / Setting | Used for | Reference |
 | --- | --- | --- |
 | `PowerWriteACValueIndex` / `PowerWriteDCValueIndex` | Writes separate AC and battery processor settings in the selected power plan. | [AC](https://learn.microsoft.com/en-us/windows/win32/api/powersetting/nf-powersetting-powerwriteacvalueindex) / [DC](https://learn.microsoft.com/en-us/windows/win32/api/powersetting/nf-powersetting-powerwritedcvalueindex) |
@@ -1136,8 +1143,6 @@ the native tray host remains alive in background mode. No undocumented Windows c
 ## Dashboard network rates
 
 `src/backend/dashboard_metrics.rs` keys network baselines by `MIB_IF_ROW2.InterfaceLuid.Value` and sums comparable per-interface `InOctets`/`OutOctets` deltas. Newly observed or reset interfaces establish a baseline; missing interfaces and failed/empty samples discard stale baselines. Loopback, down, and disconnected interfaces remain excluded. The interface index is not used because Windows can change it when an adapter is disabled/re-enabled. Reference: [MIB_IF_ROW2](https://learn.microsoft.com/en-us/windows/win32/api/netioapi/ns-netioapi-mib_if_row2).
-
-Processor-value application in `src/power/powercfg.rs` treats failure to query the active scheme as `QueryActivePlan`, not successful completion. Reactivation is attempted only when the fresh query identifies the target as active; retries repeat that check and never intentionally activate a currently inactive target. Advanced Power Plan Tuning retains Apply after an unsuccessful application even when stored-value readback succeeds. Reference: [PowerSetActiveScheme](https://learn.microsoft.com/en-us/windows/win32/api/powersetting/nf-powersetting-powersetactivescheme).
 
 ### Single-instance window restoration
 

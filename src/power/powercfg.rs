@@ -243,7 +243,6 @@ impl ProcessorPowerApplyError {
         Self { stage, source }
     }
 
-    #[cfg(test)]
     pub(crate) fn stage(&self) -> ProcessorPowerApplyStage {
         self.stage
     }

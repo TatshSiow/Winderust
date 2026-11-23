@@ -8,7 +8,7 @@ use crate::power::{
 use super::*;
 
 #[derive(Clone)]
-struct FakeStore {
+pub(crate) struct FakeStore {
     state: Arc<Mutex<FakeStoreState>>,
 }
 
@@ -17,7 +17,7 @@ struct FakeStoreState {
     values: Result<AdvancedPowerPlanTuningReadback, AdvancedPowerPlanTuningError>,
     personality: Result<PowerPlanPersonality, AdvancedPowerPlanTuningError>,
     apply_error: Option<ProcessorPowerApplyError>,
-    apply_readback: Option<AdvancedPowerPlanTuningReadback>,
+    apply_readback: Option<Result<AdvancedPowerPlanTuningReadback, AdvancedPowerPlanTuningError>>,
     requests: Vec<(
         AdvancedPowerPlanTuningSourceValues,
         AdvancedPowerPlanTuningSourceValues,
@@ -41,6 +41,41 @@ impl FakeStore {
 
     fn calls(&self) -> Vec<&'static str> {
         self.state.lock().expect("power tuning lock").calls.clone()
+    }
+
+    pub(crate) fn set_values(&self, values: AdvancedPowerPlanTuningReadback) {
+        self.state.lock().expect("power tuning lock").values = Ok(values);
+    }
+
+    pub(crate) fn set_apply_result(
+        &self,
+        stage: Option<ProcessorPowerApplyStage>,
+        readback: Result<AdvancedPowerPlanTuningReadback, AdvancedPowerPlanTuningError>,
+    ) {
+        let mut state = self.state.lock().expect("power tuning lock");
+        state.apply_error =
+            stage.map(|stage| ProcessorPowerApplyError::at(stage, "test failure".into()));
+        state.apply_readback = Some(readback);
+    }
+
+    pub(crate) fn requests(
+        &self,
+    ) -> Vec<(
+        AdvancedPowerPlanTuningSourceValues,
+        AdvancedPowerPlanTuningSourceValues,
+    )> {
+        self.state
+            .lock()
+            .expect("power tuning lock")
+            .requests
+            .clone()
+    }
+}
+
+impl AdvancedPowerPlanTuningService {
+    pub(crate) fn fake(values: AdvancedPowerPlanTuningReadback) -> (Self, FakeStore) {
+        let store = FakeStore::new(values);
+        (Self::with_store(Box::new(store.clone())), store)
     }
 }
 
@@ -73,7 +108,7 @@ impl AdvancedPowerPlanTuningStore for FakeStore {
         state.calls.push("apply");
         state.requests.push((previous, values));
         if let Some(readback) = state.apply_readback.take() {
-            state.values = Ok(readback);
+            state.values = readback;
         }
         match state.apply_error.clone() {
             Some(error) => Err(error),
@@ -201,7 +236,7 @@ fn reviewed_apply_preserves_unknown_ac_policy_and_can_edit_battery_policy() {
         .state
         .lock()
         .expect("power tuning lock")
-        .apply_readback = Some(actual);
+        .apply_readback = Some(Ok(actual));
     let service = AdvancedPowerPlanTuningService::with_store(Box::new(store.clone()));
     let requested = actual.writable();
 
@@ -264,7 +299,7 @@ fn apply_and_restore_preserve_unknown_ac_boost_mode() {
             .state
             .lock()
             .expect("power tuning lock")
-            .apply_readback = Some(expected);
+            .apply_readback = Some(Ok(expected));
         let requested = expected.writable();
         assert_eq!(requested.ac.processor.boost_mode, None);
         let outcome = service

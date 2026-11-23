@@ -503,6 +503,7 @@ processor_power:
   target_plan: "Target plan"
   review_changes: "Review power plan changes"
   no_changes: "The selected plan already has these values."
+  retry_activation_help: "The stored values match. Apply refreshes this plan if it is active."
   review_stale: "The selected plan or tuning draft changed. Review your changes again."
   review_refresh_required: "The power plan values changed while you were editing. Choose Refresh values, then re-enter your edits."
   settings_saved_tuning_failed: "Settings were saved. Power plan tuning failed. %{error}"

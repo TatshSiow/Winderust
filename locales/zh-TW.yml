@@ -505,6 +505,7 @@ processor_power:
   target_plan: "目標計畫"
   review_changes: "檢查電源計畫變更"
   no_changes: "所選計畫已使用這些值。"
+  retry_activation_help: "已儲存的數值相符。如果此計畫目前作用中，套用會重新整理此計畫。"
   review_stale: "所選電源計畫或調校草稿已變更。請再次檢查您的變更。"
   review_refresh_required: "編輯期間，電源計畫的值已變更。請選擇「重新整理數值」，再重新輸入變更。"
   settings_saved_tuning_failed: "設定已儲存。電源計畫調校失敗。%{error}"
