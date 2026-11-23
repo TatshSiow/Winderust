@@ -515,8 +515,10 @@ Implementation paths:
 - `src/platform/windows/power_plan.rs`: raw processor-setting reads/writes, scheme activation, GUID
   conversion, and native power-policy boundary.
 
-The explicit tuning service writes eight ordered A/C and battery processor
-percentages, then up to two boost modes and four scheduling policies. It retains
+The explicit tuning service writes changed A/C and battery processor percentages
+first, followed by changed boost modes and scheduling policies. It compares the
+requested fields with the verified pre-apply values. Adaptive Processor Power
+uses the same stage order to write its full profile. Persistent tuning retains
 the exact failing stage and re-reads the selected plan after every attempt,
 including a partial failure. Success requires readback to match the requested
 values on both power sources. Unavailable boost modes and unselected or

@@ -50,6 +50,7 @@ trait AdvancedPowerPlanTuningStore: Send + Sync {
     fn apply_values(
         &self,
         guid: &str,
+        previous: AdvancedPowerPlanTuningSourceValues,
         values: AdvancedPowerPlanTuningSourceValues,
     ) -> Result<(), ProcessorPowerApplyError>;
 }
@@ -75,10 +76,11 @@ impl AdvancedPowerPlanTuningStore for WindowsAdvancedPowerPlanTuningStore {
     fn apply_values(
         &self,
         guid: &str,
+        previous: AdvancedPowerPlanTuningSourceValues,
         values: AdvancedPowerPlanTuningSourceValues,
     ) -> Result<(), ProcessorPowerApplyError> {
         validate_tuning_plan(guid)?;
-        apply_processor_power_values_staged(guid, values)
+        apply_processor_power_values_staged(guid, values, Some(previous))
     }
 }
 
@@ -121,7 +123,7 @@ impl AdvancedPowerPlanTuningService {
         values: AdvancedPowerPlanTuningSourceValues,
     ) -> Result<AdvancedPowerPlanTuningApplyOutcome, AdvancedPowerPlanTuningError> {
         self.validate_reviewed_values(guid, reviewed_current, values)?;
-        Ok(self.apply_values(guid, values))
+        Ok(self.apply_values(guid, reviewed_current.writable(), values))
     }
 
     pub(crate) fn validate_reviewed_values(
@@ -153,10 +155,11 @@ impl AdvancedPowerPlanTuningService {
     fn apply_values(
         &self,
         guid: &str,
+        previous: AdvancedPowerPlanTuningSourceValues,
         values: AdvancedPowerPlanTuningSourceValues,
     ) -> AdvancedPowerPlanTuningApplyOutcome {
         let values = values.normalized();
-        let apply_error = self.store.apply_values(guid, values).err();
+        let apply_error = self.store.apply_values(guid, previous, values).err();
         let readback = self.read_values(guid);
 
         match (apply_error, readback) {

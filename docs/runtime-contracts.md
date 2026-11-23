@@ -441,8 +441,8 @@ Read the relevant section before changing feature policy, ownership, restoration
   These checks include boost mode and scheduling availability and raw unknown
   indices for each power source. Selection, confirmation, and the
   Windows write preflight exclude the temporary Winderust Adaptive plan. Apply
-  and Restore skip missing, unreadable, and unknown boost modes and scheduling
-  policies.
+  and Restore write only changed fields and skip missing, unreadable, and
+  unknown boost modes and scheduling policies.
   A stale review or failed preflight read preserves the draft. After a plan
   value changes externally, Refresh values reloads the plan for a new edit and
   review. A failed read or a missing plan during refresh keeps pending edits
@@ -450,11 +450,11 @@ Read the relevant section before changing feature policy, ownership, restoration
   Readback verifies the outcome. Each mismatch identifies the power
   source, setting, requested value, and actual value. When a write stage fails,
   the report includes the stage error and any differences from a successful readback.
-  On a failed Apply with readback, the draft retains the reviewed values that are
-  still writable and differ from the plan. When readback fails, the editor keeps
-  the reviewed edits pending. Refresh values reads the same plan before recovering
-  changes that are still writable. Discard drops the retained edits. A retry
-  requires a new review.
+  On a failed Apply with readback, the draft retains the original changes that
+  are still writable and differ from the plan. When readback fails, the editor
+  keeps the reviewed edits pending. Refresh values reads the same plan before
+  recovering changes that are still writable. Discard drops the retained edits.
+  A retry requires a new review.
 - Restore previous tuning values keeps one in-memory restore point per plan GUID
   after a verified Apply that changed values. It captures the pre-apply values
   only when the writer can reproduce the editable values exactly and preserve

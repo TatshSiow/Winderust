@@ -648,9 +648,7 @@ impl Editor {
             };
         self.set_readback(outcome.actual_values);
         if !restoring && !outcome.applied {
-            self.values = self
-                .readback
-                .map(|actual| ApplyReview::request(actual, review.requested));
+            self.values = self.readback.map(|actual| review.recover_draft(actual));
         }
         self.update_dirty();
         let mismatch_summary = if restoring {
@@ -1900,6 +1898,30 @@ mod tests {
                 "processor_power.short_scheduling_policy"
             ]
         );
+    }
+
+    #[test]
+    fn recovering_reviewed_edits_keeps_concurrent_changes_to_untouched_values() {
+        let current = AdvancedPowerPlanTuningSourceValues::same(
+            AdvancedPowerPlanTuningValues::for_preset(ProcessorPowerPreset::Balanced),
+        );
+        let mut requested = current;
+        requested.ac.processor.performance_min = 25;
+        requested.ac.processor.boost_mode = Some(ProcessorBoostMode::Disabled);
+        let review = ApplyReview {
+            guid: "plan".into(),
+            name: "Balanced".into(),
+            current: current.into(),
+            requested,
+            origin: ApplyOrigin::Page,
+        };
+        let mut actual = current;
+        actual.ac.processor.performance_min = 25;
+        actual.battery.processor.performance_min = 30;
+
+        let draft = review.recover_draft(actual.into());
+        assert_eq!(draft.ac, requested.ac);
+        assert_eq!(draft.battery, actual.battery);
     }
 
     #[test]

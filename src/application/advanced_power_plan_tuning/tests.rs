@@ -18,7 +18,10 @@ struct FakeStoreState {
     personality: Result<PowerPlanPersonality, AdvancedPowerPlanTuningError>,
     apply_error: Option<ProcessorPowerApplyError>,
     apply_readback: Option<AdvancedPowerPlanTuningReadback>,
-    requests: Vec<AdvancedPowerPlanTuningSourceValues>,
+    requests: Vec<(
+        AdvancedPowerPlanTuningSourceValues,
+        AdvancedPowerPlanTuningSourceValues,
+    )>,
     calls: Vec<&'static str>,
 }
 
@@ -63,11 +66,12 @@ impl AdvancedPowerPlanTuningStore for FakeStore {
     fn apply_values(
         &self,
         _guid: &str,
+        previous: AdvancedPowerPlanTuningSourceValues,
         values: AdvancedPowerPlanTuningSourceValues,
     ) -> Result<(), ProcessorPowerApplyError> {
         let mut state = self.state.lock().expect("power tuning lock");
         state.calls.push("apply");
-        state.requests.push(values);
+        state.requests.push((previous, values));
         if let Some(readback) = state.apply_readback.take() {
             state.values = Ok(readback);
         }
@@ -153,7 +157,7 @@ fn apply_requires_matching_values_for_both_power_sources() {
             }
             let service =
                 AdvancedPowerPlanTuningService::with_store(Box::new(FakeStore::new(actual)));
-            let outcome = service.apply_values("plan", expected);
+            let outcome = service.apply_values("plan", values(30), expected);
             assert!(!outcome.applied, "source={battery}, field={field}");
             assert_eq!(outcome.actual_values, Some(actual.into()));
             assert!(matches!(
@@ -176,7 +180,7 @@ fn apply_verifies_requested_settings_but_preserves_unowned_fields() {
     unowned.ac.processor.boost_mode = None;
     for requested in [unowned, actual.writable()] {
         assert_eq!(actual.with_requested(requested), actual);
-        let outcome = service.apply_values("plan", requested);
+        let outcome = service.apply_values("plan", actual.writable(), requested);
         assert!(outcome.applied);
         assert_eq!(outcome.actual_values, Some(actual));
         assert!(outcome.error.is_none());
@@ -271,7 +275,10 @@ fn apply_and_restore_preserve_unknown_ac_boost_mode() {
     }
     assert_eq!(
         store.state.lock().expect("power tuning lock").requests,
-        [edited.writable(), original.writable()]
+        [
+            (original.writable(), edited.writable()),
+            (edited.writable(), original.writable()),
+        ]
     );
 }
 
@@ -282,7 +289,7 @@ fn successful_write_with_failed_readback_is_not_verified() {
         AdvancedPowerPlanTuningError::ReadValues("read failed".to_owned()),
     );
     let service = AdvancedPowerPlanTuningService::with_store(Box::new(store));
-    let outcome = service.apply_values("plan", values(75));
+    let outcome = service.apply_values("plan", values(30), values(75));
     assert!(!outcome.applied);
     assert!(outcome.actual_values.is_none());
     assert!(matches!(
@@ -308,7 +315,7 @@ fn partial_apply_failure_still_returns_actual_values_and_stage() {
             ProcessorPowerApplyError::at(stage, "write failed".to_owned()),
         );
         let service = AdvancedPowerPlanTuningService::with_store(Box::new(store.clone()));
-        let outcome = service.apply_values("plan", values(80));
+        let outcome = service.apply_values("plan", actual, values(80));
         assert!(!outcome.applied);
         assert_eq!(outcome.actual_values, Some(actual.into()));
         assert!(
@@ -333,7 +340,7 @@ fn apply_and_readback_failures_are_both_retained() {
     }
     let service = AdvancedPowerPlanTuningService::with_store(Box::new(store));
 
-    let outcome = service.apply_values("plan", values(80));
+    let outcome = service.apply_values("plan", values(30), values(80));
 
     assert!(!outcome.applied);
     assert!(outcome.actual_values.is_none());

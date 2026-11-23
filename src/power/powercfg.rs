@@ -2,9 +2,9 @@ use crate::platform::windows::power_plan::{self as windows_power, PowerSetting};
 
 use super::{
     AdvancedPowerPlanTuningReadback, AdvancedPowerPlanTuningSourceReadback,
-    AdvancedPowerPlanTuningSourceValues, EffectivePowerMode, PowerPlan, PowerPlanPersonality,
-    PowerSettingReadback, ProcessorBoostMode, ProcessorPowerSourceValues, ProcessorPowerValues,
-    ProcessorSchedulingPolicy,
+    AdvancedPowerPlanTuningSourceValues, EditableTuningValues, EffectivePowerMode, PowerPlan,
+    PowerPlanPersonality, PowerSettingReadback, ProcessorBoostMode, ProcessorPowerSourceValues,
+    ProcessorPowerValues, ProcessorSchedulingPolicy,
 };
 
 pub(crate) const ADAPTIVE_PLAN_NAME: &str = "Winderust Adaptive";
@@ -277,76 +277,19 @@ pub fn apply_processor_power_values(
     guid: &str,
     values: ProcessorPowerSourceValues,
 ) -> Result<(), String> {
-    apply_processor_power_values_staged(guid, values.normalized().into())
+    apply_processor_power_values_staged(guid, values.normalized().into(), None)
         .map_err(|error| error.to_string())
 }
 
 pub(crate) fn apply_processor_power_values_staged(
     guid: &str,
     values: AdvancedPowerPlanTuningSourceValues,
+    previous: Option<AdvancedPowerPlanTuningSourceValues>,
 ) -> Result<(), ProcessorPowerApplyError> {
     validate_plan_guid(guid).map_err(|error| {
         ProcessorPowerApplyError::at(ProcessorPowerApplyStage::ValidatePlan, error)
     })?;
-    let values = values.normalized();
-
-    write_processor_value(
-        guid,
-        PowerSetting::CoreParkingMinimum,
-        values.ac.processor.core_parking_min,
-        ProcessorPowerApplyStage::AcCoreParkingMinimum,
-        windows_power::write_ac_value,
-    )?;
-    write_processor_value(
-        guid,
-        PowerSetting::CoreParkingMinimum,
-        values.battery.processor.core_parking_min,
-        ProcessorPowerApplyStage::BatteryCoreParkingMinimum,
-        windows_power::write_dc_value,
-    )?;
-    write_processor_value(
-        guid,
-        PowerSetting::PerformanceMinimum,
-        values.ac.processor.performance_min,
-        ProcessorPowerApplyStage::AcPerformanceMinimum,
-        windows_power::write_ac_value,
-    )?;
-    write_processor_value(
-        guid,
-        PowerSetting::PerformanceMinimum,
-        values.battery.processor.performance_min,
-        ProcessorPowerApplyStage::BatteryPerformanceMinimum,
-        windows_power::write_dc_value,
-    )?;
-    write_processor_value(
-        guid,
-        PowerSetting::PerformanceMaximum,
-        values.ac.processor.performance_max,
-        ProcessorPowerApplyStage::AcPerformanceMaximum,
-        windows_power::write_ac_value,
-    )?;
-    write_processor_value(
-        guid,
-        PowerSetting::PerformanceMaximum,
-        values.battery.processor.performance_max,
-        ProcessorPowerApplyStage::BatteryPerformanceMaximum,
-        windows_power::write_dc_value,
-    )?;
-    write_processor_value(
-        guid,
-        PowerSetting::BoostPolicy,
-        values.ac.processor.boost_policy,
-        ProcessorPowerApplyStage::AcBoostPolicy,
-        windows_power::write_ac_value,
-    )?;
-    write_processor_value(
-        guid,
-        PowerSetting::BoostPolicy,
-        values.battery.processor.boost_policy,
-        ProcessorPowerApplyStage::BatteryBoostPolicy,
-        windows_power::write_dc_value,
-    )?;
-    write_optional_tuning_values(values, |battery, setting, value| {
+    write_tuning_values(values.normalized(), previous, |battery, setting, value| {
         if battery {
             windows_power::write_dc_value(guid, setting, value)
         } else {
@@ -425,58 +368,89 @@ fn read_tuning_source(
     })
 }
 
-fn write_optional_tuning_values(
-    AdvancedPowerPlanTuningSourceValues { ac, battery: dc }: AdvancedPowerPlanTuningSourceValues,
+fn write_tuning_values(
+    values: AdvancedPowerPlanTuningSourceValues,
+    previous: Option<AdvancedPowerPlanTuningSourceValues>,
     mut write: impl FnMut(bool, PowerSetting, u32) -> Result<(), String>,
 ) -> Result<(), ProcessorPowerApplyError> {
-    for (battery, setting, value, stage) in [
-        (
-            false,
-            PowerSetting::BoostMode,
-            ac.processor.boost_mode.map(ProcessorBoostMode::power_value),
-            ProcessorPowerApplyStage::AcBoostMode,
-        ),
-        (
-            true,
-            PowerSetting::BoostMode,
-            dc.processor.boost_mode.map(ProcessorBoostMode::power_value),
-            ProcessorPowerApplyStage::BatteryBoostMode,
-        ),
-        (
-            false,
-            PowerSetting::SchedulingPolicy,
-            ac.scheduling_policy
-                .map(ProcessorSchedulingPolicy::power_value),
-            ProcessorPowerApplyStage::AcSchedulingPolicy,
-        ),
-        (
-            true,
-            PowerSetting::SchedulingPolicy,
-            dc.scheduling_policy
-                .map(ProcessorSchedulingPolicy::power_value),
-            ProcessorPowerApplyStage::BatterySchedulingPolicy,
-        ),
-        (
-            false,
-            PowerSetting::ShortSchedulingPolicy,
-            ac.short_scheduling_policy
-                .map(ProcessorSchedulingPolicy::power_value),
-            ProcessorPowerApplyStage::AcShortSchedulingPolicy,
-        ),
-        (
-            true,
-            PowerSetting::ShortSchedulingPolicy,
-            dc.short_scheduling_policy
-                .map(ProcessorSchedulingPolicy::power_value),
-            ProcessorPowerApplyStage::BatteryShortSchedulingPolicy,
-        ),
-    ] {
-        if let Some(value) = value {
-            write(battery, setting, value)
-                .map_err(|error| ProcessorPowerApplyError::at(stage, error))?;
+    let mut write_setting = |setting,
+                             field: fn(EditableTuningValues) -> Option<u32>,
+                             ac_stage,
+                             battery_stage|
+     -> Result<(), ProcessorPowerApplyError> {
+        for (battery, current, previous, stage) in [
+            (false, values.ac, previous.map(|values| values.ac), ac_stage),
+            (
+                true,
+                values.battery,
+                previous.map(|values| values.battery),
+                battery_stage,
+            ),
+        ] {
+            if let Some(value) =
+                field(current).filter(|&value| Some(value) != previous.and_then(field))
+            {
+                write(battery, setting, value)
+                    .map_err(|error| ProcessorPowerApplyError::at(stage, error))?;
+            }
         }
-    }
-    Ok(())
+        Ok(())
+    };
+    write_setting(
+        PowerSetting::CoreParkingMinimum,
+        |values| Some(values.processor.core_parking_min),
+        ProcessorPowerApplyStage::AcCoreParkingMinimum,
+        ProcessorPowerApplyStage::BatteryCoreParkingMinimum,
+    )?;
+    write_setting(
+        PowerSetting::PerformanceMinimum,
+        |values| Some(values.processor.performance_min),
+        ProcessorPowerApplyStage::AcPerformanceMinimum,
+        ProcessorPowerApplyStage::BatteryPerformanceMinimum,
+    )?;
+    write_setting(
+        PowerSetting::PerformanceMaximum,
+        |values| Some(values.processor.performance_max),
+        ProcessorPowerApplyStage::AcPerformanceMaximum,
+        ProcessorPowerApplyStage::BatteryPerformanceMaximum,
+    )?;
+    write_setting(
+        PowerSetting::BoostPolicy,
+        |values| Some(values.processor.boost_policy),
+        ProcessorPowerApplyStage::AcBoostPolicy,
+        ProcessorPowerApplyStage::BatteryBoostPolicy,
+    )?;
+    write_setting(
+        PowerSetting::BoostMode,
+        |values| {
+            values
+                .processor
+                .boost_mode
+                .map(ProcessorBoostMode::power_value)
+        },
+        ProcessorPowerApplyStage::AcBoostMode,
+        ProcessorPowerApplyStage::BatteryBoostMode,
+    )?;
+    write_setting(
+        PowerSetting::SchedulingPolicy,
+        |values| {
+            values
+                .scheduling_policy
+                .map(ProcessorSchedulingPolicy::power_value)
+        },
+        ProcessorPowerApplyStage::AcSchedulingPolicy,
+        ProcessorPowerApplyStage::BatterySchedulingPolicy,
+    )?;
+    write_setting(
+        PowerSetting::ShortSchedulingPolicy,
+        |values| {
+            values
+                .short_scheduling_policy
+                .map(ProcessorSchedulingPolicy::power_value)
+        },
+        ProcessorPowerApplyStage::AcShortSchedulingPolicy,
+        ProcessorPowerApplyStage::BatteryShortSchedulingPolicy,
+    )
 }
 
 impl EffectivePowerModeMonitor {
@@ -495,16 +469,6 @@ fn validate_plan_guid(guid: &str) -> Result<(), String> {
     windows_power::is_valid_guid(guid)
         .then_some(())
         .ok_or_else(|| "Invalid power plan GUID.".to_owned())
-}
-
-fn write_processor_value(
-    guid: &str,
-    setting: PowerSetting,
-    value: u32,
-    stage: ProcessorPowerApplyStage,
-    write: fn(&str, PowerSetting, u32) -> Result<(), String>,
-) -> Result<(), ProcessorPowerApplyError> {
-    write(guid, setting, value).map_err(|error| ProcessorPowerApplyError::at(stage, error))
 }
 
 fn managed_adaptive_restore_guid<'a>(plan_name: &str, description: &'a str) -> Option<&'a str> {
@@ -670,18 +634,33 @@ mod tests {
     }
 
     #[test]
-    fn optional_tuning_writes_skip_unselected_values_and_report_exact_failure_stage() {
-        let mut values: AdvancedPowerPlanTuningSourceValues = ProcessorPowerSourceValues::same(
-            ProcessorPowerValues::for_preset(ProcessorPowerPreset::Balanced),
+    fn tuning_writes_preserve_order_and_skip_unselected_optional_values() {
+        let adaptive: AdvancedPowerPlanTuningSourceValues = ProcessorPowerSourceValues::new(
+            ProcessorPowerValues::new_with_boost_mode(10, 20, 30, 40, ProcessorBoostMode::Enabled),
+            ProcessorPowerValues::new_with_boost_mode(
+                11,
+                21,
+                31,
+                41,
+                ProcessorBoostMode::EfficientEnabled,
+            ),
         )
         .into();
-        values.battery.processor.boost_mode = Some(ProcessorBoostMode::EfficientEnabled);
+        let mut values = adaptive;
         values.ac.scheduling_policy = Some(ProcessorSchedulingPolicy::PerformanceProcessors);
         values.battery.scheduling_policy =
             Some(ProcessorSchedulingPolicy::PreferEfficiencyProcessors);
         values.ac.short_scheduling_policy = Some(ProcessorSchedulingPolicy::Automatic);
         values.battery.short_scheduling_policy = Some(ProcessorSchedulingPolicy::AllProcessors);
-        let expected = vec![
+        let expected = [
+            (false, PowerSetting::CoreParkingMinimum, 10),
+            (true, PowerSetting::CoreParkingMinimum, 11),
+            (false, PowerSetting::PerformanceMinimum, 20),
+            (true, PowerSetting::PerformanceMinimum, 21),
+            (false, PowerSetting::PerformanceMaximum, 30),
+            (true, PowerSetting::PerformanceMaximum, 31),
+            (false, PowerSetting::BoostPolicy, 40),
+            (true, PowerSetting::BoostPolicy, 41),
             (false, PowerSetting::BoostMode, 1),
             (true, PowerSetting::BoostMode, 3),
             (false, PowerSetting::SchedulingPolicy, 1),
@@ -689,13 +668,15 @@ mod tests {
             (false, PowerSetting::ShortSchedulingPolicy, 5),
             (true, PowerSetting::ShortSchedulingPolicy, 0),
         ];
-        let mut calls = vec![];
-        write_optional_tuning_values(values, |battery, setting, value| {
-            calls.push((battery, setting, value));
-            Ok(())
-        })
-        .unwrap();
-        assert_eq!(calls, expected);
+        for (requested, expected) in [(adaptive, &expected[..10]), (values, &expected[..])] {
+            let mut calls = vec![];
+            write_tuning_values(requested, None, |battery, setting, value| {
+                calls.push((battery, setting, value));
+                Ok(())
+            })
+            .unwrap();
+            assert_eq!(calls, expected);
+        }
         for (failure, stage) in [
             ProcessorPowerApplyStage::AcBoostMode,
             ProcessorPowerApplyStage::BatteryBoostMode,
@@ -708,7 +689,8 @@ mod tests {
         .enumerate()
         {
             let mut calls = vec![];
-            let error = write_optional_tuning_values(values, |battery, setting, value| {
+            let failure = failure + 8;
+            let error = write_tuning_values(values, None, |battery, setting, value| {
                 calls.push((battery, setting, value));
                 if calls.len() == failure + 1 {
                     Err("denied".into())
@@ -724,12 +706,52 @@ mod tests {
         values.ac.scheduling_policy = None;
         values.battery.short_scheduling_policy = None;
         let mut calls = vec![];
-        write_optional_tuning_values(values, |battery, setting, value| {
+        write_tuning_values(values, None, |battery, setting, value| {
             calls.push((battery, setting, value));
             Ok(())
         })
         .unwrap();
-        assert_eq!(calls, vec![expected[1], expected[3], expected[4]]);
+        assert_eq!(
+            calls,
+            [&expected[..8], &[expected[9], expected[11], expected[12]]].concat()
+        );
+    }
+
+    #[test]
+    fn reviewed_tuning_writes_only_changed_settings_and_reports_the_first_failure() {
+        let mut previous: AdvancedPowerPlanTuningSourceValues = ProcessorPowerSourceValues::same(
+            ProcessorPowerValues::new_with_boost_mode(10, 20, 30, 40, ProcessorBoostMode::Enabled),
+        )
+        .into();
+        previous.ac.scheduling_policy = Some(ProcessorSchedulingPolicy::Automatic);
+        let mut requested = previous;
+        requested.ac.processor.performance_max = 50;
+
+        let mut calls = vec![];
+        let mut write = |battery, setting, value| {
+            calls.push((battery, setting, value));
+            if battery {
+                Err("denied".into())
+            } else {
+                Ok(())
+            }
+        };
+        write_tuning_values(requested, Some(previous), &mut write).unwrap();
+        requested.battery.processor.performance_max = 60;
+        requested.ac.scheduling_policy = Some(ProcessorSchedulingPolicy::PerformanceProcessors);
+        let failed = write_tuning_values(requested, Some(previous), write).unwrap_err();
+        assert_eq!(
+            failed.stage(),
+            ProcessorPowerApplyStage::BatteryPerformanceMaximum
+        );
+        assert_eq!(
+            calls,
+            [
+                (false, PowerSetting::PerformanceMaximum, 50),
+                (false, PowerSetting::PerformanceMaximum, 50),
+                (true, PowerSetting::PerformanceMaximum, 60),
+            ]
+        );
     }
 
     #[test]
