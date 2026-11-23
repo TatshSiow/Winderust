@@ -110,6 +110,8 @@ fn classify(total_cpu: f32, busiest_cpu: Option<f32>, gpu: Option<f32>) -> Bottl
         || busiest_cpu.is_some_and(|usage| usage >= BUSIEST_CPU_BUSY_PERCENT)
     {
         BottleneckState::CpuBound
+    } else if busiest_cpu.is_none() {
+        BottleneckState::Unknown
     } else {
         BottleneckState::Headroom
     }
@@ -138,6 +140,8 @@ mod tests {
             BottleneckState::Mixed
         );
         assert_eq!(classify(90.0, Some(95.0), None), BottleneckState::Unknown);
+        assert_eq!(classify(20.0, None, Some(10.0)), BottleneckState::Unknown);
+        assert_eq!(classify(90.0, None, Some(10.0)), BottleneckState::CpuBound);
     }
 
     #[test]
