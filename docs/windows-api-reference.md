@@ -147,6 +147,9 @@ User-facing behavior:
 - By Focus resolves the app with input focus through `src/foreground/active_window.rs`
   and [GetForegroundWindow](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getforegroundwindow).
   A temporarily null window is an unavailable observation.
+  The foreground observation reads the image path and critical state from the
+  same query handle in `src/foreground/process_list.rs`. By Focus and Timer
+  Resolution require a confirmed noncritical process. [QueryFullProcessImageNameW](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-queryfullprocessimagenamew), [IsProcessCritical](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-isprocesscritical)
 - The global Restore previous plan when no rule selects a plan policy belongs to
   the Power Plan Control landing page and `src/control/power_plan.rs`. Capture the
   actual active GUID before the first verified automatic switch, preserve it

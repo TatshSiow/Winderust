@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
-use super::process_list::process_image_path;
+use super::process_list::process_image_and_critical;
 
 use windows_sys::Win32::{
     Foundation::{HWND, LPARAM, POINT},
@@ -18,6 +18,7 @@ pub struct ForegroundProcess {
     pub id: u32,
     pub name: String,
     pub executable_path: PathBuf,
+    pub(crate) is_critical: Option<bool>,
 }
 
 pub fn shell_window_mouse_pressed() -> bool {
@@ -60,7 +61,7 @@ pub fn cursor_process_id() -> Option<u32> {
 }
 
 pub(crate) fn process_from_id(process_id: u32) -> Option<ForegroundProcess> {
-    let executable_path = process_image_path(process_id)?;
+    let (executable_path, is_critical) = process_image_and_critical(process_id)?;
     let name = executable_path
         .file_name()?
         .to_string_lossy()
@@ -70,6 +71,7 @@ pub(crate) fn process_from_id(process_id: u32) -> Option<ForegroundProcess> {
         id: process_id,
         name,
         executable_path,
+        is_critical,
     })
 }
 

@@ -1072,9 +1072,10 @@ pub(crate) fn observed_process_executable_path(process: &ProcessInfo) -> Option<
     process_image_path_from_handle(&handle)
 }
 
-pub(crate) fn process_image_path(process_id: u32) -> Option<PathBuf> {
+pub(super) fn process_image_and_critical(process_id: u32) -> Option<(PathBuf, Option<bool>)> {
     let process = open_process_for_query(process_id)?;
-    process_image_path_from_handle(&process)
+    let path = process_image_path_from_handle(&process)?;
+    Some((path, process_critical_from_handle(&process)))
 }
 
 fn open_process_for_query(process_id: u32) -> Option<WinHandle> {
@@ -1127,11 +1128,6 @@ fn process_protection_from_handle(process: &WinHandle) -> Option<bool> {
         )
     } != 0)
         .then_some(protection.ProtectionLevel != PROTECTION_LEVEL_NONE)
-}
-
-pub fn process_is_critical(process_id: u32) -> Option<bool> {
-    let process = open_process_for_query(process_id)?;
-    process_critical_from_handle(&process)
 }
 
 fn process_critical_from_handle(process: &WinHandle) -> Option<bool> {

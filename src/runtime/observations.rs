@@ -340,6 +340,11 @@ impl CycleObservations {
         }
     }
 
+    pub(crate) fn noncritical_foreground_process(&mut self) -> Option<ForegroundProcess> {
+        self.foreground_process()
+            .filter(|process| process.is_critical == Some(false))
+    }
+
     pub(crate) fn cached_foreground_executable_path(&self) -> Option<&Path> {
         match &self.foreground_process {
             Observation::Available(Some(process)) if process.executable_path.is_absolute() => {
@@ -934,6 +939,7 @@ mod tests {
             id: process_id,
             name: "test.exe".to_owned(),
             executable_path: PathBuf::from(r"C:\Apps\test.exe"),
+            is_critical: Some(false),
         })
     }
 
@@ -945,6 +951,25 @@ mod tests {
     fn top_level_windows() -> BTreeSet<u32> {
         TOP_LEVEL_WINDOW_CALLS.fetch_add(1, Ordering::Relaxed);
         BTreeSet::from([42])
+    }
+
+    #[test]
+    fn policy_foreground_requires_confirmed_noncritical_state() {
+        let mut observations = CycleObservations::default();
+        for (is_critical, accepted) in [(Some(false), true), (Some(true), false), (None, false)] {
+            observations.foreground_process = Observation::Available(Some(ForegroundProcess {
+                id: 42,
+                name: "test.exe".to_owned(),
+                executable_path: PathBuf::from(r"C:\Apps\test.exe"),
+                is_critical,
+            }));
+            assert_eq!(
+                observations.noncritical_foreground_process().is_some(),
+                accepted
+            );
+        }
+        observations.foreground_process = Observation::Available(None);
+        assert!(observations.noncritical_foreground_process().is_none());
     }
 
     #[test]
@@ -994,7 +1019,9 @@ mod tests {
             Some(Path::new(r"C:\Apps\test.exe"))
         );
         assert_eq!(
-            observations.foreground_process().map(|process| process.id),
+            observations
+                .noncritical_foreground_process()
+                .map(|process| process.id),
             Some(42)
         );
         assert_eq!(observations.processes().unwrap().len(), 1);

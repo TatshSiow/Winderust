@@ -75,9 +75,8 @@ use crate::{
     },
     features::winderust_features::watchdog::{WatchdogManager, WatchdogSnapshot},
     foreground::{
-        cursor_is_shell_window, cursor_process, cursor_process_id, process_is_critical,
-        same_executable_path, shell_window_mouse_pressed, ProcessActionTarget,
-        ProcessActionTargetError,
+        cursor_is_shell_window, cursor_process, cursor_process_id, same_executable_path,
+        shell_window_mouse_pressed, ProcessActionTarget, ProcessActionTargetError,
     },
     gpu_priority::{GpuPriorityManager, GpuPrioritySnapshot},
     io_priority::{IoPriorityManager, IoPrioritySnapshot},

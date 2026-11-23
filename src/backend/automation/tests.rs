@@ -2401,7 +2401,7 @@ fn power_plan_decisions_have_one_visibility_independent_runtime_route() {
         "pub(super) fn run_check",
         "pub(super) fn refresh_active_plan",
     );
-    assert!(runtime_decision.contains("process_is_critical"));
+    assert!(runtime_decision.contains("noncritical_foreground_process"));
     assert!(runtime_decision.contains("reconcile_ordinary"));
 
     let worker_source = include_str!("../automation.rs");
