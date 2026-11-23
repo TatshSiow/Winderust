@@ -613,6 +613,8 @@ Read the relevant section before changing feature policy, ownership, restoration
   Inherited Job coverage retains a child while the matching Job is owned and the child
   may still be live. A complete process census drops absent or replaced child generations.
   Required observations that are unavailable pause CPU Limiter and its eligible rule status.
+  When A/C and battery limits differ, CPU Limiter pauses and releases its limits until Windows
+  reports the power source. App Suspension retains its own freeze claims.
   Process inventory and retained cleanup errors remain visible in the status rail.
 
 ## Runtime observations

@@ -1399,16 +1399,44 @@ fn active_cpu_limiter_keeps_process_discovery_at_one_second() {
     for (hidden_to_tray, adaptive_engine_enabled) in [(false, false), (true, false), (false, true)]
     {
         assert_eq!(
-            process_appearance_refresh_interval(&settings, hidden_to_tray, adaptive_engine_enabled,),
+            process_appearance_refresh_interval(
+                hidden_to_tray,
+                adaptive_engine_enabled,
+                cpu_limiter_required(&settings),
+            ),
             PROCESS_APPEARANCE_SCAN_INTERVAL
         );
     }
 
-    settings.cpu_limiter.enabled = false;
+    assert!(process_appearance_scan_required(&settings));
+    assert!(!process_appearance_scan_required_with_limiter(
+        &settings, false
+    ));
     assert_eq!(
-        process_appearance_refresh_interval(&settings, false, true),
+        process_appearance_refresh_interval(false, true, false),
         ADAPTIVE_ENGINE_AUTOMATION_REFRESH_INTERVAL
     );
+
+    settings.adaptive_engine.enabled = true;
+    settings.general.theme_mode = AppThemeMode::Dark;
+    settings.general.accent.source = AccentColorSource::Custom;
+    let battery = settings.battery_profile_mut();
+    battery.cpu_limiter.background_allowed_cpu_time_percent = 50;
+    battery.cpu_limiter.rules[0].background_mode = ProcessRuleMode::Default;
+    assert!(!cpu_limiter_policy_varies_by_source(&settings));
+
+    settings.cpu_limiter.enabled = false;
+    assert!(cpu_limiter_policy_varies_by_source(&settings));
+    assert_eq!(
+        windows_event_watcher_mode(&settings),
+        Some(WindowsEventWatcherMode::Full)
+    );
+    assert!(windows_event_wake_required(
+        &settings,
+        WindowsAutomationEvent::PowerChanged
+    ));
+    settings.general.enabled = false;
+    assert!(!cpu_limiter_policy_varies_by_source(&settings));
 }
 
 #[test]

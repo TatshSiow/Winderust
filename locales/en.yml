@@ -1145,6 +1145,7 @@ by_running_app:
   preview_path_unavailable: "Executable path unavailable"
 
 cpu_limiter:
+  waiting_for_power_source: "CPU limits stay paused until Windows reports the power source."
   limits: "CPU time limits"
   invalid_limit: "Enter a CPU time value from 1 to 100."
   enable: "Enable CPU Limiter"

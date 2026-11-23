@@ -16,11 +16,11 @@ pub(super) fn automation_refresh_interval(
 }
 
 pub(super) fn process_appearance_refresh_interval(
-    settings: &Settings,
     hidden_to_tray: bool,
     adaptive_engine_enabled: bool,
+    cpu_limiter_active: bool,
 ) -> Duration {
-    if cpu_limiter_required(settings) {
+    if cpu_limiter_active {
         PROCESS_APPEARANCE_SCAN_INTERVAL
     } else {
         automation_refresh_interval(
@@ -103,6 +103,26 @@ pub(super) fn cpu_limiter_required(settings: &Settings) -> bool {
         && crate::features::cpu_control::cpu_limiter::has_finite_limits(&settings.cpu_limiter)
 }
 
+pub(super) fn cpu_limiter_policy_varies_by_source(settings: &Settings) -> bool {
+    if !settings.general.enabled {
+        return false;
+    }
+    let Some(battery) = settings.on_battery.as_deref() else {
+        return false;
+    };
+    if settings.cpu_limiter == battery.cpu_limiter {
+        return false;
+    }
+    let ac_active = cpu_limiter_required(settings);
+    let battery_active = cpu_limiter_required(battery);
+    ac_active != battery_active
+        || (ac_active
+            && !crate::features::cpu_control::cpu_limiter::same_limit_policy(
+                &settings.cpu_limiter,
+                &battery.cpu_limiter,
+            ))
+}
+
 pub(super) fn timer_resolution_required(settings: &Settings) -> bool {
     settings.timer_resolution.enabled
         && settings
@@ -122,11 +142,18 @@ pub(super) fn sleep_prevention_required(settings: &Settings) -> bool {
 }
 
 pub(super) fn process_appearance_scan_required(settings: &Settings) -> bool {
+    process_appearance_scan_required_with_limiter(settings, cpu_limiter_required(settings))
+}
+
+pub(super) fn process_appearance_scan_required_with_limiter(
+    settings: &Settings,
+    cpu_limiter_active: bool,
+) -> bool {
     settings.general.enabled
         && (settings.background_efficiency.enabled
             || cpu_sets_soft_required(settings)
             || processor_affinity_hard_required(settings)
-            || cpu_limiter_required(settings)
+            || cpu_limiter_active
             || by_running_app_required(settings)
             || adaptive_engine_process_required(settings)
             || settings.process_priority.enabled
@@ -251,7 +278,10 @@ pub(super) fn instance_balancing_required(settings: &Settings) -> bool {
 }
 
 pub(super) fn windows_event_watcher_mode(settings: &Settings) -> Option<WindowsEventWatcherMode> {
-    if windows_event_watcher_required(settings) || adaptive_enablement_varies_by_source(settings) {
+    if windows_event_watcher_required(settings)
+        || adaptive_enablement_varies_by_source(settings)
+        || cpu_limiter_policy_varies_by_source(settings)
+    {
         Some(WindowsEventWatcherMode::Full)
     } else if std::iter::once(settings)
         .chain(settings.on_battery.as_deref())

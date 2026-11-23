@@ -1148,6 +1148,7 @@ by_running_app:
   preview_path_unavailable: "無法取得執行檔路徑"
 
 cpu_limiter:
+  waiting_for_power_source: "CPU 限制會保持暫停，直到 Windows 回報電源來源。"
   limits: "CPU 時間限制"
   invalid_limit: "請輸入 1 至 100 的 CPU 時間值。"
   enable: "啟用 CPU 限制器"

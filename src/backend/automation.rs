@@ -1248,6 +1248,11 @@ fn run_background_automation(
         }
         runner.input_activity = snapshot.input_activity;
         let windows_event_watcher_active = snapshot.windows_event_watcher_active;
+        let cpu_limiter_policy_varies = (plugged_in.is_none() || !windows_event_watcher_active)
+            && cpu_limiter_policy_varies_by_source(&configured_settings);
+        let cpu_limiter_waits_for_source = plugged_in.is_none() && cpu_limiter_policy_varies;
+        let cpu_limiter_active = !cpu_limiter_waits_for_source
+            && feature_refresh_required(settings, cpu_limiter_required(settings));
         let mut observations = CycleObservations::default();
         let hidden_to_tray = tray_hidden();
         let adaptive_engine_enabled = settings.adaptive_engine.enabled;
@@ -1319,8 +1324,11 @@ fn run_background_automation(
             adaptive_engine_enabled,
             TIMER_RESOLUTION_REFRESH_INTERVAL,
         );
-        let process_appearance_scan_interval =
-            process_appearance_refresh_interval(settings, hidden_to_tray, adaptive_engine_enabled);
+        let process_appearance_scan_interval = process_appearance_refresh_interval(
+            hidden_to_tray,
+            adaptive_engine_enabled,
+            cpu_limiter_active,
+        );
         let app_suspension_foreground_release_interval = automation_refresh_interval(
             hidden_to_tray,
             adaptive_engine_enabled,
@@ -1413,7 +1421,8 @@ fn run_background_automation(
         let power_plan_checks_required = power_plan_waits_for_source
             || power_plan_checks_required(settings)
             || runner.has_temporary_power_plan();
-        let scan_process_appearance = process_appearance_scan_required(settings);
+        let scan_process_appearance =
+            process_appearance_scan_required_with_limiter(settings, cpu_limiter_active);
         let background_efficiency_refresh_required = settings_changed
             || feature_refresh_required(settings, settings.background_efficiency.enabled);
         let app_suspension_refresh_required = settings_changed
@@ -1424,10 +1433,11 @@ fn run_background_automation(
             || feature_refresh_required(settings, cpu_sets_soft_required(settings));
         let processor_affinity_hard_refresh_required = settings_changed
             || feature_refresh_required(settings, processor_affinity_hard_required(settings));
-        let cpu_limiter_refresh_requested =
-            settings_changed || feature_refresh_required(settings, cpu_limiter_required(settings));
-        let cpu_limiter_refresh_required =
-            cpu_limiter_refresh_requested || runner.cpu_limiter_release_pending();
+        let cpu_limiter_refresh_requested = settings_changed || cpu_limiter_active;
+        let cpu_limiter_release_pending = runner.cpu_limiter_release_pending();
+        let cpu_limiter_refresh_required = cpu_limiter_refresh_requested
+            || cpu_limiter_release_pending
+            || cpu_limiter_waits_for_source;
         let by_running_app_refresh_required = settings_changed
             || feature_refresh_required(settings, by_running_app_required(settings))
             || runner.has_temporary_power_plan();
@@ -1710,10 +1720,17 @@ fn run_background_automation(
             );
         }
         if cpu_limiter_refresh_required && scheduler.is_due(RefreshDomain::CpuLimiter, now) {
-            if cpu_limiter_refresh_requested || !runner.cpu_limiter_release_in_progress() {
+            if cpu_limiter_refresh_requested
+                || (cpu_limiter_release_pending && !runner.cpu_limiter_release_in_progress())
+            {
                 let cpu_limiter_status = CpuLimiterSnapshot {
                     source: plugged_in.map(|plugged_in| active_power_source(Some(plugged_in))),
-                    ..runner.run_cpu_limiter_update(settings, &mut observations)
+                    waiting_for_power_source: cpu_limiter_waits_for_source,
+                    ..runner.run_cpu_limiter_update(
+                        settings,
+                        cpu_limiter_waits_for_source,
+                        &mut observations,
+                    )
                 };
                 update_cpu_limiter_status(&shared, cpu_limiter_status);
             }
@@ -2127,7 +2144,8 @@ fn run_background_automation(
             wait_for = Some(min_worker_wait(wait_for, delay));
         }
         if !windows_event_watcher_active
-            && adaptive_enablement_varies_by_source(&configured_settings)
+            && (adaptive_enablement_varies_by_source(&configured_settings)
+                || cpu_limiter_policy_varies)
         {
             wait_for = Some(min_worker_wait(wait_for, Duration::from_secs(1)));
         }

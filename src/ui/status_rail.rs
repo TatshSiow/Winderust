@@ -179,6 +179,15 @@ pub(super) fn view<'a>(
     };
     let state = sidebar_state(page, settings, runtime, &summary, observed_state);
     let (state_label, detail, color) = match (page, state) {
+        (Page::CpuLimiter, FeatureRunState::Paused)
+            if runtime.feature_status.cpu_limiter.waiting_for_power_source =>
+        {
+            (
+                "sidebar_status.paused",
+                "cpu_limiter.waiting_for_power_source",
+                "common.waiting",
+            )
+        }
         (Page::SleepPrevention, FeatureRunState::Running) => (
             "sleep_prevention.request_accepted",
             "sleep_prevention.request_status_help",
@@ -714,6 +723,13 @@ fn sidebar_state(
         {
             return FeatureRunState::Error;
         }
+    }
+    if page == Page::CpuLimiter && runtime.feature_status.cpu_limiter.waiting_for_power_source {
+        return if runtime.worker_error.is_some() || summary.last_error.is_some() {
+            FeatureRunState::Error
+        } else {
+            FeatureRunState::Paused
+        };
     }
     if !settings.general.enabled
         || super::navigation::feature_page_enabled(settings, page) == Some(false)
@@ -1793,6 +1809,21 @@ mod tests {
         features.cpu_sets_soft.last_error = Some("restore failed".into());
         features.processor_affinity_hard.last_error = Some("restore failed".into());
         assert_eq!(activity(&runtime), [(FeatureRunState::Error, [None; 3]); 3]);
+
+        settings.cpu_limiter.enabled = false;
+        std::sync::Arc::make_mut(&mut runtime.feature_status)
+            .cpu_limiter
+            .waiting_for_power_source = true;
+        let labels = |runtime: &RuntimeStatusSnapshot| {
+            rail_text(view(Page::CpuLimiter, &settings, runtime, &[], None).unwrap())
+        };
+        assert_eq!(labels(&runtime)[0], t!("common.error"));
+        std::sync::Arc::make_mut(&mut runtime.feature_status)
+            .cpu_limiter
+            .last_error = None;
+        let waiting = labels(&runtime);
+        assert_eq!(waiting[0], t!("sidebar_status.paused"));
+        assert_eq!(waiting[1], t!("cpu_limiter.waiting_for_power_source"));
     }
 
     #[test]

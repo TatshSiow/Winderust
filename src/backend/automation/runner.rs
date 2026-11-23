@@ -507,7 +507,7 @@ impl RuntimeCore {
             errors.push(format!("Timer Resolution restoration failed: {error}"));
         }
         let _ = self.run_by_running_app_update(&settings, &mut observations);
-        self.run_cpu_limiter_update(&settings, &mut observations);
+        self.run_cpu_limiter_update(&settings, false, &mut observations);
         if let Some(mut controller) = self.cpu_limiter_controller.take() {
             if let Err(error) = controller.shutdown() {
                 errors.push(format!("CPU Limiter restoration failed: {error}"));
@@ -977,8 +977,21 @@ impl RuntimeCore {
     pub(super) fn run_cpu_limiter_update(
         &mut self,
         settings: &Settings,
+        waiting_for_power_source: bool,
         observations: &mut CycleObservations,
     ) -> CpuLimiterSnapshot {
+        if waiting_for_power_source {
+            return match self.cpu_limiter_controller.as_mut() {
+                Some(controller) => self
+                    .cpu_limiter_manager
+                    .paused(controller, &mut self.action_log),
+                None => CpuLimiterSnapshot {
+                    enabled: true,
+                    observation_paused: true,
+                    ..Default::default()
+                },
+            };
+        }
         let refresh_required = feature_refresh_required(settings, cpu_limiter_required(settings));
         if self.cpu_limiter_controller.is_none() && !refresh_required {
             return CpuLimiterSnapshot {

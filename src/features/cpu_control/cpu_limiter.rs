@@ -30,6 +30,7 @@ pub struct CpuLimiterSnapshot {
     pub(crate) source: Option<PowerSourceProfile>,
     pub enabled: bool,
     pub(crate) observation_paused: bool,
+    pub(crate) waiting_for_power_source: bool,
     pub scanned_processes: usize,
     pub limited_processes: usize,
     pub tracked_processes: usize,
@@ -361,6 +362,7 @@ impl CpuLimiterManager {
             source: None,
             enabled: true,
             observation_paused: false,
+            waiting_for_power_source: false,
             scanned_processes,
             limited_processes: limited_apps.len(),
             failed_apps: failed_apps.into_iter().collect(),
@@ -374,7 +376,7 @@ impl CpuLimiterManager {
         }
     }
 
-    fn paused(
+    pub(crate) fn paused(
         &mut self,
         controller: &mut CpuLimiterController,
         action_log: &mut ActionLog,
@@ -575,6 +577,28 @@ pub(crate) fn has_finite_limits(settings: &CpuLimiterSettings) -> bool {
                         .is_some()
                 })
     })
+}
+
+pub(crate) fn same_limit_policy(ac: &CpuLimiterSettings, battery: &CpuLimiterSettings) -> bool {
+    fn resolved_rules(
+        settings: &CpuLimiterSettings,
+    ) -> impl Iterator<Item = (std::borrow::Cow<'_, str>, [Option<u8>; 3])> {
+        settings
+            .rules
+            .iter()
+            .filter(|rule| valid_rule(rule))
+            .map(|rule| {
+                (
+                    crate::foreground::process_list::normalize_path_slashes(
+                        rule.executable_path.trim_start(),
+                    ),
+                    [(true, false), (false, true), (false, false)].map(|(focused, visible)| {
+                        resolved_allowed_cpu_time_percent(settings, rule, focused, visible)
+                    }),
+                )
+            })
+    }
+    resolved_rules(ac).eq(resolved_rules(battery))
 }
 
 fn requires_visible_window_observation(settings: &CpuLimiterSettings) -> bool {
