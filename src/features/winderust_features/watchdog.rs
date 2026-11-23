@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
@@ -11,7 +11,9 @@ use crate::{
     },
     cpu::{process_cpu_usage_batch, ProcessCpuSample},
     foreground::{
-        process_list::{path_has_executable_name, same_executable_name},
+        process_list::{
+            executable_basename_may_match, path_has_executable_name, same_executable_name,
+        },
         process_matches_executable_path, same_executable_path, sample_process_resources,
         ProcessActionTarget, ProcessInfo, ProcessResourceSample, ProcessResourceSampling,
     },
@@ -130,6 +132,30 @@ pub(crate) struct WatchdogManager {
     states: BTreeMap<StateKey, AppState>,
 }
 
+fn needs_path_observation(
+    process: &ProcessInfo,
+    settings: &WatchdogSettings,
+    prior_members: &BTreeSet<ProcessIdentity>,
+) -> bool {
+    // Missing paths on prior members still interrupt their incident's observation.
+    process
+        .creation_time
+        .is_some_and(|time| prior_members.contains(&(process.id, time)))
+        || settings
+            .rules
+            .iter()
+            .filter(|rule| rule.enabled)
+            .any(|rule| match &rule.selector {
+                WatchdogSelector::ExactPath { executable_path } => Path::new(executable_path)
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| executable_basename_may_match(&process.name, name)),
+                WatchdogSelector::ExactName { executable_name } => {
+                    same_executable_name(&process.name, executable_name)
+                }
+            })
+}
+
 pub(crate) fn observed_path_matches_name(process: &ProcessInfo, executable_name: &str) -> bool {
     same_executable_name(&process.name, executable_name)
         && process
@@ -208,7 +234,14 @@ impl WatchdogManager {
                 Vec::new(),
             );
         }
-        let processes = match observations.processes_with_paths() {
+        let prior_members = self
+            .states
+            .values()
+            .flat_map(|state| state.members.keys().copied())
+            .collect();
+        let processes = match observations.processes_for_path_matching(|process| {
+            needs_path_observation(process, settings, &prior_members)
+        }) {
             Ok(processes) => processes,
             Err(error) => {
                 self.note_settings(settings);
@@ -627,6 +660,41 @@ mod tests {
             rules: vec![rule],
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn path_observation_keeps_selector_candidates_and_exact_prior_members() {
+        let mut disabled = WatchdogRule::new(r"C:\Apps\disabled.exe".into());
+        disabled.enabled = false;
+        let settings = WatchdogSettings {
+            rules: vec![
+                WatchdogRule::new(r"C:\Apps\Éditor.exe".into()),
+                WatchdogRule::with_selector(WatchdogSelector::ExactName {
+                    executable_name: "Player.exe".into(),
+                }),
+                disabled,
+            ],
+            ..settings()
+        };
+        let mut process = process();
+        process.image_path = None;
+        let prior_members = BTreeSet::from([(process.id, 11)]);
+
+        for (name, expected) in [
+            ("  éditor.EXE  ", true),
+            ("PLAYER.exe", true),
+            (" PLAYER.exe", false),
+            ("disabled.exe", false),
+            ("unrelated.exe", false),
+        ] {
+            process.name = name.into();
+            assert_eq!(
+                needs_path_observation(&process, &settings, &prior_members),
+                expected
+            );
+        }
+        process.creation_time = Some(11);
+        assert!(needs_path_observation(&process, &settings, &prior_members));
     }
 
     #[test]

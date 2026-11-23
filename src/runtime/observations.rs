@@ -1,4 +1,5 @@
 use std::{
+    borrow::Cow,
     collections::{BTreeMap, BTreeSet},
     path::Path,
     sync::Arc,
@@ -124,6 +125,26 @@ pub(crate) struct CycleObservations {
     visible_window_process_ids: Observation<Arc<BTreeSet<u32>>>,
     top_level_window_process_ids: Observation<Arc<BTreeSet<u32>>>,
     cpu_topology: Observation<Arc<crate::cpu_topology::CpuTopology>>,
+}
+
+fn enrich_observed_paths(records: &mut [ProcessInfo], enrich: fn(&mut [ProcessInfo])) {
+    let generations: Vec<_> = records
+        .iter()
+        .map(|process| process.creation_time)
+        .collect();
+    enrich(records);
+    for (process, captured) in records.iter_mut().zip(generations) {
+        if process.creation_time != captured {
+            // Enrichment cannot promote a new identity into an already-observed cycle.
+            // Defer this target until a fresh process observation establishes its generation.
+            process.creation_time = captured;
+            process.image_path = None;
+            process.user_name = None;
+            process.is_service_account = None;
+            process.is_critical = None;
+            process.can_set_information = false;
+        }
+    }
 }
 
 impl Default for CycleObservations {
@@ -257,24 +278,7 @@ impl CycleObservations {
                     }
                 };
             };
-            let generations = processes
-                .iter()
-                .map(|p| p.creation_time)
-                .collect::<Vec<_>>();
-            let records = Arc::make_mut(processes);
-            (self.sources.enrich_process_paths)(records);
-            for (process, captured) in records.iter_mut().zip(generations) {
-                if process.creation_time != captured {
-                    // Enrichment cannot promote a new identity into an already-observed cycle.
-                    // Defer this target until a fresh process observation establishes its generation.
-                    process.creation_time = captured;
-                    process.image_path = None;
-                    process.user_name = None;
-                    process.is_service_account = None;
-                    process.is_critical = None;
-                    process.can_set_information = false;
-                }
-            }
+            enrich_observed_paths(Arc::make_mut(processes), self.sources.enrich_process_paths);
             self.process_paths_enriched = true;
         }
         match &self.processes {
@@ -282,6 +286,28 @@ impl CycleObservations {
             Observation::Unavailable(error) => Err(error.clone()),
             Observation::NotRequested => unreachable!("process observation was initialized"),
         }
+    }
+
+    /// Reuses completed enrichment or enriches only selected rows from the current catalog.
+    pub(crate) fn processes_for_path_matching(
+        &mut self,
+        mut is_candidate: impl FnMut(&ProcessInfo) -> bool,
+    ) -> Result<Cow<'_, [ProcessInfo]>, String> {
+        drop(self.processes()?);
+        let Observation::Available(processes) = &self.processes else {
+            unreachable!("process observation just succeeded")
+        };
+        if self.process_paths_enriched {
+            return Ok(Cow::Borrowed(processes.as_ref()));
+        }
+
+        let mut candidates: Vec<_> = processes
+            .iter()
+            .filter(|process| is_candidate(process))
+            .cloned()
+            .collect();
+        enrich_observed_paths(&mut candidates, self.sources.enrich_process_paths);
+        Ok(Cow::Owned(candidates))
     }
 
     pub(crate) fn foreground_process_id(&mut self) -> Option<u32> {
@@ -679,8 +705,13 @@ mod tests {
         }
         fn enrich(records: &mut [ProcessInfo]) {
             enrich_paths(records);
-            records[1].creation_time = Some(3);
-            records[2].creation_time = Some(4);
+            for record in records {
+                record.creation_time = match record.id {
+                    101 => Some(3),
+                    102 => Some(4),
+                    _ => record.creation_time,
+                };
+            }
         }
         let mut observations = CycleObservations::with_sources(ObservationSources {
             processes: initial,
@@ -697,7 +728,17 @@ mod tests {
             *workload,
             std::collections::BTreeMap::from([(42, 1), (102, 2)])
         );
+        let selected = observations
+            .processes_for_path_matching(|process| process.id == 102)
+            .unwrap();
+        assert_eq!((selected.len(), selected[0].id), (1, 102));
+        assert_eq!(selected[0].creation_time, Some(2));
+        assert!(selected[0].image_path.is_none());
         let after = observations.processes_with_paths().unwrap();
+        let reused = observations
+            .processes_for_path_matching(|_| panic!("full enrichment already available"))
+            .unwrap();
+        assert!(std::ptr::eq(reused.as_ref(), after.as_ref()));
         assert_eq!(after[1].creation_time, None);
         assert_eq!(after[2].creation_time, Some(2));
         assert_eq!(observations.adaptive_workload(&after), workload);

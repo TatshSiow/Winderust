@@ -228,8 +228,10 @@ Read the relevant section before changing feature policy, ownership, restoration
   apply to all rules. Sampling runs once a second in visible and tray modes.
 - Each rule selects one absolute `executable_path` or one exact `executable_name`.
   Executable name rules resolve known absolute image paths from current process
-  observations. Combined by path is the default scope and keeps a separate usage
-  total and incident for each path. Per instance evaluates each verified PID and
+  observations. Watchdog enriches enabled selector candidates and exact prior
+  incident members when the cycle has no full path catalog to reuse. Combined by
+  path is the default scope and keeps a separate usage total and incident for
+  each path. Per instance evaluates each verified PID and
   creation time independently and includes the PID in notifications. A failed
   sample or replaced process cannot carry qualification into a later instance.
   Enabled rules evaluate independently if their selectors overlap. Terminate and
