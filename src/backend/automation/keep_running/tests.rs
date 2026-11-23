@@ -759,10 +759,12 @@ fn stop_pauses_a_pinned_alias_only_from_verified_action_identity() {
 }
 
 #[test]
-fn resume_keeps_a_verified_alias_paused_after_a_failed_identity_read() {
+fn verified_alias_diagnostic_requires_a_complete_conflict_free_scan_to_clear() {
     const ORIGINAL: &str = r"C:\Keep Running Test\original.exe";
     const ALIAS: &str = r"C:\Keep Running Test\alias.exe";
-    let settings = KeepRunningSettings {
+    const CONFLICT: &str =
+        "Keep Running rules refer to the same executable; remove the duplicate rule.";
+    let mut settings = KeepRunningSettings {
         enabled: true,
         rules: [ORIGINAL, ALIAS]
             .map(|path| KeepRunningRule::new(path.into()))
@@ -782,24 +784,28 @@ fn resume_keeps_a_verified_alias_paused_after_a_failed_identity_read() {
         },
     );
     coordinator.owners[1].policy.exited(now, &member);
-    let observe = |coordinator: &mut Coordinator<Fake>| {
+    let mut log = ActionLog::default();
+    let observe = |coordinator: &mut Coordinator<Fake>,
+                   settings: &KeepRunningSettings,
+                   watcher_active,
+                   log: &mut ActionLog| {
         coordinator.tick(
-            &settings,
+            settings,
             true,
-            true,
+            watcher_active,
             |_, _, _, _, _| CommitDisposition::Deferred,
-            &mut ActionLog::default(),
+            log,
             || now,
         )
     };
     IDENTITY_READS.set(&[(ORIGINAL, Some("original")), (ALIAS, Some("replacement"))]);
-    observe(&mut coordinator);
+    observe(&mut coordinator, &settings, true, &mut log);
     IDENTITY_READS.set(&[
         (ORIGINAL, Some("replacement")),
         (ALIAS, Some("replacement")),
     ]);
     let paused = KeepRunningState::Paused(PauseReason::UnsupportedContext);
-    assert!(observe(&mut coordinator)
+    assert!(observe(&mut coordinator, &settings, true, &mut log)
         .rules
         .iter()
         .all(|row| row.state == paused));
@@ -809,9 +815,28 @@ fn resume_keeps_a_verified_alias_paused_after_a_failed_identity_read() {
         coordinator.owners[1].policy.state(),
         KeepRunningState::Retrying { .. }
     ));
-    let status = observe(&mut coordinator);
-    IDENTITY_READS.set(&[]);
+    let status = observe(&mut coordinator, &settings, true, &mut log);
     assert_eq!(status.rules[1].state, paused);
+    assert_eq!(status.rules[1].last_error.as_deref(), Some(CONFLICT));
     assert_eq!(coordinator.owners[0].identity.as_deref(), Some("original"));
+
+    settings.rules.remove(0);
+    let unknown = observe(&mut coordinator, &settings, false, &mut log);
+    assert!(!unknown.observation_known);
+    assert_eq!(unknown.rules[0].last_error.as_deref(), Some(CONFLICT));
+
+    let resolved = observe(&mut coordinator, &settings, true, &mut log);
+    IDENTITY_READS.set(&[]);
+    assert!(resolved.observation_known);
+    assert_eq!(resolved.rules[0].state, paused);
+    assert!(resolved.rules[0].last_error.is_none());
+    assert!(resolved.last_error.is_none());
     assert!(!coordinator.has_pending());
+    assert_eq!(
+        log.entries()
+            .iter()
+            .filter(|entry| entry.reason == CONFLICT)
+            .count(),
+        1
+    );
 }

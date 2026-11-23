@@ -165,12 +165,16 @@ impl<P: Platform> Worker<P> {
 enum RuleError {
     Pending(String),
     Recorded(String),
+    AliasConflict,
 }
 
 impl RuleError {
     fn message(&self) -> &str {
         match self {
             Self::Pending(message) | Self::Recorded(message) => message,
+            Self::AliasConflict => {
+                "Keep Running rules refer to the same executable; remove the duplicate rule."
+            }
         }
     }
 }
@@ -754,6 +758,7 @@ impl<P: Platform> Coordinator<P> {
             }
             drop(catalog);
             // File identities catch hard links and reparse aliases; no rule wins by list order.
+            let mut conflicts = BTreeSet::new();
             for i in 0..self.owners.len() {
                 for j in i + 1..self.owners.len() {
                     let overlapping_members = evidence
@@ -781,12 +786,15 @@ impl<P: Platform> Coordinator<P> {
                             let owner = &mut self.owners[index];
                             owner.policy.pause(PauseReason::UnsupportedContext);
                             if owner.replacement_identity.is_none() {
-                                owner.last_error = Some(RuleError::Pending("Keep Running rules refer to the same executable; remove the duplicate rule.".into()));
+                                owner.last_error = Some(RuleError::AliasConflict);
                             }
-                            evidence.remove(&index);
+                            conflicts.insert(index);
                         }
                     }
                 }
+            }
+            for index in conflicts {
+                evidence.remove(&index);
             }
             if let Some(mut flight) = self.flight.take() {
                 if let Some(index) = self
@@ -940,6 +948,15 @@ impl<P: Platform> Coordinator<P> {
                     }
                 }
             }
+            // An incomplete scan cannot rule out overlapping live members.
+            if known {
+                for &index in evidence.keys() {
+                    let error = &mut self.owners[index].last_error;
+                    if matches!(error, Some(RuleError::AliasConflict)) {
+                        *error = None;
+                    }
+                }
+            }
         } else if let Err(error) = context {
             if enabled {
                 self.pause_all(PauseReason::UnsupportedContext);
@@ -973,13 +990,17 @@ impl<P: Platform> Coordinator<P> {
             }
             let published = (state, owner.last_error.clone());
             if owner.published.as_ref() != Some(&published) {
-                if let Some(RuleError::Pending(error)) = &owner.last_error {
+                if let Some(error) = owner
+                    .last_error
+                    .as_ref()
+                    .filter(|error| !matches!(error, RuleError::Recorded(_)))
+                {
                     log.record(
                         ActionLogFeature::KeepRunning,
                         None,
                         &owner.rule.executable_path,
                         ActionLogResult::Failed,
-                        error,
+                        error.message(),
                     );
                 }
                 owner.published = Some(published);
