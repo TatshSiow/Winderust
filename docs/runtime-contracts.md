@@ -913,6 +913,8 @@ Read the relevant section before changing feature policy, ownership, restoration
   suppresses its apps. Settings observed in the same pass keep that suppression.
 - Running-app reconciliation remains at one second in visible and tray modes;
   Windows sleep and power-source notifications wake it independently of the UI.
+  Path enrichment covers enabled rule candidates and processes that can still
+  match an accepted or suppressed instance, including an unknown creation time.
   Transient power-source read failures retain the last confirmed profile without
   renewing request counts; before the first confirmed source, requests stay off.
   Enabled rule rows show Unknown until the selected profile has a matching

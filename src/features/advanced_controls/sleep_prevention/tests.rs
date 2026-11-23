@@ -180,6 +180,26 @@ fn requesting_instances_share_their_path_and_take_precedence_over_suppression() 
 }
 
 #[test]
+fn path_observation_keeps_prior_apps_and_suppression_when_creation_is_unknown() {
+    let settings = settings();
+    let mut manager = SleepPreventionManager::default();
+    let mut worker = process(7, r"C:\Apps\worker.exe");
+    observe(&mut manager, &settings, std::slice::from_ref(&worker));
+
+    worker.name = "unrelated.exe".into();
+    worker.image_path = None;
+    assert!(manager.needs_path_observation(&worker, &settings));
+    worker.creation_time = None;
+    assert!(manager.needs_path_observation(&worker, &settings));
+
+    manager.suppress_current();
+    manager.matches = Matches::default();
+    assert!(manager.needs_path_observation(&worker, &settings));
+    worker.creation_time = Some(99);
+    assert!(!manager.needs_path_observation(&worker, &settings));
+}
+
+#[test]
 fn sleep_suppression_survives_unknown_observations_and_pid_reuse_cannot_inherit_it() {
     let settings = settings();
     let mut manager = SleepPreventionManager::default();

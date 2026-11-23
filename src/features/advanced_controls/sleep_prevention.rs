@@ -250,7 +250,9 @@ impl SleepPreventionManager {
                 action_log,
             );
         }
-        let error = match observations.processes_with_paths() {
+        let error = match observations
+            .processes_for_path_matching(|process| self.needs_path_observation(process, settings))
+        {
             Ok(processes) => {
                 self.observe(
                     settings,
@@ -378,6 +380,24 @@ impl SleepPreventionManager {
         snapshot.requesting_apps.clear();
         snapshot.last_error = Some(reason.to_owned());
         self.apply(controller, SleepPreventionMode::Off, snapshot, action_log)
+    }
+
+    fn needs_path_observation(
+        &self,
+        process: &ProcessInfo,
+        settings: &SleepPreventionSettings,
+    ) -> bool {
+        // Unknown creation time can still belong to an accepted or suppressed app.
+        let first = (process.id, process.creation_time.unwrap_or(0));
+        let last = (process.id, process.creation_time.unwrap_or(u64::MAX));
+        self.matches.apps.range(first..=last).next().is_some()
+            || self.suppressed.range(first..=last).next().is_some()
+            || settings
+                .rules
+                .iter()
+                .filter(|rule| rule.enabled)
+                .filter_map(|rule| matchable_target(&rule.executable_path))
+                .any(|(_, name)| executable_basename_may_match(&process.name, name))
     }
 
     fn observe(
