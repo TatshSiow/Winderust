@@ -1610,10 +1610,14 @@ impl WinderustApp {
                 self.adaptive.update(&mut self.settings, message);
             }
             Message::AdaptiveProcessorPower(message) => {
-                let preset_was_open = self.adaptive_processor_power.preset_open();
+                let focus_name = matches!(
+                    &message,
+                    adaptive_processor_power::Message::NewPreset
+                        | adaptive_processor_power::Message::EditPreset(_)
+                ) && !self.adaptive_processor_power.preset_open();
                 self.adaptive_processor_power
                     .update(&mut self.settings, message);
-                if !preset_was_open && self.adaptive_processor_power.preset_open() {
+                if focus_name && self.adaptive_processor_power.preset_open() {
                     return iced::widget::operation::focus(
                         adaptive_processor_power::PRESET_NAME_INPUT_ID,
                     );

@@ -1,4 +1,4 @@
-use super::{design, scrollable, widgets, Editor, Message, PRESET_NAME_INPUT_ID};
+use super::{design, edit_settings, scrollable, widgets, Editor, Message, PRESET_NAME_INPUT_ID};
 use crate::application::SettingsEditor;
 use crate::config::{AdaptiveEngineSettings, AdaptiveProcessorPowerPreset, PowerSourceProfile};
 use crate::power::{AdaptivePowerBoostValues, ProcessorBoostMode, ProcessorPowerValues};
@@ -10,6 +10,17 @@ pub(super) struct PresetDraft {
     index: Option<usize>,
     pub(super) name: String,
     pub(super) use_current_values: bool,
+}
+
+pub(super) enum PresetDialog {
+    Edit(PresetDraft),
+    Preview(PresetPreview),
+}
+
+pub(super) struct PresetPreview {
+    preset: AdaptiveProcessorPowerPreset,
+    source: PowerSourceProfile,
+    built_in: Option<BuiltInPreset>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -145,11 +156,67 @@ impl BuiltInPreset {
 
 impl Editor {
     pub(in crate::ui) fn preset_open(&self) -> bool {
-        self.preset_draft.is_some()
+        self.preset_dialog.is_some()
+    }
+
+    pub(super) fn preview_preset(
+        &mut self,
+        settings: &SettingsEditor,
+        choice: PresetChoice<usize>,
+    ) {
+        let source = settings.selected_power_source();
+        let (preset, built_in) = match choice {
+            PresetChoice::BuiltIn(preset) => {
+                let mut values = settings.adaptive_engine.clone();
+                preset.apply(&mut values, source);
+                (
+                    AdaptiveProcessorPowerPreset::capture(preset.label(), &values, source),
+                    Some(preset),
+                )
+            }
+            PresetChoice::Custom(index) => {
+                let Some(preset) = settings
+                    .global()
+                    .adaptive_processor_power_presets
+                    .get(index)
+                else {
+                    return;
+                };
+                (preset.clone(), None)
+            }
+        };
+        self.preset_dialog = Some(PresetDialog::Preview(PresetPreview {
+            preset,
+            source,
+            built_in,
+        }));
+    }
+
+    pub(super) fn use_preset(&mut self, settings: &mut SettingsEditor) {
+        let Some(PresetDialog::Preview(preview)) = &self.preset_dialog else {
+            return;
+        };
+        let source = preview.source;
+        if source != settings.selected_power_source() {
+            return;
+        }
+        self.numbers.drafts.clear();
+        edit_settings(settings, |target| preview.preset.apply(target, source));
+        let selected = preview.built_in.map_or_else(
+            || PresetChoice::Custom(preview.preset.name.clone()),
+            PresetChoice::BuiltIn,
+        );
+        self.preset_dialog = None;
+        match selected {
+            PresetChoice::BuiltIn(preset) => {
+                self.selected_presets[source as usize] = Some(PresetChoice::BuiltIn(preset));
+            }
+            PresetChoice::Custom(name) => self.select_custom_preset(source, name),
+        }
     }
 
     pub(super) fn save_preset(&mut self, settings: &mut SettingsEditor) {
-        let Some(draft) = &self.preset_draft else {
+        let Some(PresetDialog::Edit(draft)) = &self.preset_dialog else {
             return;
         };
         if !draft.can_save(settings, self.validation_error().is_some()) {
@@ -181,7 +248,7 @@ impl Editor {
                 presets.push(preset);
             }
         });
-        self.preset_draft = None;
+        self.preset_dialog = None;
     }
 
     pub(super) fn select_custom_preset(&mut self, source: PowerSourceProfile, name: String) {
@@ -285,7 +352,7 @@ impl Editor {
             list = list.push(preset_button(
                 preset.label(),
                 active == Some(PresetChoice::BuiltIn(preset)),
-                Message::Preset(preset),
+                Message::PreviewBuiltIn(preset),
             ));
         }
         let presets = &settings.global().adaptive_processor_power_presets;
@@ -305,7 +372,7 @@ impl Editor {
                     preset_button(
                         preset.name.as_str(),
                         active == Some(PresetChoice::Custom(preset.name.as_str())),
-                        Message::ApplyPreset(index),
+                        Message::PreviewCustom(index),
                     ),
                     widgets::tooltip(
                         widgets::icon_button("icons/pencil.svg")
@@ -335,7 +402,10 @@ impl Editor {
         &self,
         settings: &SettingsEditor,
     ) -> Option<Element<'_, Message>> {
-        let draft = self.preset_draft.as_ref()?;
+        let draft = match self.preset_dialog.as_ref()? {
+            PresetDialog::Edit(draft) => draft,
+            PresetDialog::Preview(preview) => return Some(preview.view()),
+        };
         let editing = draft.index.is_some();
         let validation_error = self.validation_error();
         let save = draft
@@ -405,6 +475,101 @@ impl Editor {
             (500, 310),
         ))
     }
+}
+
+impl PresetPreview {
+    fn view(&self) -> Element<'_, Message> {
+        let mut values = AdaptiveEngineSettings::default();
+        self.preset.apply(&mut values, self.source);
+        let base = values.base_processor_policy;
+        let demand_rows = |boost: AdaptivePowerBoostValues| {
+            let (policy, mode) = match self.source {
+                PowerSourceProfile::PluggedIn => (boost.ac_policy, boost.ac_mode),
+                PowerSourceProfile::OnBattery => (boost.battery_policy, boost.battery_mode),
+            };
+            [
+                preview_percent("processor_power.boost_policy", policy),
+                preview_boost_mode(mode),
+            ]
+        };
+        let source = match self.source {
+            PowerSourceProfile::PluggedIn => "power_source.plugged_in",
+            PowerSourceProfile::OnBattery => "power_source.on_battery",
+        };
+        let body = column![
+            text(self.preset.name.as_str()).wrapping(text::Wrapping::WordOrGlyph),
+            preview_row("power_source.editing_profile", t!(source).into_owned()),
+            preview_group(
+                "adaptive_processor_power.base_processor_policy",
+                [
+                    preview_percent("processor_power.core_parking_min", base.core_parking_min),
+                    preview_percent("processor_power.processor_min", base.performance_min),
+                    preview_percent("processor_power.processor_max", base.performance_max),
+                    preview_percent("processor_power.boost_policy", base.boost_policy),
+                    preview_boost_mode(base.boost_mode),
+                ]
+            ),
+            preview_group(
+                "adaptive_processor_power.background_pressure_profile",
+                demand_rows(values.background_pressure_profile)
+            ),
+            preview_group(
+                "adaptive_processor_power.focus_and_launch_profile",
+                demand_rows(values.focus_and_launch_profile)
+            ),
+        ]
+        .spacing(design::space::MEDIUM);
+        let header = row![
+            text(t!("adaptive_processor_power.preset_preview").into_owned()).width(Fill),
+            widgets::icon_button("icons/x.svg").on_press(Message::CancelPreset),
+        ]
+        .align_y(iced::Center);
+        let footer = row![
+            widgets::action_button(t!("common.cancel").into_owned())
+                .style(widgets::tertiary_button)
+                .on_press(Message::CancelPreset),
+            widgets::action_button(t!("adaptive_processor_power.use_preset").into_owned())
+                .style(widgets::primary_button)
+                .on_press(Message::UsePreset),
+        ]
+        .spacing(design::space::SMALL);
+        widgets::modal_frame(
+            header,
+            scrollable(body).width(Fill).height(Fill),
+            footer,
+            (540, 520),
+        )
+    }
+}
+
+fn preview_group(
+    label: &str,
+    rows: impl IntoIterator<Item = Element<'static, Message>>,
+) -> Element<'static, Message> {
+    column![
+        widgets::heading(t!(label).into_owned(), design::typography::SECONDARY),
+        widgets::settings_card(widgets::settings_rows(rows).spacing(design::space::TIGHT)),
+    ]
+    .spacing(design::space::SMALL)
+    .into()
+}
+
+fn preview_percent(label: &str, percent: u32) -> Element<'static, Message> {
+    preview_row(label, format!("{percent}%"))
+}
+
+fn preview_boost_mode(mode: ProcessorBoostMode) -> Element<'static, Message> {
+    preview_row(
+        "processor_power.boost_mode",
+        widgets::processor_boost_mode_label(mode).into_owned(),
+    )
+}
+
+fn preview_row(label: &str, value: String) -> Element<'static, Message> {
+    row![text(t!(label).into_owned()).width(Fill), text(value)]
+        .spacing(design::space::MEDIUM)
+        .align_y(iced::Center)
+        .into()
 }
 
 fn same_preset_name(left: &str, right: &str) -> bool {

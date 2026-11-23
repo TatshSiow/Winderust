@@ -1,6 +1,50 @@
 use super::*;
 use crate::config::{AdaptiveProcessorPowerPreset, Settings};
 
+fn select_preset(editor: &mut Editor, settings: &mut SettingsEditor, message: Message) {
+    editor.update(settings, message);
+    editor.update(settings, Message::UsePreset);
+}
+
+#[test]
+fn preview_cancel_preserves_the_editor_and_use_stages_only_the_selected_source() {
+    let mut settings = SettingsEditor::with_settings(Settings::default());
+    settings.select_power_source(PowerSourceProfile::OnBattery);
+    let mut editor = Editor::default();
+    let prior = settings.global().clone();
+    editor.update(
+        &mut settings,
+        Message::Number(
+            |settings, value| settings.base_processor_policy.performance_max = value as u32,
+            String::new(),
+            0,
+            100,
+            PROCESSOR_MAX_FIELD,
+            "processor_power.processor_max",
+        ),
+    );
+    let preview = Message::PreviewBuiltIn(BuiltInPreset::Balanced);
+    editor.update(&mut settings, preview.clone());
+    assert!(editor.preset_open());
+    assert_eq!(settings.global(), &prior);
+    editor.update(&mut settings, Message::CancelPreset);
+    assert!(editor.validation_error().is_some());
+    assert_eq!(settings.global(), &prior);
+
+    select_preset(&mut editor, &mut settings, preview);
+    assert!(!editor.preset_open());
+    assert!(editor.validation_error().is_none());
+    assert_eq!(
+        settings
+            .adaptive_engine
+            .base_processor_policy
+            .performance_max,
+        95
+    );
+    assert_eq!(settings.global().adaptive_engine, prior.adaptive_engine);
+    assert_eq!(settings.persisted(), &prior);
+}
+
 #[test]
 fn equivalent_presets_keep_one_selected_row_per_source() {
     use BuiltInPreset::Balanced;
@@ -29,12 +73,12 @@ fn equivalent_presets_keep_one_selected_row_per_source() {
 
     assert_eq!(editor.active_preset(&settings), Some(BuiltIn(Balanced)));
     for (message, active) in [
-        (Message::ApplyPreset(0), Custom("AC Quiet")),
-        (Message::ApplyPreset(1), Custom("AC Work")),
-        (Message::Preset(Balanced), BuiltIn(Balanced)),
-        (Message::ApplyPreset(0), Custom("AC Quiet")),
+        (Message::PreviewCustom(0), Custom("AC Quiet")),
+        (Message::PreviewCustom(1), Custom("AC Work")),
+        (Message::PreviewBuiltIn(Balanced), BuiltIn(Balanced)),
+        (Message::PreviewCustom(0), Custom("AC Quiet")),
     ] {
-        editor.update(&mut settings, message);
+        select_preset(&mut editor, &mut settings, message);
         assert_eq!(editor.active_preset(&settings), Some(active));
         assert!(!settings.has_unsaved_changes());
     }
@@ -42,7 +86,7 @@ fn equivalent_presets_keep_one_selected_row_per_source() {
     settings.select_power_source(OnBattery);
     editor.reset_drafts();
     assert_eq!(editor.active_preset(&settings), Some(BuiltIn(Balanced)));
-    editor.update(&mut settings, Message::ApplyPreset(2));
+    select_preset(&mut editor, &mut settings, Message::PreviewCustom(2));
     assert_eq!(
         editor.active_preset(&settings),
         Some(Custom("Battery Quiet"))
@@ -61,7 +105,7 @@ fn equivalent_presets_keep_one_selected_row_per_source() {
     );
     assert!(editor.active_preset(&settings).is_none());
     assert!(settings.has_unsaved_changes());
-    editor.update(&mut settings, Message::ApplyPreset(0));
+    select_preset(&mut editor, &mut settings, Message::PreviewCustom(0));
     assert!(!settings.has_unsaved_changes());
 
     editor.update(&mut settings, Message::EditPreset(0));
@@ -120,7 +164,11 @@ fn editing_a_preset_keeps_its_values_until_current_settings_are_requested() {
         "Quiet"
     );
 
-    editor.update(&mut settings, Message::Preset(BuiltInPreset::Performance));
+    select_preset(
+        &mut editor,
+        &mut settings,
+        Message::PreviewBuiltIn(BuiltInPreset::Performance),
+    );
     editor.update(&mut settings, Message::NewPreset);
     editor.update(&mut settings, Message::PresetName("quiet".into()));
     editor.update(&mut settings, Message::SavePreset);

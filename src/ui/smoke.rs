@@ -495,9 +495,10 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                     let before = app.settings.runtime_settings_snapshot().value;
                     let _ =
                         app.update(Message::AdaptiveProcessorPower(PowerMessage::Enabled(true)));
-                    let _ = app.update(Message::AdaptiveProcessorPower(PowerMessage::Preset(
-                        BuiltInPreset::Balanced,
-                    )));
+                    let _ = app.update(Message::AdaptiveProcessorPower(
+                        PowerMessage::PreviewBuiltIn(BuiltInPreset::Balanced),
+                    ));
+                    let _ = app.update(Message::AdaptiveProcessorPower(PowerMessage::UsePreset));
                     assert_ne!(
                         app.settings.adaptive_engine.base_processor_policy,
                         before
@@ -868,9 +869,10 @@ fn exercise_adaptive_processor_power_presets(app: &mut WinderustApp) {
     let runtime_before = app.settings.runtime_settings_snapshot().value;
     let _ = app.update(Message::PowerSource(PowerSourceProfile::OnBattery));
     assert_eq!(app.power_source, PowerSourceProfile::OnBattery);
-    let _ = app.update(Message::AdaptiveProcessorPower(PowerMessage::Preset(
-        BuiltInPreset::Balanced,
-    )));
+    let _ = app.update(Message::AdaptiveProcessorPower(
+        PowerMessage::PreviewBuiltIn(BuiltInPreset::Balanced),
+    ));
+    let _ = app.update(Message::AdaptiveProcessorPower(PowerMessage::UsePreset));
     let battery = app.settings.adaptive_engine.clone();
 
     let _ = app.update(Message::AdaptiveProcessorPower(PowerMessage::NewPreset));
@@ -907,9 +909,10 @@ fn exercise_adaptive_processor_power_presets(app: &mut WinderustApp) {
 
     let _ = app.update(Message::PowerSource(PowerSourceProfile::PluggedIn));
     assert_eq!(app.power_source, PowerSourceProfile::PluggedIn);
-    let _ = app.update(Message::AdaptiveProcessorPower(PowerMessage::ApplyPreset(
-        0,
-    )));
+    let _ = app.update(Message::AdaptiveProcessorPower(
+        PowerMessage::PreviewCustom(0),
+    ));
+    let _ = app.update(Message::AdaptiveProcessorPower(PowerMessage::UsePreset));
     assert!(preset.matches(&app.settings.adaptive_engine, PowerSourceProfile::PluggedIn));
     assert!(
         !app.settings

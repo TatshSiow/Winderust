@@ -11,7 +11,7 @@ use rust_i18n::t;
 
 mod presets;
 pub(super) use presets::BuiltInPreset;
-use presets::{CustomPresetSelection, PresetChoice, PresetDraft};
+use presets::{CustomPresetSelection, PresetChoice, PresetDialog, PresetDraft};
 
 #[cfg(test)]
 mod editor_tests;
@@ -32,21 +32,22 @@ pub(super) enum Tab {
 pub(super) struct Editor {
     numbers: NumberInputs,
     tab: Tab,
-    preset_draft: Option<PresetDraft>,
+    preset_dialog: Option<PresetDialog>,
     selected_presets: [Option<PresetChoice<CustomPresetSelection>>; 2],
 }
 
 #[derive(Debug, Clone)]
 pub(super) enum Message {
     Tab(Tab),
-    Preset(BuiltInPreset),
+    PreviewBuiltIn(BuiltInPreset),
+    PreviewCustom(usize),
+    UsePreset,
     NewPreset,
     EditPreset(usize),
     PresetName(String),
     UseCurrentPresetValues(bool),
     SavePreset,
     CancelPreset,
-    ApplyPreset(usize),
     DeletePreset(usize),
     Enabled(bool),
     Number(
@@ -68,47 +69,38 @@ impl Editor {
         let numbers = &mut self.numbers;
         match message {
             Message::Tab(tab) => self.tab = tab,
-            Message::Preset(preset) => {
-                numbers.drafts.clear();
-                let source = settings.selected_power_source();
-                edit_settings(settings, |target| preset.apply(target, source));
-                self.selected_presets[source as usize] = Some(PresetChoice::BuiltIn(preset));
+            Message::PreviewBuiltIn(preset) => {
+                self.preview_preset(settings, PresetChoice::BuiltIn(preset));
             }
-            Message::NewPreset => self.preset_draft = Some(PresetDraft::new()),
+            Message::PreviewCustom(index) => {
+                self.preview_preset(settings, PresetChoice::Custom(index));
+            }
+            Message::UsePreset => self.use_preset(settings),
+            Message::NewPreset => self.preset_dialog = Some(PresetDialog::Edit(PresetDraft::new())),
             Message::EditPreset(index) => {
                 if let Some(preset) = settings
                     .global()
                     .adaptive_processor_power_presets
                     .get(index)
                 {
-                    self.preset_draft = Some(PresetDraft::edit(index, preset.name.clone()));
+                    self.preset_dialog = Some(PresetDialog::Edit(PresetDraft::edit(
+                        index,
+                        preset.name.clone(),
+                    )));
                 }
             }
             Message::PresetName(name) => {
-                if let Some(draft) = &mut self.preset_draft {
+                if let Some(PresetDialog::Edit(draft)) = &mut self.preset_dialog {
                     draft.name = name;
                 }
             }
             Message::UseCurrentPresetValues(value) => {
-                if let Some(draft) = &mut self.preset_draft {
+                if let Some(PresetDialog::Edit(draft)) = &mut self.preset_dialog {
                     draft.use_current_values = value;
                 }
             }
             Message::SavePreset => self.save_preset(settings),
-            Message::CancelPreset => self.preset_draft = None,
-            Message::ApplyPreset(index) => {
-                if let Some(preset) = settings
-                    .global()
-                    .adaptive_processor_power_presets
-                    .get(index)
-                    .cloned()
-                {
-                    numbers.drafts.clear();
-                    let source = settings.selected_power_source();
-                    edit_settings(settings, |target| preset.apply(target, source));
-                    self.select_custom_preset(source, preset.name);
-                }
-            }
+            Message::CancelPreset => self.preset_dialog = None,
             Message::DeletePreset(index) => {
                 if let Some(preset) = settings
                     .global()
@@ -158,7 +150,7 @@ impl Editor {
 
     pub(super) fn reset_drafts(&mut self) {
         self.numbers.drafts.clear();
-        self.preset_draft = None;
+        self.preset_dialog = None;
     }
 
     pub(super) fn view<'a>(&'a self, s: &'a SettingsEditor) -> Element<'a, Message> {
@@ -577,7 +569,11 @@ mod tests {
         editor.update(&mut settings, Message::Tab(Tab::DemandProfiles));
         assert!(editor.validation_error().is_some());
         assert!(!settings.has_unsaved_changes());
-        editor.update(&mut settings, Message::Preset(BuiltInPreset::Balanced));
+        editor.update(
+            &mut settings,
+            Message::PreviewBuiltIn(BuiltInPreset::Balanced),
+        );
+        editor.update(&mut settings, Message::UsePreset);
         assert!(editor.validation_error().is_none());
         assert!(!settings.has_unsaved_changes());
     }
