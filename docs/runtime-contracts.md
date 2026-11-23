@@ -423,7 +423,9 @@ Read the relevant section before changing feature policy, ownership, restoration
   including a zero-duration rule, can select a plan.
 - The global pause for power-plan switching on A/C and shared restoration policy
   belong on the Power Plan Control landing page. The A/C pause applies to ordinary
-  plan rules. Adaptive Processor Power uses its own saved enablement for each source.
+  plan rules. By CPU Load skips its CPU sampling while paused. An independent
+  Adaptive Engine or Adaptive Processor Power consumer can still sample CPU
+  usage. Adaptive Processor Power uses its own saved enablement for each source.
 - Adaptive Processor Power starts off. Saving an enablement or tuning change for one
   source preserves the other source's existing values. The former Adaptive Engine
   processor-power switch has no runtime effect. Previously saved tuning stays readable.

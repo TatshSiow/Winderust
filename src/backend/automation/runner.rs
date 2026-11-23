@@ -691,8 +691,9 @@ impl RuntimeCore {
         let changed = previous_settings
             .is_none_or(|previous| !std::ptr::eq(previous, settings) && previous != settings);
         let cpu_usage_resumed = changed
-            && previous_settings.is_some_and(|previous| {
-                !cpu_usage_required(previous) && cpu_usage_required(settings)
+            && self.last_settings.as_ref().is_some_and(|previous| {
+                !cpu_usage_required(&previous.configured, previous.plugged_in)
+                    && cpu_usage_required(configured, plugged_in)
             });
         if source_changed || events.suspend_resume || cpu_usage_resumed {
             self.cpu_usage = CpuUsageSnapshot::default();
@@ -1098,7 +1099,7 @@ impl RuntimeCore {
         settings: &Settings,
         observations: &mut CycleObservations,
     ) -> AdaptiveEngineProcessSnapshot {
-        if cpu_usage_required(settings) {
+        if bottleneck_classifier_required(settings) {
             self.refresh_cpu_usage();
         }
         let foreground_process_id = observations.foreground_process_id();
@@ -2097,7 +2098,7 @@ impl RuntimeCore {
         self.by_cpu_load_scheduler
             .observe_active_plan(self.power_plan_controller.current_guid());
 
-        let cpu_sample = if by_cpu_load_rules_required(settings) {
+        let cpu_sample = if by_cpu_load_sample_required(settings, plugged_in) {
             self.refresh_cpu_usage();
             self.cpu_usage
                 .percent
@@ -2149,12 +2150,6 @@ impl RuntimeCore {
             by_cpu_load: by_cpu_load_decision,
         };
         let decision = decide(settings, decision_input);
-        if matches!(
-            decision.state,
-            DecisionState::Disabled | DecisionState::PausedWhilePluggedIn
-        ) {
-            self.by_cpu_load_scheduler.reset();
-        }
         self.power_plan_rule_context =
             decision
                 .power_plan_guid
@@ -3108,30 +3103,39 @@ mod settings_tests {
 
     #[test]
     fn cpu_load_resumes_with_a_fresh_sample_only_after_all_consumers_yield() {
-        for adaptive_enabled in [false, true] {
+        for (plugged_in, paused, adaptive_enabled, processor_power_enabled) in [
+            (Some(true), false, false, false),
+            (Some(true), false, true, false),
+            (Some(true), true, false, false),
+            (Some(true), true, true, false),
+            (Some(true), true, false, true),
+            (None, true, false, false),
+        ] {
             let mut runner = RuntimeCore::default();
             let mut settings = Settings::default();
             settings.general.enabled = true;
+            settings.general.pause_power_plan_switching_while_plugged_in = paused;
             settings.adaptive_engine.enabled = adaptive_enabled;
+            settings.adaptive_engine.adaptive_processor_power_enabled = processor_power_enabled;
             settings.by_cpu_load.rules = vec![crate::config::ByCpuLoadRule {
                 power_plan_guid: Some("target".into()),
                 ..Default::default()
             }];
-            settings.by_cpu_load.enabled = false;
+            settings.by_cpu_load.enabled = paused;
             let mut settings = Arc::new(settings);
-            runner.note_settings(&settings, AutomationWakeEvents::default(), Some(true));
+            runner.note_settings(&settings, AutomationWakeEvents::default(), plugged_in);
 
             let sampled_at = Instant::now();
             runner.cpu_usage.percent = Some(90.0);
             runner.cpu_usage_sampled_at = Some(sampled_at);
 
-            Arc::make_mut(&mut settings).by_cpu_load.enabled = true;
-            runner.note_settings(&settings, AutomationWakeEvents::default(), Some(true));
-            assert_eq!(runner.cpu_usage.percent, adaptive_enabled.then_some(90.0));
-            assert_eq!(
-                runner.cpu_usage_sampled_at,
-                adaptive_enabled.then_some(sampled_at)
-            );
+            let edited = Arc::make_mut(&mut settings);
+            edited.by_cpu_load.enabled = true;
+            edited.general.pause_power_plan_switching_while_plugged_in = false;
+            runner.note_settings(&settings, AutomationWakeEvents::default(), plugged_in);
+            let shared = adaptive_enabled || processor_power_enabled;
+            assert_eq!(runner.cpu_usage.percent, shared.then_some(90.0));
+            assert_eq!(runner.cpu_usage_sampled_at, shared.then_some(sampled_at));
         }
     }
 

@@ -453,9 +453,18 @@ pub(super) fn by_time_rules_required(settings: &Settings) -> bool {
             .any(|rule| rule.configured_plan().is_some())
 }
 
-pub(super) fn cpu_usage_required(settings: &Settings) -> bool {
+pub(super) fn cpu_usage_required(configured: &Settings, plugged_in: Option<bool>) -> bool {
+    let settings = active_power_source_settings(configured, plugged_in);
     bottleneck_classifier_required(settings)
-        || feature_refresh_required(settings, by_cpu_load_rules_required(settings))
+        || (feature_refresh_required(settings, adaptive_power_plan_required(settings))
+            && !adaptive_power_plan_waits_for_source(configured, plugged_in))
+        || (by_cpu_load_sample_required(settings, plugged_in)
+            && !ordinary_power_plan_waits_for_source(configured, plugged_in))
+}
+
+pub(super) fn by_cpu_load_sample_required(settings: &Settings, plugged_in: Option<bool>) -> bool {
+    crate::rules::decision_engine::ordinary_power_plan_stop(settings, plugged_in).is_none()
+        && by_cpu_load_rules_required(settings)
 }
 
 pub(super) fn by_cpu_load_rules_required(settings: &Settings) -> bool {
