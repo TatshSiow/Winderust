@@ -931,6 +931,9 @@ impl ProcessList {
 
     fn auto_width(&self, col: Sort) -> f32 {
         let mut width = measure_column_text(&col.label()) + 44.0;
+        if col == Sort::Status {
+            width = width.max(column_width(col));
+        }
         let mut measured = HashMap::new();
         for entry in &self.rows {
             let value = self.cell_value(entry, col);
@@ -3202,8 +3205,9 @@ mod tests {
         let mut list = ProcessList::default();
         list.rebuild();
         assert_eq!(list.column_widths, [None; 6]);
-        list.processes.push(process(10, 100, "app.exe"));
+        list.processes.push(process(10, 100, r"C:\Fixture\app.exe"));
         list.rebuild();
+        assert!(list.column_width(Sort::Status) >= column_width(Sort::Status));
         for col in Sort::ALL {
             assert_eq!(list.column_width(col), list.auto_width(col));
         }
