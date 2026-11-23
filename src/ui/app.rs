@@ -1752,7 +1752,9 @@ impl WinderustApp {
                         {
                             self.error_message = t!("common.selected_plan_unavailable").to_string();
                         }
-                        if self.page == Page::AdvancedPowerPlanTuning {
+                        if self.page == Page::AdvancedPowerPlanTuning
+                            && self.power_tuning.review_origin().is_none()
+                        {
                             self.power_tuning.ensure_plan(&self.power_plans);
                         }
                     }

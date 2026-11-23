@@ -280,7 +280,9 @@ hover/press; background shading supplies feedback.
 - Apply and Save open the same review for pending tuning edits. Show the target
   plan and only changed values, grouped by Plugged In and On Battery. Identify
   a known active plan when it differs from the target. Cancel keeps the tuning
-  draft.
+  draft. If a catalog refresh finds the target unavailable, keep the review open
+  and show the reason in the target card. Disable confirmation until a refresh
+  confirms the target is available.
 - Restore previous tuning values opens the same review for the selected plan's
   previous values. It is available for the current Winderust session after a
   verified change and requires applying or discarding any pending edits first.

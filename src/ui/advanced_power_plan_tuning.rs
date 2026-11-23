@@ -1189,6 +1189,13 @@ impl Editor {
             review.name.clone()
         )]
         .spacing(design::space::SMALL);
+        let target_available = self
+            .selected_plan(plans)
+            .is_some_and(|plan| plan.guid.eq_ignore_ascii_case(&review.guid));
+        if !target_available {
+            target = target
+                .push(text(t!("common.selected_plan_unavailable").to_string()).style(text::danger));
+        }
         let active = power_plan_control::current_plan_guid(status, plans).filter(|guid| {
             status.active_plan_read_error.is_none() && !guid.eq_ignore_ascii_case(&review.guid)
         });
@@ -1248,7 +1255,7 @@ impl Editor {
                     .on_press(Message::CancelApply),
                 action_button(action.to_string())
                     .style(widgets::primary_button)
-                    .on_press(Message::ConfirmApply)
+                    .on_press_maybe(target_available.then_some(Message::ConfirmApply))
             ]
             .spacing(design::space::SMALL),
             (720, 620),
