@@ -18,9 +18,14 @@ pub struct TimerResolutionSnapshot {
     pub last_error: Option<String>,
 }
 
+struct AppliedRule {
+    process: String,
+    requested_period_ms: u32,
+}
+
 #[derive(Default)]
 pub struct TimerResolutionManager {
-    active_rule_process: Option<String>,
+    active_rule: Option<AppliedRule>,
     last_release_error: Option<String>,
     last_query_error: Option<String>,
 }
@@ -89,6 +94,7 @@ impl TimerResolutionManager {
             );
         };
 
+        let requested_period_ms = resolution_100ns_to_period_ms(requested_100ns);
         let info = match controller.query() {
             Ok(info) => {
                 self.last_query_error = None;
@@ -96,6 +102,22 @@ impl TimerResolutionManager {
             }
             Err(error) => {
                 record_query_failure(&mut self.last_query_error, action_log, &error);
+                if self
+                    .active_rule
+                    .as_ref()
+                    .is_some_and(|rule| rule.requested_period_ms != requested_period_ms)
+                {
+                    let mut status = self.release_inactive(
+                        controller,
+                        true,
+                        false,
+                        action_log,
+                        "timer_resolution.log_period_changed_without_bounds",
+                        false,
+                    );
+                    status.last_error.get_or_insert(error);
+                    return status;
+                }
                 return TimerResolutionSnapshot {
                     enabled: true,
                     requested_100ns: controller.active_request_100ns(),
@@ -109,9 +131,9 @@ impl TimerResolutionManager {
             normalize_desired_resolution(requested_100ns, info.minimum_100ns, info.maximum_100ns);
 
         let previous_target = self
-            .active_rule_process
-            .as_deref()
-            .unwrap_or(SYSTEM_TARGET_NAME);
+            .active_rule
+            .as_ref()
+            .map_or(SYSTEM_TARGET_NAME, |rule| rule.process.as_str());
         let result = controller.set_request(desired_100ns);
         let released = match &result {
             Ok(transition) => transition.released_100ns,
@@ -145,8 +167,16 @@ impl TimerResolutionManager {
                         ),
                     );
                 }
-                if self.active_rule_process.as_deref() != Some(rule_process_name) {
-                    self.active_rule_process = Some(rule_process_name.to_owned());
+                match &mut self.active_rule {
+                    Some(rule) if rule.process == rule_process_name => {
+                        rule.requested_period_ms = requested_period_ms;
+                    }
+                    _ => {
+                        self.active_rule = Some(AppliedRule {
+                            process: rule_process_name.to_owned(),
+                            requested_period_ms,
+                        });
+                    }
                 }
             }
             Err(error) => {
@@ -165,7 +195,7 @@ impl TimerResolutionManager {
                     }
                     TimerResolutionTransitionStage::ReleasePrevious => None,
                     TimerResolutionTransitionStage::RequestDesired => {
-                        self.active_rule_process = None;
+                        self.active_rule = None;
                         Some((rule_process_name, error.message.clone()))
                     }
                 };
@@ -216,43 +246,42 @@ impl TimerResolutionManager {
         reason_key: &str,
         observation_paused: bool,
     ) -> TimerResolutionSnapshot {
-        let mut last_error = None;
-        if let Some(previous_100ns) = controller.active_request_100ns() {
-            match controller.release() {
-                Ok(_) => {
-                    let previous_target = self
-                        .active_rule_process
-                        .take()
-                        .unwrap_or_else(|| SYSTEM_TARGET_NAME.to_owned());
-                    self.last_release_error = None;
+        let mut last_error = match controller.release() {
+            Ok(Some(previous_100ns)) => {
+                let previous_target = self
+                    .active_rule
+                    .take()
+                    .map_or_else(|| SYSTEM_TARGET_NAME.to_owned(), |rule| rule.process);
+                self.last_release_error = None;
+                action_log.record(
+                    ActionLogFeature::TimerResolution,
+                    None,
+                    previous_target,
+                    ActionLogResult::Restored,
+                    rust_i18n::t!(
+                        "timer_resolution.log_released",
+                        resolution = format_resolution_ms(previous_100ns),
+                        reason = rust_i18n::t!(reason_key)
+                    ),
+                );
+                None
+            }
+            Ok(None) => None,
+            Err(message) => {
+                if remember_error(&mut self.last_release_error, &message) {
                     action_log.record(
                         ActionLogFeature::TimerResolution,
                         None,
-                        previous_target,
-                        ActionLogResult::Restored,
-                        rust_i18n::t!(
-                            "timer_resolution.log_released",
-                            resolution = format_resolution_ms(previous_100ns),
-                            reason = rust_i18n::t!(reason_key)
-                        ),
+                        self.active_rule
+                            .as_ref()
+                            .map_or(SYSTEM_TARGET_NAME, |rule| rule.process.as_str()),
+                        ActionLogResult::Failed,
+                        message.clone(),
                     );
                 }
-                Err(message) => {
-                    if remember_error(&mut self.last_release_error, &message) {
-                        action_log.record(
-                            ActionLogFeature::TimerResolution,
-                            None,
-                            self.active_rule_process
-                                .as_deref()
-                                .unwrap_or(SYSTEM_TARGET_NAME),
-                            ActionLogResult::Failed,
-                            message.clone(),
-                        );
-                    }
-                    last_error = Some(message);
-                }
+                Some(message)
             }
-        }
+        };
 
         // Releasing the exact owned request does not depend on current device capabilities.
         let info = if refresh_bounds {

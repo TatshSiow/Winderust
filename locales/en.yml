@@ -1026,6 +1026,7 @@ timer_resolution:
   log_no_active_rules: "no timer resolution foreground rules are enabled"
   log_unknown_foreground: "foreground app is unknown"
   log_no_match: "no foreground timer resolution rule matched"
+  log_period_changed_without_bounds: "the requested period changed and Windows could not verify the supported range"
 
 memory_trim:
   waiting_for_power_source: "Memory Trim is paused until Windows reports the power source."

@@ -1029,6 +1029,7 @@ timer_resolution:
   log_no_active_rules: "沒有啟用的前景計時器解析度規則"
   log_unknown_foreground: "無法確認前景應用程式"
   log_no_match: "沒有符合的前景計時器解析度規則"
+  log_period_changed_without_bounds: "要求的期間已變更，且 Windows 無法確認支援範圍"
 
 memory_trim:
   waiting_for_power_source: "記憶體修剪已暫停，直到 Windows 回報電源來源。"
