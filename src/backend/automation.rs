@@ -1490,7 +1490,7 @@ fn run_background_automation(
         }
 
         if scan_process_appearance && scheduler.is_due(RefreshDomain::ProcessAppearance, now) {
-            if runner.detect_process_appearance(&mut observations) {
+            if runner.detect_process_appearance() {
                 scheduler.invalidate(SchedulerEvent::ProcessAppeared, now);
             }
             scheduler.schedule_after(

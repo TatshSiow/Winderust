@@ -5,7 +5,7 @@ use crate::{
     action_log::{ActionLogFeature, ActionLogResult},
     adaptive_engine_process::{focus_and_launch_profile_eligible, focus_process_priority_eligible},
     control::{memory_priority::MemoryPriorityReleaseOwner, power_plan::PowerPlanOwner},
-    foreground::{process_session_id, ProcessInfo},
+    foreground::{for_each_process_id, process_session_id, ProcessInfo},
     platform::windows::process::current_process_id,
     rules::decision_engine::{matching_by_focus_rules, ordinary_power_plan_stop},
 };
@@ -696,17 +696,17 @@ impl RuntimeCore {
         changed || explicitly_changed
     }
 
-    pub(super) fn detect_process_appearance(
-        &mut self,
-        observations: &mut CycleObservations,
-    ) -> bool {
-        let Ok(processes) = observations.processes() else {
+    pub(super) fn detect_process_appearance(&mut self) -> bool {
+        let mut current_ids = BTreeSet::new();
+        if for_each_process_id(|id| {
+            if id != 0 {
+                current_ids.insert(id);
+            }
+        })
+        .is_err()
+        {
             return false;
-        };
-        let current_ids = processes
-            .iter()
-            .filter_map(|process| (process.id != 0).then_some(process.id))
-            .collect::<BTreeSet<_>>();
+        }
 
         process_ids_have_new_entries(&mut self.known_process_ids, current_ids)
     }

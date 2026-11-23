@@ -31,7 +31,7 @@ use windows_sys::Win32::{
             CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
             TH32CS_SNAPPROCESS,
         },
-        ProcessStatus::{K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS_EX},
+        ProcessStatus::{K32EnumProcesses, K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS_EX},
         RemoteDesktop::ProcessIdToSessionId,
         SystemInformation::GetSystemWindowsDirectoryW,
         Threading::{
@@ -764,23 +764,43 @@ fn enrich_process_metadata(
     }
 }
 
-pub fn for_each_process_id(mut visit: impl FnMut(u32)) -> Result<(), String> {
-    let snapshot = process_snapshot()?;
-    let mut entry = PROCESSENTRY32W {
-        dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
-        ..Default::default()
-    };
-
-    // SAFETY: snapshot is live and entry declares its size and remains writable.
-    let mut has_entry = unsafe { Process32FirstW(snapshot.raw(), &mut entry) != 0 };
-    while has_entry {
-        visit(entry.th32ProcessID);
-        // SAFETY: snapshot remains live and entry remains writable for the next record.
-        has_entry = unsafe { Process32NextW(snapshot.raw(), &mut entry) != 0 };
-    }
-    ensure_process_iteration_complete()?;
-
+pub fn for_each_process_id(visit: impl FnMut(u32)) -> Result<(), String> {
+    let ids = read_process_ids(|ids, bytes| {
+        let mut returned = 0;
+        // SAFETY: ids is writable for bytes and returned receives the initialized byte count.
+        if unsafe { K32EnumProcesses(ids.as_mut_ptr(), bytes, &mut returned) } == 0 {
+            return Err(std::io::Error::last_os_error().to_string());
+        }
+        Ok(returned)
+    })?;
+    ids.into_iter().for_each(visit);
     Ok(())
+}
+
+fn read_process_ids(
+    mut read: impl FnMut(&mut [u32], u32) -> Result<u32, String>,
+) -> Result<Vec<u32>, String> {
+    const PID_BYTES: u32 = std::mem::size_of::<u32>() as u32;
+    let mut bytes = 512 * PID_BYTES;
+    let mut ids = Vec::new();
+    loop {
+        let slots = (bytes / PID_BYTES) as usize;
+        ids.try_reserve_exact(slots - ids.len())
+            .map_err(|error| error.to_string())?;
+        ids.resize(slots, 0);
+        let returned = read(&mut ids, bytes)?;
+        if returned > bytes || !returned.is_multiple_of(PID_BYTES) {
+            return Err("Windows returned an invalid process ID count.".to_owned());
+        }
+        if returned < bytes {
+            ids.truncate((returned / PID_BYTES) as usize);
+            return Ok(ids);
+        }
+        // Windows reports a full buffer even when it did not fit the complete list.
+        bytes = bytes
+            .checked_mul(2)
+            .ok_or("The process ID list is too large.")?;
+    }
 }
 
 fn ensure_process_iteration_complete() -> Result<(), String> {
@@ -1623,6 +1643,42 @@ mod tests {
             Some("Bob")
         );
         assert_eq!(names.len(), 2);
+    }
+
+    #[test]
+    fn process_id_capture_retries_a_full_buffer_before_returning_any_ids() {
+        let mut attempts = 0;
+        let ids = read_process_ids(|ids, bytes| {
+            attempts += 1;
+            if attempts == 1 {
+                assert_eq!(ids.len(), 512);
+                ids[0] = 123;
+                return Ok(bytes);
+            }
+            assert_eq!(ids.len(), 1024);
+            ids[..3].copy_from_slice(&[0, 20, 40]);
+            Ok(12)
+        })
+        .expect("the second scan fits");
+        assert_eq!(attempts, 2);
+        assert_eq!(ids, [0, 20, 40]);
+    }
+
+    #[test]
+    fn process_id_capture_rejects_failed_or_malformed_results() {
+        let mut attempts = 0;
+        let result = read_process_ids(|_, bytes| {
+            attempts += 1;
+            if attempts == 1 {
+                Ok(bytes)
+            } else {
+                Err("read failed".to_owned())
+            }
+        });
+        assert_eq!(result, Err("read failed".to_owned()));
+        for offset in [-1, 4] {
+            assert!(read_process_ids(|_, bytes| Ok(bytes.saturating_add_signed(offset))).is_err());
+        }
     }
 
     #[test]
