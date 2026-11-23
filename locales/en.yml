@@ -804,6 +804,7 @@ app_suspension:
     suspended_help: "Winderust has suspended this app in memory with Windows Job Object freeze."
     temporarily_resumed: "Temporarily resumed"
     temporarily_resumed_help: "Winderust has temporarily resumed this app before suspending it again."
+    wake_detection_unavailable: "Wake detection unavailable"
     waiting: "Grace"
     waiting_help: "This app is in background grace before it can be suspended."
     unknown: "Unknown"

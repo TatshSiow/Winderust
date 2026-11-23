@@ -515,6 +515,11 @@ fn indicator(
         "suspended"
     } else if app_suspension::contains_process(&s.temporary_thawed_apps, p) {
         "temporarily_resumed"
+    } else if s.enabled
+        && rule.enabled
+        && app_suspension::contains_process(&s.wake_detection_unavailable_apps, p)
+    {
+        "wake_detection_unavailable"
     } else if app_suspension::contains_process(&s.background_grace_apps, p) {
         "waiting"
     } else if !rule.enabled {
@@ -552,6 +557,22 @@ impl std::fmt::Display for Unit {
 mod tests {
     use super::*;
     use crate::config::{PowerSourceProfile, Settings};
+
+    #[test]
+    fn wake_detection_failure_is_visible_on_the_affected_rule() {
+        let path = r"C:\Apps\test.exe";
+        let rule = new_app_suspension_rule(path);
+        let status = AppSuspensionSnapshot {
+            enabled: true,
+            running_apps: vec![path.into()],
+            wake_detection_unavailable_apps: vec![path.into()],
+            ..Default::default()
+        };
+        assert_eq!(
+            indicator(&status, &rule, false, None),
+            t!("app_suspension.indicator.wake_detection_unavailable")
+        );
+    }
 
     #[test]
     fn absent_status_requires_an_enabled_saved_rule() {

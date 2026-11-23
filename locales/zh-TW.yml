@@ -806,6 +806,7 @@ app_suspension:
     suspended_help: "Winderust 已使用 Windows Job Object 凍結此應用程式。"
     temporarily_resumed: "暫時繼續中"
     temporarily_resumed_help: "Winderust 已暫時繼續執行此應用程式，之後會再次暫停。"
+    wake_detection_unavailable: "喚醒偵測無法使用"
     waiting: "等待中"
     waiting_help: "此應用程式在背景中，正在等待延遲時間。"
     unknown: "未知"

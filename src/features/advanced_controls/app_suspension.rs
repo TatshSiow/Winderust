@@ -64,6 +64,7 @@ pub struct AppSuspensionSnapshot {
     pub temporary_thawed_apps: Vec<String>,
     pub network_wake_apps: Vec<String>,
     pub audio_wake_apps: Vec<String>,
+    pub(crate) wake_detection_unavailable_apps: Vec<String>,
     pub running_apps: Vec<String>,
     pub(crate) observed_rule_paths: Option<Arc<[String]>>,
     pub status_unknown: bool,
@@ -224,6 +225,20 @@ enum SuspensionLifecycleState {
 impl SuspensionLifecycleState {
     fn should_suspend(self) -> bool {
         matches!(self, Self::ReadyToSuspend | Self::ManualFreeze)
+    }
+
+    fn waits_for_wake_detection(
+        self,
+        process_id: u32,
+        detector_failures: &ExecutionFailureTracker,
+        network_targets: &BTreeMap<u32, TargetProcess>,
+        audio_targets: &BTreeMap<u32, TargetProcess>,
+    ) -> bool {
+        self == Self::ReadyToSuspend
+            && ((detector_failures.has_key_failure(NETWORK_DETECTION_FAILURE_KEY)
+                && network_targets.contains_key(&process_id))
+                || (detector_failures.has_key_failure(AUDIO_DETECTION_FAILURE_KEY)
+                    && audio_targets.contains_key(&process_id)))
     }
 
     fn is_manual_freeze(self) -> bool {
@@ -830,6 +845,7 @@ impl AppSuspensionManager {
             self.release_for_temporary_thaw(controller, settings, &target_ids, now, action_log);
 
         let mut auto_excluded_processes = BTreeSet::new();
+        let mut wake_detection_unavailable_apps = BTreeSet::new();
         let mut suspended_app_names = BTreeSet::new();
         for (process_id, process) in target_processes {
             let process_name = process.process_name.clone();
@@ -879,6 +895,15 @@ impl AppSuspensionManager {
                 manual_freeze_path.is_some(),
             );
             if !lifecycle.should_suspend() {
+                continue;
+            }
+            if lifecycle.waits_for_wake_detection(
+                process_id,
+                &self.action_failure_suppression,
+                &network_target_processes,
+                &audio_target_processes,
+            ) {
+                wake_detection_unavailable_apps.insert(process.key());
                 continue;
             }
 
@@ -1001,6 +1026,8 @@ impl AppSuspensionManager {
             last_error,
         );
         snapshot.auto_excluded_processes = auto_excluded_processes.into_iter().collect();
+        snapshot.wake_detection_unavailable_apps =
+            wake_detection_unavailable_apps.into_iter().collect();
         snapshot
     }
 
@@ -2027,6 +2054,7 @@ impl AppSuspensionManager {
                 .into_iter()
                 .map(str::to_owned)
                 .collect(),
+            wake_detection_unavailable_apps: Vec::new(),
             running_apps: self.running_apps.iter().cloned().collect(),
             observed_rule_paths: self.observed_rule_paths.clone(),
             status_unknown: false,
@@ -2210,6 +2238,48 @@ mod tests {
             manager.manual_freeze_result(path).unwrap_err(),
             "1 of 2 App Suspension actions failed: commit failed"
         );
+    }
+
+    #[test]
+    fn only_ready_automatic_targets_wait_for_their_unavailable_wake_detectors() {
+        let shared_target = target_process("both.exe", r"C:\Apps\both.exe");
+        let network_targets = BTreeMap::from([
+            (7, target_process("browser.exe", r"C:\Apps\browser.exe")),
+            (9, shared_target.clone()),
+        ]);
+        let audio_targets = BTreeMap::from([
+            (8, target_process("player.exe", r"C:\Apps\player.exe")),
+            (9, shared_target),
+        ]);
+        let waits = |state: SuspensionLifecycleState,
+                     failures: &ExecutionFailureTracker,
+                     process_id| {
+            state.waits_for_wake_detection(process_id, failures, &network_targets, &audio_targets)
+        };
+        let blocked = |failures: &ExecutionFailureTracker| {
+            (7..=10)
+                .filter(|&id| waits(SuspensionLifecycleState::ReadyToSuspend, failures, id))
+                .collect::<Vec<_>>()
+        };
+        let mut failures = ExecutionFailureTracker::default();
+        assert!(blocked(&failures).is_empty());
+
+        failures.record_key_failure(NETWORK_DETECTION_FAILURE_KEY);
+        assert_eq!(blocked(&failures), [7, 9]);
+        failures.suppress_key_failure(AUDIO_DETECTION_FAILURE_KEY);
+        assert_eq!(blocked(&failures), [7, 8, 9]);
+        for state in [
+            SuspensionLifecycleState::ManualFreeze,
+            SuspensionLifecycleState::BackgroundGrace,
+            SuspensionLifecycleState::IntentActive,
+        ] {
+            assert!(!waits(state, &failures, 9));
+        }
+
+        failures.clear_key_failure(NETWORK_DETECTION_FAILURE_KEY);
+        assert_eq!(blocked(&failures), [8, 9]);
+        failures.clear_key_failure(AUDIO_DETECTION_FAILURE_KEY);
+        assert!(blocked(&failures).is_empty());
     }
 
     #[test]
