@@ -38,6 +38,20 @@ pub(super) fn app_suspension_release_status(
     status
 }
 
+fn app_suspension_status_with_retry(
+    mut status: AppSuspensionSnapshot,
+    controller: &SuspensionController,
+) -> AppSuspensionSnapshot {
+    if status.last_error.is_some() {
+        return status;
+    }
+    if let Some(error) = controller.app_suspension_retry_error() {
+        status.failed_actions = status.failed_actions.max(1);
+        status.last_error = Some(error.to_owned());
+    }
+    status
+}
+
 pub(super) fn adaptive_power_plan_required(settings: &Settings) -> bool {
     settings.adaptive_engine.adaptive_processor_power_enabled
 }
@@ -802,7 +816,7 @@ impl RuntimeCore {
     ) -> AppSuspensionSnapshot {
         let foreground_process_id = observations.foreground_process_id();
         self.with_app_suspension(|manager, controller, action_log| {
-            let mut status = manager.update(
+            let status = manager.update(
                 controller,
                 &settings.app_suspension,
                 settings.general.enabled,
@@ -812,16 +826,24 @@ impl RuntimeCore {
                 observations,
                 action_log,
             );
-            if status.last_error.is_some() {
-                return status;
-            }
-            if let Some(error) = controller.app_suspension_retry_error() {
-                status.failed_actions = status.failed_actions.max(1);
-                status.last_error = Some(error.to_owned());
-            }
-            status
+            app_suspension_status_with_retry(status, controller)
         })
         .unwrap_or_else(app_suspension_lock_failure)
+    }
+
+    fn with_app_suspension_release(
+        &mut self,
+        release: impl FnOnce(
+            &mut AppSuspensionManager,
+            &mut SuspensionController,
+            &mut ActionLog,
+        ) -> Option<AppSuspensionSnapshot>,
+    ) -> Option<AppSuspensionSnapshot> {
+        self.with_app_suspension(|manager, controller, action_log| {
+            release(manager, controller, action_log)
+                .map(|status| app_suspension_status_with_retry(status, controller))
+        })
+        .unwrap_or_else(|error| Some(app_suspension_lock_failure(error)))
     }
 
     pub(super) fn run_app_suspension_foreground_release(
@@ -831,11 +853,9 @@ impl RuntimeCore {
         let now = Instant::now();
         if shell_window_mouse_pressed() && self.app_suspension_shell_user_intent_due(now) {
             self.last_app_suspension_shell_user_intent = Some(now);
-            let status = self
-                .with_app_suspension(|manager, controller, action_log| {
-                    manager.release_all_suspended_processes_for_user_intent(controller, action_log)
-                })
-                .unwrap_or_else(|error| Some(app_suspension_lock_failure(error)));
+            let status = self.with_app_suspension_release(|manager, controller, action_log| {
+                manager.release_all_suspended_processes_for_user_intent(controller, action_log)
+            });
             if let Some(status) = status {
                 return Some(status);
             }
@@ -844,7 +864,7 @@ impl RuntimeCore {
         let foreground_process_id = observations.foreground_process_id();
         let foreground_process = observations.foreground_process();
         let status = foreground_process_id.and_then(|process_id| {
-            self.with_app_suspension(|manager, controller, action_log| {
+            self.with_app_suspension_release(|manager, controller, action_log| {
                 manager.release_interactive_process(
                     controller,
                     process_id,
@@ -855,7 +875,6 @@ impl RuntimeCore {
                     action_log,
                 )
             })
-            .unwrap_or_else(|error| Some(app_suspension_lock_failure(error)))
         });
         if let Some(status) = status {
             return Some(status);
@@ -866,7 +885,7 @@ impl RuntimeCore {
             return None;
         }
         let cursor_process = cursor_process();
-        self.with_app_suspension(|manager, controller, action_log| {
+        self.with_app_suspension_release(|manager, controller, action_log| {
             manager.release_interactive_process(
                 controller,
                 cursor_process_id,
@@ -877,21 +896,19 @@ impl RuntimeCore {
                 action_log,
             )
         })
-        .unwrap_or_else(|error| Some(app_suspension_lock_failure(error)))
     }
 
     pub(super) fn run_app_suspension_app_switch_release(
         &mut self,
         observations: &mut CycleObservations,
     ) -> Option<AppSuspensionSnapshot> {
-        self.with_app_suspension(|manager, controller, action_log| {
+        self.with_app_suspension_release(|manager, controller, action_log| {
             manager.release_window_owner_processes_for_user_intent(
                 controller,
                 observations.top_level_window_process_ids().as_ref(),
                 action_log,
             )
         })
-        .unwrap_or_else(|error| Some(app_suspension_lock_failure(error)))
     }
 
     pub(super) fn run_app_suspension_shell_click_release(
@@ -901,10 +918,9 @@ impl RuntimeCore {
             return None;
         }
 
-        self.with_app_suspension(|manager, controller, action_log| {
+        self.with_app_suspension_release(|manager, controller, action_log| {
             manager.release_all_suspended_processes_for_user_intent(controller, action_log)
         })
-        .unwrap_or_else(|error| Some(app_suspension_lock_failure(error)))
     }
 
     pub(super) fn app_suspension_shell_user_intent_due(&self, now: Instant) -> bool {
@@ -1520,21 +1536,28 @@ impl RuntimeCore {
                             });
                         (status, reply)
                     } else {
-                        let status = self
-                            .with_app_suspension(|manager, controller, action_log| {
-                                manager.release_suspended_path_for_user_intent(
-                                    controller,
-                                    Path::new(&executable_path),
-                                    action_log,
-                                )
-                            })
-                            .unwrap_or_else(app_suspension_lock_failure);
-                        let status = app_suspension_release_status(status, settings);
-                        let reply = match &status.last_error {
-                            Some(error) => Err(RuntimeCommandError::CommandFailed(error.clone())),
-                            None => Ok(status.clone()),
-                        };
-                        (status, reply)
+                        self.with_app_suspension(|manager, controller, action_log| {
+                            let status = manager.release_suspended_path_for_user_intent(
+                                controller,
+                                Path::new(&executable_path),
+                                action_log,
+                            );
+                            let status = app_suspension_release_status(status, settings);
+                            let reply = match &status.last_error {
+                                Some(error) => {
+                                    Err(RuntimeCommandError::CommandFailed(error.clone()))
+                                }
+                                None => Ok(status.clone()),
+                            };
+                            (app_suspension_status_with_retry(status, controller), reply)
+                        })
+                        .unwrap_or_else(|error| {
+                            let status = app_suspension_release_status(
+                                app_suspension_lock_failure(error.clone()),
+                                settings,
+                            );
+                            (status, Err(RuntimeCommandError::CommandFailed(error)))
+                        })
                     };
                     let _ = result.try_send(reply);
                     statuses.app_suspension = Some(status);
