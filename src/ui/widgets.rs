@@ -1635,6 +1635,17 @@ pub(super) fn plan<M: Clone + 'static>(
     plans: &[PowerPlan],
     action: impl Fn(Option<String>) -> M + 'static,
 ) -> Element<'static, M> {
+    let (choices, selected) = power_plan_choices(guid, plans);
+    pick_list(choices, Some(selected), move |choice| action(choice.0))
+        .same_option(|left, right| left.0 == right.0)
+        .width(Fill)
+        .into()
+}
+
+fn power_plan_choices(
+    guid: Option<&str>,
+    plans: &[PowerPlan],
+) -> (Vec<Choice<Option<String>>>, Choice<Option<String>>) {
     let mut choices = vec![Choice(None, rust_i18n::t!("common.none").to_string())];
     choices.extend(
         plans
@@ -1644,7 +1655,11 @@ pub(super) fn plan<M: Clone + 'static>(
     );
     let selected = choices
         .iter()
-        .find(|choice| choice.0.as_deref() == guid)
+        .find(|choice| match (choice.0.as_deref(), guid) {
+            (Some(installed), Some(saved)) => installed.eq_ignore_ascii_case(saved),
+            (None, None) => true,
+            _ => false,
+        })
         .cloned()
         .unwrap_or_else(|| {
             Choice(
@@ -1652,10 +1667,7 @@ pub(super) fn plan<M: Clone + 'static>(
                 rust_i18n::t!("common.selected_plan_unavailable").to_string(),
             )
         });
-    pick_list(choices, Some(selected), move |choice| action(choice.0))
-        .same_option(|left, right| left.0 == right.0)
-        .width(Fill)
-        .into()
+    (choices, selected)
 }
 
 // Theme-derived surfaces and interaction states; controls remain standard Iced widgets.
@@ -1748,6 +1760,41 @@ pub(super) fn card(
 mod tests {
     use super::*;
     use iced::{widget::button::Status, Theme};
+
+    #[test]
+    fn power_plan_choices_match_saved_guid_casing_and_keep_unavailable_targets() {
+        let installed = "381b4222-f694-41f0-9685-ff5bb260df2e";
+        let managed = "11111111-aaaa-bbbb-cccc-222222222222";
+        let plans = [
+            PowerPlan {
+                guid: installed.into(),
+                name: "Balanced".into(),
+                active: false,
+                managed_adaptive: false,
+            },
+            PowerPlan {
+                guid: managed.into(),
+                name: "Winderust Adaptive".into(),
+                active: false,
+                managed_adaptive: true,
+            },
+        ];
+
+        let (choices, selected) = power_plan_choices(Some(&installed.to_ascii_uppercase()), &plans);
+        assert_eq!(choices.len(), 2);
+        assert_eq!(selected, Choice(Some(installed.into()), "Balanced".into()));
+        assert!(choices.contains(&selected));
+
+        let (choices, selected) = power_plan_choices(None, &plans);
+        assert_eq!(selected.0, None);
+        assert!(choices.contains(&selected));
+
+        for unavailable in [managed, "00000000-aaaa-bbbb-cccc-000000000000"] {
+            let (choices, selected) = power_plan_choices(Some(unavailable), &plans);
+            assert_eq!(selected.0.as_deref(), Some(unavailable));
+            assert!(!choices.contains(&selected));
+        }
+    }
 
     #[test]
     fn button_hierarchy_tracks_accent_and_keeps_tertiary_subdued() {
