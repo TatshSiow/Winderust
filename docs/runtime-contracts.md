@@ -942,8 +942,11 @@ Read the relevant section before changing feature policy, ownership, restoration
   Windows sleep and power-source notifications wake it independently of the UI.
   Path enrichment covers enabled rule candidates and processes that can still
   match an accepted or suppressed instance, including an unknown creation time.
-  Transient power-source read failures retain the last confirmed profile without
-  renewing request counts; before the first confirmed source, requests stay off.
+  Transient power-source read failures retain the last confirmed profile. When
+  the saved policies differ, new system or display requests wait for a confirmed
+  source. Accepted types remain shared across apps. Confirmed exits and withdrawn
+  rules can still release them. Before the first confirmed source, requests stay
+  off.
   Enabled rule rows show Unknown until the selected profile has a matching
   observation. A confirmed source change invalidates the previous profile's rows.
 

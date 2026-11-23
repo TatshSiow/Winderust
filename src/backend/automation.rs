@@ -1529,7 +1529,7 @@ fn run_background_automation(
         let sleep_settings = active_power_source_settings(&configured_settings, sleep_power_source);
         let sleep_prevention_refresh_required = settings_changed
             || feature_refresh_required(sleep_settings, sleep_prevention_required(sleep_settings))
-            || (sleep_power_source.is_none()
+            || (plugged_in.is_none()
                 && std::iter::once(configured_settings.as_ref())
                     .chain(configured_settings.on_battery.as_deref())
                     .any(|settings| {

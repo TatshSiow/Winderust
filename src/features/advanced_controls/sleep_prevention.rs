@@ -26,6 +26,7 @@ pub struct SleepPreventionSnapshot {
     pub system_requested: bool,
     pub display_requested: bool,
     pub observation_known: bool,
+    pub(crate) waiting_for_power_source: bool,
     pub failed_actions: usize,
     pub last_error: Option<String>,
 }
@@ -80,7 +81,7 @@ impl SleepPreventionManager {
         if self.change_power_source(plugged_in) {
             self.reset(controller, action_log);
         }
-        let Some(plugged_in) = self.power_source else {
+        let Some(last_power_source) = self.power_source else {
             let profiles = [configured_settings, configured_settings.battery_profile()];
             let enabled = profiles
                 .iter()
@@ -110,7 +111,7 @@ impl SleepPreventionManager {
                 &rust_i18n::t!("sleep_prevention.power_source_unavailable"),
             );
         };
-        let profile = if plugged_in {
+        let profile = if last_power_source {
             configured_settings
         } else {
             configured_settings.battery_profile()
@@ -130,11 +131,15 @@ impl SleepPreventionManager {
                 &rust_i18n::t!("sleep_prevention.watcher_unavailable"),
             );
         }
+        let allow_new_requests = plugged_in.is_some()
+            || same_sleep_prevention_policy(
+                configured_settings,
+                configured_settings.battery_profile(),
+            );
         self.update_profile(
             controller,
-            &profile.sleep_prevention,
-            profile.general.enabled,
-            profile.general.allow_cross_session_process_control,
+            profile,
+            allow_new_requests,
             observations,
             action_log,
         )
@@ -224,13 +229,15 @@ impl SleepPreventionManager {
     fn update_profile(
         &mut self,
         controller: &mut SleepPreventionController,
-        settings: &SleepPreventionSettings,
-        automation_enabled: bool,
-        allow_cross_session_process_control: bool,
+        profile: &Settings,
+        allow_new_requests: bool,
         observations: &mut CycleObservations,
         action_log: &mut ActionLog,
     ) -> SleepPreventionSnapshot {
-        if !automation_enabled || !settings.enabled {
+        let settings = &profile.sleep_prevention;
+        let allow_cross_session_process_control =
+            profile.general.allow_cross_session_process_control;
+        if !profile.general.enabled || !settings.enabled {
             self.matches = Matches::default();
             return self.reset(controller, action_log);
         }
@@ -286,7 +293,14 @@ impl SleepPreventionManager {
             );
         }
         snapshot.last_error = error;
-        let mode = self.permitted_mode(controller.requests());
+        let accepted = controller.requests();
+        let observed = self.permitted_mode(accepted);
+        let mode = if allow_new_requests {
+            observed
+        } else {
+            retain_accepted_requests(observed, accepted)
+        };
+        snapshot.waiting_for_power_source = mode != observed;
         self.apply(controller, mode, snapshot, action_log)
     }
 
@@ -347,6 +361,7 @@ impl SleepPreventionManager {
         let mut snapshot = self.snapshot.clone();
         snapshot.suppressed_apps.clone_from(&snapshot.running_apps);
         snapshot.requesting_apps.clear();
+        snapshot.waiting_for_power_source = false;
         snapshot.failed_actions = 0;
         snapshot.last_error = None;
         self.apply(controller, SleepPreventionMode::Off, snapshot, action_log)
@@ -535,13 +550,7 @@ impl SleepPreventionManager {
         if self.matches.known {
             return desired;
         }
-        // Unknown observations can retain or withdraw accepted counts, never renew or add them.
-        match desired {
-            SleepPreventionMode::Off => SleepPreventionMode::Off,
-            _ if !accepted.system => SleepPreventionMode::Off,
-            SleepPreventionMode::SystemAndDisplay if accepted.display => desired,
-            _ => SleepPreventionMode::System,
-        }
+        retain_accepted_requests(desired, accepted)
     }
 
     fn apply(
@@ -607,6 +616,54 @@ impl SleepPreventionManager {
         self.snapshot = snapshot.clone();
         snapshot
     }
+}
+
+// Incomplete observations can retain or withdraw accepted counts.
+fn retain_accepted_requests(
+    desired: SleepPreventionMode,
+    accepted: SleepPreventionRequests,
+) -> SleepPreventionMode {
+    match desired {
+        SleepPreventionMode::Off => SleepPreventionMode::Off,
+        _ if !accepted.system => SleepPreventionMode::Off,
+        SleepPreventionMode::SystemAndDisplay if accepted.display => desired,
+        _ => SleepPreventionMode::System,
+    }
+}
+
+fn same_sleep_prevention_policy(ac: &Settings, battery: &Settings) -> bool {
+    fn enabled_rules(profile: &Settings) -> BTreeMap<&str, bool> {
+        let mut rules = BTreeMap::new();
+        if profile.general.enabled && profile.sleep_prevention.enabled {
+            for rule in profile
+                .sleep_prevention
+                .rules
+                .iter()
+                .filter(|rule| rule.enabled)
+            {
+                let Some((path, _)) = matchable_target(&rule.executable_path) else {
+                    continue;
+                };
+                rules
+                    .entry(path)
+                    .and_modify(|display| *display |= rule.keep_display_on)
+                    .or_insert(rule.keep_display_on);
+            }
+        }
+        rules
+    }
+
+    let same_session_scope = ac.general.allow_cross_session_process_control
+        == battery.general.allow_cross_session_process_control;
+    if same_session_scope
+        && ac.general.enabled == battery.general.enabled
+        && ac.sleep_prevention == battery.sleep_prevention
+    {
+        return true;
+    }
+    // Compare saved spellings without opening or resolving executable paths.
+    let ac_rules = enabled_rules(ac);
+    (same_session_scope || ac_rules.is_empty()) && ac_rules == enabled_rules(battery)
 }
 
 fn capture_configuration(profiles: [&Settings; 2]) -> [(bool, SleepPreventionSettings); 2] {

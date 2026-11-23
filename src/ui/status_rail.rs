@@ -199,6 +199,24 @@ pub(super) fn view<'a>(
                 "common.waiting",
             )
         }
+        (Page::SleepPrevention, FeatureRunState::Running)
+            if sleep.is_some_and(|status| status.waiting_for_power_source) =>
+        {
+            (
+                "sleep_prevention.system_request_accepted",
+                "sleep_prevention.power_source_unavailable",
+                "common.applied",
+            )
+        }
+        (Page::SleepPrevention, FeatureRunState::Waiting)
+            if sleep.is_some_and(|status| status.waiting_for_power_source) =>
+        {
+            (
+                "common.waiting",
+                "sleep_prevention.power_source_unavailable",
+                "common.waiting",
+            )
+        }
         (Page::SleepPrevention, FeatureRunState::Running) => (
             "sleep_prevention.request_accepted",
             "sleep_prevention.request_status_help",

@@ -310,9 +310,8 @@ fn inactive_profiles_and_missing_rules_preserve_sleep_suppression_until_explicit
     let mut log = ActionLog::new(4);
     manager.update_profile(
         &mut controller,
-        &inactive,
+        configured.battery_profile(),
         true,
-        false,
         &mut CycleObservations::default(),
         &mut log,
     );
@@ -366,9 +365,11 @@ fn suspend_before_first_observation_suppresses_running_apps_and_disabling_rearms
     manager.rearm_withdrawn(&(true, previous), &(true, settings.clone()), None);
     let snapshot = manager.update_profile(
         &mut controller,
-        &settings,
+        &Settings {
+            sleep_prevention: settings.clone(),
+            ..Default::default()
+        },
         true,
-        false,
         &mut CycleObservations::default(),
         &mut log,
     );
@@ -392,6 +393,28 @@ fn unavailable_power_samples_do_not_start_new_profile_transitions() {
     assert!(!manager.change_power_source(None));
     assert!(!manager.change_power_source(Some(false)));
     assert_eq!(manager.last_known_power_source(), Some(false));
+}
+
+#[test]
+fn shared_power_source_policy_requires_the_same_native_rule_paths_and_request_types() {
+    let mut ac = Settings {
+        sleep_prevention: settings(),
+        ..Default::default()
+    };
+    ac.sleep_prevention.rules[0].executable_path = r"\\?\C:\Apps\worker.exe".into();
+    let mut battery = ac.clone();
+    battery.sleep_prevention.rules.push(SleepPreventionRule {
+        enabled: false,
+        executable_path: r"C:\Apps\ignored.exe".into(),
+        keep_display_on: true,
+    });
+    assert!(same_sleep_prevention_policy(&ac, &battery));
+
+    battery.sleep_prevention.rules[0].executable_path = r"\\?\C:\Apps/worker.exe".into();
+    assert!(!same_sleep_prevention_policy(&ac, &battery));
+    battery.sleep_prevention.rules[0] = ac.sleep_prevention.rules[0].clone();
+    battery.sleep_prevention.rules[0].keep_display_on = true;
+    assert!(!same_sleep_prevention_policy(&ac, &battery));
 }
 
 #[test]
