@@ -13,6 +13,7 @@ use crate::{
         preview_matches, rule_name, ByRunningAppPreview, ByRunningAppPreviewMatch,
         ByRunningAppPreviewRow,
     },
+    foreground::process_list::same_executable_name,
     power::PowerPlan,
     rules::decision_engine::matching_by_focus_rules,
     ui::{
@@ -391,8 +392,10 @@ fn rule_matches<'a>(
     if rule.selector.exact_path().is_none() || target != name {
         let location = if rule.selector.exact_path().is_some() {
             target.to_owned()
-        } else {
+        } else if same_executable_name(target, name) {
             t!("common.any_path").to_string()
+        } else {
+            format!("{target} · {}", t!("common.any_path"))
         };
         details = details.push(
             text(location)
