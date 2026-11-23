@@ -5,16 +5,48 @@ use crate::application::SettingsEditor;
 use crate::config::{AdaptiveEngineSettings, PowerSourceProfile};
 use crate::power::{ProcessorBoostMode, ProcessorPowerValues};
 use crate::ui::scrolling::scrollable;
-use iced::widget::{column, row, text};
+use iced::widget::{column, container, row, text};
 use iced::{Element, Fill};
+use rust_i18n::t;
 
-pub(super) const PROCESSOR_MIN_FIELD: &str =
-    stringify!(adaptive_engine.base_processor_policy.performance_min);
+mod presets;
+pub(super) use presets::BuiltInPreset;
+use presets::PresetDraft;
+
+#[cfg(test)]
+mod editor_tests;
+
+const PROCESSOR_MIN_FIELD: &str = stringify!(adaptive_engine.base_processor_policy.performance_min);
 pub(super) const PROCESSOR_MAX_FIELD: &str =
     stringify!(adaptive_engine.base_processor_policy.performance_max);
+pub(super) const PRESET_NAME_INPUT_ID: &str = "adaptive-processor-power-preset-name";
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) enum Tab {
+    #[default]
+    BasePolicy,
+    DemandProfiles,
+}
+
+#[derive(Default)]
+pub(super) struct Editor {
+    numbers: NumberInputs,
+    tab: Tab,
+    preset_draft: Option<PresetDraft>,
+}
 
 #[derive(Debug, Clone)]
 pub(super) enum Message {
+    Tab(Tab),
+    Preset(BuiltInPreset),
+    NewPreset,
+    EditPreset(usize),
+    PresetName(String),
+    UseCurrentPresetValues(bool),
+    SavePreset,
+    CancelPreset,
+    ApplyPreset(usize),
+    DeletePreset(usize),
     Enabled(bool),
     Number(
         fn(&mut AdaptiveEngineSettings, u64),
@@ -30,34 +62,257 @@ pub(super) enum Message {
     ),
 }
 
-pub(super) fn update(settings: &mut SettingsEditor, numbers: &mut NumberInputs, message: Message) {
-    match message {
-        Message::Enabled(enabled) => edit_settings(settings, |target| {
-            target.adaptive_processor_power_enabled = enabled;
-        }),
-        Message::BoostMode(update, mode) => edit_settings(settings, |target| update(target, mode)),
-        Message::Number(update, text, minimum, maximum, key, label) => {
-            let before = settings.adaptive_engine.base_processor_policy;
-            let minimum = if key == PROCESSOR_MAX_FIELD {
-                u64::from(before.performance_min.min(100))
-            } else {
-                minimum
-            };
-            let value = parse_number(&text, minimum, maximum);
-            numbers.drafts.insert(
-                key,
-                NumberDraft {
-                    text,
-                    invalid: value.is_none().then_some((minimum, maximum, label)),
-                },
-            );
-            if let Some(value) = value {
-                edit_settings(settings, |target| {
-                    update(target, value);
-                    normalize_number(target, numbers, key, before);
-                });
+impl Editor {
+    pub(super) fn update(&mut self, settings: &mut SettingsEditor, message: Message) {
+        let numbers = &mut self.numbers;
+        match message {
+            Message::Tab(tab) => self.tab = tab,
+            Message::Preset(preset) => {
+                numbers.drafts.clear();
+                let source = settings.selected_power_source();
+                edit_settings(settings, |target| preset.apply(target, source));
+            }
+            Message::NewPreset => self.preset_draft = Some(PresetDraft::new()),
+            Message::EditPreset(index) => {
+                if let Some(preset) = settings
+                    .global()
+                    .adaptive_processor_power_presets
+                    .get(index)
+                {
+                    self.preset_draft = Some(PresetDraft::edit(index, preset.name.clone()));
+                }
+            }
+            Message::PresetName(name) => {
+                if let Some(draft) = &mut self.preset_draft {
+                    draft.name = name;
+                }
+            }
+            Message::UseCurrentPresetValues(value) => {
+                if let Some(draft) = &mut self.preset_draft {
+                    draft.use_current_values = value;
+                }
+            }
+            Message::SavePreset => self.save_preset(settings),
+            Message::CancelPreset => self.preset_draft = None,
+            Message::ApplyPreset(index) => {
+                if let Some(preset) = settings
+                    .global()
+                    .adaptive_processor_power_presets
+                    .get(index)
+                    .cloned()
+                {
+                    numbers.drafts.clear();
+                    let source = settings.selected_power_source();
+                    edit_settings(settings, |target| preset.apply(target, source));
+                }
+            }
+            Message::DeletePreset(index) => {
+                if index < settings.global().adaptive_processor_power_presets.len() {
+                    settings.edit_global(|settings| {
+                        settings.adaptive_processor_power_presets.remove(index);
+                    });
+                }
+            }
+            Message::Enabled(enabled) => edit_settings(settings, |target| {
+                target.adaptive_processor_power_enabled = enabled;
+            }),
+            Message::BoostMode(update, mode) => {
+                edit_settings(settings, |target| update(target, mode))
+            }
+            Message::Number(update, text, minimum, maximum, key, label) => {
+                let before = settings.adaptive_engine.base_processor_policy;
+                let minimum = if key == PROCESSOR_MAX_FIELD {
+                    u64::from(before.performance_min.min(100))
+                } else {
+                    minimum
+                };
+                let value = parse_number(&text, minimum, maximum);
+                numbers.drafts.insert(
+                    key,
+                    NumberDraft {
+                        text,
+                        invalid: value.is_none().then_some((minimum, maximum, label)),
+                    },
+                );
+                if let Some(value) = value {
+                    edit_settings(settings, |target| {
+                        update(target, value);
+                        normalize_number(target, numbers, key, before);
+                    });
+                }
             }
         }
+    }
+
+    pub(super) fn validation_error(&self) -> Option<String> {
+        self.numbers.validation_error()
+    }
+
+    pub(super) fn reset_drafts(&mut self) {
+        self.numbers.drafts.clear();
+        self.preset_draft = None;
+    }
+
+    pub(super) fn view<'a>(&'a self, s: &'a SettingsEditor) -> Element<'a, Message> {
+        let numbers = &self.numbers;
+        macro_rules! number {
+            ($label:literal, $help:literal, $min:expr, adaptive_engine.$($field:ident).+) => {{
+                let key = stringify!(adaptive_engine.$($field).+);
+                let min = $min;
+                let formatted = s.adaptive_engine.$($field).+.to_string();
+                let value = numbers
+                    .drafts
+                    .get(key)
+                    .map_or(formatted.as_str(), |draft| draft.text.as_str());
+                row![
+                    widgets::setting_title_with_help($label, "%", $help).width(Fill),
+                    widgets::stepper(
+                        value,
+                        min..=100,
+                        1,
+                        Some(move |value| Message::Number(
+                            |settings, number| settings.$($field).+ = number as _,
+                            value,
+                            min,
+                            100,
+                            key,
+                            $label,
+                        )),
+                    ),
+                ]
+                .spacing(design::space::SMALL)
+                .padding([design::space::CONTROL as u16, 0])
+                .align_y(iced::Center)
+            }};
+        }
+        macro_rules! boost {
+            ($help:literal, adaptive_engine.$($field:ident).+) => {
+                boost_mode_row($help, s.adaptive_engine.$($field).+, |settings, mode| {
+                    settings.$($field).+ = mode;
+                })
+            };
+        }
+        macro_rules! profile_card {
+            ($profile:ident, $policy:ident, $mode:ident) => {
+                widgets::settings_card(widgets::settings_rows([
+                    number!(
+                        "processor_power.boost_policy",
+                        "adaptive_processor_power.profile_boost_policy_help",
+                        0,
+                        adaptive_engine.$profile.$policy
+                    )
+                    .into(),
+                    boost!(
+                        "adaptive_processor_power.profile_boost_mode_help",
+                        adaptive_engine.$profile.$mode
+                    ),
+                ]))
+            };
+        }
+        let error = self.validation_error();
+        let source = s.selected_power_source();
+        let tabs = row![
+            widgets::panel_tab(
+                t!("adaptive_processor_power.base_processor_policy").to_string(),
+                self.tab == Tab::BasePolicy,
+                Message::Tab(Tab::BasePolicy),
+            ),
+            widgets::panel_tab(
+                t!("adaptive_processor_power.demand_profiles").to_string(),
+                self.tab == Tab::DemandProfiles,
+                Message::Tab(Tab::DemandProfiles),
+            ),
+        ];
+        let help_key = match self.tab {
+            Tab::BasePolicy => "adaptive_processor_power.base_processor_policy_help",
+            Tab::DemandProfiles => "adaptive_processor_power.demand_profiles_help",
+        };
+        let mut body = column![
+            widgets::toggle_card(
+                "adaptive_processor_power.enable",
+                s.adaptive_engine.adaptive_processor_power_enabled,
+                Some(Message::Enabled),
+            ),
+            container(tabs.wrap()).style(widgets::tab_bar),
+            text(t!(help_key).to_string())
+                .size(design::typography::SECONDARY)
+                .style(text::secondary)
+                .width(Fill),
+        ]
+        .spacing(widgets::CARD_GAP);
+        match self.tab {
+            Tab::BasePolicy => {
+                body = body.push(widgets::settings_card(widgets::settings_rows([
+                    number!(
+                        "processor_power.core_parking_min",
+                        "adaptive_processor_power.core_parking_min_help",
+                        0,
+                        adaptive_engine.base_processor_policy.core_parking_min
+                    )
+                    .into(),
+                    number!(
+                        "processor_power.processor_min",
+                        "adaptive_processor_power.processor_min_help",
+                        0,
+                        adaptive_engine.base_processor_policy.performance_min
+                    )
+                    .into(),
+                    number!(
+                        "processor_power.processor_max",
+                        "adaptive_processor_power.processor_max_help",
+                        u64::from(
+                            s.adaptive_engine
+                                .base_processor_policy
+                                .performance_min
+                                .min(100)
+                        ),
+                        adaptive_engine.base_processor_policy.performance_max
+                    )
+                    .into(),
+                    number!(
+                        "processor_power.boost_policy",
+                        "adaptive_processor_power.base_boost_policy_help",
+                        0,
+                        adaptive_engine.base_processor_policy.boost_policy
+                    )
+                    .into(),
+                    boost!(
+                        "adaptive_processor_power.base_boost_mode_help",
+                        adaptive_engine.base_processor_policy.boost_mode
+                    ),
+                ])));
+            }
+
+            Tab::DemandProfiles => {
+                let (background, focus_and_launch) = match source {
+                    PowerSourceProfile::PluggedIn => (
+                        profile_card!(background_pressure_profile, ac_policy, ac_mode),
+                        profile_card!(focus_and_launch_profile, ac_policy, ac_mode),
+                    ),
+                    PowerSourceProfile::OnBattery => (
+                        profile_card!(background_pressure_profile, battery_policy, battery_mode),
+                        profile_card!(focus_and_launch_profile, battery_policy, battery_mode),
+                    ),
+                };
+                body = body
+                    .push(widgets::setting_title(
+                        "adaptive_processor_power.background_pressure_profile",
+                    ))
+                    .push(background)
+                    .push(widgets::setting_title(
+                        "adaptive_processor_power.focus_and_launch_profile",
+                    ))
+                    .push(focus_and_launch);
+            }
+        }
+        if let Some(error) = error {
+            body = body.push(text(error).style(text::danger));
+        }
+        scrollable(body)
+            .id("adaptive-processor-power-settings")
+            .width(Fill)
+            .height(Fill)
+            .into()
     }
 }
 
@@ -76,127 +331,6 @@ fn edit_settings(settings: &mut SettingsEditor, update: impl FnOnce(&mut Adaptiv
         };
         target.adaptive_engine = edited;
     });
-}
-
-pub(super) fn view<'a>(s: &'a SettingsEditor, numbers: &'a NumberInputs) -> Element<'a, Message> {
-    let mut body = column![].spacing(widgets::CARD_GAP);
-    macro_rules! number {
-        ($label:literal, $help:literal, $min:expr, adaptive_engine.$($field:ident).+) => {{
-            let key = stringify!(adaptive_engine.$($field).+);
-            let min = $min;
-            let formatted = s.adaptive_engine.$($field).+.to_string();
-            let value = numbers.drafts.get(key).map_or(formatted.as_str(), |draft| draft.text.as_str());
-            row![
-                widgets::setting_title_with_help($label, "%", $help).width(Fill),
-                widgets::stepper(value, min..=100, 1, Some(move |value| Message::Number(
-                    |settings, number| settings.$($field).+ = number as _,
-                    value, min, 100, key, $label,
-                ))),
-            ]
-            .spacing(design::space::SMALL)
-            .padding([design::space::CONTROL as u16, 0])
-            .align_y(iced::Center)
-        }};
-    }
-    macro_rules! boost {
-        ($help:literal, adaptive_engine.$($field:ident).+) => {
-            boost_mode_row($help, s.adaptive_engine.$($field).+, |settings, mode| {
-                settings.$($field).+ = mode;
-            })
-        };
-    }
-    macro_rules! profile_card {
-        ($profile:ident, $policy:ident, $mode:ident) => {
-            widgets::settings_card(widgets::settings_rows([
-                number!(
-                    "processor_power.boost_policy",
-                    "adaptive_processor_power.profile_boost_policy_help",
-                    0,
-                    adaptive_engine.$profile.$policy
-                )
-                .into(),
-                boost!(
-                    "adaptive_processor_power.profile_boost_mode_help",
-                    adaptive_engine.$profile.$mode
-                ),
-            ]))
-        };
-    }
-    body = body.push(widgets::toggle_card(
-        "adaptive_processor_power.enable",
-        s.adaptive_engine.adaptive_processor_power_enabled,
-        Some(Message::Enabled),
-    ));
-    body = body.push(widgets::setting_title(
-        "adaptive_processor_power.base_processor_policy",
-    ));
-    body = body.push(widgets::settings_card(widgets::settings_rows([
-        number!(
-            "processor_power.core_parking_min",
-            "adaptive_processor_power.core_parking_min_help",
-            0,
-            adaptive_engine.base_processor_policy.core_parking_min
-        )
-        .into(),
-        number!(
-            "processor_power.processor_min",
-            "adaptive_processor_power.processor_min_help",
-            0,
-            adaptive_engine.base_processor_policy.performance_min
-        )
-        .into(),
-        number!(
-            "processor_power.processor_max",
-            "adaptive_processor_power.processor_max_help",
-            u64::from(
-                s.adaptive_engine
-                    .base_processor_policy
-                    .performance_min
-                    .min(100)
-            ),
-            adaptive_engine.base_processor_policy.performance_max
-        )
-        .into(),
-        number!(
-            "processor_power.boost_policy",
-            "adaptive_processor_power.base_boost_policy_help",
-            0,
-            adaptive_engine.base_processor_policy.boost_policy
-        )
-        .into(),
-        boost!(
-            "adaptive_processor_power.base_boost_mode_help",
-            adaptive_engine.base_processor_policy.boost_mode
-        ),
-    ])));
-
-    let (background, focus_and_launch) = match s.selected_power_source() {
-        PowerSourceProfile::PluggedIn => (
-            profile_card!(background_pressure_profile, ac_policy, ac_mode),
-            profile_card!(focus_and_launch_profile, ac_policy, ac_mode),
-        ),
-        PowerSourceProfile::OnBattery => (
-            profile_card!(background_pressure_profile, battery_policy, battery_mode),
-            profile_card!(focus_and_launch_profile, battery_policy, battery_mode),
-        ),
-    };
-    body = body
-        .push(widgets::setting_title(
-            "adaptive_processor_power.background_pressure_profile",
-        ))
-        .push(background)
-        .push(widgets::setting_title(
-            "adaptive_processor_power.focus_and_launch_profile",
-        ))
-        .push(focus_and_launch);
-    if let Some(error) = numbers.validation_error() {
-        body = body.push(text(error).style(text::danger));
-    }
-    scrollable(body)
-        .id("adaptive-processor-power-settings")
-        .width(Fill)
-        .height(Fill)
-        .into()
 }
 
 fn normalize_number(
@@ -302,9 +436,12 @@ mod tests {
 
         for source in [PowerSourceProfile::PluggedIn, PowerSourceProfile::OnBattery] {
             settings.select_power_source(source);
-            let mut numbers = NumberInputs::default();
+            let mut editor = Editor {
+                tab: Tab::DemandProfiles,
+                ..Editor::default()
+            };
             let messages = {
-                let mut view = view(&settings, &numbers);
+                let mut view = editor.view(&settings);
                 let mut tree = Tree::new(&view);
                 let node = view.as_widget_mut().layout(
                     &mut tree,
@@ -340,7 +477,7 @@ mod tests {
                 messages
             };
             for message in messages {
-                update(&mut settings, &mut numbers, message);
+                editor.update(&mut settings, message);
             }
 
             match source {
@@ -365,7 +502,7 @@ mod tests {
     fn numeric_and_boost_edits_isolate_profiles_without_dirtying_invalid_or_unchanged_input() {
         let mut settings = SettingsEditor::with_settings(Settings::default());
         let before = settings.adaptive_engine.clone();
-        let mut numbers = NumberInputs::default();
+        let mut editor = Editor::default();
         let set_max = |text: String| {
             Message::Number(
                 |target, value| target.base_processor_policy.performance_max = value as u32,
@@ -376,19 +513,18 @@ mod tests {
                 "processor_power.processor_max",
             )
         };
-        update(&mut settings, &mut numbers, set_max(String::new()));
-        assert!(numbers.validation_error().is_some());
+        editor.update(&mut settings, set_max(String::new()));
+        assert!(editor.validation_error().is_some());
         assert!(!settings.has_unsaved_changes());
         assert!(settings.global().on_battery.is_none());
-        update(
+        editor.update(
             &mut settings,
-            &mut numbers,
             set_max(before.base_processor_policy.performance_max.to_string()),
         );
-        assert!(numbers.validation_error().is_none());
+        assert!(editor.validation_error().is_none());
         assert!(!settings.has_unsaved_changes());
         assert!(settings.global().on_battery.is_none());
-        update(&mut settings, &mut numbers, set_max("80".into()));
+        editor.update(&mut settings, set_max("80".into()));
         assert_eq!(
             settings
                 .adaptive_engine
@@ -399,9 +535,8 @@ mod tests {
         assert_eq!(settings.global().battery_profile().adaptive_engine, before);
         let ac = settings.adaptive_engine.clone();
         settings.select_power_source(PowerSourceProfile::OnBattery);
-        update(
+        editor.update(
             &mut settings,
-            &mut numbers,
             Message::BoostMode(
                 |target, mode| target.base_processor_policy.boost_mode = mode,
                 ProcessorBoostMode::Aggressive,
@@ -412,5 +547,30 @@ mod tests {
             ProcessorBoostMode::Aggressive
         );
         assert_eq!(settings.global().adaptive_engine, ac);
+    }
+
+    #[test]
+    fn reapplying_preset_clears_invalid_input_without_staging_changes() {
+        let mut initial = Settings::default();
+        BuiltInPreset::Balanced.apply(&mut initial.adaptive_engine, PowerSourceProfile::PluggedIn);
+        let mut settings = SettingsEditor::with_settings(initial);
+        let mut editor = Editor::default();
+        editor.update(
+            &mut settings,
+            Message::Number(
+                |target, value| target.base_processor_policy.performance_max = value as u32,
+                String::new(),
+                0,
+                100,
+                PROCESSOR_MAX_FIELD,
+                "processor_power.processor_max",
+            ),
+        );
+        editor.update(&mut settings, Message::Tab(Tab::DemandProfiles));
+        assert!(editor.validation_error().is_some());
+        assert!(!settings.has_unsaved_changes());
+        editor.update(&mut settings, Message::Preset(BuiltInPreset::Balanced));
+        assert!(editor.validation_error().is_none());
+        assert!(!settings.has_unsaved_changes());
     }
 }

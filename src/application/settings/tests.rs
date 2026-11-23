@@ -781,6 +781,16 @@ fn preset_edits_survive_profile_switching_and_save() {
         let runtime_before = editor.runtime_settings_snapshot();
         editor.select_power_source(profile);
         editor.edit_global(|settings| {
+            let source = match profile {
+                PowerSourceProfile::PluggedIn => &*settings,
+                PowerSourceProfile::OnBattery => settings.battery_profile(),
+            };
+            let power_preset = crate::config::AdaptiveProcessorPowerPreset::capture(
+                "Saved".into(),
+                &source.adaptive_engine,
+                profile,
+            );
+            settings.adaptive_processor_power_presets.push(power_preset);
             settings
                 .adaptive_engine_presets
                 .push(crate::config::AdaptiveEnginePreset {
@@ -822,6 +832,7 @@ fn preset_edits_survive_profile_switching_and_save() {
             runtime_saved.value.battery_profile(),
         ] {
             assert!(runtime_profile.adaptive_engine_presets.is_empty());
+            assert!(runtime_profile.adaptive_processor_power_presets.is_empty());
             assert!(runtime_profile.cpu_allocation_presets.is_empty());
             assert!(runtime_profile
                 .advanced_power_plan_tuning_presets
@@ -830,6 +841,7 @@ fn preset_edits_survive_profile_switching_and_save() {
         for selected in [PowerSourceProfile::PluggedIn, PowerSourceProfile::OnBattery] {
             editor.select_power_source(selected);
             assert_eq!(editor.adaptive_engine_presets[0].name, "Saved");
+            assert_eq!(editor.adaptive_processor_power_presets[0].name, "Saved");
             assert_eq!(
                 editor.cpu_allocation_presets[0].selection,
                 crate::cpu_topology::test_selection(3)
@@ -839,12 +851,24 @@ fn preset_edits_survive_profile_switching_and_save() {
         editor.select_power_source(profile);
         editor.edit_global(|settings| {
             settings.adaptive_engine_presets[0].name = "Edited".into();
+            settings.adaptive_processor_power_presets[0].name = "Edited".into();
             settings.cpu_allocation_presets.clear();
             settings.advanced_power_plan_tuning_presets.clear();
         });
         editor.save().expect("save edits");
         assert_eq!(editor.persisted().on_battery.is_some(), explicit_battery);
         assert_eq!(editor.persisted().adaptive_engine_presets[0].name, "Edited");
+        assert_eq!(
+            editor.persisted().adaptive_processor_power_presets[0].name,
+            "Edited"
+        );
+        assert_eq!(
+            editor.persisted().adaptive_processor_power_presets,
+            editor
+                .persisted()
+                .battery_profile()
+                .adaptive_processor_power_presets
+        );
         assert!(editor.persisted().cpu_allocation_presets.is_empty());
         assert!(editor
             .persisted()

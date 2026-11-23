@@ -15,7 +15,10 @@ use crate::rules::{
     DEFAULT_EXECUTION_FAILURE_SUPPRESSION_THRESHOLD,
 };
 
+mod adaptive_processor_power;
 mod validation;
+
+pub use adaptive_processor_power::AdaptiveProcessorPowerPreset;
 
 pub const CHECK_INTERVAL_MIN_MS: u64 = 250;
 pub const CHECK_INTERVAL_MAX_MS: u64 = 60 * 1000;
@@ -29,6 +32,8 @@ pub struct Settings {
     pub advanced: AdvancedSettings,
     pub adaptive_engine: AdaptiveEngineSettings,
     pub adaptive_engine_presets: Vec<AdaptiveEnginePreset>,
+    #[serde(default)]
+    pub adaptive_processor_power_presets: Vec<AdaptiveProcessorPowerPreset>,
     pub by_activity: ByActivitySettings,
     pub by_focus: ByFocusSettings,
     pub by_time: ByTimeSettings,
@@ -136,6 +141,7 @@ impl Settings {
         battery.instance_limits = self.instance_limits.clone();
         battery.instance_balancing = self.instance_balancing.clone();
         battery.adaptive_engine_presets = self.adaptive_engine_presets.clone();
+        battery.adaptive_processor_power_presets = self.adaptive_processor_power_presets.clone();
         battery.cpu_allocation_presets = self.cpu_allocation_presets.clone();
         battery.advanced_power_plan_tuning_presets =
             self.advanced_power_plan_tuning_presets.clone();
@@ -1973,6 +1979,7 @@ impl Default for Settings {
             advanced: AdvancedSettings::default(),
             adaptive_engine: AdaptiveEngineSettings::default(),
             adaptive_engine_presets: Vec::new(),
+            adaptive_processor_power_presets: Vec::new(),
             by_activity: ByActivitySettings {
                 enabled: false,
                 idle_timeout_seconds: 300,

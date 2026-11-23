@@ -1,0 +1,132 @@
+use super::*;
+use crate::config::Settings;
+
+#[test]
+fn editing_a_preset_keeps_its_values_until_current_settings_are_requested() {
+    let mut settings = SettingsEditor::with_settings(Settings::default());
+    let original = settings.adaptive_engine.clone();
+    let mut editor = Editor::default();
+    let source = settings.selected_power_source();
+
+    editor.update(&mut settings, Message::NewPreset);
+    editor.update(&mut settings, Message::SavePreset);
+    assert!(editor.preset_open());
+    assert!(settings
+        .global()
+        .adaptive_processor_power_presets
+        .is_empty());
+    editor.update(&mut settings, Message::PresetName(" Quiet ".into()));
+    editor.update(&mut settings, Message::SavePreset);
+    assert_eq!(
+        settings.global().adaptive_processor_power_presets[0].name,
+        "Quiet"
+    );
+
+    editor.update(&mut settings, Message::Preset(BuiltInPreset::Performance));
+    editor.update(&mut settings, Message::NewPreset);
+    editor.update(&mut settings, Message::PresetName("quiet".into()));
+    editor.update(&mut settings, Message::SavePreset);
+    assert!(editor.preset_open());
+    assert_eq!(settings.global().adaptive_processor_power_presets.len(), 1);
+    editor.update(&mut settings, Message::CancelPreset);
+
+    editor.update(&mut settings, Message::EditPreset(0));
+    editor.update(&mut settings, Message::PresetName("Fast".into()));
+    editor.update(&mut settings, Message::SavePreset);
+    let preset = &settings.global().adaptive_processor_power_presets[0];
+    assert_eq!(preset.name, "Fast");
+    assert!(preset.matches(&original, source));
+
+    editor.update(&mut settings, Message::EditPreset(0));
+    editor.update(&mut settings, Message::UseCurrentPresetValues(true));
+    editor.update(&mut settings, Message::SavePreset);
+    assert!(settings.global().adaptive_processor_power_presets[0]
+        .matches(&settings.adaptive_engine, source));
+
+    editor.update(&mut settings, Message::DeletePreset(0));
+    assert!(settings
+        .global()
+        .adaptive_processor_power_presets
+        .is_empty());
+}
+
+#[test]
+fn processor_power_toggle_is_independent_and_profile_scoped() {
+    let mut settings = SettingsEditor::with_settings(Settings::default());
+    let mut editor = Editor::default();
+    assert!(settings.global().on_battery.is_none());
+    editor.update(&mut settings, Message::Enabled(false));
+    assert!(!settings.has_unsaved_changes());
+    assert!(settings.global().on_battery.is_none());
+    editor.update(&mut settings, Message::Enabled(true));
+    assert!(!settings.adaptive_engine.enabled);
+    assert!(settings.adaptive_engine.adaptive_processor_power_enabled);
+    assert!(settings.global().on_battery.is_some());
+    settings.select_power_source(PowerSourceProfile::OnBattery);
+    assert!(!settings.adaptive_engine.adaptive_processor_power_enabled);
+    editor.update(&mut settings, Message::Enabled(true));
+    assert!(!settings.adaptive_engine.enabled);
+    settings.select_power_source(PowerSourceProfile::PluggedIn);
+    assert!(settings.adaptive_engine.adaptive_processor_power_enabled);
+    editor.update(&mut settings, Message::Enabled(false));
+    settings.select_power_source(PowerSourceProfile::OnBattery);
+    assert!(settings.adaptive_engine.adaptive_processor_power_enabled);
+}
+
+#[test]
+fn processor_max_draft_is_rechecked_when_minimum_changes() {
+    let mut settings = SettingsEditor::with_settings(Settings::default());
+    settings
+        .adaptive_engine
+        .base_processor_policy
+        .performance_min = 25;
+    settings
+        .adaptive_engine
+        .base_processor_policy
+        .performance_max = 100;
+    let mut editor = Editor::default();
+    let set_min = |text: &str| {
+        Message::Number(
+            |settings, value| settings.base_processor_policy.performance_min = value as u32,
+            text.into(),
+            0,
+            100,
+            PROCESSOR_MIN_FIELD,
+            "processor_power.processor_min",
+        )
+    };
+    let set_max = |text: &str| {
+        Message::Number(
+            |settings, value| settings.base_processor_policy.performance_max = value as u32,
+            text.into(),
+            0,
+            100,
+            PROCESSOR_MAX_FIELD,
+            "processor_power.processor_max",
+        )
+    };
+    let policy = |settings: &Settings| settings.adaptive_engine.base_processor_policy;
+
+    editor.update(&mut settings, set_max("10"));
+    assert_eq!(policy(&settings).performance_max, 100);
+    assert_eq!(
+        editor.numbers.drafts[PROCESSOR_MAX_FIELD].invalid,
+        Some((25, 100, "processor_power.processor_max"))
+    );
+    editor.update(&mut settings, set_min("5"));
+    assert_eq!(policy(&settings).performance_max, 10);
+    assert_eq!(editor.numbers.drafts[PROCESSOR_MAX_FIELD].text, "10");
+    assert!(editor.validation_error().is_none());
+
+    editor.update(&mut settings, set_min("15"));
+    assert_eq!(policy(&settings).performance_max, 15);
+    assert!(!editor.numbers.drafts.contains_key(PROCESSOR_MAX_FIELD));
+    editor.update(&mut settings, set_max(""));
+    editor.update(&mut settings, set_min("20"));
+    assert_eq!(policy(&settings).performance_max, 20);
+    assert_eq!(editor.numbers.drafts[PROCESSOR_MAX_FIELD].text, "");
+    assert_eq!(
+        editor.numbers.drafts[PROCESSOR_MAX_FIELD].invalid,
+        Some((20, 100, "processor_power.processor_max"))
+    );
+}

@@ -8,6 +8,7 @@ use the shared automation runtime and foreground demand observations.
 
 - `src/ui/adaptive_presets.rs` defines the visible Adaptive Engine presets and Adaptive Engine
   preset values.
+- `src/ui/adaptive_processor_power/presets.rs` defines the built-in Adaptive Processor Power presets.
 - `src/backend/automation/runner.rs` collects demand signals, selects the active processor-power
   profile, and coordinates feature policies and controllers.
 - `src/features/winderust_features/adaptive_engine_process.rs` implements pressure
@@ -89,8 +90,12 @@ migration or copying from the limiter is performed.
 - Adaptive Processor Power uses a temporary managed `Winderust Adaptive` plan when enabled for
   the current source. Its saved Base Processor Policy supplies the processor baseline. Current
   CPU, foreground, launch, and I/O demand select Idle, Responsive, Background Pressure, or Focus
-  and Launch. Transitions to lower-demand profiles use the existing delay. The page exposes the
-  boost policy and mode for Background Pressure and Focus and Launch.
+  and Launch. Transitions to lower-demand profiles use the existing delay.
+- The Power Save, Balanced, and Performance presets replace the selected source's Base Processor
+  Policy and reset its Background Pressure and Focus and Launch boost settings to the profile
+  defaults. Custom presets capture those same tuning values from the selected source and can be
+  applied to either source. Applying a preset leaves the enable switches and the other source's
+  settings under their own controls.
 - Winderust applies EcoQoS to itself while the low-power Adaptive Engine path is active.
 - Background Efficiency and Adaptive Engine policy submit typed claims through RuntimeCore. Each
   controller revalidates exact identity, access, protection, and cross-session policy before a

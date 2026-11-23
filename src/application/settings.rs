@@ -787,6 +787,7 @@ pub fn runtime_settings_for(current: &Settings, persisted: &Settings) -> Setting
     projected.general.enabled = persisted.general.enabled;
     projected.advanced = current.advanced.clone();
     projected.adaptive_engine_presets.clear();
+    projected.adaptive_processor_power_presets.clear();
     projected.cpu_allocation_presets.clear();
     projected.advanced_power_plan_tuning_presets.clear();
     projected.sync_shared_settings_to_battery();

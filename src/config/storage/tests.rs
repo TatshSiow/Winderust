@@ -1,6 +1,45 @@
 use super::*;
 
 #[test]
+fn adaptive_processor_power_presets_round_trip_and_reject_invalid_entries() {
+    use crate::config::{AdaptiveProcessorPowerPreset, PowerSourceProfile};
+
+    let mut settings = Settings::default();
+    let preset = AdaptiveProcessorPowerPreset::capture(
+        "Quiet".into(),
+        &settings.adaptive_engine,
+        PowerSourceProfile::PluggedIn,
+    );
+    settings
+        .adaptive_processor_power_presets
+        .push(preset.clone());
+    let path = std::env::temp_dir().join(format!(
+        "winderust-adaptive-processor-power-presets-{}.toml",
+        std::process::id()
+    ));
+    write_toml_settings(&path, &settings).unwrap();
+    assert_eq!(load_from_path(&path).unwrap(), settings);
+    fs::remove_file(&path).unwrap();
+    let mut invalid = toml::Value::try_from(&settings).unwrap();
+    invalid["adaptive_processor_power_presets"][0]["background_pressure_profile"]["policy"] =
+        101.into();
+    assert!(
+        parse_toml_settings(&path, &toml::to_string(&invalid).unwrap())
+            .unwrap_err()
+            .contains("out-of-range processor settings")
+    );
+
+    let mut duplicate = preset;
+    duplicate.name = " quiet ".into();
+    settings.adaptive_processor_power_presets.push(duplicate);
+    assert!(
+        parse_toml_settings(&path, &toml::to_string(&settings).unwrap())
+            .unwrap_err()
+            .contains("is already in use")
+    );
+}
+
+#[test]
 fn export_destination_reserves_active_settings_even_when_missing() {
     let directory =
         std::env::temp_dir().join(format!("winderust-export-path-{}", std::process::id()));
@@ -892,6 +931,11 @@ fn toml_round_trip_preserves_settings() {
     let mut adaptive_engine = AdaptiveEngineSettings::default();
     adaptive_engine.enabled = true;
     adaptive_engine.adaptive_processor_power_enabled = true;
+    let processor_power_preset = crate::config::AdaptiveProcessorPowerPreset::capture(
+        "Quiet power".into(),
+        &adaptive_engine,
+        crate::config::PowerSourceProfile::OnBattery,
+    );
     let mut settings = Settings {
         general: GeneralSettings {
             enabled: false,
@@ -934,6 +978,7 @@ fn toml_round_trip_preserves_settings() {
             focus_and_launch_profile: crate::power::AdaptivePowerBoostValues::FOCUS_AND_LAUNCH,
             adaptive_engine_process: AdaptiveEngineProcessSettings::default(),
         }],
+        adaptive_processor_power_presets: vec![processor_power_preset],
         by_activity: ByActivitySettings {
             enabled: true,
             idle_timeout_seconds: 12,

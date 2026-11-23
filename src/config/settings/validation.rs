@@ -3,6 +3,7 @@ use super::{
     SleepPreventionSettings, NESTED_BATTERY_PROFILE_ERROR,
 };
 use crate::config::{is_valid_executable_name, ExecutableSelector};
+use std::collections::HashSet;
 
 impl Settings {
     pub fn validate(&self) -> Result<(), String> {
@@ -14,6 +15,16 @@ impl Settings {
         self.validate_dynamic_resource_zones()?;
         self.validate_by_cpu_load_rules()?;
         for profile in self.profiles() {
+            let mut preset_names = HashSet::new();
+            for preset in &profile.adaptive_processor_power_presets {
+                preset.validate()?;
+                if !preset_names.insert(preset.name.trim().to_ascii_lowercase()) {
+                    return Err(format!(
+                        "Adaptive Processor Power preset name '{}' is already in use.",
+                        preset.name
+                    ));
+                }
+            }
             profile.app_suspension.validate()?;
             profile.sleep_prevention.validate()?;
             let focus = profile

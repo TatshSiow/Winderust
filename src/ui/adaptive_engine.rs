@@ -60,7 +60,6 @@ pub(super) struct Editor {
     path: String,
     error: String,
     live_numbers: NumberInputs,
-    processor_power_numbers: NumberInputs,
     preset_numbers: NumberInputs,
 }
 #[derive(Default)]
@@ -90,7 +89,6 @@ pub(super) fn parse_number(text: &str, min: u64, max: u64) -> Option<u64> {
 #[derive(Debug, Clone)]
 pub(super) enum Message {
     Toggle(fn(&mut Settings, bool), bool),
-    ProcessorPower(super::adaptive_processor_power::Message),
     InterruptTiming(super::interrupt_timing::Message),
     TuningTab(TuningTab),
     Collapse(usize),
@@ -123,14 +121,6 @@ pub(super) enum Message {
     ExclusionEnabled(usize, bool),
 }
 impl Editor {
-    pub(super) fn processor_power_view<'a>(
-        &'a self,
-        settings: &'a SettingsEditor,
-    ) -> Element<'a, Message> {
-        super::adaptive_processor_power::view(settings, &self.processor_power_numbers)
-            .map(Message::ProcessorPower)
-    }
-
     pub(super) fn update(&mut self, s: &mut SettingsEditor, m: Message) {
         if matches!(
             m,
@@ -272,13 +262,6 @@ impl Editor {
                 }
             }
 
-            Message::ProcessorPower(message) => {
-                super::adaptive_processor_power::update(
-                    s,
-                    &mut self.processor_power_numbers,
-                    message,
-                );
-            }
             Message::ExclusionEnabled(i, v) => {
                 if let Some(r) = s.adaptive_engine_process.custom_rules.get_mut(i) {
                     r.enabled = v
@@ -388,9 +371,7 @@ impl Editor {
     }
 
     pub(super) fn validation_error(&self) -> Option<String> {
-        self.live_numbers
-            .validation_error()
-            .or_else(|| self.processor_power_numbers.validation_error())
+        self.live_numbers.validation_error()
     }
     pub(super) fn preset_open(&self) -> bool {
         self.draft.is_some()
@@ -1179,7 +1160,6 @@ mod tests {
         );
     }
 
-    use super::super::adaptive_processor_power::{PROCESSOR_MAX_FIELD, PROCESSOR_MIN_FIELD};
     use super::*;
 
     #[test]
@@ -1398,126 +1378,34 @@ mod tests {
     }
 
     #[test]
-    fn processor_power_toggle_is_independent_and_profile_scoped() {
-        let mut settings = SettingsEditor::with_settings(Settings::default());
-        let mut editor = Editor::default();
-        assert!(settings.global().on_battery.is_none());
-        let enabled = |value| {
-            Message::ProcessorPower(super::super::adaptive_processor_power::Message::Enabled(
-                value,
-            ))
-        };
-        editor.update(&mut settings, enabled(false));
-        assert!(!settings.has_unsaved_changes());
-        assert!(settings.global().on_battery.is_none());
-        editor.update(&mut settings, enabled(true));
-        assert!(!settings.adaptive_engine.enabled);
-        assert!(settings.adaptive_engine.adaptive_processor_power_enabled);
-        assert!(settings.global().on_battery.is_some());
-        settings.select_power_source(PowerSourceProfile::OnBattery);
-        assert!(!settings.adaptive_engine.adaptive_processor_power_enabled);
-        editor.update(&mut settings, enabled(true));
-        assert!(!settings.adaptive_engine.enabled);
-        settings.select_power_source(PowerSourceProfile::PluggedIn);
-        assert!(settings.adaptive_engine.adaptive_processor_power_enabled);
-        editor.update(&mut settings, enabled(false));
-        settings.select_power_source(PowerSourceProfile::OnBattery);
-        assert!(settings.adaptive_engine.adaptive_processor_power_enabled);
-    }
-
-    #[test]
-    fn processor_max_draft_is_rechecked_when_minimum_changes() {
-        let mut settings = SettingsEditor::with_settings(Settings::default());
-        settings
-            .adaptive_engine
-            .base_processor_policy
-            .performance_min = 25;
-        settings
-            .adaptive_engine
-            .base_processor_policy
-            .performance_max = 100;
-        let mut editor = Editor::default();
-        let set_min = |text: &str| {
-            Message::ProcessorPower(super::super::adaptive_processor_power::Message::Number(
-                |settings, value| settings.base_processor_policy.performance_min = value as u32,
-                text.into(),
-                0,
-                100,
-                PROCESSOR_MIN_FIELD,
-                "processor_power.processor_min",
-            ))
-        };
-        let set_max = |text: &str| {
-            Message::ProcessorPower(super::super::adaptive_processor_power::Message::Number(
-                |settings, value| settings.base_processor_policy.performance_max = value as u32,
-                text.into(),
-                0,
-                100,
-                PROCESSOR_MAX_FIELD,
-                "processor_power.processor_max",
-            ))
-        };
-        let policy = |settings: &Settings| settings.adaptive_engine.base_processor_policy;
-
-        editor.update(&mut settings, set_max("10"));
-        assert_eq!(policy(&settings).performance_max, 100);
-        assert_eq!(
-            editor.processor_power_numbers.invalid(),
-            Some((25, 100, "processor_power.processor_max"))
-        );
-        editor.update(&mut settings, set_min("5"));
-        assert_eq!(policy(&settings).performance_max, 10);
-        assert_eq!(
-            editor.processor_power_numbers.drafts[PROCESSOR_MAX_FIELD].text,
-            "10"
-        );
-        assert!(editor.processor_power_numbers.invalid().is_none());
-
-        editor.update(&mut settings, set_min("15"));
-        assert_eq!(policy(&settings).performance_max, 15);
-        assert!(!editor
-            .processor_power_numbers
-            .drafts
-            .contains_key(PROCESSOR_MAX_FIELD));
-        editor.update(&mut settings, set_max(""));
-        editor.update(&mut settings, set_min("20"));
-        assert_eq!(policy(&settings).performance_max, 20);
-        assert_eq!(
-            editor.processor_power_numbers.drafts[PROCESSOR_MAX_FIELD].text,
-            ""
-        );
-        assert_eq!(
-            editor.processor_power_numbers.invalid(),
-            Some((20, 100, "processor_power.processor_max"))
-        );
-    }
-
-    #[test]
     fn process_preset_keeps_unfinished_processor_power_edit() {
+        use super::super::adaptive_processor_power::{self, PROCESSOR_MAX_FIELD};
+
         let mut settings = SettingsEditor::with_settings(Settings::default());
         let mut editor = Editor::default();
-        editor.update(
+        let mut processor_power = adaptive_processor_power::Editor::default();
+        processor_power.update(
             &mut settings,
-            Message::ProcessorPower(super::super::adaptive_processor_power::Message::Number(
+            adaptive_processor_power::Message::Number(
                 |settings, value| settings.base_processor_policy.performance_max = value as u32,
                 String::new(),
                 0,
                 100,
                 PROCESSOR_MAX_FIELD,
                 "processor_power.processor_max",
-            )),
+            ),
         );
         let power_before = settings.adaptive_engine.clone();
+        let validation_error = processor_power.validation_error();
+        assert!(validation_error.is_some());
+
         editor.update(
             &mut settings,
             Message::BuiltIn(BuiltInAdaptiveEnginePreset::Speed),
         );
+
         assert_eq!(settings.adaptive_engine, power_before);
-        assert_eq!(
-            editor.processor_power_numbers.drafts[PROCESSOR_MAX_FIELD].text,
-            ""
-        );
-        assert!(editor.validation_error().is_some());
+        assert_eq!(processor_power.validation_error(), validation_error);
         assert!(editor.live_numbers.drafts.is_empty());
     }
 

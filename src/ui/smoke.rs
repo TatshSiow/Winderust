@@ -34,14 +34,31 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
     let window = app.window?;
     let run = app.smoke.as_mut()?;
     let extra = run.index.checked_sub(run.pages.len() * 2);
-    if extra == Some(70) {
+    if extra == Some(72) {
         return Some(app.shutdown());
     }
     if run.ticks == 0 {
         let chinese = extra.map_or(run.index >= run.pages.len(), |index| {
             matches!(
                 index,
-                1 | 5 | 7 | 9 | 11 | 36 | 40 | 42 | 45 | 52 | 55 | 56 | 59 | 61 | 63 | 65 | 67 | 69
+                1 | 5
+                    | 7
+                    | 9
+                    | 11
+                    | 36
+                    | 40
+                    | 42
+                    | 45
+                    | 52
+                    | 55
+                    | 56
+                    | 59
+                    | 61
+                    | 63
+                    | 65
+                    | 67
+                    | 69
+                    | 71
             )
         });
         let page = match extra {
@@ -50,7 +67,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             Some(2) => Page::SettingsHome,
             Some(3) => Page::Home,
             Some(4 | 6..=10) => Page::AdaptiveEngine,
-            Some(5) => Page::AdaptiveProcessorPower,
+            Some(5 | 70 | 71) => Page::AdaptiveProcessorPower,
             Some(11) => Page::MemoryTrim,
             Some(12) => Page::ByFocus,
             Some(13) => Page::Home,
@@ -415,6 +432,14 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
         if !navigation::page_feature_info(page).is_empty() {
             assert!(app.side_panel(page).is_some());
         }
+        if matches!(extra, Some(5 | 70 | 71)) {
+            assert!(SidePanelTab::for_page(page).contains(&SidePanelTab::Presets));
+            let _ = app.update(Message::ToggleSidePanel);
+            let _ = app.update(Message::SidePanelTab(SidePanelTab::Presets));
+            assert!(app.side_panel_open);
+            assert_eq!(app.side_panel_tab, SidePanelTab::Presets);
+            assert!(app.side_panel(page).is_some());
+        }
         if extra == Some(0) {
             let section = Page::SettingsHome;
             let _ = app.update(Message::Navigation(navigation::Event::Select(section)));
@@ -461,11 +486,36 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                     )));
                     let _ = app.update(Message::Adaptive(AdaptiveMessage::Collapse(0)));
                 } else if index == 5 {
-                    assert!(app.select_power_source(PowerSourceProfile::OnBattery));
-                    app.settings
-                        .adaptive_engine
-                        .adaptive_processor_power_enabled = true;
+                    use adaptive_processor_power::{BuiltInPreset, Message as PowerMessage, Tab};
+
+                    let _ = app.update(Message::PowerSource(PowerSourceProfile::OnBattery));
+                    assert_eq!(app.power_source, PowerSourceProfile::OnBattery);
+                    let ac = app.settings.global().adaptive_engine.clone();
+                    let before = app.settings.runtime_settings_snapshot().value;
+                    let _ =
+                        app.update(Message::AdaptiveProcessorPower(PowerMessage::Enabled(true)));
+                    let _ = app.update(Message::AdaptiveProcessorPower(PowerMessage::Preset(
+                        BuiltInPreset::Balanced,
+                    )));
+                    assert_ne!(
+                        app.settings.adaptive_engine.base_processor_policy,
+                        before
+                            .battery_profile()
+                            .adaptive_engine
+                            .base_processor_policy
+                    );
+                    assert!(
+                        app.settings
+                            .adaptive_engine
+                            .adaptive_processor_power_enabled
+                    );
+                    assert_eq!(app.settings.global().adaptive_engine, ac);
+                    assert!(!app.settings.general.enabled);
+                    assert_eq!(&app.settings.runtime_settings_snapshot().value, &before);
                     assert!(app.pending_changes());
+                    let _ = app.update(Message::AdaptiveProcessorPower(PowerMessage::Tab(
+                        Tab::DemandProfiles,
+                    )));
                 } else if index == 8 {
                     let _ = app.update(Message::Adaptive(AdaptiveMessage::New));
                 } else if index == 6 || index == 9 {
@@ -725,13 +775,27 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             app.side_panel_open = true;
             app.side_panel_tab = SidePanelTab::Status;
         }
+        if extra == Some(70) {
+            exercise_adaptive_processor_power_presets(app);
+            let _ = app.update(Message::AdaptiveProcessorPower(
+                adaptive_processor_power::Message::Tab(
+                    adaptive_processor_power::Tab::DemandProfiles,
+                ),
+            ));
+        } else if extra == Some(71) {
+            use adaptive_processor_power::Message as PowerMessage;
+
+            let _ = app.update(Message::AdaptiveProcessorPower(PowerMessage::NewPreset));
+            assert!(app.adaptive_processor_power.preset_open());
+        }
         let size = match extra {
-            Some(35..=37 | 40 | 42 | 44..=50 | 52..=69) => iced::Size::new(900.0, 620.0),
+            Some(35..=37 | 40 | 42 | 44..=50 | 52..=69 | 71) => iced::Size::new(900.0, 620.0),
             Some(30) => iced::Size::new(1280.0, 720.0),
             Some(31) => iced::Size::new(1440.0, 900.0),
             Some(32) => iced::Size::new(1920.0, 720.0),
             Some(33) => iced::Size::new(900.0, 1000.0),
             Some(34) => iced::Size::new(1536.0, 960.0),
+            Some(70) => iced::Size::new(1120.0, 920.0),
             _ => iced::Size::new(
                 if extra.is_some_and(|i| i >= 13) {
                     1920.0
@@ -757,12 +821,6 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
         ]));
     }
     run.ticks += 1;
-    if app.page == Page::AdaptiveProcessorPower && run.ticks == 3 {
-        return Some(iced::widget::operation::snap_to(
-            "adaptive-processor-power-settings",
-            iced::widget::scrollable::RelativeOffset { x: 0.0, y: 1.0 },
-        ));
-    }
     if extra == Some(53) && run.ticks == 3 {
         return Some(iced::widget::operation::snap_to(
             "watchdog-rule-details",
@@ -795,6 +853,84 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
         Some(Task::none())
     }
 }
+
+fn exercise_adaptive_processor_power_presets(app: &mut WinderustApp) {
+    use adaptive_processor_power::{BuiltInPreset, Message as PowerMessage};
+
+    let mut settings = crate::config::Settings::default();
+    settings.general = app.settings.global().general.clone();
+    settings.general.enabled = false;
+    app.settings = SettingsEditor::with_settings(settings);
+    app.power_source = PowerSourceProfile::PluggedIn;
+    app.reset_editors();
+
+    let runtime_before = app.settings.runtime_settings_snapshot().value;
+    let _ = app.update(Message::PowerSource(PowerSourceProfile::OnBattery));
+    assert_eq!(app.power_source, PowerSourceProfile::OnBattery);
+    let _ = app.update(Message::AdaptiveProcessorPower(PowerMessage::Preset(
+        BuiltInPreset::Balanced,
+    )));
+    let battery = app.settings.adaptive_engine.clone();
+
+    let _ = app.update(Message::AdaptiveProcessorPower(PowerMessage::NewPreset));
+    assert!(app.adaptive_processor_power.preset_open());
+    let _ = app.update(Message::AdaptiveProcessorPower(PowerMessage::PresetName(
+        "Canceled preset".into(),
+    )));
+    let _ = app.search_keyboard(
+        iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape),
+        iced::keyboard::Modifiers::empty(),
+        false,
+        iced::event::Status::Ignored,
+    );
+    assert!(!app.adaptive_processor_power.preset_open());
+    assert!(app
+        .settings
+        .global()
+        .adaptive_processor_power_presets
+        .is_empty());
+
+    for message in [
+        PowerMessage::NewPreset,
+        PowerMessage::PresetName("Quiet battery".into()),
+        PowerMessage::SavePreset,
+    ] {
+        let _ = app.update(Message::AdaptiveProcessorPower(message));
+    }
+    assert!(!app.adaptive_processor_power.preset_open());
+    let presets = &app.settings.global().adaptive_processor_power_presets;
+    assert_eq!(presets.len(), 1);
+    let preset = presets[0].clone();
+    assert_eq!(preset.name, "Quiet battery");
+    assert!(preset.matches(&battery, PowerSourceProfile::OnBattery));
+
+    let _ = app.update(Message::PowerSource(PowerSourceProfile::PluggedIn));
+    assert_eq!(app.power_source, PowerSourceProfile::PluggedIn);
+    let _ = app.update(Message::AdaptiveProcessorPower(PowerMessage::ApplyPreset(
+        0,
+    )));
+    assert!(preset.matches(&app.settings.adaptive_engine, PowerSourceProfile::PluggedIn));
+    assert!(
+        !app.settings
+            .adaptive_engine
+            .adaptive_processor_power_enabled
+    );
+    assert_eq!(
+        app.settings.global().battery_profile().adaptive_engine,
+        battery
+    );
+    assert!(app
+        .settings
+        .persisted()
+        .adaptive_processor_power_presets
+        .is_empty());
+    assert_eq!(
+        app.settings.runtime_settings_snapshot().value,
+        runtime_before
+    );
+    assert!(app.pending_changes());
+}
+
 pub(super) fn captured(app: &mut WinderustApp, shot: iced::window::Screenshot) -> Task<Message> {
     let run = app
         .smoke
@@ -838,6 +974,6 @@ pub(crate) fn render_all_pages() {
             .filter_map(Result::ok)
             .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "png"))
             .count(),
-        150
+        152
     );
 }

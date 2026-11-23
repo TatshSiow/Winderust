@@ -1,10 +1,10 @@
 use super::{
-    action_log, adaptive_engine, advanced_power_plan_tuning, app_suspension, background_efficiency,
-    by_activity, cpu_allocation, cpu_limiter, design, home, instance_balancing, instance_limits,
-    interrupt_timing, keep_running, memory_trim, navigation, power_plan_control, power_rules,
-    priority_control, process_list, process_power_plans, settings_pages, sleep_prevention,
-    status_rail, tasks, timer_resolution, watchdog, widgets, win32_priority_separation,
-    window_frame,
+    action_log, adaptive_engine, adaptive_processor_power, advanced_power_plan_tuning,
+    app_suspension, background_efficiency, by_activity, cpu_allocation, cpu_limiter, design, home,
+    instance_balancing, instance_limits, interrupt_timing, keep_running, memory_trim, navigation,
+    power_plan_control, power_rules, priority_control, process_list, process_power_plans,
+    settings_pages, sleep_prevention, status_rail, tasks, timer_resolution, watchdog, widgets,
+    win32_priority_separation, window_frame,
 };
 use crate::ui::scrolling::scrollable;
 use std::{
@@ -53,9 +53,10 @@ enum SidePanelTab {
 impl SidePanelTab {
     fn for_page(feature_page: Page) -> &'static [Self] {
         match feature_page {
-            Page::AdaptiveEngine | Page::CpuSetsSoft | Page::ProcessorAffinityHard => {
-                &[Self::Info, Self::Status, Self::Presets]
-            }
+            Page::AdaptiveEngine
+            | Page::AdaptiveProcessorPower
+            | Page::CpuSetsSoft
+            | Page::ProcessorAffinityHard => &[Self::Info, Self::Status, Self::Presets],
             Page::AdvancedPowerPlanTuning => &[Self::Info, Self::Presets],
             Page::Win32PrioritySeparation => &[Self::Info],
             _ => &[Self::Info, Self::Status],
@@ -280,6 +281,7 @@ pub(crate) fn run(
                 soft_allocation: cpu_allocation::Editor::default(),
                 hard_allocation: cpu_allocation::Editor::default(),
                 adaptive: adaptive_engine::Editor::default(),
+                adaptive_processor_power: adaptive_processor_power::Editor::default(),
                 interrupt_timing: interrupt_timing::State::default(),
                 candidates: Arc::default(),
                 unavailable_candidates: Vec::new(),
@@ -592,6 +594,7 @@ struct WinderustApp {
     soft_allocation: cpu_allocation::Editor,
     hard_allocation: cpu_allocation::Editor,
     adaptive: adaptive_engine::Editor,
+    adaptive_processor_power: adaptive_processor_power::Editor,
     interrupt_timing: interrupt_timing::State,
     candidates: Arc<Vec<super::app_picker::Candidate>>,
     unavailable_candidates: Vec<String>,
@@ -677,6 +680,7 @@ enum Message {
     Efficiency(background_efficiency::Message),
     Allocation(cpu_allocation::Kind, cpu_allocation::Message),
     Adaptive(adaptive_engine::Message),
+    AdaptiveProcessorPower(adaptive_processor_power::Message),
     PollInterruptTiming,
     Catalog(Result<Arc<Vec<super::app_picker::Candidate>>, String>),
     ExecutableChosen(Page, PowerSourceProfile, Option<PathBuf>),
@@ -1164,6 +1168,7 @@ impl WinderustApp {
                     }
                 }
             }
+            Message::OpenNavigationSearch if self.adaptive_processor_power.preset_open() => {}
             Message::OpenNavigationSearch => {
                 self.navigation.dismiss();
                 self.navigation_search_open = true;
@@ -1605,6 +1610,16 @@ impl WinderustApp {
                 }
                 self.adaptive.update(&mut self.settings, message);
             }
+            Message::AdaptiveProcessorPower(message) => {
+                let preset_was_open = self.adaptive_processor_power.preset_open();
+                self.adaptive_processor_power
+                    .update(&mut self.settings, message);
+                if !preset_was_open && self.adaptive_processor_power.preset_open() {
+                    return iced::widget::operation::focus(
+                        adaptive_processor_power::PRESET_NAME_INPUT_ID,
+                    );
+                }
+            }
             Message::Catalog(result) => {
                 self.catalog_loading = false;
                 match result {
@@ -1856,6 +1871,7 @@ impl WinderustApp {
                     }
                 }
             }
+            Message::Page(_) if self.adaptive_processor_power.preset_open() => {}
             Message::Page(page) => {
                 let entering_page = self.page != page;
                 self.preferences.dismiss_picker();
@@ -2156,8 +2172,8 @@ impl WinderustApp {
             Message::Save if self.watchdog.has_invalid_inputs() => {
                 self.error_message = t!("watchdog.invalid_duration").to_string();
             }
-            Message::Save if self.adaptive.validation_error().is_some() => {
-                self.error_message = self.adaptive.validation_error().unwrap_or_default();
+            Message::Save if self.adaptive_validation_error().is_some() => {
+                self.error_message = self.adaptive_validation_error().unwrap_or_default();
             }
             Message::Save if self.cpu_limiter.has_invalid_inputs() => {
                 self.error_message = t!("cpu_limiter.invalid_limit").to_string();
@@ -2250,6 +2266,11 @@ impl WinderustApp {
                 return self.shutdown();
             }
             Message::SettingsFile(_) if self.blocking_editor_open() || self.invalid_inputs() => {
+                self.error_message = t!("unsaved.message").to_string();
+            }
+            Message::SettingsFileChosen(FileDialogMode::Open, Some(_))
+                if self.adaptive_processor_power.preset_open() =>
+            {
                 self.error_message = t!("unsaved.message").to_string();
             }
             Message::SettingsFile(FileDialogMode::Open)
@@ -2402,6 +2423,12 @@ impl WinderustApp {
             )
         })
     }
+    fn adaptive_validation_error(&self) -> Option<String> {
+        self.adaptive
+            .validation_error()
+            .or_else(|| self.adaptive_processor_power.validation_error())
+    }
+
     fn invalid_inputs(&self) -> bool {
         self.settings.validate_watchdog().is_err()
             || self.settings.validate_keep_running().is_err()
@@ -2415,7 +2442,7 @@ impl WinderustApp {
             || self.trim.invalid_threshold().is_some()
             || self.timer.has_invalid_inputs()
             || self.preferences.has_invalid_inputs()
-            || self.adaptive.validation_error().is_some()
+            || self.adaptive_validation_error().is_some()
             || !self.activity_inputs.valid()
             || !self.time_rules.valid()
             || !self.cpu_rules.valid()
@@ -2471,6 +2498,7 @@ impl WinderustApp {
     fn pending_editor(&self) -> bool {
         self.power_tuning.has_pending_editor()
             || self.adaptive.has_pending_editor()
+            || self.adaptive_processor_power.preset_open()
             || self.soft_allocation.has_pending_editor()
             || self.hard_allocation.has_pending_editor()
             || self.cpu_limiter.has_pending_editor()
@@ -2494,6 +2522,9 @@ impl WinderustApp {
             Page::AdaptiveEngine if self.adaptive.preset_open() => {
                 Some(Message::Adaptive(adaptive_engine::Message::Cancel))
             }
+            Page::AdaptiveProcessorPower if self.adaptive_processor_power.preset_open() => Some(
+                Message::AdaptiveProcessorPower(adaptive_processor_power::Message::CancelPreset),
+            ),
             Page::CpuSetsSoft if self.soft_allocation.preset_open() => Some(Message::Allocation(
                 cpu_allocation::Kind::Soft,
                 cpu_allocation::Message::ClosePreset,
@@ -2561,6 +2592,7 @@ impl WinderustApp {
         self.soft_allocation.reset_drafts();
         self.hard_allocation.reset_drafts();
         self.adaptive.reset_drafts();
+        self.adaptive_processor_power.reset_drafts();
         self.time_rules = Default::default();
         self.cpu_rules = Default::default();
         self.suspension = Default::default();
@@ -2985,6 +3017,14 @@ impl WinderustApp {
                 self.adaptive
                     .presets_panel(&self.settings)
                     .map(Message::Adaptive),
+            )
+        } else if page == Page::AdaptiveProcessorPower
+            && self.side_panel_tab == SidePanelTab::Presets
+        {
+            Some(
+                self.adaptive_processor_power
+                    .presets_panel(&self.settings)
+                    .map(Message::AdaptiveProcessorPower),
             )
         } else if page == Page::AdvancedPowerPlanTuning {
             Some(
@@ -3436,6 +3476,10 @@ impl WinderustApp {
                     .preset_modal(&self.settings, &self.candidates)
                     .map(Message::Adaptive),
             ),
+            Page::AdaptiveProcessorPower => self
+                .adaptive_processor_power
+                .preset_modal(&self.settings)
+                .map(|modal| modal.map(Message::AdaptiveProcessorPower)),
             Page::ByTime => self
                 .time_rules
                 .modal(power_rules::Kind::Time, &self.power_plans)
@@ -3597,9 +3641,9 @@ impl WinderustApp {
                 .view()
                 .map(Message::PrioritySeparation),
             Page::AdaptiveProcessorPower => self
-                .adaptive
-                .processor_power_view(&self.settings)
-                .map(Message::Adaptive),
+                .adaptive_processor_power
+                .view(&self.settings)
+                .map(Message::AdaptiveProcessorPower),
             Page::AdvancedPowerPlanTuning => self
                 .power_tuning
                 .view(
@@ -4255,6 +4299,7 @@ mod tests {
                 for feature_page in [
                     Page::CpuLimiter,
                     Page::AdaptiveEngine,
+                    Page::AdaptiveProcessorPower,
                     Page::AdvancedPowerPlanTuning,
                 ] {
                     for &selected in SidePanelTab::for_page(feature_page) {
