@@ -662,6 +662,12 @@ pub fn process_candidates_from_processes(processes: &[ProcessInfo]) -> Vec<Proce
 }
 
 pub fn list_processes() -> Result<Vec<ProcessInfo>, String> {
+    list_processes_with(|_, _| {})
+}
+
+fn list_processes_with(
+    mut enrich: impl FnMut(&mut ProcessInfo, &WinHandle),
+) -> Result<Vec<ProcessInfo>, String> {
     let mut processes = list_process_entries()?;
     for process in &mut processes {
         process.session_id = process_session_id(process.id);
@@ -672,6 +678,7 @@ pub fn list_processes() -> Result<Vec<ProcessInfo>, String> {
         process.is_critical = process_critical_from_handle(&handle);
         process.can_set_information = process_protection_from_handle(&handle) == Some(false)
             && process_has_access(process.id, PROCESS_SET_INFORMATION);
+        enrich(process, &handle);
     }
     Ok(processes)
 }
@@ -734,32 +741,24 @@ fn list_process_entries() -> Result<Vec<ProcessInfo>, String> {
 }
 
 pub fn list_processes_with_paths() -> Result<Vec<ProcessInfo>, String> {
-    let mut processes = list_processes()?;
     let mut account_names = BTreeMap::new();
-    enrich_process_metadata(&mut processes, |handle| {
-        process_identity_from_handle(handle, &mut account_names)
-    });
-    Ok(processes)
+    list_processes_with(|process, handle| {
+        process.image_path = process_image_path_from_handle(handle);
+        (process.user_name, process.is_service_account) =
+            process_identity_from_handle(handle, &mut account_names);
+    })
 }
 
 pub(crate) fn enrich_process_paths(processes: &mut [ProcessInfo]) {
     // Policy and picker scans need SID safety classification, not display names.
-    enrich_process_metadata(processes, |handle| {
-        (None, process_runs_as_service_account_from_handle(handle))
-    });
-}
-
-fn enrich_process_metadata(
-    processes: &mut [ProcessInfo],
-    mut identity: impl FnMut(&WinHandle) -> (Option<String>, Option<bool>),
-) {
     for process in processes {
         let Some(handle) = open_process_for_query(process.id) else {
             continue;
         };
         process.image_path = process_image_path_from_handle(&handle);
         process.creation_time = handle.process_creation_time();
-        (process.user_name, process.is_service_account) = identity(&handle);
+        process.user_name = None;
+        process.is_service_account = process_runs_as_service_account_from_handle(&handle);
         process.is_critical = process_critical_from_handle(&handle);
     }
 }

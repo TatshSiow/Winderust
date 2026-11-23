@@ -976,6 +976,13 @@ Winderust keeps App Suspension opt-in and limited to explicitly selected apps be
 | `CloseHandle` | Closes process and job handles after use. | https://learn.microsoft.com/en-us/windows/win32/api/handleapi/nf-handleapi-closehandle |
 | `SetLastError` / `GetLastError` | Clears the thread error slot immediately before `CreateJobObjectW`, then captures it immediately afterward so `ERROR_ALREADY_EXISTS` cannot be confused with a stale success-path value; other failures likewise capture their error before another Win32 call. | [Set](https://learn.microsoft.com/en-us/windows/win32/api/errhandlingapi/nf-errhandlingapi-setlasterror) / [Get](https://learn.microsoft.com/en-us/windows/win32/api/errhandlingapi/nf-errhandlingapi-getlasterror) |
 
+The full Process List catalog in `src/foreground/process_list.rs::list_processes_with_paths`
+reads creation time, critical/protection state, the image path, and account data
+using one `PROCESS_QUERY_LIMITED_INFORMATION` handle per process. The existing
+`PROCESS_SET_INFORMATION` access probe uses a separate handle while the query
+handle remains open. Windows retains the process ID until all handles close and
+the process object is freed. [Process IDs and handle lifetime](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/ns-processthreadsapi-process_information)
+
 Implementation paths: process account/session capture and one-time target validation are in
 `src/foreground/process_list.rs`; rule-driven filtering is applied by the
 individual process-control managers under `src/features/`. Winderust Behaviour
