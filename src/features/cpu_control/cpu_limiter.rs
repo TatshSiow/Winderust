@@ -563,6 +563,7 @@ fn requires_foreground_observation(settings: &CpuLimiterSettings) -> bool {
         .any(|rule| {
             let focus = resolved_allowed_cpu_time_percent(settings, rule, true, false);
             focus != resolved_allowed_cpu_time_percent(settings, rule, false, true)
+                || focus != resolved_allowed_cpu_time_percent(settings, rule, false, false)
         })
 }
 
@@ -790,16 +791,16 @@ mod tests {
     }
 
     #[test]
-    fn matching_focus_and_visible_tiers_do_not_require_foreground_observation() {
+    fn matching_focus_and_visible_tiers_still_require_foreground_when_background_differs() {
         let settings = CpuLimiterSettings {
             enabled: true,
-            focus_allowed_cpu_time_percent: 60,
-            visible_window_allowed_cpu_time_percent: 60,
+            focus_allowed_cpu_time_percent: 100,
+            visible_window_allowed_cpu_time_percent: 100,
             background_allowed_cpu_time_percent: 25,
             rules: vec![rule()],
         };
 
-        assert!(!requires_foreground_observation(&settings));
+        assert!(requires_foreground_observation(&settings));
         assert!(requires_visible_window_observation(&settings));
     }
 
@@ -846,7 +847,13 @@ mod tests {
 
         assert!(update(&settings).observation_paused);
 
+        settings.visible_window_allowed_cpu_time_percent = 100;
+        assert!(update(&settings).observation_paused);
+
         settings.focus_allowed_cpu_time_percent = 25;
+        settings.visible_window_allowed_cpu_time_percent = 25;
+        assert!(!requires_foreground_observation(&settings));
+        assert!(!requires_visible_window_observation(&settings));
         let independent = update(&settings);
         assert!(!independent.observation_paused);
         assert_eq!(independent.scanned_processes, 1);
