@@ -761,11 +761,7 @@ impl Editor {
                 if let Some(values) = self.values.as_mut() {
                     self.invalid_percentages[source as usize] = Default::default();
                     let current = source_values(values, source);
-                    let preset = choice.1.normalized();
-                    *current = with_supported_settings(
-                        preset.with_boost_mode(Some(preset.processor.boost_mode)),
-                        *current,
-                    );
+                    *current = preset_values(choice.1, *current);
                     self.selected_presets[source as usize] = Some(choice);
                     self.update_dirty();
                 }
@@ -1354,18 +1350,18 @@ fn source_values(
     }
 }
 fn preset_matches(preset: AdvancedPowerPlanTuningValues, actual: EditableTuningValues) -> bool {
+    preset_values(preset, actual) == actual
+}
+
+fn preset_values(
+    preset: AdvancedPowerPlanTuningValues,
+    current: EditableTuningValues,
+) -> EditableTuningValues {
     let preset = preset.normalized();
-    let boost_mode = actual
-        .processor
-        .boost_mode
-        .map(|_| preset.processor.boost_mode);
-    preset.processor.with_boost_mode(boost_mode) == actual.processor
-        && preset
-            .scheduling_policy
-            .is_none_or(|policy| Some(policy) == actual.scheduling_policy)
-        && preset
-            .short_scheduling_policy
-            .is_none_or(|policy| Some(policy) == actual.short_scheduling_policy)
+    with_supported_settings(
+        preset.with_boost_mode(Some(preset.processor.boost_mode)),
+        current,
+    )
 }
 
 fn with_supported_settings(
@@ -2295,8 +2291,30 @@ mod tests {
             ),
         );
         assert!(!editor.dirty);
-        editor.update(&mut settings, &[], Message::Load(Source::Battery, choice));
-        assert_eq!(editor.values.unwrap().battery.scheduling_policy, None);
+        editor.update(
+            &mut settings,
+            &[],
+            Message::Load(Source::Battery, choice.clone()),
+        );
+        let battery = editor.values.unwrap().battery;
+        let choices = std::slice::from_ref(&choice);
+        assert_eq!(battery.scheduling_policy, None);
+        assert_eq!(
+            editor.selected_preset(Source::Battery, battery, choices),
+            Some(choice.clone())
+        );
+        editor.update(
+            &mut settings,
+            &[],
+            Message::Scheduling(
+                Source::Battery,
+                SchedulingField::ShortRunning,
+                ProcessorSchedulingPolicy::Automatic,
+            ),
+        );
+        assert!(editor
+            .selected_preset(Source::Battery, editor.values.unwrap().battery, choices)
+            .is_none());
         editor.update(
             &mut settings,
             &[],
