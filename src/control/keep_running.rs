@@ -73,9 +73,6 @@ impl Member {
     pub(crate) fn key(&self) -> ProcessTargetKey {
         self.target.key()
     }
-    pub(crate) fn executable_identity(&self) -> &ExecutableIdentity {
-        self.native.executable_identity()
-    }
     pub(crate) fn exit_confirmed(&self) -> Result<bool, KeepRunningError> {
         self.native.exit_confirmed().map_err(Into::into)
     }
@@ -100,14 +97,16 @@ pub(crate) fn retain_member(
 }
 
 /// Fresh enumeration, distinct from cached cycle membership. Any plausible unverifiable match fails
-/// the observation instead of certifying absence. Callers exclude only their exact prepared child.
+/// the observation instead of certifying absence. Retained members must still match the scan's
+/// verified file identity. Callers exclude only their exact prepared child.
 pub(crate) fn scan_members(
     spec: &LaunchSpec,
     context: &DesktopContext,
     exclude: Option<&ProcessTargetKey>,
 ) -> Result<Vec<Member>, KeepRunningError> {
+    let (identity, candidates) = native::matching_processes(&spec.0)?;
     let mut members = Vec::new();
-    for candidate in native::matching_processes(&spec.0)? {
+    for candidate in candidates {
         let target = ProcessControlTarget::automatic(
             candidate.id,
             candidate.name,
@@ -118,6 +117,15 @@ pub(crate) fn scan_members(
             continue;
         }
         members.push(retain_member(&target, context)?);
+    }
+    if members
+        .iter()
+        .any(|member| member.native.executable_identity() != &identity)
+    {
+        return Err(native::KeepRunningError::Unsupported(
+            "Keep Running executable identity changed during observation.",
+        )
+        .into());
     }
     Ok(members)
 }

@@ -1310,8 +1310,10 @@ acquisition checks. The raw boundary is `src/platform/windows/keep_running.rs`.
   on the original UTF-16 filenames. Inspection failures for a possible match
   leave absence unknown. Resolved aliases use volume serial
   plus [FILE_ID_INFO](https://learn.microsoft.com/en-us/windows/win32/api/winbase/ns-winbase-file_id_info)
-  file ID. An inaccessible differently named alias cannot be ruled out, and a
-  path's current file identity does not prove an unchanged loaded image section.
+  file ID. The control layer checks retained members against the same verified
+  file identity used by the scan. An inaccessible differently named alias cannot
+  be ruled out, and a path's current file identity does not prove an unchanged
+  loaded image section.
   Retained exact process handles, not missing enumeration, prove member exit.
 
 No undocumented token layouts, privilege enabling, service/session launch,

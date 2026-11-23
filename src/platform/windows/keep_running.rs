@@ -714,7 +714,9 @@ pub(crate) struct ObservedProcess {
     pub(crate) creation_time: u64,
 }
 
-pub(crate) fn matching_processes(spec: &LaunchSpec) -> Result<Vec<ObservedProcess>> {
+pub(crate) fn matching_processes(
+    spec: &LaunchSpec,
+) -> Result<(ExecutableIdentity, Vec<ObservedProcess>)> {
     let expected = spec.identity()?;
     let name = spec
         .executable
@@ -797,7 +799,7 @@ pub(crate) fn matching_processes(spec: &LaunchSpec) -> Result<Vec<ObservedProces
     if last_error() != windows_sys::Win32::Foundation::ERROR_NO_MORE_FILES {
         return Err(failed("Process32NextW"));
     }
-    Ok(matches)
+    Ok((expected, matches))
 }
 
 struct AttributeList(Vec<usize>);
@@ -1371,6 +1373,36 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_file(&self.0);
         }
+    }
+
+    #[test]
+    #[ignore = "Reads the native process catalog and executable file identities."]
+    fn native_catalog_verifies_the_configured_identity() {
+        use crate::platform::windows::process::{open, ProcessAccess};
+
+        let executable = std::env::current_exe().expect("test executable path");
+        let directory = executable.parent().expect("test executable directory");
+        let mut spec = LaunchSpec::new(&executable, "", directory).expect("test launch spec");
+        let pid = std::process::id();
+        let process = open(pid, ProcessAccess::Observation).expect("open the test process");
+        let creation_time = process
+            .process_creation_time()
+            .expect("test process creation time");
+
+        let (identity, matches) = matching_processes(&spec).expect("scan the native catalog");
+        assert!(identity == spec.executable_identity);
+        let own = matches
+            .iter()
+            .find(|candidate| candidate.id == pid)
+            .expect("find the test process");
+        assert_eq!(own.creation_time, creation_time);
+        assert!(file_identity(&own.path).expect("observed image file identity") == identity);
+
+        spec.executable_identity.file[0] ^= 1;
+        let error = matching_processes(&spec)
+            .err()
+            .expect("stale file identity must fail the scan");
+        assert_eq!(error.kind(), ErrorKind::Unsupported);
     }
 
     #[test]

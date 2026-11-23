@@ -48,19 +48,7 @@ impl Platform for Windows {
         context: &Self::Context,
         exclude: Option<&ProcessTargetKey>,
     ) -> Result<Vec<Self::Member>, Failure> {
-        let spec = spec(rule)?;
-        let identity = spec.identity().map_err(failure)?;
-        let members = control::scan_members(&spec, context, exclude).map_err(failure)?;
-        if members
-            .iter()
-            .any(|member| member.executable_identity() != &identity)
-        {
-            return Err(Failure {
-                kind: FailureKind::UnsupportedContext,
-                message: "Keep Running executable identity changed during observation.".into(),
-            });
-        }
-        Ok(members)
+        control::scan_members(&spec(rule)?, context, exclude).map_err(failure)
     }
     fn key(member: &Self::Member) -> ProcessTargetKey {
         member.key()
