@@ -906,9 +906,24 @@ pub(crate) fn unicode_case_match(left: &str, right: &str) -> bool {
     if left.is_ascii() && right.is_ascii() {
         return false;
     }
-    let left: Vec<_> = left.encode_utf16().collect();
-    let right: Vec<_> = right.encode_utf16().collect();
+    let mut left_buffer = [0; 128];
+    let mut right_buffer = [0; 128];
+    let left = utf16_for_ordinal(left, &mut left_buffer);
+    let right = utf16_for_ordinal(right, &mut right_buffer);
     crate::platform::windows::ordinal_equal(&left, &right).unwrap_or(false)
+}
+
+fn utf16_for_ordinal<'a>(text: &str, buffer: &'a mut [u16]) -> Cow<'a, [u16]> {
+    // The UTF-8 byte length bounds the UTF-16 unit count.
+    if text.len() > buffer.len() {
+        return Cow::Owned(text.encode_utf16().collect());
+    }
+    let mut len = 0;
+    for unit in text.encode_utf16() {
+        buffer[len] = unit;
+        len += 1;
+    }
+    Cow::Borrowed(&buffer[..len])
 }
 
 pub(crate) fn same_executable_name(left: &str, right: &str) -> bool {
@@ -1780,6 +1795,17 @@ mod tests {
             &path,
             Path::new("C:\\Games\\directory-\u{fffd}\\game.exe"),
         ));
+    }
+
+    #[test]
+    fn executable_name_comparison_preserves_unicode_on_both_buffer_paths() {
+        for prefix in [String::new(), "a".repeat(128)] {
+            let upper = format!("{prefix}Ü\u{1f680}.EXE");
+            let lower = format!("{prefix}ü\u{1f680}.exe");
+            let different = format!("{prefix}ü\u{1f681}.exe");
+            assert!(same_executable_name(&upper, &lower));
+            assert!(!same_executable_name(&upper, &different));
+        }
     }
 
     #[test]
