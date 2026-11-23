@@ -17,8 +17,9 @@ use crate::{
         suspension::{self as suspension_control, SuspensionTarget},
     },
     foreground::{
-        is_foreground_process, process_executable_path, process_failure_key, process_session_id,
-        same_executable_path, ProcessInfo, ProtectedProcesses,
+        is_foreground_process, process_executable_path, process_failure_key,
+        process_list::catalog_process_executable_path, process_session_id, same_executable_path,
+        ProcessInfo, ProtectedProcesses,
     },
     rules::{execution_failure_suppression_threshold, ExecutionFailureTracker},
     runtime::observations::CycleObservations,
@@ -116,15 +117,14 @@ impl CpuLimiterManager {
                 return snapshot;
             }
         };
+        let foreground_executable_path =
+            foreground_process_id.and_then(|id| catalog_process_executable_path(&processes, id));
+        if needs_foreground && foreground_executable_path.is_none() {
+            return self.paused(controller, action_log);
+        }
         self.release_pending = false;
 
         let scanned_processes = processes.len();
-        let foreground_executable_path = foreground_process_id.and_then(|id| {
-            processes
-                .iter()
-                .find(|process| process.id == id)
-                .and_then(process_executable_path)
-        });
         let visible_processes = ProtectedProcesses::capture(
             processes.as_ref(),
             false,
@@ -640,8 +640,11 @@ fn verified_ancestor_process_ids(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{Arc, Mutex};
+
     use super::*;
     use crate::config::ProcessRuleMode;
+    use crate::control::suspension::SuspensionController;
     use crate::foreground::ProcessInfo;
 
     fn limited_process(process_id: u32) -> (ProcessTargetKey, LimitedProcess) {
@@ -738,17 +741,25 @@ mod tests {
             is_critical: Some(false),
             can_set_information: true,
             name: "browser.exe".to_owned(),
-            image_path: Some(app_path.to_path_buf()),
+            image_path: Some(Path::new("c:/apps/browser/browser.exe").to_path_buf()),
         };
+        let processes = [visible_process];
+        let foreground_path = catalog_process_executable_path(&processes, 7);
         let visible_processes = crate::foreground::ProtectedProcesses::capture(
-            &[visible_process],
+            &processes,
             false,
             None,
             BTreeSet::from([7]),
         );
 
         assert_eq!(
-            detected_process_tier(8, app_path, Some(7), Some(app_path), &visible_processes),
+            detected_process_tier(
+                8,
+                app_path,
+                Some(7),
+                foreground_path.as_deref(),
+                &visible_processes,
+            ),
             (true, false)
         );
         assert_eq!(
@@ -790,6 +801,60 @@ mod tests {
 
         assert!(!requires_foreground_observation(&settings));
         assert!(requires_visible_window_observation(&settings));
+    }
+
+    #[test]
+    fn unverified_foreground_executable_pauses_focus_dependent_limits() {
+        let process_id = std::process::id();
+        let mut observations = CycleObservations::with_processes(vec![ProcessInfo {
+            id: process_id,
+            creation_time: None,
+            parent_id: None,
+            session_id: None,
+            user_name: None,
+            is_service_account: None,
+            is_critical: None,
+            can_set_information: false,
+            name: "test process".to_owned(),
+            image_path: None,
+        }]);
+        let mut manager = CpuLimiterManager::default();
+        let (key, limited) = limited_process(42);
+        manager.limited.insert(key, limited);
+        let mut controller =
+            CpuLimiterController::new(Arc::new(Mutex::new(SuspensionController::default())))
+                .unwrap();
+        let mut action_log = ActionLog::default();
+        let mut settings = CpuLimiterSettings {
+            enabled: true,
+            focus_allowed_cpu_time_percent: 100,
+            visible_window_allowed_cpu_time_percent: 25,
+            background_allowed_cpu_time_percent: 25,
+            rules: vec![rule()],
+        };
+        let mut update = |settings: &CpuLimiterSettings| {
+            manager.update(
+                &mut controller,
+                settings,
+                true,
+                true,
+                Some(process_id),
+                &mut observations,
+                &mut action_log,
+            )
+        };
+
+        assert!(update(&settings).observation_paused);
+
+        settings.focus_allowed_cpu_time_percent = 25;
+        let independent = update(&settings);
+        assert!(!independent.observation_paused);
+        assert_eq!(independent.scanned_processes, 1);
+        assert!(manager.limited.is_empty());
+        let restored = action_log.entries();
+        assert_eq!(restored.len(), 1);
+        assert_eq!(restored[0].process_id, Some(42));
+        assert_eq!(restored[0].result, ActionLogResult::Restored);
     }
 
     #[test]
