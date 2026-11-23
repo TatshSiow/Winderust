@@ -13,9 +13,13 @@ use crate::{
     },
     cpu_topology::CpuTopology,
     features::cpu_control::instance_balancing::{Assignment, Cohort, PlanError, Policy},
+    foreground::same_executable_path,
 };
 use rust_i18n::t;
-use std::{collections::BTreeMap, path::PathBuf};
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct InstanceBalancingSnapshot {
@@ -307,13 +311,10 @@ fn target(member: &Member) -> Result<ProcessControlTarget, String> {
     ))
 }
 
-fn explicit_selection(settings: &Settings, path: &str) -> Result<bool, String> {
-    for selected in explicit_cpu_allocation_paths(settings) {
-        if membership::paths_equal(&selected, path)? {
-            return Ok(true);
-        }
-    }
-    Ok(false)
+fn explicit_selection(explicit_paths: &[String], path: &str) -> bool {
+    explicit_paths
+        .iter()
+        .any(|selected| same_executable_path(Path::new(selected), Path::new(path)))
 }
 
 fn known_exclusion(error: &CpuAllocationApplyError) -> bool {
@@ -338,6 +339,7 @@ fn prepare_cohort<P: CpuAllocationPlatform>(
     let generation = rule
         .generation
         .ok_or_else(|| "Instance Balancing exhausted its rule generations.".to_owned())?;
+    let explicit_paths = explicit_cpu_allocation_paths(settings);
     let mut members = Vec::new();
     let mut excluded = Vec::new();
     for member in rule.retained.values() {
@@ -345,7 +347,7 @@ fn prepare_cohort<P: CpuAllocationPlatform>(
             return Err(t!("instance_balancing.changed").to_string());
         }
         let target = target(member)?;
-        if explicit_selection(settings, &member.path)? {
+        if explicit_selection(&explicit_paths, &member.path) {
             excluded.push(InstanceBalancingExclusion::ExplicitSelection {
                 process_name: target.name,
                 pid: target.id,

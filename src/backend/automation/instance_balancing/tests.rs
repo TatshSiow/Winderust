@@ -1,10 +1,49 @@
 use super::*;
 use crate::{
+    config::CpuAllocationRule,
     control::{cpu_allocation::CpuAllocationRecoveryIntent, process::ProcessIdentity},
     cpu_topology::{test_selection, test_topology},
     platform::windows::cpu_allocation::CpuSetRecord,
 };
 use std::{cell::RefCell, rc::Rc};
+
+#[test]
+fn explicit_cpu_rules_exclude_matching_instances_without_rejecting_unrelated_paths() {
+    let explicit_rule = |path: &str| CpuAllocationRule {
+        enabled: true,
+        executable_path: path.to_owned(),
+        focus_selection: test_selection(1),
+        visible_window_selection: test_selection(0),
+        background_selection: test_selection(0),
+    };
+    let mut settings = Settings {
+        cpu_sets_soft: CpuAllocationSettings {
+            enabled: true,
+            rules: vec![explicit_rule(r"C:\Apps\.\other.exe")],
+        },
+        processor_affinity_hard: CpuAllocationSettings {
+            enabled: true,
+            rules: vec![],
+        },
+        ..Default::default()
+    };
+    let instance = r"C:\Apps\worker.exe";
+    let excluded = |settings: &Settings| {
+        explicit_selection(&explicit_cpu_allocation_paths(settings), instance)
+    };
+    assert!(!excluded(&settings));
+
+    settings
+        .processor_affinity_hard
+        .rules
+        .push(explicit_rule("C:/Apps/worker.exe"));
+    assert!(excluded(&settings));
+
+    settings.processor_affinity_hard.enabled = false;
+    assert!(!excluded(&settings));
+    settings.cpu_sets_soft.rules.push(explicit_rule(instance));
+    assert!(excluded(&settings));
+}
 
 #[derive(Default)]
 struct State {
