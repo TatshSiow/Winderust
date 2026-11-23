@@ -447,7 +447,8 @@ impl WatchdogManager {
                             delay,
                             now,
                         );
-                    let warning = responds(&monitor.warning)
+                    let warning_enabled = responds(&monitor.warning);
+                    let warning = warning_enabled
                         && thresholds.warning.observe(
                             value,
                             monitor.warning.threshold,
@@ -457,7 +458,7 @@ impl WatchdogManager {
                             now,
                         );
                     if critical || warning {
-                        if critical {
+                        if critical && warning_enabled {
                             thresholds.warning.fired = true;
                         }
                         let targets = if allows_actions {
@@ -681,6 +682,39 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].targets[0].creation_time, 20);
         assert_eq!(events[0].response.action, WatchdogAction::Restart);
+    }
+
+    #[test]
+    fn critical_only_response_clears_alerting_and_rearms_after_recovery() {
+        let mut manager = WatchdogManager::default();
+        let mut settings = settings();
+        settings.notify = false;
+        settings.rules[0].memory.critical.action = WatchdogAction::Terminate;
+        let process = process();
+        let start = Instant::now();
+        let mut evaluate = |seconds, bytes| {
+            let now = start + Duration::from_secs(seconds);
+            manager.evaluate(
+                &settings,
+                std::slice::from_ref(&process),
+                &sample(&process, now, Some(bytes)),
+                Some(1000),
+                now,
+            )
+        };
+
+        assert!(evaluate(0, 950).1.is_empty());
+        let (alerting, events) = evaluate(2, 950);
+        assert_eq!(alerting.alerting_processes, 1);
+        assert!(matches!(&events[..], [event] if event.critical));
+
+        let (recovered, events) = evaluate(3, 800);
+        assert_eq!(recovered.alerting_processes, 0);
+        assert!(events.is_empty());
+
+        assert!(evaluate(4, 950).1.is_empty());
+        let (_, events) = evaluate(6, 950);
+        assert!(matches!(&events[..], [event] if event.critical));
     }
 
     #[test]

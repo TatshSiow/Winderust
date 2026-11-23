@@ -247,10 +247,10 @@ Read the relevant section before changing feature policy, ownership, restoration
   threshold rearms on any positive measurement. Low readings represent resource
   usage only. Both comparisons include equality when qualifying a threshold.
 - Warning and critical use the shared notification switch and default to
-  notification only. The feature defaults off. Critical subsumes a simultaneous
-  warning for the same resource while the critical response is enabled. Each
-  response fires once per incident. Missing samples break only the affected
-  resource's sustained interval. Collection gaps, complete app-instance
+  notification only. The feature defaults off. When both response levels are
+  enabled, a critical response subsumes a simultaneous warning for the same
+  resource. Each response fires once per incident. Missing samples break only
+  the affected resource's sustained interval. Collection gaps, complete app-instance
   replacement, shared-setting or rule changes, and disable clear stale sustained
   timers. Membership changes keep the app incident while any exact instance
   survives. Within a matched group, unavailable protection or resource data
