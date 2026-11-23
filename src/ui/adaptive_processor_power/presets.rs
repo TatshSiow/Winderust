@@ -72,7 +72,10 @@ impl BuiltInPreset {
             Self::Balanced => ProcessorPowerValues::new_with_boost_mode(
                 25,
                 5,
-                95,
+                match source {
+                    PowerSourceProfile::PluggedIn => 100,
+                    PowerSourceProfile::OnBattery => 95,
+                },
                 60,
                 ProcessorBoostMode::EfficientEnabled,
             ),
@@ -342,9 +345,9 @@ mod tests {
             ProcessorBoostMode::Disabled,
         );
         let preset = BuiltInPreset::Balanced;
-        for (source, enabled, processor_power_enabled) in [
-            (PowerSourceProfile::PluggedIn, true, false),
-            (PowerSourceProfile::OnBattery, false, true),
+        for (source, performance_max, enabled, processor_power_enabled) in [
+            (PowerSourceProfile::PluggedIn, 100, true, false),
+            (PowerSourceProfile::OnBattery, 95, false, true),
         ] {
             let mut settings = AdaptiveEngineSettings::default();
             settings.enabled = enabled;
@@ -353,6 +356,10 @@ mod tests {
             settings.focus_and_launch_profile = custom;
             preset.apply(&mut settings, source);
 
+            assert_eq!(
+                settings.base_processor_policy.performance_max,
+                performance_max
+            );
             assert_eq!(settings.enabled, enabled);
             assert_eq!(
                 settings.adaptive_processor_power_enabled,

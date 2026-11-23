@@ -93,9 +93,10 @@ migration or copying from the limiter is performed.
   and Launch. Transitions to lower-demand profiles use the existing delay.
 - The Power Save, Balanced, and Performance presets replace the selected source's Base Processor
   Policy and reset its Background Pressure and Focus and Launch boost settings to the profile
-  defaults. Custom presets capture those same tuning values from the selected source and can be
-  applied to either source. Applying a preset leaves the enable switches and the other source's
-  settings under their own controls.
+  defaults. Balanced sets Processor max to 100% when plugged in and 95% on battery. Custom presets
+  capture those same tuning values from the selected source and can be applied to either source.
+  Applying a preset leaves the enable switches and the other source's settings under their own
+  controls.
 - Winderust applies EcoQoS to itself while the low-power Adaptive Engine path is active.
 - Background Efficiency and Adaptive Engine policy submit typed claims through RuntimeCore. Each
   controller revalidates exact identity, access, protection, and cross-session policy before a
