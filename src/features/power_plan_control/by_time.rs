@@ -74,7 +74,7 @@ fn next_change_at(settings: &ByTimeSettings, now: DateTime<Local>) -> Option<Dat
         return None;
     }
 
-    let mut next = None;
+    let mut next: Option<DateTime<Local>> = None;
     for rule in &settings.rules {
         if rule.configured_plan().is_none() {
             continue;
@@ -89,6 +89,12 @@ fn next_change_at(settings: &ByTimeSettings, now: DateTime<Local>) -> Option<Dat
             else {
                 continue;
             };
+            // A local boundary can map to the preceding UTC date at earliest.
+            if next
+                .is_some_and(|next| start_date - next.naive_utc().date() > ChronoDuration::days(1))
+            {
+                break;
+            }
             if !rule
                 .days
                 .contains(&WeekdaySetting::from_chrono(start_date.weekday()))
