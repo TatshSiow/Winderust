@@ -324,7 +324,8 @@ Read the relevant section before changing feature policy, ownership, restoration
   automation baseline. The episode survives app, feature, CPU Else, and Activity
   Active plan handoffs. Only after every rule yields does the controller restore
   through its existing verified recovery transaction. Turning the policy off
-  cancels temporary returns without changing the active plan. Any pending
+  cancels temporary returns without changing the active plan, even if the
+  policy is enabled again before the worker processes the saved changes. Any pending
   journal transaction still requires acknowledgement before another mutation;
   it cannot recreate the canceled baseline. Ordinary shutdown and recovery
   safety ownership remain independent of this optional runtime return.

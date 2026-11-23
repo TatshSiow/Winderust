@@ -474,6 +474,7 @@ impl PendingSleepPreventionSettings {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct AutomationWakeEvents {
     settings_changed: bool,
+    restore_previous_plan_disabled: bool,
     tray_visibility_changed: bool,
     windows_event_watcher_changed: bool,
     foreground_changed: bool,
@@ -599,6 +600,12 @@ impl RuntimeHandle {
                     bump_status_generation(&self.shared, &mut state);
                 }
                 instance_balancing::record_settings_changes(&mut state, &settings.value);
+                // A later save can restore the option before the worker sees this cancellation.
+                if state.settings.general.restore_previous_power_plan
+                    && !settings.value.general.restore_previous_power_plan
+                {
+                    state.pending_events.restore_previous_plan_disabled = true;
+                }
                 if state.pending_events.settings_changed {
                     let state = &mut *state;
                     state

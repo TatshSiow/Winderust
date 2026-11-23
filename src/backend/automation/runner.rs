@@ -617,7 +617,7 @@ impl RuntimeCore {
         plugged_in: Option<bool>,
     ) -> bool {
         let settings = active_power_source_settings(configured, plugged_in);
-        if !settings.general.restore_previous_power_plan {
+        if events.restore_previous_plan_disabled || !settings.general.restore_previous_power_plan {
             self.power_plan_controller.cancel_temporary_restoration();
         }
         self.action_log.set_mode(settings.advanced.action_log_mode);
@@ -2452,7 +2452,7 @@ mod settings_tests {
 
     #[test]
     #[allow(clippy::field_reassign_with_default)] // RuntimeCore implements Drop, preventing struct update.
-    fn settings_cancel_restoration_even_while_adaptive_checks_are_paused() {
+    fn coalesced_settings_cancel_restoration_even_while_adaptive_checks_are_paused() {
         let mut runner = RuntimeCore::default();
         // The fixture contains synthetic plan IDs and must never run native shutdown.
         runner.shutdown_started = true;
@@ -2461,17 +2461,46 @@ mod settings_tests {
         Arc::make_mut(&mut settings)
             .general
             .restore_previous_power_plan = true;
-        runner.note_settings(&settings, AutomationWakeEvents::default(), Some(true));
+        assert!(!automation_worker_required(&settings));
+        let mut revision = SettingsRevision::initial();
+        let runtime = RuntimeHandle::start(&RuntimeSettingsSnapshot {
+            value: Arc::clone(&settings),
+            runtime_revision: revision,
+            persisted_revision: revision,
+        });
+        let mut save = |value| {
+            revision = revision.next();
+            runtime.replace_settings(&RuntimeSettingsSnapshot {
+                value,
+                runtime_revision: revision,
+                persisted_revision: revision,
+            });
+        };
+        let mut edited = Arc::clone(&settings);
+        Arc::make_mut(&mut edited).general.check_interval_ms += 100;
+        save(edited);
+        save(Arc::clone(&settings));
+        let snapshot = automation_snapshot(&runtime.shared).unwrap();
+        runner.note_settings(&snapshot.settings, snapshot.wake_events, Some(true));
         assert!(runner.has_temporary_power_plan());
-        Arc::make_mut(&mut settings)
+
+        let mut disabled = Arc::clone(&settings);
+        Arc::make_mut(&mut disabled)
             .general
             .restore_previous_power_plan = false;
-        runner.note_settings(&settings, AutomationWakeEvents::default(), Some(true));
+        save(disabled);
+        save(Arc::clone(&settings));
+        let snapshot = automation_snapshot(&runtime.shared).unwrap();
+        assert!(snapshot.settings.general.restore_previous_power_plan);
+        runner.note_settings(&snapshot.settings, snapshot.wake_events, Some(true));
         assert!(!runner.has_temporary_power_plan());
-        Arc::make_mut(&mut settings)
-            .general
-            .restore_previous_power_plan = true;
-        runner.note_settings(&settings, AutomationWakeEvents::default(), Some(true));
+        assert!(
+            !automation_snapshot(&runtime.shared)
+                .unwrap()
+                .wake_events
+                .restore_previous_plan_disabled
+        );
+
         runner.power_plan_rule_context = Some(PowerPlanRuleContext {
             settings: Arc::clone(&settings),
             source: PowerSourceProfile::PluggedIn,
