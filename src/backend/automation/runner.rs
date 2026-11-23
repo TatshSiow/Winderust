@@ -1079,8 +1079,10 @@ impl RuntimeCore {
     pub(super) fn publish_adaptive_engine_process_status(
         &self,
         shared: &SharedAutomationState,
+        source: PowerSourceProfile,
         mut status: AdaptiveEngineProcessSnapshot,
     ) {
+        status.source = Some(source);
         if status.enabled && !status.observation_paused {
             let owner = ControlOwner::AdaptiveEngine;
             status.adjusted_processes = self

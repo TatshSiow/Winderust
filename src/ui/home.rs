@@ -326,6 +326,7 @@ impl Model {
                     };
                     Some(enabled_features(
                         profile,
+                        source,
                         &status.feature_status,
                         &displayed_sample,
                         activity,
@@ -1404,6 +1405,7 @@ fn priority_observation_detail(
 
 fn enabled_features(
     settings: &Settings,
+    source: PowerSourceProfile,
     status: &RuntimeFeatureStatus,
     sample: &Sample,
     activity: ActivityState,
@@ -1528,6 +1530,8 @@ fn enabled_features(
         adaptive_engine,
         if !settings.adaptive_engine_process.has_enabled_policies() {
             t!("common.enabled").into_owned()
+        } else if adaptive.source != Some(source) {
+            t!("common.unknown").into_owned()
         } else if adaptive.observation_paused {
             t!(if adaptive.last_error.is_some() {
                 "common.error"
@@ -1682,6 +1686,35 @@ mod tests {
     use super::*;
 
     #[test]
+    fn adaptive_engine_card_uses_cpu_counts_for_the_sampled_power_source() {
+        let mut settings = Settings::default();
+        settings.adaptive_engine.enabled = true;
+        settings
+            .adaptive_engine_process
+            .cpu_pressure_restraint_enabled = true;
+        let mut runtime = RuntimeFeatureStatus::default();
+        runtime.adaptive_engine_process.enabled = true;
+        runtime.adaptive_engine_process.adjusted_processes = 4;
+        runtime.adaptive_engine_process.source = Some(PowerSourceProfile::OnBattery);
+        for (source, detail) in [
+            (PowerSourceProfile::PluggedIn, t!("common.unknown")),
+            (
+                PowerSourceProfile::OnBattery,
+                t!("home.adjusted_count", count = 4),
+            ),
+        ] {
+            let cards = enabled_features(
+                &settings,
+                source,
+                &runtime,
+                &Sample::default(),
+                ActivityState::Unknown,
+            );
+            assert!(cards.contains(&(Page::AdaptiveEngine, detail.into_owned())));
+        }
+    }
+
+    #[test]
     fn enabled_features_keep_order_details_and_independent_toggles() {
         use crate::ui::navigation::feature_toggle;
 
@@ -1733,7 +1766,13 @@ mod tests {
             ..Default::default()
         };
         let visible = |settings: &Settings| {
-            enabled_features(settings, &status, &sample, ActivityState::Active)
+            enabled_features(
+                settings,
+                PowerSourceProfile::PluggedIn,
+                &status,
+                &sample,
+                ActivityState::Active,
+            )
         };
         let expected = visible(&settings);
         assert_eq!(

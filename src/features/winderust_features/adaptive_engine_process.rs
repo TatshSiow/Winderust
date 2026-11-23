@@ -11,7 +11,10 @@ use windows_sys::Win32::System::Threading::GetCurrentProcessId;
 use crate::{
     action_log::{ActionLog, ActionLogFeature, ActionLogResult},
     audio_activity::active_audio_process_ids,
-    config::{AdaptiveEngineProcessSettings, BackgroundProcessorSelection, CpuAllocationMethod},
+    config::{
+        AdaptiveEngineProcessSettings, BackgroundProcessorSelection, CpuAllocationMethod,
+        PowerSourceProfile,
+    },
     control::{
         cpu_allocation::CpuAllocationCoordinator,
         priority_efficiency::{
@@ -55,6 +58,7 @@ const ADAPTIVE_ENGINE_PROCESS_SELECTION_STICKINESS_TENTHS: u32 = 50;
 const FOCUS_AND_LAUNCH_PROFILE_WINDOW: Duration = Duration::from_secs(8);
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AdaptiveEngineProcessSnapshot {
+    pub(crate) source: Option<PowerSourceProfile>,
     pub zones: DynamicResourceZoneSnapshot,
     pub enabled: bool,
     pub observation_paused: bool,
@@ -1108,6 +1112,7 @@ impl AdaptiveEngineProcessManager {
             }
         }
         AdaptiveEngineProcessSnapshot {
+            source: None,
             zones,
             enabled: true,
             observation_paused: false,

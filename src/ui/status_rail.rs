@@ -109,17 +109,21 @@ pub(super) fn view<'a>(
     };
     let instance_limits = (page == Page::InstanceLimits)
         .then(|| instance_limits_status(settings, &runtime.feature_status.instance_limits));
+    let current_source = plugged_in.map(|plugged_in| {
+        if plugged_in {
+            PowerSourceProfile::PluggedIn
+        } else {
+            PowerSourceProfile::OnBattery
+        }
+    });
     let sleep = (page == Page::SleepPrevention)
         .then_some(&runtime.feature_status.sleep_prevention)
+        .filter(|snapshot| current_source.is_none_or(|source| snapshot.source == Some(source)));
+    let adaptive = (page == Page::AdaptiveEngine)
+        .then_some(&runtime.feature_status.adaptive_engine_process)
         .filter(|snapshot| {
-            plugged_in.is_none_or(|plugged_in| {
-                let current = if plugged_in {
-                    PowerSourceProfile::PluggedIn
-                } else {
-                    PowerSourceProfile::OnBattery
-                };
-                snapshot.source == Some(current)
-            })
+            snapshot.source.is_some()
+                && current_source.is_none_or(|source| snapshot.source == Some(source))
         });
     let summary = if let Some(limits) = &instance_limits {
         FeatureStatusSummary {
@@ -139,6 +143,16 @@ pub(super) fn view<'a>(
             last_error: sleep.and_then(|snapshot| snapshot.last_error.as_deref()),
             action_log_feature: ActionLogFeature::SleepPrevention,
         }
+    } else if page == Page::AdaptiveEngine {
+        let observed = adaptive.filter(|status| status.enabled && !status.observation_paused);
+        FeatureStatusSummary {
+            scanned: observed.map(|status| status.scanned_processes),
+            adjusted: observed.map(|status| status.adjusted_processes),
+            protected_or_denied: None,
+            skipped: observed.map(|status| status.skipped_processes),
+            last_error: adaptive.and_then(|status| status.last_error.as_deref()),
+            action_log_feature: ActionLogFeature::AdaptiveEngine,
+        }
     } else if let Some(feature) = power_feature {
         FeatureStatusSummary {
             scanned: None,
@@ -154,6 +168,13 @@ pub(super) fn view<'a>(
     let available = runtime.generation != 0;
     let observed_state = match page {
         Page::SleepPrevention => Some(sleep_prevention_state(sleep)),
+        Page::AdaptiveEngine if settings.adaptive_engine_process.has_enabled_policies() => {
+            match adaptive {
+                Some(status) if status.observation_paused => Some(FeatureRunState::Paused),
+                Some(status) if status.enabled => None,
+                _ => Some(FeatureRunState::Unknown),
+            }
+        }
         _ => instance_limits.as_ref().map(|limits| limits.state),
     };
     let state = sidebar_state(page, settings, runtime, &summary, observed_state);
@@ -349,23 +370,33 @@ pub(super) fn view<'a>(
         ));
     if page == Page::AdaptiveEngine {
         use crate::adaptive_engine_process::ZoneStatus;
-        let adaptive = &runtime.feature_status.adaptive_engine_process;
-        let zones = &adaptive.zones;
-        let (key, color) = match zones.status {
-            ZoneStatus::Disabled => ("common.inactive", "common.inactive"),
-            ZoneStatus::Waiting => ("common.waiting", "common.waiting"),
-            ZoneStatus::Applying => ("adaptive_engine_process.zone_applying", "common.waiting"),
-            ZoneStatus::Active => ("common.applied", "common.applied"),
-            ZoneStatus::Overridden => ("adaptive_engine_process.zone_overridden", "common.waiting"),
-            ZoneStatus::Degraded => ("adaptive_engine_process.zone_degraded", "common.error"),
-            ZoneStatus::Unavailable => ("common.unavailable", "common.unknown"),
+        let enabled = settings.general.enabled && settings.adaptive_engine.enabled;
+        let zones_enabled = enabled
+            && settings
+                .adaptive_engine_process
+                .dynamic_resource_zones_enabled;
+        let zones = adaptive.map(|status| &status.zones);
+        let (key, color) = match zones.map(|zones| zones.status) {
+            None if zones_enabled => ("common.unknown", "common.unknown"),
+            None | Some(ZoneStatus::Disabled) => ("common.inactive", "common.inactive"),
+            Some(ZoneStatus::Waiting) => ("common.waiting", "common.waiting"),
+            Some(ZoneStatus::Applying) => {
+                ("adaptive_engine_process.zone_applying", "common.waiting")
+            }
+            Some(ZoneStatus::Active) => ("common.applied", "common.applied"),
+            Some(ZoneStatus::Overridden) => {
+                ("adaptive_engine_process.zone_overridden", "common.waiting")
+            }
+            Some(ZoneStatus::Degraded) => ("adaptive_engine_process.zone_degraded", "common.error"),
+            Some(ZoneStatus::Unavailable) => ("common.unavailable", "common.unknown"),
         };
-        let reason = if zones.reason.is_empty() {
-            String::new()
-        } else {
-            let key = format!("adaptive_engine_process.{}", zones.reason);
-            t!(&key).to_string()
-        };
+        let reason = zones
+            .filter(|zones| !zones.reason.is_empty())
+            .map(|zones| {
+                let key = format!("adaptive_engine_process.{}", zones.reason);
+                t!(&key).into_owned()
+            })
+            .unwrap_or_default();
         body = body.push(section(
             "adaptive_engine_process.dynamic_resource_zones",
             column![
@@ -375,19 +406,19 @@ pub(super) fn view<'a>(
                 text(reason).size(design::typography::CAPTION),
                 metric(
                     "adaptive_engine_process.zone_foreground_cpus",
-                    zones.foreground_processors.to_string()
+                    count(zones.map(|zones| zones.foreground_processors as usize))
                 ),
                 metric(
                     "adaptive_engine_process.zone_background_cpus",
-                    zones.background_processors.to_string()
+                    count(zones.map(|zones| zones.background_processors as usize))
                 ),
                 metric(
                     "adaptive_engine_process.zone_foreground_targets",
-                    zones.foreground_targets.to_string()
+                    count(zones.map(|zones| zones.foreground_targets))
                 ),
                 metric(
                     "adaptive_engine_process.zone_background_targets",
-                    zones.background_targets.to_string()
+                    count(zones.map(|zones| zones.background_targets))
                 ),
             ]
             .spacing(design::space::CONTROL),
@@ -396,23 +427,19 @@ pub(super) fn view<'a>(
             .adaptive_engine_process
             .limit_background_processors_enabled
         {
+            let key = match adaptive.filter(|status| status.enabled) {
+                Some(status) if status.observation_paused => "sidebar_status.paused",
+                Some(status) if status.zones.status == ZoneStatus::Active => {
+                    "adaptive_engine_process.limit_waiting_zones"
+                }
+                Some(status) if status.zones.background_limit_targets > 0 => "common.applied",
+                Some(_) => "common.waiting",
+                _ if enabled => "common.unknown",
+                _ => "common.inactive",
+            };
             body = body.push(section(
                 "adaptive_engine_process.limit_background_processors",
-                column![text(
-                    t!(if adaptive.observation_paused {
-                        "sidebar_status.paused"
-                    } else if !adaptive.enabled {
-                        "common.unknown"
-                    } else if zones.status == ZoneStatus::Active {
-                        "adaptive_engine_process.limit_waiting_zones"
-                    } else if zones.background_limit_targets > 0 {
-                        "common.applied"
-                    } else {
-                        "common.waiting"
-                    })
-                    .to_string()
-                )
-                .size(design::typography::CAPTION)],
+                column![text(t!(key).to_string()).size(design::typography::CAPTION)],
             ));
         }
     }
@@ -553,6 +580,24 @@ fn scroll_status(body: iced::widget::Column<'_, Message>) -> Element<'_, Message
     .height(Fill)
     .into()
 }
+pub(super) fn saved_rail_settings<'a>(
+    editor: &'a crate::application::SettingsEditor,
+    page: Page,
+    runtime: &RuntimeStatusSnapshot,
+    plugged_in: Option<bool>,
+) -> &'a Settings {
+    let plugged_in = plugged_in.or_else(|| {
+        let features = &runtime.feature_status;
+        let source = match page {
+            Page::AdaptiveEngine => features.adaptive_engine_process.source,
+            Page::SleepPrevention => features.sleep_prevention.source,
+            _ => None,
+        };
+        source.map(|source| source == PowerSourceProfile::PluggedIn)
+    });
+    saved_runtime_settings(editor, plugged_in)
+}
+
 pub(super) fn saved_runtime_settings(
     editor: &crate::application::SettingsEditor,
     plugged_in: Option<bool>,
@@ -832,15 +877,6 @@ fn sidebar_state(
             _ => {}
         }
     }
-    if page == Page::AdaptiveEngine && settings.adaptive_engine_process.has_enabled_policies() {
-        let adaptive = &features.adaptive_engine_process;
-        if adaptive.observation_paused {
-            return FeatureRunState::Paused;
-        }
-        if !adaptive.enabled {
-            return FeatureRunState::Unknown;
-        }
-    }
     let active = (page == Page::Watchdog && summary.scanned.is_some_and(|count| count > 0))
         || summary.adjusted.is_some_and(|count| count > 0)
         || (page == Page::TimerResolution && features.timer_resolution.requested_100ns.is_some());
@@ -914,18 +950,6 @@ fn feature_status_summary(
     runtime: &RuntimeStatusSnapshot,
 ) -> Option<FeatureStatusSummary<'_>> {
     let summary = match page {
-        Page::AdaptiveEngine => {
-            let status = &runtime.feature_status.adaptive_engine_process;
-            let observed = status.enabled && !status.observation_paused;
-            FeatureStatusSummary {
-                scanned: observed.then_some(status.scanned_processes),
-                adjusted: observed.then_some(status.adjusted_processes),
-                protected_or_denied: None,
-                skipped: observed.then_some(status.skipped_processes),
-                last_error: status.last_error.as_deref(),
-                action_log_feature: ActionLogFeature::AdaptiveEngine,
-            }
-        }
         Page::BackgroundEfficiency => {
             let status = &runtime.feature_status.background_efficiency;
             let observed = status.enabled && !status.observation_paused;
@@ -1306,6 +1330,127 @@ mod tests {
         rail.as_widget_mut()
             .operate(&mut tree, Layout::new(&node), &renderer, &mut details);
         details.0
+    }
+
+    #[test]
+    fn adaptive_engine_policy_status_follows_live_source_and_preserves_cleanup_failures() {
+        use crate::action_log::{ActionLog, ActionLogResult};
+        use crate::adaptive_engine_process::{
+            AdaptiveEngineProcessSnapshot, DynamicResourceZoneSnapshot, ZoneStatus,
+        };
+
+        fn value<'a>(rail: &'a [String], key: &str) -> &'a str {
+            let label = t!(key);
+            rail.windows(2)
+                .find(|pair| pair[0] == label)
+                .map(|pair| pair[1].as_str())
+                .expect("status metric")
+        }
+
+        let mut saved = Settings::default();
+        let battery = saved.battery_profile_mut();
+        battery.adaptive_engine.enabled = true;
+        battery
+            .adaptive_engine_process
+            .dynamic_resource_zones_enabled = true;
+        battery
+            .adaptive_engine_process
+            .limit_background_processors_enabled = true;
+        let editor = crate::application::SettingsEditor::with_settings(saved);
+        let mut action_log = ActionLog::new(4);
+        action_log.record(
+            ActionLogFeature::AdaptiveEngine,
+            None,
+            "test.exe",
+            ActionLogResult::Failed,
+            "earlier process error",
+        );
+        let mut runtime = RuntimeStatusSnapshot {
+            generation: 1,
+            action_log_summaries: action_log.summaries().into(),
+            ..Default::default()
+        };
+        let features = std::sync::Arc::make_mut(&mut runtime.feature_status);
+        features.adaptive_engine_process = AdaptiveEngineProcessSnapshot {
+            source: Some(PowerSourceProfile::OnBattery),
+            zones: DynamicResourceZoneSnapshot {
+                status: ZoneStatus::Active,
+                foreground_targets: 3,
+                ..Default::default()
+            },
+            enabled: true,
+            adjusted_processes: 4,
+            last_error: Some("reported process error".into()),
+            ..Default::default()
+        };
+        features.bottleneck_classifier.enabled = true;
+        features.bottleneck_classifier.total_cpu_tenths = Some(420);
+        let render = |observed, runtime: &RuntimeStatusSnapshot| {
+            let page = Page::AdaptiveEngine;
+            let settings = saved_rail_settings(&editor, page, runtime, observed);
+            rail_text(view(page, settings, runtime, &[], observed).unwrap())
+        };
+        for observed in [Some(false), None] {
+            let rail = render(observed, &runtime);
+            assert_eq!(value(&rail, "common.adjusted_processes"), "4");
+            assert_eq!(
+                value(&rail, "adaptive_engine_process.zone_foreground_targets"),
+                "3"
+            );
+            assert!(rail.iter().any(|text| text == "reported process error"));
+        }
+
+        let rail = render(Some(true), &runtime);
+        assert_eq!(rail[0], t!("common.inactive"));
+        assert_eq!(
+            value(&rail, "adaptive_engine_process.dynamic_resource_zones"),
+            t!("common.inactive")
+        );
+        assert_eq!(
+            value(&rail, "adaptive_engine_process.zone_foreground_targets"),
+            count(None)
+        );
+        assert_eq!(value(&rail, "common.adjusted_processes"), count(None));
+        assert!(!rail.iter().any(|text| text == "reported process error"));
+        assert_eq!(value(&rail, "common.failed_count"), "1");
+
+        std::sync::Arc::make_mut(&mut runtime.feature_status).adaptive_engine_process =
+            AdaptiveEngineProcessSnapshot {
+                source: Some(PowerSourceProfile::PluggedIn),
+                zones: DynamicResourceZoneSnapshot {
+                    status: ZoneStatus::Degraded,
+                    reason: "zone_retry",
+                    ..Default::default()
+                },
+                last_error: Some("could not restore process allocation".into()),
+                ..Default::default()
+            };
+        let rail = render(Some(true), &runtime);
+        assert_eq!(
+            value(&rail, "adaptive_engine_process.dynamic_resource_zones"),
+            t!("adaptive_engine_process.zone_degraded")
+        );
+        assert!(rail
+            .iter()
+            .any(|text| text == "could not restore process allocation"));
+        let rail = render(Some(false), &runtime);
+        assert_eq!(rail[0], t!("common.unknown"));
+        assert_eq!(
+            value(&rail, "adaptive_engine_process.dynamic_resource_zones"),
+            t!("common.unknown")
+        );
+        assert_eq!(
+            value(&rail, "adaptive_engine_process.limit_background_processors"),
+            t!("common.unknown")
+        );
+        assert_eq!(
+            value(&rail, "adaptive_engine_process.zone_foreground_targets"),
+            count(None)
+        );
+        assert!(!rail
+            .iter()
+            .any(|text| text == "could not restore process allocation"));
+        assert!(rail.iter().any(|text| text == "42.0%"));
     }
 
     #[test]

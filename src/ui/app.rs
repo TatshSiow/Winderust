@@ -3048,15 +3048,12 @@ impl WinderustApp {
             )
         } else {
             let observed_plugged_in = crate::backend::power_source::is_plugged_in();
-            let plugged_in = observed_plugged_in.or_else(|| {
-                self.status
-                    .feature_status
-                    .sleep_prevention
-                    .source
-                    .filter(|_| page == Page::SleepPrevention)
-                    .map(|source| source == PowerSourceProfile::PluggedIn)
-            });
-            let settings = status_rail::saved_runtime_settings(&self.settings, plugged_in);
+            let settings = status_rail::saved_rail_settings(
+                &self.settings,
+                page,
+                &self.status,
+                observed_plugged_in,
+            );
             let panel = status_rail::view(
                 page,
                 settings,
