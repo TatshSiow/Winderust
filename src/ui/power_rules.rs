@@ -1036,7 +1036,7 @@ impl Editor {
             footer,
             (800, 760),
         );
-        Some(modal)
+        Some(super::modal::dismiss_on_escape(modal, Message::Cancel))
     }
 
     fn time_field<'a>(
