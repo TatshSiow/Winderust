@@ -134,7 +134,6 @@ impl CpuAllocationManager {
         allocation: (CpuAllocationMode, ActionLogFeature),
         automation_enabled: bool,
         allow_cross_session_process_control: bool,
-        foreground_process_id: Option<u32>,
         observations: &mut CycleObservations,
         action_log: &mut ActionLog,
     ) -> CpuAllocationSnapshot {
@@ -174,6 +173,9 @@ impl CpuAllocationManager {
 
         let (needs_foreground, needs_visible_windows) =
             cpu_allocation_observation_requirements(&settings.rules);
+        let foreground_process_id = needs_foreground
+            .then(|| observations.foreground_process_id())
+            .flatten();
         if needs_foreground && foreground_process_id.is_none() {
             return self.paused_snapshot(
                 coordinator,
@@ -224,9 +226,8 @@ impl CpuAllocationManager {
             }
         };
 
-        let foreground_executable_path = foreground_process_id
-            .filter(|_| needs_foreground)
-            .and_then(|id| catalog_process_executable_path(&processes, id));
+        let foreground_executable_path =
+            foreground_process_id.and_then(|id| catalog_process_executable_path(&processes, id));
         if needs_foreground && foreground_executable_path.is_none() {
             return self.paused_snapshot(
                 coordinator,
@@ -1401,7 +1402,8 @@ mod tests {
             ),
         ] {
             let mut observations =
-                CycleObservations::with_processes(vec![foreground_process.clone()]);
+                CycleObservations::with_processes(vec![foreground_process.clone()])
+                    .with_foreground_source(|| Some(std::process::id()));
             let mut manager = CpuAllocationManager::with_action_log_feature(feature);
             let mut coordinator = CpuAllocationCoordinator::default();
             let mut action_log = ActionLog::default();
@@ -1423,7 +1425,6 @@ mod tests {
                     (mode, feature),
                     true,
                     true,
-                    Some(foreground_process.id),
                     &mut observations,
                     &mut action_log,
                 )
