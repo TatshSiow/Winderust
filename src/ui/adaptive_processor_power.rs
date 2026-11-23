@@ -11,7 +11,7 @@ use rust_i18n::t;
 
 mod presets;
 pub(super) use presets::BuiltInPreset;
-use presets::{CustomPresetSelection, PresetChoice, PresetDialog, PresetDraft};
+use presets::{PresetChoice, PresetDialog, PresetDraft, PresetSelection};
 
 #[cfg(test)]
 mod editor_tests;
@@ -33,7 +33,7 @@ pub(super) struct Editor {
     numbers: NumberInputs,
     tab: Tab,
     preset_dialog: Option<PresetDialog>,
-    selected_presets: [Option<PresetChoice<CustomPresetSelection>>; 2],
+    selected_presets: [PresetSelection; 2],
 }
 
 #[derive(Debug, Clone)]

@@ -141,6 +141,23 @@ fn equivalent_presets_keep_one_selected_row_per_source() {
     settings.select_power_source(PluggedIn);
     editor.reset_drafts();
     assert_eq!(editor.active_preset(&settings), Some(Custom("AC Quiet")));
+
+    for message in [
+        Message::NewPreset,
+        Message::PresetName("New AC choice".into()),
+        Message::SavePreset,
+    ] {
+        editor.update(&mut settings, message);
+    }
+    select_preset(&mut editor, &mut settings, Message::PreviewCustom(3));
+    assert_eq!(
+        editor.active_preset(&settings),
+        Some(Custom("New AC choice"))
+    );
+    settings.cancel();
+    editor.discard_preset_selection();
+    editor.reset_drafts();
+    assert_eq!(editor.active_preset(&settings), Some(Custom("AC Quiet")));
 }
 
 #[test]

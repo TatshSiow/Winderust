@@ -29,16 +29,20 @@ pub(super) enum PresetChoice<Name> {
     Custom(Name),
 }
 
-pub(super) struct CustomPresetSelection {
-    name: Option<String>,
-    before_list_edit: Option<String>,
+#[derive(Default)]
+pub(super) struct PresetSelection {
+    current: Option<PresetChoice<String>>,
+    before_edit: Option<Option<PresetChoice<String>>>,
 }
 
-impl CustomPresetSelection {
-    fn has_name(&self, name: &str) -> bool {
-        self.name
-            .as_deref()
-            .is_some_and(|current| same_preset_name(current, name))
+impl PresetSelection {
+    fn choose(&mut self, choice: Option<PresetChoice<String>>, staged: bool) {
+        if staged {
+            self.before_edit.get_or_insert_with(|| self.current.take());
+        } else {
+            self.before_edit = None;
+        }
+        self.current = choice;
     }
 }
 
@@ -200,6 +204,18 @@ impl Editor {
         if source != settings.selected_power_source() {
             return;
         }
+        let saved = settings.persisted();
+        let saved_target = match source {
+            PowerSourceProfile::PluggedIn => saved,
+            PowerSourceProfile::OnBattery => saved.battery_profile(),
+        };
+        let staged = !preview
+            .preset
+            .matches(&saved_target.adaptive_engine, source)
+            || (preview.built_in.is_none()
+                && !saved
+                    .adaptive_processor_power_presets
+                    .contains(&preview.preset));
         self.numbers.drafts.clear();
         edit_settings(settings, |target| preview.preset.apply(target, source));
         let selected = preview.built_in.map_or_else(
@@ -207,12 +223,7 @@ impl Editor {
             PresetChoice::BuiltIn,
         );
         self.preset_dialog = None;
-        match selected {
-            PresetChoice::BuiltIn(preset) => {
-                self.selected_presets[source as usize] = Some(PresetChoice::BuiltIn(preset));
-            }
-            PresetChoice::Custom(name) => self.select_custom_preset(source, name),
-        }
+        self.selected_presets[source as usize].choose(Some(selected), staged);
     }
 
     pub(super) fn save_preset(&mut self, settings: &mut SettingsEditor) {
@@ -251,52 +262,28 @@ impl Editor {
         self.preset_dialog = None;
     }
 
-    pub(super) fn select_custom_preset(&mut self, source: PowerSourceProfile, name: String) {
-        let selected = &mut self.selected_presets[source as usize];
-        if !matches!(selected, Some(PresetChoice::Custom(current)) if current.has_name(&name)) {
-            *selected = Some(PresetChoice::Custom(CustomPresetSelection {
-                name: Some(name),
-                before_list_edit: None,
-            }));
-        }
-    }
-
     pub(super) fn replace_selected_preset_name(&mut self, previous: &str, name: Option<&str>) {
         if name == Some(previous) {
             return;
         }
-        for selected in self.selected_presets.iter_mut().flatten() {
-            let PresetChoice::Custom(current) = selected else {
-                continue;
-            };
-            if !current.has_name(previous) {
-                continue;
+        for selected in &mut self.selected_presets {
+            if matches!(selected.current.as_ref(), Some(PresetChoice::Custom(current)) if same_preset_name(current, previous))
+            {
+                selected.choose(name.map(|name| PresetChoice::Custom(name.to_owned())), true);
             }
-            if current.before_list_edit.is_none() {
-                current.before_list_edit = current.name.take();
-            }
-            current.name = name.map(str::to_owned);
         }
     }
 
     pub(in crate::ui) fn commit_preset_selection(&mut self) {
         for selected in &mut self.selected_presets {
-            if let Some(PresetChoice::Custom(current)) = selected {
-                current.before_list_edit = None;
-                if current.name.is_none() {
-                    *selected = None;
-                }
-            }
+            selected.before_edit = None;
         }
     }
 
     pub(in crate::ui) fn discard_preset_selection(&mut self) {
-        for selected in self.selected_presets.iter_mut().flatten() {
-            let PresetChoice::Custom(current) = selected else {
-                continue;
-            };
-            if let Some(name) = current.before_list_edit.take() {
-                current.name = Some(name);
+        for selected in &mut self.selected_presets {
+            if let Some(before) = selected.before_edit.take() {
+                selected.current = before;
             }
         }
     }
@@ -320,11 +307,11 @@ impl Editor {
                 .matches(&settings.adaptive_engine, source)
                 .then_some(PresetChoice::Custom(preset.name.as_str()))
         };
-        let selected = match self.selected_presets[source as usize].as_ref() {
+        let selected = match self.selected_presets[source as usize].current.as_ref() {
             Some(PresetChoice::BuiltIn(preset)) => builtin(*preset),
             Some(PresetChoice::Custom(current)) => presets
                 .iter()
-                .find(|preset| current.has_name(&preset.name))
+                .find(|preset| same_preset_name(current, &preset.name))
                 .and_then(custom),
             None => None,
         };
