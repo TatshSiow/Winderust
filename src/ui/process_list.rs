@@ -1431,8 +1431,8 @@ impl ProcessList {
                 }
             }
             let offsets = &self.offsets;
-            let range =
-                visible_range_offsets(offsets, self.offset.get(), (size.height - 32.0).max(0.0));
+            let body_height = size.height - HEADER_HEIGHT - scrolling::SCROLLBAR_GUTTER;
+            let range = visible_range_offsets(offsets, &self.offset, body_height);
             let mut rows = column![Space::new().height(offsets[range.start])];
             let mut visible_rows = Vec::with_capacity(range.len());
             for row_index in range.clone() {
@@ -2284,16 +2284,24 @@ fn column_width(c: Sort) -> f32 {
         Sort::User => 200.0,
     }
 }
-fn visible_range_offsets(offsets: &[f32], offset: f32, height: f32) -> Range<usize> {
+fn visible_range_offsets(
+    offsets: &[f32],
+    offset: &std::cell::Cell<f32>,
+    height: f32,
+) -> Range<usize> {
     let count = offsets.len().saturating_sub(1);
-    let offset = offset.max(0.0);
+    let height = height.max(0.0);
+    let max_offset = (offsets.last().copied().unwrap_or_default() - height).max(0.0);
+    let bounded = offset.get().clamp(0.0, max_offset);
+    // Keyboard focus uses the same offset even when Iced skips an on_scroll callback.
+    offset.set(bounded);
     let start = offsets
-        .partition_point(|p| *p <= offset)
+        .partition_point(|p| *p <= bounded)
         .saturating_sub(1)
         .min(count)
         .saturating_sub(8);
     let end = offsets
-        .partition_point(|p| *p < offset + height.max(0.0))
+        .partition_point(|p| *p < bounded + height)
         .saturating_add(9)
         .min(count);
     start..end.max(start)
@@ -2303,7 +2311,7 @@ fn visible_range(count: usize, offset: f32, height: f32) -> Range<usize> {
     let offsets = (0..=count)
         .map(|i| i as f32 * ROW_HEIGHT)
         .collect::<Vec<_>>();
-    visible_range_offsets(&offsets, offset, height)
+    visible_range_offsets(&offsets, &std::cell::Cell::new(offset), height)
 }
 
 fn background<T: Send + 'static>(
@@ -3391,6 +3399,10 @@ mod tests {
         assert_eq!(visible_range(0, 1000.0, 600.0), 0..0);
         assert!(visible_range(10_000, 120_000.0, 600.0).len() <= 42);
         assert_eq!(visible_range(3, 120_000.0, 600.0), 0..3);
+        let offsets = (0..=11).map(|i| i as f32 * ROW_HEIGHT).collect::<Vec<_>>();
+        let offset = std::cell::Cell::new(1500.0);
+        assert_eq!(visible_range_offsets(&offsets, &offset, 450.0), 0..11);
+        assert_eq!(offset.get(), 0.0);
     }
     #[test]
     fn grouping_uses_exact_path_and_expands_members() {
@@ -3460,7 +3472,7 @@ mod tests {
         list.expanded.insert(key.clone());
         list.rebuild();
         assert_eq!(list.rows.len(), 1001);
-        assert!(visible_range_offsets(&list.offsets, 0.0, 600.0).len() <= 42);
+        assert!(visible_range_offsets(&list.offsets, &list.offset, 600.0).len() <= 42);
         list.expanded.remove(&key);
         list.rebuild();
         assert_eq!(list.rows.len(), 1);

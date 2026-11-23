@@ -284,7 +284,9 @@ impl Editor {
             &self.feature,
         ));
         let count = groups.len();
-        let range = visible_log_range(count, self.offset.get(), size.height);
+        let body_height =
+            size.height - ACTION_LOG_HEADER_HEIGHT - super::scrolling::SCROLLBAR_GUTTER;
+        let range = visible_log_range(count, self.offset.get(), body_height);
         let header = row![
             text("#").width(48),
             text(t!("action_log.time").to_string()).width(80),
@@ -388,7 +390,7 @@ impl Editor {
         let table = column![
             container(header)
                 .padding([0, design::space::MEDIUM as u16])
-                .center_y(32),
+                .center_y(ACTION_LOG_HEADER_HEIGHT - 1.0),
             iced::widget::rule::horizontal(1),
             super::motion::wrap_keys(
                 super::scrolling::buffered(
@@ -674,11 +676,15 @@ const FEATURES: [ActionLogFeature; 24] = [
 
 const ACTION_LOG_SCROLL_ID: &str = "action-log";
 const ACTION_LOG_ROW_HEIGHT: f32 = 36.0;
+const ACTION_LOG_HEADER_HEIGHT: f32 = 33.0;
 
 fn visible_log_range(count: usize, offset: f32, height: f32) -> std::ops::Range<usize> {
-    let first = ((offset.max(0.0) / ACTION_LOG_ROW_HEIGHT).floor() as usize).min(count);
+    let height = height.max(0.0);
+    let max_offset = (count as f32 * ACTION_LOG_ROW_HEIGHT - height).max(0.0);
+    let first =
+        ((offset.clamp(0.0, max_offset) / ACTION_LOG_ROW_HEIGHT).floor() as usize).min(count);
     let start = first.saturating_sub(8);
-    let end = (first + (height.max(0.0) / ACTION_LOG_ROW_HEIGHT).ceil() as usize + 8).min(count);
+    let end = (first + (height / ACTION_LOG_ROW_HEIGHT).ceil() as usize + 8).min(count);
     start..end
 }
 pub(super) fn action_log_action_label(result: ActionLogResult) -> &'static str {
@@ -1036,6 +1042,7 @@ mod tests {
         let range = visible_log_range(10000, 3600.0, 900.0);
         assert_eq!(range, 92..133);
         assert_eq!(visible_log_range(52, 1500.0, 900.0).end, 52);
+        assert_eq!(visible_log_range(11, 1500.0, 450.0), 0..11);
         let mut editor = Editor::default();
         editor.update(Message::Scrolled(3600.0));
         editor.update(Message::Level(ActionLogLevel::Error, false));
