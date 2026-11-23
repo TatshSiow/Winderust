@@ -169,10 +169,21 @@ pub(crate) fn matching_path<'a>(
     process: &'a ProcessInfo,
 ) -> Option<&'a Path> {
     match selector {
-        WatchdogSelector::ExactPath { executable_path }
-            if process_matches_executable_path(process, executable_path) =>
-        {
-            Some(Path::new(executable_path))
+        WatchdogSelector::ExactPath { executable_path } => {
+            let selected_path = Path::new(executable_path);
+            let matches = if process.creation_time.is_some() {
+                process_matches_executable_path(process, executable_path)
+            } else {
+                // The cached image can establish incomplete group coverage, but
+                // sampling and action targets still require the process generation.
+                let basename = selected_path.file_name()?.to_str()?;
+                process.image_path.as_deref().is_some_and(|path| {
+                    path.is_absolute()
+                        && executable_basename_may_match(&process.name, basename)
+                        && same_executable_path(path, selected_path)
+                })
+            };
+            matches.then_some(selected_path)
         }
         WatchdogSelector::ExactName { executable_name }
             if observed_path_matches_name(process, executable_name) =>
@@ -290,7 +301,7 @@ impl WatchdogManager {
                 *path = None;
             }
         }
-        let total_memory_required = !matched.is_empty()
+        let total_memory_required = !samples.is_empty()
             && settings.rules.iter().any(|rule| {
                 rule.enabled
                     && rule.memory.enabled
@@ -1449,36 +1460,50 @@ mod tests {
 
     #[test]
     fn incomplete_member_memory_samples_break_the_combined_sustained_interval() {
-        for missing_process_sample in [false, true] {
+        enum Gap {
+            Memory,
+            Sample,
+            CreationTime,
+        }
+
+        for gap in [Gap::Memory, Gap::Sample, Gap::CreationTime] {
             let settings = settings();
             let mut second = process();
             second.id += 1;
-            let processes = [process(), second];
+            let complete = [process(), second];
+            let mut missing_creation = complete.clone();
+            missing_creation[1].creation_time = None;
             let mut manager = WatchdogManager::default();
             let start = Instant::now();
             for second in 0..5 {
                 let now = start + Duration::from_secs(second);
-                let mut samples: BTreeMap<_, _> = processes
+                let missing_creation_time = second == 1 && matches!(gap, Gap::CreationTime);
+                let processes = if missing_creation_time {
+                    &missing_creation
+                } else {
+                    &complete
+                };
+                let samples = processes
                     .iter()
                     .enumerate()
-                    .flat_map(|(i, p)| {
-                        sample(
-                            p,
-                            now,
-                            if second == 1 && i == 1 {
-                                None
-                            } else {
-                                Some(400)
-                            },
-                        )
+                    .flat_map(|(i, process)| {
+                        if second != 1 || i == 0 {
+                            return sample(process, now, Some(400));
+                        }
+                        match gap {
+                            Gap::Memory => sample(process, now, None),
+                            Gap::Sample | Gap::CreationTime => BTreeMap::new(),
+                        }
                     })
                     .collect();
-                if second == 1 && missing_process_sample {
-                    samples.remove(&processes[1].id);
+                let (snapshot, events) =
+                    manager.evaluate(&settings, processes, &samples, Some(1000), now);
+                if missing_creation_time {
+                    assert_eq!(
+                        (snapshot.monitored_processes, snapshot.skipped_processes),
+                        (0, 2)
+                    );
                 }
-                let events = manager
-                    .evaluate(&settings, &processes, &samples, Some(1000), now)
-                    .1;
                 assert_eq!(events.len(), usize::from(second == 4));
             }
         }
