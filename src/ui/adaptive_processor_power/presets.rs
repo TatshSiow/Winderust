@@ -455,11 +455,14 @@ impl Editor {
                 .on_press_maybe(save),
         ]
         .spacing(design::space::SMALL);
-        Some(widgets::modal_frame(
-            header,
-            scrollable(body).width(Fill).height(Fill),
-            footer,
-            (500, 310),
+        Some(super::super::modal::dismiss_on_escape(
+            widgets::modal_frame(
+                header,
+                scrollable(body).width(Fill).height(Fill),
+                footer,
+                (500, 310),
+            ),
+            Message::CancelPreset,
         ))
     }
 }
