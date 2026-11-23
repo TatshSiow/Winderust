@@ -678,8 +678,18 @@ impl Editor {
                     return false;
                 }
             };
-        let pending = self.pending_activation.take().filter(|_| retry);
-        let original = pending.as_ref().unwrap_or(&review);
+        // A failed native apply may leave the earlier stored values awaiting activation.
+        let pending = self.pending_activation.take().filter(|_| {
+            retry
+                || matches!(
+                    outcome.error.as_ref(),
+                    Some(
+                        AdvancedPowerPlanTuningApplyError::Apply(_)
+                            | AdvancedPowerPlanTuningApplyError::ApplyAndReadback { .. }
+                    )
+                )
+        });
+        let original = pending.as_ref().filter(|_| retry).unwrap_or(&review);
         let restoring = original.origin == ApplyOrigin::Restore;
         let activation_failed = outcome
             .error
@@ -730,7 +740,10 @@ impl Editor {
             } else if (activation_failed || retry)
                 && self.readback == Some(original.expected_readback())
             {
-                self.pending_activation = Some(pending.unwrap_or(review));
+                self.pending_activation = if retry { pending } else { Some(review) };
+            } else {
+                self.pending_activation =
+                    pending.filter(|previous| self.readback == Some(previous.expected_readback()));
             }
             self.update_dirty();
             self.set_failure(message);
@@ -2258,6 +2271,47 @@ mod tests {
                 (before.writable(), before.writable()),
             ]
         );
+    }
+
+    #[test]
+    fn failed_newer_write_preserves_an_earlier_activation_retry() {
+        use crate::power::ProcessorPowerApplyStage::{BatteryPerformanceMaximum, ReactivatePlan};
+
+        let before = tuning_retry_baseline();
+        let mut stored = before;
+        stored.ac.processor.performance_max = 80;
+        let plans = [tuning_retry_plan()];
+        let (service, store) = AdvancedPowerPlanTuningService::fake(before);
+        let mut editor = Editor {
+            service,
+            ..Default::default()
+        };
+        editor.ensure_plan(&plans);
+        editor.values = Some(stored.writable());
+        editor.update_dirty();
+        editor.review_apply(&plans, ApplyOrigin::Page).unwrap();
+        store.set_apply_result(Some(ReactivatePlan), Ok(stored));
+        assert!(!editor.confirm_apply(&plans));
+
+        let mut newer = stored.writable();
+        newer.battery.processor.performance_max = 85;
+        editor.values = Some(newer);
+        editor.update_dirty();
+        editor.review_apply(&plans, ApplyOrigin::Page).unwrap();
+        store.set_apply_result(Some(BatteryPerformanceMaximum), Ok(stored));
+        assert!(!editor.confirm_apply(&plans));
+        assert_eq!(editor.values, Some(newer));
+
+        editor.values = Some(stored.writable());
+        editor.update_dirty();
+        assert!(editor.dirty);
+        editor.review_apply(&plans, ApplyOrigin::Page).unwrap();
+        assert!(editor.is_activation_retry(editor.review.as_ref().unwrap()));
+        store.set_apply_result(None, Ok(stored));
+        assert!(editor.confirm_apply(&plans));
+        let (_, point) = editor.restore_point_for(&plans).unwrap();
+        assert_eq!(point.previous, before);
+        assert_eq!(point.applied, stored);
     }
 
     #[test]
