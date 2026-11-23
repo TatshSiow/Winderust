@@ -16,6 +16,7 @@ instance_balancing:
   not_accepted: "執行個體平衡無法套用所有分配；整條規則已讓出控制權。"
   disabled: "執行個體平衡已停用。"
   waiting_context: "執行個體平衡正在等待新的 Windows 工作階段觀察。"
+  no_enabled_rules: "目前沒有啟用的執行個體平衡規則。"
   waiting: "等待至少兩個符合條件的執行個體。"
   insufficient_capacity: "符合條件的完整核心不足以分配給所有執行個體；規則已讓出控制權。"
   waiting_stable: "等待執行個體穩定及下一次允許的配置變更。"

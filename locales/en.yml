@@ -16,6 +16,7 @@ instance_balancing:
   not_accepted: "Instance Balancing could not apply every share; the whole rule yielded."
   disabled: "Instance Balancing is disabled."
   waiting_context: "Instance Balancing is waiting for a fresh Windows session observation."
+  no_enabled_rules: "No Instance Balancing rules are enabled."
   waiting: "Waiting for at least two eligible instances."
   insufficient_capacity: "Not enough eligible whole cores for every instance; the rule yielded."
   waiting_stable: "Waiting for stable instances and the next permitted plan change."

@@ -70,6 +70,7 @@ impl InstanceBalancingSnapshot {
 pub(crate) enum InstanceBalancingDetail {
     Disabled,
     WaitingForContext,
+    NoEnabledRules,
     WaitingForInstances,
     WaitingForStableCohort,
     InsufficientCapacity,
@@ -91,6 +92,7 @@ impl InstanceBalancingDetail {
         let mut message = match self {
             Self::Disabled => t!("instance_balancing.disabled"),
             Self::WaitingForContext => t!("instance_balancing.waiting_context"),
+            Self::NoEnabledRules => t!("instance_balancing.no_enabled_rules"),
             Self::WaitingForInstances => t!("instance_balancing.waiting"),
             Self::WaitingForStableCohort => t!("instance_balancing.waiting_stable"),
             Self::InsufficientCapacity => t!("instance_balancing.insufficient_capacity"),
@@ -553,7 +555,8 @@ impl RuntimeCore {
             detail: Some(InstanceBalancingDetail::WaitingForInstances),
             ..Default::default()
         };
-        if !runtime.enabled || !active.general.enabled || !watcher_active {
+        let disabled = !runtime.enabled || !active.general.enabled;
+        if disabled || !watcher_active {
             runtime.invalidate();
         }
         snapshot.last_error = release(
@@ -562,22 +565,29 @@ impl RuntimeCore {
             &mut self.action_log,
         );
         runtime.dirty = false;
-        if !runtime.enabled || !active.general.enabled || !watcher_active {
-            snapshot.detail = Some(if runtime.enabled && active.general.enabled {
-                InstanceBalancingDetail::WaitingForContext
-            } else {
-                InstanceBalancingDetail::Disabled
-            });
-            runtime.remember_release_only_status(&snapshot);
-            return snapshot;
-        }
-        let topology = cpu_allocation::processor_topology();
-        let enabled = runtime
+        let mut enabled = runtime
             .rules
             .iter()
             .enumerate()
             .filter_map(|(index, rule)| rule.settings.enabled.then_some(index))
-            .collect::<Vec<_>>();
+            .peekable();
+        let no_rules = !disabled && enabled.peek().is_none();
+        if disabled || no_rules || !watcher_active {
+            snapshot.detail = Some(if disabled {
+                InstanceBalancingDetail::Disabled
+            } else if no_rules {
+                InstanceBalancingDetail::NoEnabledRules
+            } else {
+                InstanceBalancingDetail::WaitingForContext
+            });
+            runtime.remember_release_only_status(&snapshot);
+            if let Some(error) = snapshot.last_error.as_ref().filter(|_| no_rules) {
+                snapshot.detail = Some(InstanceBalancingDetail::Diagnostic(error.clone()));
+            }
+            return snapshot;
+        }
+        let topology = cpu_allocation::processor_topology();
+        let enabled = enabled.collect::<Vec<_>>();
         let paths = enabled
             .iter()
             .map(|index| runtime.rules[*index].settings.executable_path.clone())
@@ -602,10 +612,6 @@ impl RuntimeCore {
         let mut observed_rules = 0;
         for (index, observation) in enabled.into_iter().zip(observations) {
             let rule = &mut runtime.rules[index];
-            if !rule.settings.enabled {
-                rule.accepted.clear();
-                continue;
-            }
             let mut inventory = CpuSetInventory::default();
             let mut observed_counts = None;
             let mut exclusions = Vec::new();
@@ -755,9 +761,6 @@ impl RuntimeCore {
             }
         }
         snapshot.process_activity_known = observed_rules != 0 && observed_rules == rule_count;
-        if rule_count == 0 {
-            runtime.remember_release_only_status(&snapshot);
-        }
         let assigned = snapshot.adjusted_processes;
         if let Some(error) = &snapshot.last_error {
             snapshot.detail = Some(InstanceBalancingDetail::Diagnostic(error.clone()));
