@@ -1012,6 +1012,7 @@ timer_resolution:
   log_automation_disabled: "automation disabled"
   log_control_disabled: "timer resolution control disabled"
   log_no_active_rules: "no timer resolution foreground rules are enabled"
+  log_unknown_power_source: "Windows could not confirm the power source"
   log_unknown_foreground: "foreground app is unknown"
   log_no_match: "no foreground timer resolution rule matched"
   log_period_changed_without_bounds: "the requested period changed and Windows could not verify the supported range"

@@ -181,6 +181,18 @@ pub(super) fn view<'a>(
     };
     let state = sidebar_state(page, settings, runtime, &summary, observed_state);
     let (state_label, detail, color) = match (page, state) {
+        (Page::TimerResolution, FeatureRunState::Paused)
+            if runtime
+                .feature_status
+                .timer_resolution
+                .waiting_for_power_source =>
+        {
+            (
+                "sidebar_status.paused",
+                "home.power_source_unavailable",
+                "common.waiting",
+            )
+        }
         (Page::CpuLimiter, FeatureRunState::Paused)
             if runtime.feature_status.cpu_limiter.waiting_for_power_source =>
         {
@@ -757,6 +769,13 @@ fn sidebar_state(
     use crate::rules::DecisionState;
     if page == Page::TimerResolution {
         let timer = &runtime.feature_status.timer_resolution;
+        if timer.waiting_for_power_source {
+            return if runtime.worker_error.is_some() || summary.last_error.is_some() {
+                FeatureRunState::Error
+            } else {
+                FeatureRunState::Paused
+            };
+        }
         if !timer.enabled && timer.requested_100ns.is_some() && timer.last_error.is_some() {
             return FeatureRunState::Error;
         }
@@ -1932,6 +1951,46 @@ mod tests {
         let waiting = labels(&runtime);
         assert_eq!(waiting[0], t!("sidebar_status.paused"));
         assert_eq!(waiting[1], t!("cpu_limiter.waiting_for_power_source"));
+    }
+
+    #[test]
+    fn timer_resolution_sidebar_shows_power_source_pause_and_release_failure() {
+        let mut settings = Settings::default();
+        settings.general.enabled = true;
+        settings.timer_resolution.enabled = false;
+        let battery = &mut settings.battery_profile_mut().timer_resolution;
+        battery.enabled = true;
+        battery.rules.push(crate::config::TimerResolutionRule {
+            enabled: true,
+            executable_path: r"C:\Apps\timer.exe".into(),
+            desired_100ns: 100_000,
+        });
+        let mut runtime = RuntimeStatusSnapshot {
+            generation: 1,
+            ..Default::default()
+        };
+        let labels = |runtime: &RuntimeStatusSnapshot| {
+            rail_text(view(Page::TimerResolution, &settings, runtime, &[], None).unwrap())
+        };
+        assert_eq!(labels(&runtime)[0], t!("common.inactive"));
+
+        let timer = &mut std::sync::Arc::make_mut(&mut runtime.feature_status).timer_resolution;
+        timer.enabled = true;
+        timer.observation_paused = true;
+        timer.waiting_for_power_source = true;
+        let paused = labels(&runtime);
+        assert_eq!(paused[0], t!("sidebar_status.paused"));
+        assert_eq!(paused[1], t!("home.power_source_unavailable"));
+
+        let timer = &mut std::sync::Arc::make_mut(&mut runtime.feature_status).timer_resolution;
+        timer.requested_100ns = Some(100_000);
+        timer.last_error = Some("release failed".into());
+        let failed = labels(&runtime);
+        assert_eq!(failed[0], t!("common.error"));
+        assert!(failed.iter().any(|text| text == "release failed"));
+        assert!(failed
+            .iter()
+            .any(|text| text == &crate::timer_resolution::format_resolution_ms(100_000)));
     }
 
     #[test]

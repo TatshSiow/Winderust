@@ -146,6 +146,25 @@ pub(super) fn timer_resolution_enablement_varies_by_source(settings: &Settings) 
         .is_some_and(|battery| enabled(settings) != enabled(battery))
 }
 
+pub(super) fn timer_resolution_policy_varies_by_source(settings: &Settings) -> bool {
+    fn intents(profile: &Settings) -> impl Iterator<Item = (&str, u32)> {
+        let enabled = feature_refresh_required(profile, profile.timer_resolution.enabled);
+        profile
+            .timer_resolution
+            .rules
+            .iter()
+            .filter(move |rule| {
+                enabled && enabled_executable_path_rule(rule.enabled, &rule.executable_path)
+            })
+            .map(|rule| (rule.executable_path.trim_start(), rule.desired_100ns))
+    }
+
+    settings
+        .on_battery
+        .as_deref()
+        .is_some_and(|battery| intents(settings).ne(intents(battery)))
+}
+
 pub(super) fn sleep_prevention_required(settings: &Settings) -> bool {
     settings.sleep_prevention.enabled
         && settings

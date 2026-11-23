@@ -1015,6 +1015,7 @@ timer_resolution:
   log_automation_disabled: "自動化已停用"
   log_control_disabled: "計時器解析度控制已停用"
   log_no_active_rules: "沒有啟用的前景計時器解析度規則"
+  log_unknown_power_source: "Windows 無法確認電源來源"
   log_unknown_foreground: "無法確認前景應用程式"
   log_no_match: "沒有符合的前景計時器解析度規則"
   log_period_changed_without_bounds: "要求的期間已變更，且 Windows 無法確認支援範圍"

@@ -517,7 +517,7 @@ impl RuntimeCore {
                 .reset(&mut self.sleep_prevention_controller, &mut self.action_log)
                 .last_error,
         );
-        self.run_timer_resolution_update(&settings, &mut observations);
+        self.run_timer_resolution_update(&settings, false, &mut observations);
         if let Err(error) = self.timer_resolution_controller.shutdown() {
             errors.push(format!("Timer Resolution restoration failed: {error}"));
         }
@@ -2006,8 +2006,15 @@ impl RuntimeCore {
     pub(super) fn run_timer_resolution_update(
         &mut self,
         settings: &Settings,
+        waiting_for_power_source: bool,
         observations: &mut CycleObservations,
     ) -> TimerResolutionSnapshot {
+        if waiting_for_power_source {
+            return self.timer_resolution_manager.pause_for_power_source(
+                &mut self.timer_resolution_controller,
+                &mut self.action_log,
+            );
+        }
         let foreground_process =
             feature_refresh_required(settings, timer_resolution_required(settings))
                 .then(|| observations.noncritical_foreground_process())

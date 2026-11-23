@@ -15,6 +15,7 @@ pub struct TimerResolutionSnapshot {
     pub maximum_100ns: Option<u32>,
     pub minimum_100ns: Option<u32>,
     pub observation_paused: bool,
+    pub waiting_for_power_source: bool,
     pub last_error: Option<String>,
 }
 
@@ -227,6 +228,24 @@ impl TimerResolutionManager {
         )
     }
 
+    pub(crate) fn pause_for_power_source(
+        &mut self,
+        controller: &mut TimerResolutionController,
+        action_log: &mut ActionLog,
+    ) -> TimerResolutionSnapshot {
+        TimerResolutionSnapshot {
+            waiting_for_power_source: true,
+            ..self.release_inactive(
+                controller,
+                true,
+                false,
+                action_log,
+                "timer_resolution.log_unknown_power_source",
+                true,
+            )
+        }
+    }
+
     fn disable(
         &mut self,
         controller: &mut TimerResolutionController,
@@ -366,6 +385,7 @@ fn snapshot_from_query(
         maximum_100ns: info.map(|info| info.maximum_100ns),
         minimum_100ns: info.map(|info| info.minimum_100ns),
         observation_paused,
+        waiting_for_power_source: false,
         last_error,
     }
 }

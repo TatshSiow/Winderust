@@ -1542,9 +1542,11 @@ fn run_background_automation(
             || memory_trim_command_requested
             || memory_trim_active
             || memory_trim_waits_for_source;
-        let timer_resolution_active =
-            feature_refresh_required(settings, timer_resolution_required(settings))
-                || runner.timer_resolution_request_active();
+        let timer_resolution_waits_for_source =
+            plugged_in.is_none() && timer_resolution_policy_varies_by_source(&configured_settings);
+        let timer_resolution_active = (!timer_resolution_waits_for_source
+            && feature_refresh_required(settings, timer_resolution_required(settings)))
+            || runner.timer_resolution_request_active();
         let timer_resolution_refresh_required = settings_changed || timer_resolution_active;
         let sleep_power_source = plugged_in.or(runner.sleep_prevention_power_source());
         let sleep_settings = active_power_source_settings(&configured_settings, sleep_power_source);
@@ -1953,8 +1955,11 @@ fn run_background_automation(
         if timer_resolution_refresh_required
             && scheduler.is_due(RefreshDomain::TimerResolution, now)
         {
-            let timer_resolution_status =
-                runner.run_timer_resolution_update(settings, &mut observations);
+            let timer_resolution_status = runner.run_timer_resolution_update(
+                settings,
+                timer_resolution_waits_for_source,
+                &mut observations,
+            );
             update_timer_resolution_status(&shared, timer_resolution_status);
             scheduler.schedule_after(
                 RefreshDomain::TimerResolution,
@@ -2229,9 +2234,10 @@ fn run_background_automation(
         if let Some(delay) = runner.control_release_retry_delay(sleep_now) {
             wait_for = Some(min_worker_wait(wait_for, delay));
         }
-        if (!timer_resolution_active
-            && (plugged_in.is_none() || !windows_event_watcher_active)
-            && timer_resolution_enablement_varies_by_source(&configured_settings))
+        if timer_resolution_waits_for_source
+            || (!timer_resolution_active
+                && !windows_event_watcher_active
+                && timer_resolution_enablement_varies_by_source(&configured_settings))
             || (!windows_event_watcher_active
                 && (adaptive_enablement_varies_by_source(&configured_settings)
                     || memory_trim_policy_difference != MemoryTrimPolicyDifference::Common

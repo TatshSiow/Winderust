@@ -1305,8 +1305,29 @@ fn timer_resolution_requests_power_events_only_for_different_profile_enablement(
         desired_100ns: 10_000,
     });
     assert_eq!(windows_event_watcher_mode(&settings), None);
+    assert!(!timer_resolution_policy_varies_by_source(&settings));
+
+    let battery = &mut settings.battery_profile_mut().timer_resolution;
+    battery.rules[0].executable_path.insert(0, ' ');
+    battery.rules.push(TimerResolutionRule {
+        enabled: false,
+        executable_path: r"C:\Apps\unused.exe".to_owned(),
+        desired_100ns: 100_000,
+    });
+    assert!(!timer_resolution_policy_varies_by_source(&settings));
+
+    settings.battery_profile_mut().timer_resolution.rules[0].desired_100ns = 100_000;
+    assert!(timer_resolution_policy_varies_by_source(&settings));
+    assert_eq!(windows_event_watcher_mode(&settings), None);
+
+    let rule = &mut settings.battery_profile_mut().timer_resolution.rules[0];
+    rule.desired_100ns = 10_000;
+    rule.executable_path.push('\u{3000}');
+    assert!(timer_resolution_policy_varies_by_source(&settings));
+    assert_eq!(windows_event_watcher_mode(&settings), None);
 
     settings.battery_profile_mut().timer_resolution.enabled = false;
+    assert!(timer_resolution_policy_varies_by_source(&settings));
     assert_eq!(
         windows_event_watcher_mode(&settings),
         Some(WindowsEventWatcherMode::Full)
