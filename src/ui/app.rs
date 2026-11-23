@@ -3308,6 +3308,8 @@ impl WinderustApp {
                 | Page::AppSuspension
                 | Page::CpuLimiter
                 | Page::TimerResolution
+                | Page::SleepPrevention
+                | Page::MemoryTrim
         );
         let save_card =
             || widgets::settings_card(self.save_notice(settings_are_pending)).width(360);
