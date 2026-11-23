@@ -756,8 +756,17 @@ impl Editor {
                         .get(&(id, field))
                         .is_some_and(|value| !valid_input(field, value))
                 });
-                let feedback = invalid_clock.then(|| {
-                    text(t!("by_time.invalid_time").to_string())
+                let feedback_key = if invalid_clock {
+                    Some("by_time.invalid_time")
+                } else if r.days.is_empty() {
+                    Some("by_time.no_days")
+                } else if r.start_time == r.end_time {
+                    Some("by_time.equal_times")
+                } else {
+                    None
+                };
+                let feedback = feedback_key.map(|key| {
+                    text(t!(key).to_string())
                         .wrapping(text::Wrapping::WordOrGlyph)
                         .style(text::danger)
                         .into()
