@@ -21,9 +21,7 @@ use windows_sys::Win32::{
             WTSRegisterSessionNotification, WTSUnRegisterSessionNotification,
             NOTIFY_FOR_THIS_SESSION,
         },
-        SystemServices::{
-            GUID_ACDC_POWER_SOURCE, GUID_BATTERY_PERCENTAGE_REMAINING, GUID_POWERSCHEME_PERSONALITY,
-        },
+        SystemServices::{GUID_ACDC_POWER_SOURCE, GUID_POWERSCHEME_PERSONALITY},
         Threading::GetCurrentThreadId,
     },
     UI::{
@@ -351,11 +349,7 @@ fn register_window_hook(event: u32) -> HWINEVENTHOOK {
 
 fn register_power_notifications(window: HWND, include_power_settings: bool) -> PowerNotifications {
     let power_settings: &[_] = if include_power_settings {
-        &[
-            GUID_ACDC_POWER_SOURCE,
-            GUID_BATTERY_PERCENTAGE_REMAINING,
-            GUID_POWERSCHEME_PERSONALITY,
-        ]
+        &[GUID_ACDC_POWER_SOURCE, GUID_POWERSCHEME_PERSONALITY]
     } else {
         &[]
     };
