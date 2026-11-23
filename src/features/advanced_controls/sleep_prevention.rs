@@ -261,11 +261,13 @@ impl SleepPreventionManager {
             .processes_for_path_matching(|process| self.needs_path_observation(process, settings))
         {
             Ok(processes) => {
+                let own_pid = std::process::id();
+                let current_session = processes.first().and_then(|_| process_session_id(own_pid));
                 self.observe(
                     settings,
                     &processes,
-                    std::process::id(),
-                    process_session_id(std::process::id()),
+                    own_pid,
+                    current_session,
                     allow_cross_session_process_control,
                 );
                 None
@@ -687,7 +689,7 @@ fn match_rules(
     allow_cross_session: bool,
 ) -> Matches {
     let mut matches = Matches {
-        known: allow_cross_session || current_session.is_some(),
+        known: processes.is_empty() || allow_cross_session || current_session.is_some(),
         ..Default::default()
     };
     if !matches.known {

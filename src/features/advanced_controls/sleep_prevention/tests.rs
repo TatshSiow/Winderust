@@ -116,6 +116,7 @@ fn matching_rejects_wrong_paths_protected_apps_and_disallowed_sessions() {
     let settings = settings();
     let mut worker = process(7, r"C:\Apps\worker.exe");
     let baseline = worker.clone();
+    assert!(match_rules(&settings, &[], u32::MAX, None, false).known);
     for modified in 0..7 {
         worker = baseline.clone();
         match modified {
