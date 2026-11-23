@@ -3276,7 +3276,7 @@ impl WinderustApp {
             || widgets::settings_card(self.save_notice(settings_are_pending)).width(360);
         let content = container(super::motion::wrap(
             super::motion::wrap(
-                super::scrolling::repaint_group(self.page_view()),
+                super::scrolling::repaint_group(self.page_view(settings_are_pending)),
                 true,
                 super::motion::Effect::Content(self.power_source as u64),
             ),
@@ -3557,7 +3557,7 @@ impl WinderustApp {
         .then_some(status)
     }
 
-    fn page_view(&self) -> Element<'_, Message> {
+    fn page_view(&self, settings_are_pending: bool) -> Element<'_, Message> {
         let general = &self.settings.global().general;
         let toggle = |label: &'static str, value, action: fn(bool) -> Message| {
             widgets::toggle_card(label, value, Some(action))
@@ -3612,6 +3612,7 @@ impl WinderustApp {
                     &self.settings.global().keep_running,
                     &self.status.feature_status.keep_running,
                     &self.candidates,
+                    settings_are_pending,
                 )
                 .map(Message::KeepRunning),
             Page::MemoryTrim => self

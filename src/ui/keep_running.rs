@@ -116,6 +116,7 @@ impl Editor {
         settings: &'a KeepRunningSettings,
         status: &'a KeepRunningSnapshot,
         candidates: &'a [app_picker::Candidate],
+        settings_are_pending: bool,
     ) -> Element<'a, Message> {
         let rules = settings
             .rules
@@ -169,10 +170,22 @@ impl Editor {
                     }
                 }
                 if matches!(state, Some(KeepRunningState::Paused(_))) {
-                    details = details.push(
-                        widgets::action_button(t!("keep_running.resume").to_string())
-                            .on_press(Message::Resume(rule.executable_path.clone())),
-                    );
+                    let resume = widgets::action_button(t!("keep_running.resume").to_string())
+                        .on_press_maybe(
+                            (!settings_are_pending)
+                                .then(|| Message::Resume(rule.executable_path.clone())),
+                        );
+                    details = if settings_are_pending {
+                        details.push(widgets::tooltip(
+                            resume,
+                            text(t!("keep_running.save_before_resume").to_string())
+                                .width(240)
+                                .wrapping(text::Wrapping::WordOrGlyph),
+                            iced::widget::tooltip::Position::Top,
+                        ))
+                    } else {
+                        details.push(resume)
+                    };
                 }
                 (
                     widgets::stable_key(&rule.executable_path),
