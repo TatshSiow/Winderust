@@ -17,8 +17,11 @@ use crate::{
         suspension::{self as suspension_control, SuspensionTarget},
     },
     foreground::{
-        is_foreground_process, process_executable_path, process_failure_key,
-        process_list::{catalog_process_executable_path, power_profile_executable_path_key},
+        is_foreground_process, process_failure_key,
+        process_list::{
+            catalog_process_executable_path, power_profile_executable_path_key,
+            verified_process_executable_path,
+        },
         process_session_id, same_executable_path, ProcessInfo, ProtectedProcesses,
     },
     rules::{execution_failure_suppression_threshold, ExecutionFailureTracker},
@@ -63,17 +66,12 @@ struct SelectedTarget {
 }
 
 impl CpuLimiterManager {
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "the policy boundary receives current observations and the dedicated controller"
-    )]
     pub fn update(
         &mut self,
         controller: &mut CpuLimiterController,
         settings: &CpuLimiterSettings,
         automation_enabled: bool,
         allow_cross_session_process_control: bool,
-        foreground_process_id: Option<u32>,
         observations: &mut CycleObservations,
         action_log: &mut ActionLog,
     ) -> CpuLimiterSnapshot {
@@ -86,6 +84,9 @@ impl CpuLimiterManager {
         }
 
         let needs_foreground = requires_foreground_observation(settings);
+        let foreground_process_id = needs_foreground
+            .then(|| observations.foreground_process_id())
+            .flatten();
         if needs_foreground && foreground_process_id.is_none() {
             return self.paused(controller, action_log);
         }
@@ -141,9 +142,10 @@ impl CpuLimiterManager {
         let mut selected = BTreeMap::new();
         let mut active_failure_keys = BTreeSet::new();
         for process in processes.iter() {
-            let (Some(creation_time), Some(executable_path)) =
-                (process.creation_time, process_executable_path(process))
-            else {
+            let (Some(creation_time), Some(executable_path)) = (
+                process.creation_time,
+                verified_process_executable_path(process),
+            ) else {
                 continue;
             };
             let Some(rule) = matching_rule(settings, &executable_path) else {
@@ -827,7 +829,7 @@ mod tests {
     #[test]
     fn unverified_foreground_executable_pauses_focus_dependent_limits() {
         let process_id = std::process::id();
-        let mut observations = CycleObservations::with_processes(vec![ProcessInfo {
+        let process = ProcessInfo {
             id: process_id,
             creation_time: None,
             parent_id: None,
@@ -838,7 +840,7 @@ mod tests {
             can_set_information: false,
             name: "test process".to_owned(),
             image_path: None,
-        }]);
+        };
         let mut manager = CpuLimiterManager::default();
         let (key, limited) = limited_process(42);
         manager.limited.insert(key, limited);
@@ -853,28 +855,32 @@ mod tests {
             background_allowed_cpu_time_percent: 25,
             rules: vec![rule()],
         };
-        let mut update = |settings: &CpuLimiterSettings| {
+        let mut update = |settings: &CpuLimiterSettings, foreground_source: fn() -> Option<u32>| {
+            let mut observations = CycleObservations::with_processes(vec![process.clone()])
+                .with_foreground_source(foreground_source);
             manager.update(
                 &mut controller,
                 settings,
                 true,
                 true,
-                Some(process_id),
                 &mut observations,
                 &mut action_log,
             )
         };
 
-        assert!(update(&settings).observation_paused);
+        let foreground = || Some(std::process::id());
+        assert!(update(&settings, foreground).observation_paused);
 
         settings.visible_window_allowed_cpu_time_percent = 100;
-        assert!(update(&settings).observation_paused);
+        assert!(update(&settings, foreground).observation_paused);
 
         settings.focus_allowed_cpu_time_percent = 25;
         settings.visible_window_allowed_cpu_time_percent = 25;
         assert!(!requires_foreground_observation(&settings));
         assert!(!requires_visible_window_observation(&settings));
-        let independent = update(&settings);
+        let independent = update(&settings, || {
+            panic!("uniform limits do not need foreground")
+        });
         assert!(!independent.observation_paused);
         assert_eq!(independent.scanned_processes, 1);
         assert!(manager.limited.is_empty());

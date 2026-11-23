@@ -179,6 +179,12 @@ impl CycleObservations {
     }
 
     #[cfg(test)]
+    pub(crate) fn with_foreground_source(mut self, source: fn() -> Option<u32>) -> Self {
+        self.sources.foreground_process_id = source;
+        self
+    }
+
+    #[cfg(test)]
     pub(crate) fn with_adaptive_cpu_sample(
         processes: Vec<ProcessInfo>,
         foreground_id: Option<u32>,

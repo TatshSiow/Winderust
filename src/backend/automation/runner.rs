@@ -1010,16 +1010,14 @@ impl RuntimeCore {
                 },
             };
         }
-        let refresh_required = feature_refresh_required(settings, cpu_limiter_required(settings));
-        if self.cpu_limiter_controller.is_none() && !refresh_required {
+        if self.cpu_limiter_controller.is_none()
+            && !feature_refresh_required(settings, cpu_limiter_required(settings))
+        {
             return CpuLimiterSnapshot {
                 enabled: settings.general.enabled && settings.cpu_limiter.enabled,
                 ..Default::default()
             };
         }
-        let foreground_process_id = refresh_required
-            .then(|| observations.foreground_process_id())
-            .flatten();
         let controller = match self.cpu_limiter_controller.as_mut() {
             Some(controller) => controller,
             None => match CpuLimiterController::new(Arc::clone(&self.app_suspension_controller)) {
@@ -1038,7 +1036,6 @@ impl RuntimeCore {
             &settings.cpu_limiter,
             settings.general.enabled,
             settings.general.allow_cross_session_process_control,
-            foreground_process_id,
             observations,
             &mut self.action_log,
         )
