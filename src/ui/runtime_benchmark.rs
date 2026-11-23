@@ -11,9 +11,10 @@ use crate::{
         automation::{RuntimeHandle, RuntimeStatusSnapshot},
         crash_recovery, privilege,
     },
-    config::{ProcessExclusionRule, Settings},
+    config::{PowerSourceProfile, ProcessExclusionRule, Settings},
     control::power_plan::PowerPlanOwner,
     power,
+    ui::adaptive_processor_power::BuiltInPreset,
     win_util::NamedMutexGuard,
 };
 use std::{
@@ -41,16 +42,36 @@ struct BenchmarkRequest {
 
 impl BenchmarkRequest {
     fn apply(self, settings: &mut Settings) -> Result<(), String> {
+        self.apply_process_overrides(settings)?;
+        if let Some(battery) = settings.on_battery.as_deref_mut() {
+            self.apply_process_overrides(battery)?;
+        }
+        if let Some(value) = self.background_pressure_ac_boost_policy {
+            if value > 100 {
+                return Err("Background pressure A/C boost policy must be 0..=100".to_owned());
+            }
+            settings
+                .adaptive_engine
+                .background_pressure_profile
+                .ac_policy = u32::from(value);
+        }
+        if let Some(value) = self.background_pressure_ac_boost_mode {
+            settings.adaptive_engine.background_pressure_profile.ac_mode = value;
+        }
+        settings.validate()
+    }
+
+    fn apply_process_overrides(&self, settings: &mut Settings) -> Result<(), String> {
         if let Some(enabled) = self.adaptive_engine_enabled {
             settings.adaptive_engine.enabled = enabled;
         }
         let process = &mut settings.adaptive_engine_process;
-        if let Some(path) = self.benchmark_host_path {
-            if !Path::new(&path).is_absolute() {
+        if let Some(path) = &self.benchmark_host_path {
+            if !Path::new(path).is_absolute() {
                 return Err("Benchmark host path must be absolute".to_owned());
             }
             process.custom_rules.push(ProcessExclusionRule {
-                executable_path: path,
+                executable_path: path.clone(),
                 ..Default::default()
             });
         }
@@ -81,19 +102,7 @@ impl BenchmarkRequest {
             }
             process.foreground_or_system_cpu_threshold_percent = value;
         }
-        if let Some(value) = self.background_pressure_ac_boost_policy {
-            if value > 100 {
-                return Err("Background pressure A/C boost policy must be 0..=100".to_owned());
-            }
-            settings
-                .adaptive_engine
-                .background_pressure_profile
-                .ac_policy = u32::from(value);
-        }
-        if let Some(value) = self.background_pressure_ac_boost_mode {
-            settings.adaptive_engine.background_pressure_profile.ac_mode = value;
-        }
-        settings.validate()
+        Ok(())
     }
 }
 
@@ -108,14 +117,12 @@ fn settings_for(case: &str) -> Result<Settings, String> {
             );
             settings.adaptive_engine.enabled = true;
             settings.adaptive_engine.adaptive_processor_power_enabled = true;
-            settings.adaptive_engine.base_processor_policy =
-                power::ProcessorPowerValues::new_with_boost_mode(
-                    25,
-                    5,
-                    95,
-                    60,
-                    power::ProcessorBoostMode::EfficientEnabled,
-                );
+            BuiltInPreset::Balanced
+                .apply(&mut settings.adaptive_engine, PowerSourceProfile::PluggedIn);
+            BuiltInPreset::Balanced.apply(
+                &mut settings.battery_profile_mut().adaptive_engine,
+                PowerSourceProfile::OnBattery,
+            );
         }
         "Speed" | "SpeedPowerOff" | "SpeedRestraint" => {
             apply_built_in_adaptive_engine_preset(

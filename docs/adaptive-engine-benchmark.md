@@ -276,13 +276,15 @@ a foreground-contended Focus and Launch workload.
 The runner requests settings through
 `--runtime-benchmark-settings <directory> Balanced`, then starts
 `--runtime-benchmark <directory> Balanced` without the application UI. Both use
-the canonical built-in Balanced preset applied to fresh defaults, with the
-benchmark host exclusion and any explicit tuning overrides. The default keeps
-CPU Pressure Restraint off, a 60% background processor limit, the 1000 ms general
-polling interval, and Balanced's priority-control switches. Processor Power
-retains its independent 500 ms demand-sampling cadence. The report records the
-complete generated TOML and structured settings in JSON so each result can be
-checked against the configuration that ran.
+the built-in Balanced Adaptive Engine and Adaptive Processor Power presets on
+fresh defaults. The processor maximum is 100% on A/C and 95% on battery. The
+host exclusion and process overrides apply to both sources. A/C boost overrides
+apply only to the A/C profile. The default keeps CPU Pressure Restraint off, a
+60% background processor limit, the 1000 ms general polling interval, and
+Balanced's priority-control switches. Adaptive Processor Power retains its
+independent 500 ms demand-sampling cadence. The report records the complete
+generated TOML and structured settings in JSON so each result can be checked
+against the configuration that ran.
 
 The headless host shuts down the runtime and recovery client and verifies that
 the original power plan was restored. The runner does not force-kill the host

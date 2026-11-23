@@ -64,7 +64,11 @@ impl BuiltInPreset {
         .to_string()
     }
 
-    pub(super) fn apply(self, settings: &mut AdaptiveEngineSettings, source: PowerSourceProfile) {
+    pub(in crate::ui) fn apply(
+        self,
+        settings: &mut AdaptiveEngineSettings,
+        source: PowerSourceProfile,
+    ) {
         settings.base_processor_policy = match self {
             Self::PowerSave => {
                 ProcessorPowerValues::new_with_boost_mode(0, 5, 45, 0, ProcessorBoostMode::Disabled)

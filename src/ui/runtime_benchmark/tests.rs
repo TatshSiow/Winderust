@@ -82,14 +82,11 @@ fn balanced_export_matches_the_process_preset_and_separate_power_tuning() {
     apply_built_in_adaptive_engine_preset(&mut expected, BuiltInAdaptiveEnginePreset::Balanced);
     expected.adaptive_engine.enabled = true;
     expected.adaptive_engine.adaptive_processor_power_enabled = true;
-    expected.adaptive_engine.base_processor_policy =
-        power::ProcessorPowerValues::new_with_boost_mode(
-            25,
-            5,
-            95,
-            60,
-            power::ProcessorBoostMode::EfficientEnabled,
-        );
+    BuiltInPreset::Balanced.apply(&mut expected.adaptive_engine, PowerSourceProfile::PluggedIn);
+    BuiltInPreset::Balanced.apply(
+        &mut expected.battery_profile_mut().adaptive_engine,
+        PowerSourceProfile::OnBattery,
+    );
     assert_eq!(export_settings(&path, "Balanced").unwrap(), expected);
     assert!(
         !expected
@@ -100,16 +97,30 @@ fn balanced_export_matches_the_process_preset_and_separate_power_tuning() {
     let host = std::env::current_exe().unwrap();
     fs::write(
         path.join("request.json"),
-        serde_json::to_vec(&serde_json::json!({ "benchmark_host_path": host })).unwrap(),
+        serde_json::to_vec(&serde_json::json!({
+            "benchmark_host_path": host,
+            "background_pressure_ac_boost_policy": 42,
+            "background_pressure_ac_boost_mode": "disabled"
+        }))
+        .unwrap(),
     )
     .unwrap();
+    let exclusion = ProcessExclusionRule {
+        executable_path: host.to_str().unwrap().to_owned(),
+        ..Default::default()
+    };
     expected
         .adaptive_engine_process
         .custom_rules
-        .push(ProcessExclusionRule {
-            executable_path: host.to_str().unwrap().to_owned(),
-            ..Default::default()
-        });
+        .push(exclusion.clone());
+    expected
+        .battery_profile_mut()
+        .adaptive_engine_process
+        .custom_rules
+        .push(exclusion);
+    let boost = &mut expected.adaptive_engine.background_pressure_profile;
+    boost.ac_policy = 42;
+    boost.ac_mode = power::ProcessorBoostMode::Disabled;
     assert_eq!(export_settings(&path, "Balanced").unwrap(), expected);
     assert_eq!(
         toml::from_str::<Settings>(&fs::read_to_string(path.join("settings.toml")).unwrap())
@@ -139,14 +150,18 @@ fn balanced_request_changes_only_explicit_overrides() {
         "background_pressure_ac_boost_mode": "disabled"
     }))
     .unwrap();
-    expected.adaptive_engine.enabled = false;
-    let process = &mut expected.adaptive_engine_process;
-    process.dynamic_resource_zones_enabled = true;
-    process.limit_background_processors_enabled = false;
-    process.cpu_pressure_restraint_enabled = true;
-    process.background_app_cpu_threshold_percent = 100;
-    process.maximum_restrained_apps = 32;
-    process.foreground_or_system_cpu_threshold_percent = 1;
+    let expect_process_overrides = |profile: &mut Settings| {
+        profile.adaptive_engine.enabled = false;
+        let process = &mut profile.adaptive_engine_process;
+        process.dynamic_resource_zones_enabled = true;
+        process.limit_background_processors_enabled = false;
+        process.cpu_pressure_restraint_enabled = true;
+        process.background_app_cpu_threshold_percent = 100;
+        process.maximum_restrained_apps = 32;
+        process.foreground_or_system_cpu_threshold_percent = 1;
+    };
+    expect_process_overrides(&mut expected);
+    expect_process_overrides(expected.battery_profile_mut());
     expected
         .adaptive_engine
         .background_pressure_profile
@@ -160,6 +175,10 @@ fn balanced_request_changes_only_explicit_overrides() {
         .apply(&mut settings)
         .unwrap();
     expected
+        .adaptive_engine_process
+        .cpu_pressure_restraint_enabled = false;
+    expected
+        .battery_profile_mut()
         .adaptive_engine_process
         .cpu_pressure_restraint_enabled = false;
     assert_eq!(settings, expected);
