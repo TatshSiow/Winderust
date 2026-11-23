@@ -652,7 +652,7 @@ background_efficiency:
 
 interrupt_timing:
   title: "Interrupt Timing"
-  title_help: "Experimental five-second capture of driver interrupt timing."
+  title_help: "Experimental five-second capture. A routine may be listed under its driver framework."
   run: "Run diagnostic"
   export_report: "Export report"
   report_files: "JSON reports"
@@ -668,8 +668,8 @@ interrupt_timing:
   timed_out: "Interrupt Timing timed out. Cleanup may still be in progress."
   previous_report_status: "%{status} Showing the previous report."
   no_samples: "No completed interrupt samples were captured."
-  top_drivers: "Top drivers by total elapsed time"
-  driver: "Driver"
+  top_routine_modules: "Top routine modules by total time"
+  routine_module: "Routine module"
   kind: "Type"
   count: "Count"
   longest: "Longest (ms)"
@@ -678,7 +678,7 @@ interrupt_timing:
   logical_cpu: "Logical CPU"
   dpc_ms: "DPC (ms)"
   isr_ms: "ISR (ms)"
-  unknown_driver: "Unknown driver"
+  unknown_module: "Unknown module"
   dpc: "DPC"
   isr: "ISR"
   threaded_dpc: "Threaded DPC"
@@ -686,8 +686,8 @@ interrupt_timing:
   lost_buffers: "Buffers lost (%{count})"
   invalid_intervals: "Invalid timings (%{count})"
   incomplete_intervals: "Incomplete timings (%{count})"
-  invalid_images: "Invalid driver records (%{count})"
-  unresolved_drivers: "Samples with unknown driver (%{count})"
+  invalid_images: "Invalid module records (%{count})"
+  unresolved_modules: "Samples with unknown modules (%{count})"
 
 adaptive_engine:
   detection: "Detection"

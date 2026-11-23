@@ -77,13 +77,17 @@ cleanup of the owned session. The drain-time QPC sample identifies impossible
 future timestamps. ETW loss counters and malformed-record warnings cover the
 full collection. ISR opcode
 50 follows the [TraceEvent parser](https://github.com/microsoft/perfview/blob/main/src/TraceEvent/Parsers/KernelTraceEventParser.cs).
+The routine module is the loaded image containing the address in the ETW event.
+A [framework routine that calls a driver callback](https://learn.microsoft.com/en-us/windows-hardware/drivers/wdf/servicing-an-interrupt)
+can therefore be reported under the framework's module.
 An x64 `Image_Load` v2/v3 load or rundown record with a verified kernel address
 range and an unreadable basename retains an unattributed lifetime and counts
-as one invalid driver record. Ambiguous image evidence also leaves the routine
-unattributed. Per-CPU sums accepted, positive-duration regular and timer DPCs and
-ISRs, including events whose driver could not be resolved. Threaded DPC appears in driver totals as its own event
-type. An unverified CPU number or topology omits the CPU breakdown while
-preserving driver totals. The diagnostic changes no driver settings.
+as one invalid module record. Ambiguous image evidence also leaves the routine
+unattributed. Per-CPU sums accepted, positive-duration regular and timer DPCs
+and ISRs, including events whose modules could not be resolved. Threaded DPC
+appears in module totals as its own event type. An unverified CPU number or
+topology omits the CPU breakdown while preserving module totals. The diagnostic
+changes no driver settings.
 
 ## Update Checks
 

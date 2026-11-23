@@ -291,7 +291,7 @@ fn report_view<'a>(
         text(t!("interrupt_timing.no_samples")).style(text::secondary)
     } else {
         widgets::heading(
-            t!("interrupt_timing.top_drivers").into_owned(),
+            t!("interrupt_timing.top_routine_modules").into_owned(),
             design::typography::BODY,
         )
     };
@@ -306,7 +306,7 @@ fn report_view<'a>(
     if !report.modules.is_empty() {
         body = body.push(result_row(
             [
-                t!("interrupt_timing.driver"),
+                t!("interrupt_timing.routine_module"),
                 t!("interrupt_timing.kind"),
                 t!("interrupt_timing.count"),
                 t!("interrupt_timing.longest"),
@@ -314,22 +314,22 @@ fn report_view<'a>(
             ],
             true,
         ));
-        for driver in &report.modules {
-            let kind = match driver.kind {
+        for timing in &report.modules {
+            let kind = match timing.kind {
                 InterruptKind::Dpc => "interrupt_timing.dpc",
                 InterruptKind::Isr => "interrupt_timing.isr",
                 InterruptKind::ThreadedDpc => "interrupt_timing.threaded_dpc",
             };
             body = body.push(result_row(
                 [
-                    driver
+                    timing
                         .module
                         .as_deref()
-                        .map_or_else(|| t!("interrupt_timing.unknown_driver"), Cow::Borrowed),
+                        .map_or_else(|| t!("interrupt_timing.unknown_module"), Cow::Borrowed),
                     t!(kind),
-                    driver.count.to_string().into(),
-                    format!("{:.3}", driver.max_inclusive_ms).into(),
-                    format!("{:.3}", driver.total_inclusive_ms).into(),
+                    timing.count.to_string().into(),
+                    format!("{:.3}", timing.max_inclusive_ms).into(),
+                    format!("{:.3}", timing.total_inclusive_ms).into(),
                 ],
                 false,
             ));
@@ -354,7 +354,7 @@ fn report_view<'a>(
             report.invalid_image_records,
         ),
         (
-            "interrupt_timing.unresolved_drivers",
+            "interrupt_timing.unresolved_modules",
             report.unresolved_attribution,
         ),
     ]
@@ -427,10 +427,10 @@ fn report_view<'a>(
 }
 
 fn result_row<'a>(cells: [Cow<'a, str>; 5], header: bool) -> Row<'a, Message> {
-    let [driver, kind, count, longest, total] = cells;
+    let [module, kind, count, longest, total] = cells;
     let cell = |label| result_cell(label, header);
     row![
-        cell(driver).width(Length::FillPortion(3)),
+        cell(module).width(Length::FillPortion(3)),
         cell(kind).width(Length::FillPortion(2)),
         cell(count).width(48).align_x(iced::Right),
         cell(longest).width(70).align_x(iced::Right),
