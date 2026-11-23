@@ -132,6 +132,18 @@ pub(crate) struct WatchdogManager {
     states: BTreeMap<StateKey, AppState>,
 }
 
+pub(crate) fn selector_basename_matches(selector: &WatchdogSelector, process_name: &str) -> bool {
+    match selector {
+        WatchdogSelector::ExactPath { executable_path } => Path::new(executable_path)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| executable_basename_may_match(process_name, name)),
+        WatchdogSelector::ExactName { executable_name } => {
+            same_executable_name(process_name, executable_name)
+        }
+    }
+}
+
 fn needs_path_observation(
     process: &ProcessInfo,
     settings: &WatchdogSettings,
@@ -145,15 +157,7 @@ fn needs_path_observation(
             .rules
             .iter()
             .filter(|rule| rule.enabled)
-            .any(|rule| match &rule.selector {
-                WatchdogSelector::ExactPath { executable_path } => Path::new(executable_path)
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .is_some_and(|name| executable_basename_may_match(&process.name, name)),
-                WatchdogSelector::ExactName { executable_name } => {
-                    same_executable_name(&process.name, executable_name)
-                }
-            })
+            .any(|rule| selector_basename_matches(&rule.selector, &process.name))
 }
 
 pub(crate) fn observed_path_matches_name(process: &ProcessInfo, executable_name: &str) -> bool {

@@ -2,11 +2,10 @@ use std::path::{Path, PathBuf};
 
 use crate::{
     config::{WatchdogRule, WatchdogSelector},
-    features::winderust_features::watchdog::{matching_path, observed_path_matches_name},
-    foreground::{
-        process_list::{executable_basename_may_match, same_executable_name},
-        same_executable_path, ProcessInfo,
+    features::winderust_features::watchdog::{
+        matching_path, observed_path_matches_name, selector_basename_matches,
     },
+    foreground::{same_executable_path, ProcessInfo},
     runtime::observations::CycleObservations,
 };
 
@@ -64,7 +63,10 @@ pub(super) fn load(
     selector: &WatchdogSelector,
     other_rules: &[(usize, WatchdogSelector)],
 ) -> Result<Vec<MatchRow>, String> {
-    let processes = CycleObservations::default().processes_with_paths()?;
+    let mut observations = CycleObservations::default();
+    let processes = observations.processes_for_path_matching(|process| {
+        selector_basename_matches(selector, &process.name)
+    })?;
     Ok(classify(
         selector,
         other_rules,
@@ -81,25 +83,10 @@ fn classify(
 ) -> Vec<MatchRow> {
     use UnavailableReason::*;
 
-    let (name, expected_path) = match selector {
-        WatchdogSelector::ExactPath { executable_path } => {
-            let path = Path::new(executable_path);
-            let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
-                return Vec::new();
-            };
-            (name, Some(path))
-        }
-        WatchdogSelector::ExactName { executable_name } => (executable_name.as_str(), None),
-    };
-
+    let expected_path = selector.exact_path().map(Path::new);
     let mut rows = Vec::new();
     for process in processes {
-        let name_matches = if expected_path.is_some() {
-            executable_basename_may_match(&process.name, name)
-        } else {
-            same_executable_name(&process.name, name)
-        };
-        if !name_matches {
+        if !selector_basename_matches(selector, &process.name) {
             continue;
         }
         let kind = match process.image_path.as_deref() {
@@ -109,7 +96,10 @@ fn classify(
                 MatchKind::SameName
             }
             None => MatchKind::Unavailable(PathUnavailable),
-            Some(_) if expected_path.is_none() && !observed_path_matches_name(process, name) => {
+            Some(_)
+                if expected_path.is_none()
+                    && !observed_path_matches_name(process, selector.value()) =>
+            {
                 MatchKind::Unavailable(NameUnverified)
             }
             Some(_) if process.id == current_pid => MatchKind::Unavailable(WinderustProcess),
