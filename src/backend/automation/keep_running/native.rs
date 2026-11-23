@@ -29,6 +29,7 @@ fn spec(rule: &KeepRunningRule) -> Result<control::LaunchSpec, Failure> {
 }
 
 impl Platform for Windows {
+    type Catalog = control::ProcessCatalog;
     type Context = control::DesktopContext;
     type Identity = control::ExecutableIdentity;
     type Member = control::Member;
@@ -47,8 +48,9 @@ impl Platform for Windows {
         rule: &KeepRunningRule,
         context: &Self::Context,
         exclude: Option<&ProcessTargetKey>,
+        catalog: Option<&Self::Catalog>,
     ) -> Result<Vec<Self::Member>, Failure> {
-        control::scan_members(&spec(rule)?, context, exclude).map_err(failure)
+        control::scan_members(&spec(rule)?, context, exclude, catalog).map_err(failure)
     }
     fn key(member: &Self::Member) -> ProcessTargetKey {
         member.key()

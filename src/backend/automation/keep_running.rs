@@ -63,6 +63,7 @@ pub(super) struct PrepareFailure<L> {
 
 // This seam exercises real ownership/routing with a held fake native operation in tests.
 pub(super) trait Platform: Send + 'static {
+    type Catalog: Default;
     type Context;
     type Identity: Clone + Eq + Send;
     type Member;
@@ -74,7 +75,15 @@ pub(super) trait Platform: Send + 'static {
         rule: &KeepRunningRule,
         context: &Self::Context,
         exclude: Option<&ProcessTargetKey>,
+        catalog: Option<&Self::Catalog>,
     ) -> Result<Vec<Self::Member>, Failure>;
+    fn scan_fresh(
+        rule: &KeepRunningRule,
+        context: &Self::Context,
+        exclude: Option<&ProcessTargetKey>,
+    ) -> Result<Vec<Self::Member>, Failure> {
+        Self::scan(rule, context, exclude, None)
+    }
     fn key(member: &Self::Member) -> ProcessTargetKey;
     fn exited(member: &Self::Member) -> Result<bool, Failure>;
     fn prepare(
@@ -601,6 +610,12 @@ impl<P: Platform> Coordinator<P> {
         let mut evidence = BTreeMap::new();
         if let Ok(context) = context {
             let binding = DesktopBindingKey::new(P::binding(&context));
+            let catalog = settings
+                .rules
+                .iter()
+                .filter(|rule| rule.enabled)
+                .nth(1)
+                .map(|_| P::Catalog::default());
             for (index, owner) in self
                 .owners
                 .iter_mut()
@@ -662,7 +677,7 @@ impl<P: Platform> Coordinator<P> {
                         Phase::Ready(launch) => P::launch_key(launch),
                         _ => None,
                     });
-                let scan = P::scan(&owner.rule, &context, exclude.as_ref());
+                let scan = P::scan(&owner.rule, &context, exclude.as_ref(), catalog.as_ref());
                 let now = clock();
                 match scan {
                     Ok(members) if exits_known && watcher_active => {
@@ -697,6 +712,7 @@ impl<P: Platform> Coordinator<P> {
                     }
                 }
             }
+            drop(catalog);
             // File identities catch hard links and reparse aliases; no rule wins by list order.
             for i in 0..self.owners.len() {
                 for j in i + 1..self.owners.len() {
@@ -741,7 +757,8 @@ impl<P: Platform> Coordinator<P> {
                     if let Phase::Ready(launch) = flight.phase {
                         // Re-enumerate immediately before the shared intake reservation, never use the cycle cache.
                         let exclude = P::launch_key(&launch);
-                        let fresh = P::scan(&self.owners[index].rule, &context, exclude.as_ref());
+                        let fresh =
+                            P::scan_fresh(&self.owners[index].rule, &context, exclude.as_ref());
                         let now = clock();
                         let disposition = if let Ok(members) = fresh {
                             let keys: Vec<_> = members.iter().map(P::key).collect();
@@ -811,7 +828,7 @@ impl<P: Platform> Coordinator<P> {
                     {
                         continue;
                     }
-                    let members = match P::scan(&self.owners[index].rule, &context, None) {
+                    let members = match P::scan_fresh(&self.owners[index].rule, &context, None) {
                         Ok(members) => members,
                         Err(error) => {
                             let owner = &mut self.owners[index];

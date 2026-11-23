@@ -10,7 +10,7 @@ use super::process::{
     open_process_for_observation, ProcessControlError, ProcessControlTarget, ProcessTargetKey,
 };
 
-pub(crate) use native::{DisposeOutcome, ErrorKind, ExecutableIdentity};
+pub(crate) use native::{DisposeOutcome, ErrorKind, ExecutableIdentity, ProcessCatalog};
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum KeepRunningError {
@@ -96,15 +96,16 @@ pub(crate) fn retain_member(
     })
 }
 
-/// Fresh enumeration, distinct from cached cycle membership. Any plausible unverifiable match fails
-/// the observation instead of certifying absence. Retained members must still match the scan's
-/// verified file identity. Callers exclude only their exact prepared child.
+/// A plausible unverifiable match fails the observation instead of certifying absence. Retained
+/// members must still match the scan's verified file identity. Pre-action callers use a fresh
+/// enumeration and exclude only their exact prepared child.
 pub(crate) fn scan_members(
     spec: &LaunchSpec,
     context: &DesktopContext,
     exclude: Option<&ProcessTargetKey>,
+    catalog: Option<&ProcessCatalog>,
 ) -> Result<Vec<Member>, KeepRunningError> {
-    let (identity, candidates) = native::matching_processes(&spec.0)?;
+    let (identity, candidates) = native::matching_processes(&spec.0, catalog)?;
     let mut members = Vec::new();
     for candidate in candidates {
         let target = ProcessControlTarget::automatic(

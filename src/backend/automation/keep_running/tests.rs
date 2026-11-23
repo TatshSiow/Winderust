@@ -1,5 +1,5 @@
 use std::{
-    cell::Cell,
+    cell::{Cell, OnceCell},
     sync::{Condvar, Mutex, OnceLock},
     time::Duration,
 };
@@ -17,6 +17,7 @@ struct State {
     incomplete: bool,
     scan_cost: u64,
     elapsed: u64,
+    arrival_on_fresh_scan: Option<ProcessTargetKey>,
 }
 fn state() -> &'static (Mutex<State>, Condvar) {
     static STATE: OnceLock<(Mutex<State>, Condvar)> = OnceLock::new();
@@ -47,6 +48,7 @@ fn key(id: u32, path: &str) -> ProcessTargetKey {
 }
 thread_local! {
     static IDENTITY_READS: Cell<&'static [(&'static str, Option<&'static str>)]> = const { Cell::new(&[]) };
+    static CATALOG_CALLS: Cell<(usize, usize)> = const { Cell::new((0, 0)) };
 }
 
 struct Fake;
@@ -55,6 +57,7 @@ struct Launch {
     accepted: bool,
 }
 impl Platform for Fake {
+    type Catalog = OnceCell<Vec<ProcessTargetKey>>;
     type Context = ();
     type Identity = String;
     type Member = ProcessTargetKey;
@@ -83,6 +86,7 @@ impl Platform for Fake {
         rule: &KeepRunningRule,
         _: &(),
         exclude: Option<&ProcessTargetKey>,
+        catalog: Option<&Self::Catalog>,
     ) -> Result<Vec<ProcessTargetKey>, Failure> {
         let mut state = state().0.lock().unwrap();
         state.elapsed += state.scan_cost;
@@ -92,8 +96,17 @@ impl Platform for Fake {
                 kind: FailureKind::Retryable,
             });
         }
-        Ok(state
-            .present
+        let present = if let Some(catalog) = catalog {
+            let (captures, scans) = CATALOG_CALLS.get();
+            CATALOG_CALLS.set((captures + usize::from(catalog.get().is_none()), scans + 1));
+            catalog.get_or_init(|| state.present.clone())
+        } else {
+            if let Some(member) = state.arrival_on_fresh_scan.take() {
+                state.present.push(member);
+            }
+            &state.present
+        };
+        Ok(present
             .iter()
             .filter(|member| {
                 Some(*member) != exclude && **member == key(member.id, &rule.executable_path)
@@ -542,6 +555,47 @@ fn bounded_worker_routes_late_results_and_never_disposes_accepted_children() {
     );
     assert_eq!(state().0.lock().unwrap().committed, 0);
     assert_eq!(state().0.lock().unwrap().disposed, 1);
+    drop(coordinator);
+
+    // Ordinary rules share a catalog. A member appearing before reservation prevents a duplicate launch.
+    settings
+        .rules
+        .push(KeepRunningRule::new(r"C:\Apps\second.exe".into()));
+    let path = &settings.rules[0].executable_path;
+    edit(|state| {
+        *state = State {
+            present: vec![key(5, path)],
+            held: true,
+            ..State::default()
+        }
+    });
+    let mut coordinator = Coordinator::<Fake>::default();
+    CATALOG_CALLS.set((0, 0));
+    tick(&mut coordinator, &settings, now, true);
+    assert_eq!(CATALOG_CALLS.get(), (1, 2));
+    edit(|state| state.present.clear());
+    tick(&mut coordinator, &settings, now, true);
+    tick(
+        &mut coordinator,
+        &settings,
+        now + Duration::from_secs(1),
+        true,
+    );
+    wait_for(|state| state.prepared == 1);
+    let external = key(6, path);
+    edit(|state| {
+        state.held = false;
+        state.arrival_on_fresh_scan = Some(external.clone());
+    });
+    drain(
+        &mut coordinator,
+        &settings,
+        now + Duration::from_secs(2),
+        true,
+    );
+    let state = state().0.lock().unwrap();
+    assert_eq!((state.prepared, state.committed, state.disposed), (1, 0, 1));
+    assert_eq!(state.present, [external]);
 }
 
 #[test]

@@ -1305,7 +1305,7 @@ acquisition checks. The raw boundary is `src/platform/windows/keep_running.rs`.
   the private job; explicit breakaway children can escape it. Cleanup is not a
   descendant rollback guarantee. Kill-on-close protects the provisional root only
   while armed; it cannot make native disarm and result publication atomic.
-- Fresh Toolhelp enumeration inspects accessible candidates and uses
+- Toolhelp enumeration inspects accessible candidates and uses
   [CompareStringOrdinal](https://learn.microsoft.com/en-us/windows/win32/api/stringapiset/nf-stringapiset-comparestringordinal)
   on the original UTF-16 filenames. Inspection failures for a possible match
   leave absence unknown. Resolved aliases use volume serial
@@ -1314,6 +1314,10 @@ acquisition checks. The raw boundary is `src/platform/windows/keep_running.rs`.
   file identity used by the scan. An inaccessible differently named alias cannot
   be ruled out, and a path's current file identity does not prove an unchanged
   loaded image section.
+  In an ordinary pass with multiple enabled rules, Keep Running reads each
+  catalog row once and retains its raw name, readback, or failure until the
+  pass ends. The cache holds no process handles. The scans before preparation
+  and launch reservation each re-enumerate and verify independently.
   Retained exact process handles, not missing enumeration, prove member exit.
 
 No undocumented token layouts, privilege enabling, service/session launch,
