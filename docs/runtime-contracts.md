@@ -740,6 +740,9 @@ Read the relevant section before changing feature policy, ownership, restoration
   a new catalog make the rule incomplete; absence alone never proves exit. Fresh
   SID/session and liveness queries use the retained handles, while mutation still
   reopens the exact target through shared safety and cross-session checks.
+  Loss of full Windows event coverage withdraws balancing claims and pauses
+  observations until coverage returns. The CPU allocation coordinator keeps
+  retrying unresolved restoration.
 - Each rule partitions the common eligible whole-core pool, balancing core counts
   within each numeric efficiency class. Survivor admission order and valid prior
   core assignments are stability hints only. New accepted plans are at least five

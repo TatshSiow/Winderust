@@ -1236,10 +1236,8 @@ fn run_background_automation(
         let instance_observation_context_changed = wake_events.suspend_resume
             || wake_events.session_changed
             || wake_events.windows_event_watcher_changed;
-        if instance_observation_context_changed || !snapshot.windows_event_watcher_active {
-            runner.instance_balancing.invalidate();
-        }
         if instance_observation_context_changed {
+            runner.instance_balancing.invalidate();
             runner
                 .instance_limits
                 .invalidate(&t!("instance_limits.waiting_context"));
@@ -1517,10 +1515,12 @@ fn run_background_automation(
         let instance_limits_refresh_required = settings_changed
             || instance_limits_sampling_required
             || (instance_limits_configured && instance_observation_context_changed);
+        let instance_balancing_sampling_required = windows_event_watcher_active
+            && instance_balancing_required(configured_settings.as_ref());
         let instance_balancing_refresh_required = settings_changed
             || instance_balancing_reset
             || instance_observation_context_changed
-            || instance_balancing_required(configured_settings.as_ref())
+            || instance_balancing_sampling_required
             || runner.instance_balancing.active();
         let memory_trim_refresh_required = settings_changed
             || memory_trim_command_requested
@@ -2057,7 +2057,7 @@ fn run_background_automation(
                     INSTANCE_LIMITS_REFRESH_INTERVAL,
                 ),
                 (
-                    instance_balancing_refresh_required || runner.instance_balancing.active(),
+                    instance_balancing_sampling_required || runner.instance_balancing.active(),
                     RefreshDomain::InstanceBalancing,
                     INSTANCE_BALANCING_REFRESH_INTERVAL,
                 ),

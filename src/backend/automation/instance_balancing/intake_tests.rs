@@ -100,7 +100,7 @@ fn inactive_rules_do_not_keep_invalidated_runtime_polling() {
     runtime.invalidate();
     assert!(
         runtime.active(),
-        "Enabled rules must retry unavailable context"
+        "Enabled rules need a pass after the observation context changes"
     );
 }
 
