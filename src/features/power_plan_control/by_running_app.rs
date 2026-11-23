@@ -365,7 +365,7 @@ fn classify_process(
 pub(crate) fn rule_name(rule: &ByRunningAppRule) -> &str {
     let name = rule.name.trim();
     if name.is_empty() {
-        rule.selector.value().trim()
+        rule.selector.value().trim_start()
     } else {
         name
     }

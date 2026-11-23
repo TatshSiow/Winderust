@@ -319,9 +319,7 @@ fn focus_matches(matches: &[FocusMatch], plans: &[PowerPlan]) -> Element<'static
             design::typography::BODY
         ),
         Column::with_children(others.iter().map(|matched| {
-            let rule_number = t!("common.rule", number = matched.rule_index + 1);
-            let plan = preview_plan_label(Some(&matched.plan_guid), plans);
-            text(format!("{rule_number} · {} ({plan})", matched.rule.trim()))
+            text(alternate_focus_match_label(matched, plans))
                 .wrapping(text::Wrapping::WordOrGlyph)
                 .into()
         }))
@@ -331,11 +329,18 @@ fn focus_matches(matches: &[FocusMatch], plans: &[PowerPlan]) -> Element<'static
     .into()
 }
 
+fn alternate_focus_match_label(matched: &FocusMatch, plans: &[PowerPlan]) -> String {
+    let rule_number = t!("common.rule", number = matched.rule_index + 1);
+    let rule = matched.rule.trim_start();
+    let plan = preview_plan_label(Some(&matched.plan_guid), plans);
+    format!("{rule_number} · {rule} ({plan})")
+}
+
 fn winner_label(rule: &str, plan_guid: Option<&str>, plans: &[PowerPlan]) -> String {
     let plan = preview_plan_label(plan_guid, plans);
     t!(
         "power_plan_control.preview_winner",
-        rule = rule.trim(),
+        rule = rule.trim_start(),
         plan = plan
     )
     .to_string()
@@ -367,7 +372,7 @@ fn rule_matches<'a>(
 ) -> Element<'a, PreviewMessage> {
     use ByRunningAppPreviewMatch::{Match, SameNameDifferentPath, Unavailable};
 
-    let target = rule.selector.value().trim();
+    let target = rule.selector.value().trim_start();
     let name = rule_name(rule);
     let mut details = column![widgets::heading(
         running_app_rule_label(index, rule),
@@ -495,6 +500,38 @@ fn focus_preview_checks_only_full_executable_paths() {
         };
         assert_eq!(focus.checkable_path(), Some(Path::new(r"C:\Apps\app.exe")));
     }
+}
+
+#[test]
+fn preview_labels_keep_literal_executable_path_suffixes() {
+    use crate::config::ExecutableSelector;
+
+    let path = "C:\\Apps\\worker.exe\u{3000}";
+    let configured_path = format!("  {path}");
+    let alternate = FocusMatch {
+        rule_index: 1,
+        rule: configured_path.clone(),
+        plan_guid: "alternate".into(),
+    };
+    for label in [
+        winner_label(&configured_path, None, &[]),
+        alternate_focus_match_label(&alternate, &[]),
+    ] {
+        assert!(label.contains(path));
+        assert!(!label.contains(&configured_path));
+    }
+
+    let mut running_app = ByRunningAppRule {
+        enabled: true,
+        name: String::new(),
+        selector: ExecutableSelector::ExactPath {
+            executable_path: configured_path,
+        },
+        power_plan_guid: None,
+    };
+    assert!(running_app_rule_label(0, &running_app).ends_with(path));
+    running_app.name = "  Worker  ".into();
+    assert!(running_app_rule_label(0, &running_app).ends_with(" · Worker"));
 }
 
 #[test]
