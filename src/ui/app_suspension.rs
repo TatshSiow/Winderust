@@ -551,11 +551,8 @@ fn indicator(
     } else {
         "unknown"
     };
-    {
-        let locale_key = format!("app_suspension.indicator.{key}");
-        t!(&locale_key).to_string()
-    }
-    .to_string()
+    let locale_key = format!("app_suspension.indicator.{key}");
+    t!(&locale_key).into_owned()
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Unit(NetworkThresholdUnit);
