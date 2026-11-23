@@ -82,9 +82,11 @@ A [framework routine that calls a driver callback](https://learn.microsoft.com/e
 can therefore be reported under the framework's module.
 An x64 `Image_Load` v2/v3 load or rundown record with a verified kernel address
 range and an unreadable basename retains an unattributed lifetime and counts
-as one invalid module record. Ambiguous image evidence also leaves the routine
-unattributed. Per-CPU sums accepted, positive-duration regular and timer DPCs
-and ISRs, including events whose modules could not be resolved. Threaded DPC
+as one invalid module record. A load with a readable kernel base and timestamp
+but an invalid size ends attribution to the previous image at that base and
+counts as one invalid module record. Ambiguous image evidence also leaves the
+routine unattributed. Per-CPU sums accepted, positive-duration regular and timer
+DPCs and ISRs, including events whose modules could not be resolved. Threaded DPC
 appears in module totals as its own event type. An unverified CPU number or
 topology omits the CPU breakdown while preserving module totals. The diagnostic
 changes no driver settings.

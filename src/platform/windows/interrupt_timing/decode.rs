@@ -200,16 +200,16 @@ impl ImageHistory {
                     mapping,
                 });
             }
-            let mut unload = change.is_none();
+            let mut missing_mapping = change.is_none();
             current = change;
             while let Some((_, change)) = changes.next_if(|(time, _)| *time == at) {
                 match change {
                     Some(load) => merge_mapping(&mut current, load),
-                    None => unload = true,
+                    None => missing_mapping = true,
                 }
             }
-            // An unload and a load with the same timestamp have no reliable ordering.
-            if let Some(mapping) = current.as_mut().filter(|_| unload) {
+            // A load at the same timestamp as an unload or unreadable range is ambiguous.
+            if let Some(mapping) = current.as_mut().filter(|_| missing_mapping) {
                 mapping.end = mapping.end.max(previous_end);
                 mapping.name = None;
             }
@@ -286,15 +286,18 @@ impl Events {
             history.changes.push((at, None));
             return Some(());
         }
-        let mapping = image_mapping(base, payload)?;
-        let name_valid = mapping.name.is_some();
+        let mapping = image_mapping(base, payload);
+        let name_valid = mapping
+            .as_ref()
+            .is_some_and(|mapping| mapping.name.is_some());
         if initial {
             // DCStart describes the beginning of the trace even when the callback arrives later.
-            merge_mapping(&mut history.initial, mapping);
+            merge_mapping(&mut history.initial, mapping?);
         } else {
-            history.changes.push((at, Some(mapping)));
+            // Even an unreadable load ends the previously verified lifetime at this base.
+            history.changes.push((at, mapping));
         }
-        // Retain the verified range and report the unreadable name as an invalid record.
+        // Report unreadable ranges and names after recording the available evidence.
         name_valid.then_some(())
     }
 
@@ -724,6 +727,47 @@ mod tests {
         assert_eq!(report.modules[0].total_inclusive_ms, 5.0);
         assert_eq!(report.modules[1].module.as_deref(), Some("old.sys"));
         assert_eq!(report.modules[1].total_inclusive_ms, 4.0);
+    }
+
+    #[test]
+    fn malformed_image_range_ends_the_previous_mapping() {
+        let base = KERNEL_ADDRESS;
+        let old = image(base, 128, "old.sys");
+        let new = image(base, 128, "new.sys");
+        let disjoint = image(base + 256, 128, "disjoint.sys");
+        let mut events = Events {
+            interrupts: vec![
+                sample(base + 8, 130, 134),
+                sample(base + 8, 195, 205),
+                sample(base + 8, 220, 225),
+                sample(base + 8, 250, 260),
+                sample(base + 256, 220, 223),
+            ],
+            ..Events::default()
+        };
+        events.add_image(ImageKind::Initial, 110, &old).unwrap();
+        events
+            .add_image(ImageKind::Initial, 110, &disjoint)
+            .unwrap();
+        assert!(events.add_image(ImageKind::Load, 200, &new[..8]).is_none());
+        events.add_image(ImageKind::Load, 240, &new).unwrap();
+
+        let report = events.report(100..=300, 300, 1_000, None).unwrap();
+        assert_eq!(report.unresolved_attribution, 2);
+        let modules = report
+            .modules
+            .iter()
+            .map(|row| (row.module.as_deref(), row.count, row.total_inclusive_ms))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            modules,
+            [
+                (None, 2, 15.0),
+                (Some("new.sys"), 1, 10.0),
+                (Some("old.sys"), 1, 4.0),
+                (Some("disjoint.sys"), 1, 3.0),
+            ]
+        );
     }
 
     #[test]
