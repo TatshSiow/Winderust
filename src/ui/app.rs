@@ -3304,7 +3304,10 @@ impl WinderustApp {
             settings_are_pending || self.power_plan_control.selected_guid.is_some();
         let save_notice_in_editor = matches!(
             self.page,
-            Page::AdaptiveProcessorPower | Page::AppSuspension
+            Page::AdaptiveProcessorPower
+                | Page::AppSuspension
+                | Page::CpuLimiter
+                | Page::TimerResolution
         );
         let save_card =
             || widgets::settings_card(self.save_notice(settings_are_pending)).width(360);
