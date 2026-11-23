@@ -32,6 +32,7 @@ use crate::{
 const MB: u64 = 1_000_000;
 const CPU_IDLE_THRESHOLD_PERCENT: f32 = 1.0;
 const AUTOMATIC_TRIM_ATTEMPT_LIMIT: usize = 4;
+const AUTOMATIC_TRIM_ATTEMPT_COOLDOWN: Duration = Duration::from_secs(60);
 
 const BUILT_IN_EXCLUSIONS: &[&str] = EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS;
 
@@ -78,6 +79,7 @@ struct TrackedProcess {
     previous_cpu_time: Option<ProcessCpuSample>,
     idle_since: Option<Instant>,
     trimmed_while_idle: bool,
+    last_automatic_attempt: Option<Instant>,
 }
 
 impl TrackedProcess {
@@ -391,6 +393,10 @@ impl MemoryTrimManager {
             ) {
                 Ok(ProcessUpdate::Waiting) => {}
                 Ok(ProcessUpdate::Candidate) => candidate_processes += 1,
+                Ok(ProcessUpdate::CoolingDown) => {
+                    candidate_processes += 1;
+                    unresolved_trim_paths.insert(path_key);
+                }
                 Ok(ProcessUpdate::Deferred) => {
                     candidate_processes += 1;
                     has_deferred_candidates = true;
@@ -531,6 +537,7 @@ impl MemoryTrimManager {
                 previous_cpu_time: None,
                 idle_since: None,
                 trimmed_while_idle: false,
+                last_automatic_attempt: None,
             });
 
         if !state.observe_cpu(
@@ -540,12 +547,18 @@ impl MemoryTrimManager {
         ) {
             return Ok(ProcessUpdate::Candidate);
         }
+        if state.last_automatic_attempt.is_some_and(|last| {
+            cpu_sample.sampled_at.saturating_duration_since(last) < AUTOMATIC_TRIM_ATTEMPT_COOLDOWN
+        }) {
+            return Ok(ProcessUpdate::CoolingDown);
+        }
 
         if *remaining_attempts == 0 {
             return Ok(ProcessUpdate::Deferred);
         }
         *remaining_attempts -= 1;
         self.last_automatic_trim_pid = process_id;
+        state.last_automatic_attempt = Some(cpu_sample.sampled_at);
         let MemoryTrimOutcome::Trimmed {
             working_set_reduction_bytes,
         } = controller.trim(target, allow_cross_session_process_control, threshold_bytes)?
@@ -615,6 +628,7 @@ enum MemoryTrimMode {
 enum ProcessUpdate {
     Waiting,
     Candidate,
+    CoolingDown,
     Deferred,
     Trimmed {
         working_set_reduction_bytes: Option<u64>,

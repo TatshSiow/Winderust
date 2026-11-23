@@ -494,6 +494,9 @@ Read the relevant section before changing feature policy, ownership, restoration
 - The controller checks the working-set threshold on the verified process handle
   immediately before either automatic or manual trimming. A working set below
   the minimum returns to waiting and clears idle qualification.
+- Automatic trim attempts for the same process are spaced at least 60 seconds
+  apart based on CPU sample time, including after an error or drop in memory
+  pressure. Trim Now remains available during the cooldown.
 - An automatic pass attempts up to four trims, counting failures toward the
   limit. If eligible processes remain, the worker schedules another pass in
   three seconds. Each pass checks current pressure and eligibility, and starts
@@ -503,8 +506,8 @@ Read the relevant section before changing feature policy, ownership, restoration
   be represented in settings keep runtime suppression and an Action Log entry.
   Saved exclusions and auto-exclusions require a representable path. A successful
   trim clears prior failures after the pass if no attempt for the same path
-  failed or was deferred. Waiting for pressure or observing idleness keeps the
-  failure count.
+  failed, was deferred, or was eligible but cooling down. Waiting for pressure
+  or observing idleness keeps the failure count.
 - Before/after working-set reduction is not measured system RAM reclaimed.
   Unavailable readback remains unknown; trimming cannot restore discarded pages.
 

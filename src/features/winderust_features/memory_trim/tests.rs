@@ -14,6 +14,7 @@ fn tracked_process() -> TrackedProcess {
         previous_cpu_time: None,
         idle_since: None,
         trimmed_while_idle: false,
+        last_automatic_attempt: None,
     }
 }
 
@@ -299,11 +300,12 @@ fn sibling_success_and_pressure_gaps_preserve_trim_failures() {
     let mut processes = batch_processes(2);
     processes[0].image_path = Some(r"C:\Apps\worker.exe".into());
     processes[1].image_path = Some("C:/Apps/worker.exe".into());
+    let key = OsStr::new(r"C:\Apps\worker.exe");
     let start = Instant::now();
-    let run = |manager: &mut MemoryTrimManager, elapsed_seconds, pressure| {
+    let run = |manager: &mut MemoryTrimManager, process_count, elapsed_seconds, pressure| {
         run_batch_pass(
             manager,
-            &processes,
+            &processes[..process_count],
             MemoryTrimMode::Automatic,
             BatchTestPlatform::new(
                 start + Duration::from_secs(elapsed_seconds),
@@ -313,20 +315,34 @@ fn sibling_success_and_pressure_gaps_preserve_trim_failures() {
         )
     };
 
-    run(&mut manager, 0, 90);
-    let first = run(&mut manager, 1, 90);
+    run(&mut manager, 1, 0, 90);
+    let first = run(&mut manager, 1, 1, 90);
     assert_eq!(first.failed_processes, 1);
-    assert_eq!(first.trimmed_processes, 1);
-    run(&mut manager, 2, 70);
-    let sample_only = run(&mut manager, 3, 90);
+    assert_eq!(first.trimmed_processes, 0);
+    run(&mut manager, 2, 2, 70);
+    let sample_only = run(&mut manager, 2, 3, 90);
     assert_eq!(sample_only.failed_processes, 0);
     assert_eq!(sample_only.trimmed_processes, 0);
 
+    let sibling_trimmed = run(&mut manager, 2, 4, 90);
+    assert_eq!(sibling_trimmed.failed_processes, 0);
+    assert_eq!(sibling_trimmed.trimmed_processes, 1);
+    assert!(!sibling_trimmed.has_deferred_candidates);
+    assert!(manager.failure_suppression.has_key_failure(key));
+
+    let cooldown_seconds = AUTOMATIC_TRIM_ATTEMPT_COOLDOWN.as_secs();
+    let cooling_down = run(&mut manager, 2, cooldown_seconds, 90);
+    assert_eq!(cooling_down.failed_processes, 0);
+    assert_eq!(cooling_down.trimmed_processes, 0);
+    assert!(!cooling_down.has_deferred_candidates);
+
     let limit = u64::from(execution_failure_suppression_threshold());
     for attempt in 1..limit {
-        assert_eq!(run(&mut manager, 3 + attempt, 90).failed_processes, 1);
+        let retry = run(&mut manager, 2, 1 + attempt * cooldown_seconds, 90);
+        assert_eq!(retry.failed_processes, 1);
     }
-    let suppressed = run(&mut manager, 3 + limit, 90);
+    let after_last_attempt = 2 + (limit - 1) * cooldown_seconds;
+    let suppressed = run(&mut manager, 2, after_last_attempt, 90);
     assert_eq!(suppressed.failed_processes, 0);
     assert_eq!(suppressed.skipped_processes, 2);
     assert_eq!(suppressed.auto_excluded_processes.len(), 1);
@@ -334,7 +350,7 @@ fn sibling_success_and_pressure_gaps_preserve_trim_failures() {
         executable_grouping_key(Path::new(&suppressed.auto_excluded_processes[0])),
         r"C:\Apps\worker.exe"
     );
-    assert!(run(&mut manager, 4 + limit, 90)
+    assert!(run(&mut manager, 2, after_last_attempt + 1, 90)
         .auto_excluded_processes
         .is_empty());
 }
@@ -413,6 +429,7 @@ fn both_trim_modes_wait_after_working_set_falls_below_minimum() {
     let processes = batch_processes(1);
     let process_id = processes[0].id;
     let start = Instant::now();
+    let attempted_at = start + Duration::from_secs(1);
     for mode in [MemoryTrimMode::Automatic, MemoryTrimMode::Manual] {
         let mut manager = MemoryTrimManager::default();
         run_batch_pass(
@@ -428,7 +445,7 @@ fn both_trim_modes_wait_after_working_set_falls_below_minimum() {
             mode,
             BatchTestPlatform {
                 working_set_samples: VecDeque::from([MB, MB - 1]),
-                ..BatchTestPlatform::new(start + Duration::from_secs(1), u32::MAX)
+                ..BatchTestPlatform::new(attempted_at, u32::MAX)
             },
             90,
         );
@@ -440,6 +457,10 @@ fn both_trim_modes_wait_after_working_set_falls_below_minimum() {
         assert!(tracked.previous_cpu_time.is_none());
         assert!(tracked.idle_since.is_none());
         assert!(!tracked.trimmed_while_idle);
+        assert_eq!(
+            tracked.last_automatic_attempt,
+            (mode == MemoryTrimMode::Automatic).then_some(attempted_at)
+        );
     }
 }
 
