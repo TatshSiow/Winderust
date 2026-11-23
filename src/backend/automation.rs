@@ -2211,7 +2211,9 @@ fn run_background_automation(
             && (adaptive_enablement_varies_by_source(&configured_settings)
                 || memory_trim_policy_difference != MemoryTrimPolicyDifference::Common
                 || cpu_limiter_policy_varies
-                || app_suspension_policy_varies)
+                || app_suspension_policy_varies
+                || (!power_plan_checks_required
+                    && ordinary_power_plan_policy_varies_by_source(&configured_settings)))
         {
             wait_for = Some(min_worker_wait(wait_for, POWER_SOURCE_RECHECK_INTERVAL));
         }

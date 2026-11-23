@@ -188,7 +188,11 @@ pub(super) fn ordinary_power_plan_waits_for_source(
     settings: &Settings,
     plugged_in: Option<bool>,
 ) -> bool {
-    if plugged_in.is_some() || !settings.general.enabled {
+    plugged_in.is_none() && ordinary_power_plan_policy_varies_by_source(settings)
+}
+
+pub(super) fn ordinary_power_plan_policy_varies_by_source(settings: &Settings) -> bool {
+    if !settings.general.enabled {
         return false;
     }
 
