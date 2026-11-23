@@ -88,8 +88,11 @@ counts as one invalid module record. Ambiguous image evidence also leaves the
 routine unattributed. Per-CPU sums accepted, positive-duration regular and timer
 DPCs and ISRs, including events whose modules could not be resolved. Threaded DPC
 appears in module totals as its own event type. An unverified CPU number or
-topology omits the CPU breakdown while preserving module totals. The diagnostic
-changes no driver settings.
+topology omits the CPU breakdown while preserving module and timeline totals.
+The timeline sums QPC duration against one-second boundaries relative to the
+capture start, with DPC, ISR, and Threaded DPC accumulated separately across
+processors. The sums can overlap across processors or nested routines. The
+diagnostic changes no driver settings.
 
 ## Update Checks
 

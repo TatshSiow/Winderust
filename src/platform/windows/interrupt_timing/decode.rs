@@ -23,6 +23,7 @@ const MAX_INTERRUPTS: usize = 262_144;
 const MAX_IMAGE_RECORDS: usize = 4_096;
 const MAX_MODULE_ROWS: usize = 5;
 const KERNEL_ADDRESS: u64 = 0xffff_0000_0000_0000;
+pub(super) const CAPTURE_SECONDS: usize = 5;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub(crate) enum InterruptKind {
@@ -52,6 +53,13 @@ pub(crate) struct InterruptTimingCpuRow {
     pub(crate) isr_ms: f64,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub(crate) struct InterruptTimingSecond {
+    pub(crate) dpc_ms: f64,
+    pub(crate) isr_ms: f64,
+    pub(crate) threaded_dpc_ms: f64,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct InterruptTimingReport {
     pub(crate) events_lost: u32,
@@ -62,6 +70,7 @@ pub(crate) struct InterruptTimingReport {
     pub(crate) unresolved_attribution: usize,
     pub(crate) modules: Vec<InterruptTimingRow>,
     pub(crate) per_cpu: Option<Vec<InterruptTimingCpuRow>>,
+    pub(crate) timeline: [InterruptTimingSecond; CAPTURE_SECONDS],
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -82,7 +91,6 @@ pub(super) fn decode_live(
     session_name: &str,
     ready: Sender<()>,
     capture_start: i64,
-    capture_seconds: i64,
     cpu_count: Option<u16>,
 ) -> Result<InterruptTimingReport, DecodeError> {
     let mut frequency = 0;
@@ -91,7 +99,7 @@ pub(super) fn decode_live(
         return Err(DecodeError::Clock);
     }
     let capture_end = frequency
-        .checked_mul(capture_seconds)
+        .checked_mul(CAPTURE_SECONDS as i64)
         .and_then(|ticks| capture_start.checked_add(ticks))
         .ok_or(DecodeError::Clock)?;
     let mut name = wide_null(session_name);
@@ -332,6 +340,7 @@ impl Events {
         let mut invalid_intervals = self.invalid_intervals;
         let mut incomplete_intervals = 0;
         let mut unresolved_attribution = 0;
+        let mut timeline = [[0_i128; 3]; CAPTURE_SECONDS];
         for event in self.interrupts {
             if event.entry < *window.start() {
                 incomplete_intervals += usize::from(event.end >= *window.start());
@@ -352,6 +361,21 @@ impl Events {
             unresolved_attribution += usize::from(module.is_none());
             let ticks = event.end - event.entry;
             modules.entry((event.kind, module)).or_default().add(ticks);
+            if ticks > 0 {
+                let start = event.entry - window.start();
+                let end = event.end - window.start();
+                let kind = match event.kind {
+                    InterruptKind::Dpc => 0,
+                    InterruptKind::Isr => 1,
+                    InterruptKind::ThreadedDpc => 2,
+                };
+                for second in start / frequency..=(end - 1) / frequency {
+                    let bucket_start = second * frequency;
+                    let bucket_end = bucket_start + frequency;
+                    let overlap = end.min(bucket_end) - start.max(bucket_start);
+                    timeline[second as usize][kind] += i128::from(overlap);
+                }
+            }
             if let Some(cpus) = cpu_totals.as_mut().filter(|_| ticks > 0) {
                 match (event.kind, cpus.get_mut(usize::from(event.cpu))) {
                     (InterruptKind::ThreadedDpc, _) => {}
@@ -394,6 +418,11 @@ impl Events {
             unresolved_attribution,
             modules,
             per_cpu,
+            timeline: timeline.map(|[dpc, isr, threaded_dpc]| InterruptTimingSecond {
+                dpc_ms: dpc as f64 * millis_per_tick,
+                isr_ms: isr as f64 * millis_per_tick,
+                threaded_dpc_ms: threaded_dpc as f64 * millis_per_tick,
+            }),
         })
     }
 }
@@ -603,6 +632,42 @@ mod tests {
         assert_eq!(report.modules[0].count, 2);
         assert_eq!(report.modules[0].total_inclusive_ms, 5.0);
         assert_eq!(report.per_cpu.unwrap()[0].dpc_ms, 5.0);
+    }
+
+    #[test]
+    fn timeline_splits_complete_intervals_at_capture_relative_second_boundaries() {
+        let events = Events {
+            interrupts: vec![
+                sample(0, 1_123, 1_129),
+                Interrupt {
+                    kind: InterruptKind::Isr,
+                    cpu: 1,
+                    ..sample(0, 4_623, 5_125)
+                },
+                Interrupt {
+                    kind: InterruptKind::ThreadedDpc,
+                    ..sample(0, 2_125, 3_125)
+                },
+                sample(0, 120, 125),
+                sample(0, 5_124, 5_126),
+                sample(0, 5_125, 5_125),
+            ],
+            ..Events::default()
+        };
+        let report = events.report(125..=5_125, 5_130, 1_000, None).unwrap();
+        assert_eq!(report.incomplete_intervals, 2);
+        assert_eq!(
+            report
+                .timeline
+                .map(|second| (second.dpc_ms, second.isr_ms, second.threaded_dpc_ms)),
+            [
+                (2.0, 0.0, 0.0),
+                (4.0, 0.0, 0.0),
+                (0.0, 0.0, 1_000.0),
+                (0.0, 0.0, 0.0),
+                (0.0, 502.0, 0.0),
+            ]
+        );
     }
 
     #[test]

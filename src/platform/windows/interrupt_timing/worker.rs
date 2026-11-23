@@ -30,10 +30,12 @@ use windows_sys::{
 
 use crate::platform::windows::cpu_allocation::topology;
 
-use super::{decode::decode_live, InterruptTimingError, Outcome};
+use super::{
+    decode::{decode_live, CAPTURE_SECONDS},
+    InterruptTimingError, Outcome,
+};
 
 const SESSION_GUID: GUID = GUID::from_u128(0xacd9dac4_48da_4f73_a66d_87e51252a93c);
-const CAPTURE_SECONDS: i64 = 5;
 const WINDOW: Duration = Duration::from_secs(CAPTURE_SECONDS as u64);
 const STARTUP_LIMIT: Duration = Duration::from_secs(2);
 const DRAIN_LIMIT: Duration = Duration::from_secs(3);
@@ -56,7 +58,6 @@ pub(super) fn capture(name: &str, cancelled: &Receiver<()>) -> Outcome {
                 &consumer_name,
                 ready_sender,
                 start_tick,
-                CAPTURE_SECONDS,
                 cpu_count,
             ));
         });

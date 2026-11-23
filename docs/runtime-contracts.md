@@ -763,13 +763,17 @@ Read the relevant section before changing feature policy, ownership, restoration
   The module contains the routine address recorded by ETW, which can point to a
   driver framework. The report includes intervals fully contained in the five
   seconds after ETW startup.
-  Intervals crossing either boundary count as incomplete. Per-CPU is collapsed
-  for each new result and shows inclusive DPC and ISR times in milliseconds on
-  verified single-group systems. When a report has module rows and the CPU
-  breakdown cannot be verified, Per-CPU shows Unavailable.
+  Intervals crossing either boundary count as incomplete. Capture timeline
+  shows inclusive DPC, ISR, and Threaded DPC time across processors for each
+  elapsed second. It splits intervals crossing a second boundary between those
+  seconds. Per-CPU shows inclusive DPC and ISR times in milliseconds on verified
+  single-group systems. Both sections start collapsed for each new result. When
+  a report has module rows and the CPU breakdown cannot be verified, Per-CPU
+  shows Unavailable.
 - A completed report can be exported as JSON to a user-selected path. The
   export includes module basenames, aggregate durations, loss and attribution
-  counts, and per-CPU totals when available. It does not include raw trace
+  counts, and per-CPU totals when available. Its `timeline` array has five rows
+  in elapsed-second order, starting at 0–1 seconds. It does not include raw trace
   events, addresses, or driver paths. Cancelling or failing an export leaves
   the completed report available for another attempt. Once a destination is
   selected, the Exit prompt shows export progress and enables Exit after the

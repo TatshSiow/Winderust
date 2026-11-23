@@ -13,6 +13,7 @@ use windows_sys::Win32::Foundation::HWND;
 pub(super) enum Message {
     Run,
     Cancel,
+    ToggleTimeline,
     TogglePerCpu,
     Export,
     ExportChosen(Option<PathBuf>),
@@ -59,6 +60,7 @@ enum CapturePhase {
 
 struct CompletedReport {
     report: InterruptTimingReport,
+    timeline_expanded: bool,
     per_cpu_expanded: bool,
     export: ExportStatus,
 }
@@ -111,12 +113,17 @@ impl State {
                     }
                 }
             }
-            Message::TogglePerCpu if !self.is_capturing() => {
+            Message::ToggleTimeline | Message::TogglePerCpu if !self.is_capturing() => {
                 if let Some(completed) = &mut self.completed {
-                    completed.per_cpu_expanded = !completed.per_cpu_expanded;
+                    let expanded = if matches!(message, Message::ToggleTimeline) {
+                        &mut completed.timeline_expanded
+                    } else {
+                        &mut completed.per_cpu_expanded
+                    };
+                    *expanded = !*expanded;
                 }
             }
-            Message::TogglePerCpu => {}
+            Message::ToggleTimeline | Message::TogglePerCpu => {}
         }
         Task::none()
     }
@@ -205,6 +212,7 @@ impl State {
                         (Ok(report), CapturePhase::Recording) => {
                             self.completed = Some(CompletedReport {
                                 report,
+                                timeline_expanded: false,
                                 per_cpu_expanded: false,
                                 export: ExportStatus::Ready,
                             });
@@ -275,6 +283,7 @@ impl State {
         }
         if let Some(CompletedReport {
             report,
+            timeline_expanded,
             per_cpu_expanded,
             export,
         }) = completed
@@ -300,6 +309,7 @@ impl State {
             }
             body = body.push(widgets::settings_divider()).push(report_view(
                 report,
+                *timeline_expanded,
                 *per_cpu_expanded,
                 export,
             ));
@@ -314,6 +324,7 @@ fn export_failure_message(error: &str) -> String {
 
 fn report_view<'a>(
     report: &'a InterruptTimingReport,
+    timeline_expanded: bool,
     per_cpu_expanded: bool,
     export: &ExportStatus,
 ) -> Column<'a, Message> {
@@ -395,34 +406,48 @@ fn report_view<'a>(
     if !issues.is_empty() {
         body = body.push(text(issues.join(" · ")).style(text::secondary));
     }
+    if !report.modules.is_empty() {
+        body = body.push(widgets::settings_divider()).push(detail_button(
+            "interrupt_timing.timeline",
+            timeline_expanded,
+            Message::ToggleTimeline,
+        ));
+        if timeline_expanded {
+            body = body.push(timeline_row(
+                [
+                    t!("interrupt_timing.elapsed"),
+                    t!("interrupt_timing.dpc_ms"),
+                    t!("interrupt_timing.isr_ms"),
+                    t!("interrupt_timing.threaded_dpc_ms"),
+                ],
+                true,
+            ));
+            for (second, timing) in report.timeline.iter().enumerate() {
+                body = body.push(timeline_row(
+                    [
+                        t!(
+                            "interrupt_timing.second_range",
+                            start = second,
+                            end = second + 1
+                        ),
+                        format!("{:.3}", timing.dpc_ms).into(),
+                        format!("{:.3}", timing.isr_ms).into(),
+                        format!("{:.3}", timing.threaded_dpc_ms).into(),
+                    ],
+                    false,
+                ));
+            }
+        }
+    }
     if let Some(rows) = report.per_cpu.as_deref().filter(|rows| {
         rows.iter()
             .any(|row| row.dpc_count != 0 || row.isr_count != 0)
     }) {
-        let chevron = if per_cpu_expanded {
-            "icons/chevron-down.svg"
-        } else {
-            "icons/chevron-right.svg"
-        };
-        body = body.push(widgets::settings_divider()).push(
-            widgets::button(
-                row![
-                    widgets::heading(
-                        t!("interrupt_timing.per_cpu").into_owned(),
-                        design::typography::BODY,
-                    )
-                    .width(Fill),
-                    super::navigation::glyph(chevron),
-                ]
-                .height(Fill)
-                .align_y(iced::Center),
-            )
-            .width(Fill)
-            .height(design::BUTTON_HEIGHT)
-            .padding(0)
-            .style(widgets::quiet)
-            .on_press(Message::TogglePerCpu),
-        );
+        body = body.push(widgets::settings_divider()).push(detail_button(
+            "interrupt_timing.per_cpu",
+            per_cpu_expanded,
+            Message::TogglePerCpu,
+        ));
         if per_cpu_expanded {
             body = body.push(per_cpu_row(
                 [
@@ -456,6 +481,28 @@ fn report_view<'a>(
     body
 }
 
+fn detail_button(key: &str, expanded: bool, message: Message) -> Element<'static, Message> {
+    let chevron = if expanded {
+        "icons/chevron-down.svg"
+    } else {
+        "icons/chevron-right.svg"
+    };
+    widgets::button(
+        row![
+            widgets::heading(t!(key).into_owned(), design::typography::BODY).width(Fill),
+            super::navigation::glyph(chevron),
+        ]
+        .height(Fill)
+        .align_y(iced::Center),
+    )
+    .width(Fill)
+    .height(design::BUTTON_HEIGHT)
+    .padding(0)
+    .style(widgets::quiet)
+    .on_press(message)
+    .into()
+}
+
 fn result_row<'a>(cells: [Cow<'a, str>; 5], header: bool) -> Row<'a, Message> {
     let [module, kind, count, longest, total] = cells;
     let cell = |label| result_cell(label, header);
@@ -477,6 +524,19 @@ fn per_cpu_row<'a>(cells: [Cow<'a, str>; 3], header: bool) -> Row<'a, Message> {
         cell(cpu).width(Fill),
         cell(dpc).width(82).align_x(iced::Right),
         cell(isr).width(82).align_x(iced::Right),
+    ]
+    .spacing(design::space::SMALL)
+    .align_y(iced::Center)
+}
+
+fn timeline_row<'a>(cells: [Cow<'a, str>; 4], header: bool) -> Row<'a, Message> {
+    let [elapsed, dpc, isr, threaded_dpc] = cells;
+    let cell = |label| result_cell(label, header).align_x(iced::Right);
+    row![
+        result_cell(elapsed, header).width(Fill),
+        cell(dpc).width(Fill),
+        cell(isr).width(Fill),
+        cell(threaded_dpc).width(Length::FillPortion(2)),
     ]
     .spacing(design::space::SMALL)
     .align_y(iced::Center)
@@ -507,6 +567,7 @@ mod tests {
             unresolved_attribution: 0,
             modules: Vec::new(),
             per_cpu: None,
+            timeline: Default::default(),
         }
     }
 
@@ -527,6 +588,7 @@ mod tests {
                 },
                 completed: Some(CompletedReport {
                     report: previous.clone(),
+                    timeline_expanded: true,
                     per_cpu_expanded: true,
                     export: ExportStatus::Ready,
                 }),
@@ -556,7 +618,7 @@ mod tests {
             );
             assert!(matches!(
                 &state.completed,
-                Some(CompletedReport { report, per_cpu_expanded: true, export: ExportStatus::Ready })
+                Some(CompletedReport { report, timeline_expanded: true, per_cpu_expanded: true, export: ExportStatus::Ready })
                     if report == &previous
             ));
         }
@@ -569,6 +631,7 @@ mod tests {
         let mut state = State {
             completed: Some(CompletedReport {
                 report: report.clone(),
+                timeline_expanded: false,
                 per_cpu_expanded: true,
                 export: ExportStatus::Ready,
             }),
@@ -582,7 +645,7 @@ mod tests {
         assert!(state.can_run());
         assert!(matches!(
             &state.completed,
-            Some(CompletedReport { report: current, per_cpu_expanded: true, export: ExportStatus::Ready })
+            Some(CompletedReport { report: current, per_cpu_expanded: true, export: ExportStatus::Ready, .. })
                 if current == &report
         ));
 
@@ -604,7 +667,7 @@ mod tests {
             assert!(state.can_run());
             assert!(matches!(
                 &state.completed,
-                Some(CompletedReport { report: current, per_cpu_expanded: true, export })
+                Some(CompletedReport { report: current, per_cpu_expanded: true, export, .. })
                     if current == &report && export == &expected
             ));
         }

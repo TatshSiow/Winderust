@@ -35,7 +35,14 @@ mod tests {
                 {"kind": "ISR", "module": null, "count": 1,
                  "total_inclusive_ms": 0.25, "max_inclusive_ms": 0.25}
             ],
-            "per_cpu": null
+            "per_cpu": null,
+            "timeline": [
+                {"dpc_ms": 0.0, "isr_ms": 0.25, "threaded_dpc_ms": 0.0},
+                {"dpc_ms": 0.0, "isr_ms": 0.0, "threaded_dpc_ms": 1.25},
+                {"dpc_ms": 0.0, "isr_ms": 0.0, "threaded_dpc_ms": 1.25},
+                {"dpc_ms": 0.0, "isr_ms": 0.0, "threaded_dpc_ms": 0.0},
+                {"dpc_ms": 0.0, "isr_ms": 0.0, "threaded_dpc_ms": 0.0}
+            ]
         });
         let initial: InterruptTimingReport = serde_json::from_value(fixture.clone()).unwrap();
         export_report(&path, &initial).unwrap();
