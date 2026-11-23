@@ -71,6 +71,10 @@ pub(super) trait Platform: Send + 'static {
     fn context() -> Result<Self::Context, Failure>;
     fn binding(context: &Self::Context) -> String;
     fn identity(rule: &KeepRunningRule) -> Result<Self::Identity, Failure>;
+    fn action_identity(
+        target: &ProcessActionTarget,
+        context: &Self::Context,
+    ) -> Result<Self::Identity, Failure>;
     fn scan(
         rule: &KeepRunningRule,
         context: &Self::Context,
@@ -347,17 +351,53 @@ impl<P: Platform> Coordinator<P> {
     }
 
     pub(super) fn pause_targets(&mut self, targets: &[ProcessActionTarget], reason: PauseReason) {
+        if targets.is_empty() {
+            return;
+        }
+        let mut unmatched = Vec::new();
         for owner in &mut self.owners {
             if targets.iter().any(|target| {
-                owner.members.contains_key(
-                    &crate::control::process::ProcessControlTarget::from_action_target(target)
-                        .key(),
-                ) || same_executable_path(
+                owner.members.contains_key(&ProcessTargetKey::new(
+                    target.id,
+                    target.creation_time,
+                    &target.executable_path,
+                )) || same_executable_path(
                     &target.executable_path,
                     std::path::Path::new(&owner.rule.executable_path),
                 )
             }) {
                 owner.policy.pause(reason);
+            } else if let Some(identity) = owner.identity.as_ref().filter(|_| {
+                reason == PauseReason::IntentionalStop
+                    && owner.active
+                    && !matches!(
+                        owner.policy.state(),
+                        KeepRunningState::Disabled | KeepRunningState::Paused(_)
+                    )
+            }) {
+                unmatched.push((identity, &mut owner.policy));
+            }
+        }
+        if unmatched.is_empty() {
+            return;
+        }
+        let Ok(context) = P::context() else {
+            return;
+        };
+        for target in targets {
+            let Ok(identity) = P::action_identity(target, &context) else {
+                continue;
+            };
+            unmatched.retain_mut(|(pinned, policy)| {
+                if *pinned == &identity {
+                    policy.pause(reason);
+                    false
+                } else {
+                    true
+                }
+            });
+            if unmatched.is_empty() {
+                break;
             }
         }
     }

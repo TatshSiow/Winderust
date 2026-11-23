@@ -1326,6 +1326,8 @@ acquisition checks. The raw boundary is `src/platform/windows/keep_running.rs`.
   file identity used by the scan. An inaccessible differently named alias cannot
   be ruled out, and a path's current file identity does not prove an unchanged
   loaded image section.
+  Manual Stop and Stop Process Tree use the same retained-member verification
+  to match a hard-link alias against a rule's pinned executable identity.
   In an ordinary pass with multiple enabled rules, Keep Running reads each
   catalog row once and retains its raw name, readback, or failure until the
   pass ends. The cache holds no process handles. The scans before preparation

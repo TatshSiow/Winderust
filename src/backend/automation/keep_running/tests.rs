@@ -1,5 +1,5 @@
 use std::{
-    cell::{Cell, OnceCell},
+    cell::{Cell, OnceCell, RefCell},
     sync::{Condvar, Mutex, OnceLock},
     time::Duration,
 };
@@ -49,6 +49,8 @@ fn key(id: u32, path: &str) -> ProcessTargetKey {
 thread_local! {
     static IDENTITY_READS: Cell<&'static [(&'static str, Option<&'static str>)]> = const { Cell::new(&[]) };
     static CATALOG_CALLS: Cell<(usize, usize)> = const { Cell::new((0, 0)) };
+    static ACTION_IDENTITIES: RefCell<Vec<(ProcessActionTarget, &'static str)>> = const { RefCell::new(Vec::new()) };
+    static ACTION_READS: Cell<(usize, usize)> = const { Cell::new((0, 0)) };
 }
 
 struct Fake;
@@ -63,6 +65,8 @@ impl Platform for Fake {
     type Member = ProcessTargetKey;
     type Launch = Launch;
     fn context() -> Result<(), Failure> {
+        let (contexts, identities) = ACTION_READS.get();
+        ACTION_READS.set((contexts + 1, identities));
         Ok(())
     }
     fn binding(_: &()) -> String {
@@ -81,6 +85,20 @@ impl Platform for Fake {
             }),
             None => Ok(rule.executable_path.clone()),
         }
+    }
+    fn action_identity(target: &ProcessActionTarget, _: &()) -> Result<String, Failure> {
+        let (contexts, identities) = ACTION_READS.get();
+        ACTION_READS.set((contexts, identities + 1));
+        ACTION_IDENTITIES.with_borrow(|targets| {
+            targets
+                .iter()
+                .find(|(verified, _)| verified == target)
+                .map(|(_, identity)| (*identity).to_owned())
+                .ok_or_else(|| Failure {
+                    kind: FailureKind::UnsupportedContext,
+                    message: "unverified action target".into(),
+                })
+        })
     }
     fn scan(
         rule: &KeepRunningRule,
@@ -654,6 +672,90 @@ fn path_resets_preserve_the_other_rules_pending_retry() {
         KeepRunningState::WaitingForApp
     );
     assert_eq!(coordinator.owners[1].policy.state(), second);
+}
+
+#[test]
+fn stop_pauses_a_pinned_alias_only_from_verified_action_identity() {
+    let original = r"C:\Apps\original.exe";
+    let settings = KeepRunningSettings {
+        enabled: true,
+        rules: vec![KeepRunningRule::new(original.into())],
+    };
+    let target = |id, name: &str, path: &str| ProcessActionTarget {
+        id,
+        name: name.into(),
+        executable_path: path.into(),
+        creation_time: u64::from(id),
+        session_id: Some(1),
+        is_service_account: Some(false),
+    };
+    let literal = target(20, "original.exe", original);
+    let alias = target(21, "alias.exe", r"C:\Links\alias.exe");
+    let unrelated = target(22, "alias.exe", r"C:\Other\alias.exe");
+    let stale = ProcessActionTarget {
+        creation_time: alias.creation_time - 1,
+        ..alias.clone()
+    };
+    let foreign = ProcessActionTarget {
+        session_id: Some(2),
+        ..alias.clone()
+    };
+    ACTION_IDENTITIES.set(vec![
+        (alias.clone(), "shared-file-id"),
+        (unrelated.clone(), "different-file-id"),
+    ]);
+    let mut coordinator = Coordinator::<Fake>::default();
+    coordinator.sync_settings(&settings, true);
+    let owner = &mut coordinator.owners[0];
+    owner.identity = Some("shared-file-id".to_owned());
+    let now = Instant::now();
+    let member = key(1, original);
+    owner.policy.observe(
+        now,
+        Observation::Complete {
+            observed_at: now,
+            context: &DesktopBindingKey::new("desktop".into()),
+            members: std::slice::from_ref(&member),
+        },
+    );
+    owner.policy.exited(now, &member);
+
+    let reason = PauseReason::IntentionalStop;
+    let paused = KeepRunningState::Paused(reason);
+    ACTION_READS.set((0, 0));
+    coordinator.pause_targets(std::slice::from_ref(&alias), PauseReason::Watchdog);
+    assert_eq!(ACTION_READS.get(), (0, 0));
+    assert!(matches!(
+        coordinator.owners[0].policy.state(),
+        KeepRunningState::Retrying { .. }
+    ));
+    coordinator.pause_targets(&[stale, foreign, unrelated.clone()], reason);
+    assert_eq!(ACTION_READS.get(), (1, 3));
+    assert!(matches!(
+        coordinator.owners[0].policy.state(),
+        KeepRunningState::Retrying { .. }
+    ));
+
+    ACTION_READS.set((0, 0));
+    coordinator.pause_targets(&[alias.clone(), unrelated], reason);
+    assert_eq!(coordinator.owners[0].policy.state(), paused);
+    assert_eq!(ACTION_READS.get(), (1, 1));
+
+    coordinator.resume(original);
+    ACTION_READS.set((0, 0));
+    coordinator.pause_targets(&[alias.clone(), literal], reason);
+    assert_eq!(coordinator.owners[0].policy.state(), paused);
+    assert_eq!(ACTION_READS.get(), (0, 0));
+
+    coordinator.resume(original);
+    let alias_key = key(alias.id, alias.executable_path.to_str().unwrap());
+    coordinator.owners[0]
+        .members
+        .insert(alias_key.clone(), alias_key);
+    ACTION_READS.set((0, 0));
+    coordinator.pause_targets(&[alias], reason);
+    assert_eq!(coordinator.owners[0].policy.state(), paused);
+    assert_eq!(ACTION_READS.get(), (0, 0));
 }
 
 #[test]

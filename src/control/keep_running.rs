@@ -73,6 +73,9 @@ impl Member {
     pub(crate) fn key(&self) -> ProcessTargetKey {
         self.target.key()
     }
+    pub(crate) fn executable_identity(&self) -> &ExecutableIdentity {
+        self.native.executable_identity()
+    }
     pub(crate) fn exit_confirmed(&self) -> Result<bool, KeepRunningError> {
         self.native.exit_confirmed().map_err(Into::into)
     }
@@ -121,7 +124,7 @@ pub(crate) fn scan_members(
     }
     if members
         .iter()
-        .any(|member| member.native.executable_identity() != &identity)
+        .any(|member| member.executable_identity() != &identity)
     {
         return Err(native::KeepRunningError::Unsupported(
             "Keep Running executable identity changed during observation.",

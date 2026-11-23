@@ -44,6 +44,15 @@ impl Platform for Windows {
     fn identity(rule: &KeepRunningRule) -> Result<Self::Identity, Failure> {
         spec(rule)?.identity().map_err(failure)
     }
+    fn action_identity(
+        target: &ProcessActionTarget,
+        context: &Self::Context,
+    ) -> Result<Self::Identity, Failure> {
+        let target = crate::control::process::ProcessControlTarget::from_action_target(target);
+        control::retain_member(&target, context)
+            .map(|member| member.executable_identity().clone())
+            .map_err(failure)
+    }
     fn scan(
         rule: &KeepRunningRule,
         context: &Self::Context,
