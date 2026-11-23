@@ -111,8 +111,10 @@ Read the relevant section before changing feature policy, ownership, restoration
 - Counts are sampled and non-atomic: short-lived processes may be missed. Incomplete
   counts expose a verified lower bound; incomplete zero says Count incomplete,
   never a reassuring zero. Old samples become Unknown with their age. A missing
-  event watcher blocks fresh qualification. Native queries run outside the shared
-  intake mutex; one-second visible/tray cadence is not a Windows-call deadline.
+  event watcher pauses count sampling until coverage returns. The rule shows
+  that it is waiting for context without a sample age. Native queries run outside
+  the shared intake mutex; one-second visible/tray cadence is not a Windows-call
+  deadline.
 - Excess and recovery each need two fresh qualifying samples at least one second
   apart. A lower bound above the maximum proves excess; only complete within-limit
   counts prove recovery. Uncertainty and gaps longer than three seconds restart

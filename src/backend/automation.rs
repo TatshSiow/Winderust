@@ -1511,8 +1511,12 @@ fn run_background_automation(
             || keep_running_command_requested
             || keep_running_required(configured_settings.as_ref())
             || runner.keep_running.has_pending();
-        let instance_limits_refresh_required =
-            settings_changed || instance_limits_required(configured_settings.as_ref());
+        let instance_limits_configured = instance_limits_required(configured_settings.as_ref());
+        let instance_limits_sampling_required =
+            instance_limits_configured && windows_event_watcher_active;
+        let instance_limits_refresh_required = settings_changed
+            || instance_limits_sampling_required
+            || (instance_limits_configured && instance_observation_context_changed);
         let instance_balancing_refresh_required = settings_changed
             || instance_balancing_reset
             || instance_observation_context_changed
@@ -2048,7 +2052,7 @@ fn run_background_automation(
                     KEEP_RUNNING_REFRESH_INTERVAL,
                 ),
                 (
-                    instance_limits_refresh_required,
+                    instance_limits_sampling_required,
                     RefreshDomain::InstanceLimits,
                     INSTANCE_LIMITS_REFRESH_INTERVAL,
                 ),

@@ -90,6 +90,11 @@ impl RuntimeCore {
         if !instance_limits_required(settings) {
             return self.instance_limits.snapshot();
         }
+        if !watcher_active {
+            self.instance_limits
+                .invalidate(&t!("instance_limits.waiting_context"));
+            return self.instance_limits.snapshot();
+        }
         let mut counts = vec![
             CountObservation::Unavailable {
                 reason: "The rule is disabled.".into(),
@@ -108,16 +113,7 @@ impl RuntimeCore {
             .map(|(_, rule)| rule.executable_path.clone())
             .collect();
         // Native queries use one fresh catalog and never hold the shared intake mutex.
-        let observed = if watcher_active {
-            instance_limits::collect(&paths)
-        } else {
-            vec![
-                CountObservation::Unavailable {
-                    reason: t!("instance_limits.waiting_context").to_string(),
-                };
-                paths.len()
-            ]
-        };
+        let observed = instance_limits::collect(&paths);
         if observed.len() == enabled.len() {
             for ((index, _), count) in enabled.into_iter().zip(observed) {
                 counts[index] = count;
@@ -273,6 +269,40 @@ mod tests {
         assert!(sample_is_current(&state, &expected, true));
         state.stop_requested = true;
         assert!(!sample_is_current(&state, &expected, true));
+    }
+
+    #[test]
+    fn watcher_outage_clears_sample_age() {
+        let runtime = runtime();
+        let settings = {
+            let mut state = lock_unpoisoned(&runtime.shared.state);
+            state.windows_event_watcher_active = false;
+            state.pending_events = AutomationWakeEvents::default();
+            let mut settings = (*state.settings).clone();
+            settings.general.enabled = true;
+            settings.instance_limits.enabled = true;
+            settings
+                .instance_limits
+                .rules
+                .push(crate::config::InstanceLimitsRule::new(
+                    r"C:\Apps\app.exe".into(),
+                ));
+            state.settings = Arc::new(settings);
+            Arc::clone(&state.settings)
+        };
+        let mut runner = RuntimeCore::default();
+        runner.instance_limits.sync(&settings.instance_limits, true);
+        runner
+            .instance_limits
+            .observe(&[CountObservation::Complete(1)], Instant::now());
+        let paused = runner.run_instance_limits_update(&runtime.shared, &settings, false);
+        assert_eq!(paused.rules[0].sampled_at, None);
+        assert_eq!(
+            paused.rules[0].count,
+            CountObservation::Unavailable {
+                reason: t!("instance_limits.waiting_context").to_string(),
+            }
+        );
     }
 
     #[test]
