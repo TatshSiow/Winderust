@@ -249,16 +249,23 @@ impl CpuLimiterController {
         targets: Vec<CpuLimiterTarget>,
         observed_processes: Option<&BTreeMap<u32, &ProcessInfo>>,
     ) -> Result<Vec<ProcessTargetKey>, String> {
-        let now = Instant::now();
-        let requested_keys = targets
-            .iter()
-            .map(|target| target.suspension_target.key())
-            .collect::<BTreeSet<_>>();
         let mut state = self
             .state
             .lock()
             .map_err(|_| "CPU Limiter worker state is unavailable.".to_owned())?;
         let fatal_error = state.fatal_error.clone();
+        if targets.is_empty() && state.targets.is_empty() {
+            return match fatal_error {
+                Some(error) => Err(error),
+                None => Ok(state.prune_covered_targets(observed_processes)),
+            };
+        }
+
+        let now = Instant::now();
+        let requested_keys = targets
+            .iter()
+            .map(|target| target.suspension_target.key())
+            .collect::<BTreeSet<_>>();
         let removed_keys = state
             .targets
             .keys()
@@ -916,6 +923,37 @@ mod tests {
             allow_cross_session_process_control: true,
             ancestor_process_ids,
         }
+    }
+
+    #[test]
+    fn empty_refresh_prunes_orphaned_coverage_without_accessing_suspension() {
+        let owner = target(1, Vec::new()).suspension_target.key();
+        let child = target(2, vec![1]).suspension_target.key();
+        let mut controller = CpuLimiterController {
+            suspension: Arc::new(Mutex::new(SuspensionController::default())),
+            state: Arc::new(Mutex::new(WorkerState {
+                covered_targets: BTreeMap::from([(child, owner)]),
+                ..Default::default()
+            })),
+            command_event: CommandEvent::new().unwrap(),
+            worker: None,
+        };
+        assert!(catch_unwind(AssertUnwindSafe(|| {
+            let _guard = controller.suspension.lock().unwrap();
+            panic!("test suspension lock poison");
+        }))
+        .is_err());
+
+        assert_eq!(controller.replace_targets(Vec::new()), Ok(()));
+        {
+            let mut state = controller.state.lock().unwrap();
+            assert!(state.covered_targets.is_empty());
+            state.fatal_error = Some("worker failed".to_owned());
+        }
+        assert_eq!(
+            controller.replace_targets(Vec::new()),
+            Err("worker failed".to_owned())
+        );
     }
 
     #[test]
