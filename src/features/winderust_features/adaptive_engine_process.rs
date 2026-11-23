@@ -2,6 +2,7 @@ use std::{
     cmp::Reverse,
     collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
+    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -461,18 +462,12 @@ impl AdaptiveEngineProcessManager {
         let visible_window_process_group_ids = background_observations
             .as_ref()
             .map(|(_, windows)| {
-                let visible = ProtectedProcesses::capture(processes, false, None, windows.clone());
-                processes
-                    .iter()
-                    .filter(|process| !foreground_group.contains(&process.id))
-                    .filter(|process| visible.may_contain(process))
-                    .filter_map(|process| {
-                        let path = cached_executable_path(process, &mut executable_paths)?;
-                        visible
-                            .contains(process.id, Path::new(&path))
-                            .then_some(process.id)
-                    })
-                    .collect::<BTreeSet<_>>()
+                visible_window_group_ids(
+                    processes,
+                    &foreground_group,
+                    windows,
+                    &mut executable_paths,
+                )
             })
             .unwrap_or_default();
         if self.allocation_settings.as_ref().is_some_and(|previous| {
@@ -1585,6 +1580,26 @@ impl AdaptiveEngineProcessManager {
         }
         Some(mask)
     }
+}
+
+fn visible_window_group_ids(
+    processes: &[ProcessInfo],
+    foreground_group: &BTreeSet<u32>,
+    windows: &Arc<BTreeSet<u32>>,
+    executable_paths: &mut BTreeMap<u32, String>,
+) -> BTreeSet<u32> {
+    let visible = ProtectedProcesses::capture(processes, false, None, Arc::clone(windows));
+    processes
+        .iter()
+        .filter(|process| !foreground_group.contains(&process.id))
+        .filter(|process| {
+            windows.contains(&process.id)
+                || (visible.may_contain(process)
+                    && cached_executable_path(process, executable_paths)
+                        .is_some_and(|path| visible.contains(process.id, Path::new(&path))))
+        })
+        .map(|process| process.id)
+        .collect()
 }
 
 fn cached_executable_path(

@@ -66,6 +66,42 @@ fn foreground_skip_matches_pid_or_process_group() {
 }
 
 #[test]
+fn observed_window_owner_is_protected_without_an_executable_image() {
+    let process = |id, image_path: Option<&str>| ProcessInfo {
+        id,
+        creation_time: image_path.map(|_| u64::from(id)),
+        parent_id: None,
+        session_id: Some(1),
+        user_name: None,
+        is_service_account: Some(false),
+        is_critical: Some(false),
+        can_set_information: true,
+        name: "app.exe".to_owned(),
+        image_path: image_path.map(PathBuf::from),
+    };
+    let pathless_id = u32::MAX;
+    let processes = [
+        process(42, Some(r"C:\Apps\Visible\app.exe")),
+        process(43, Some(r"c:\apps\visible\APP.EXE")),
+        process(44, Some(r"C:\Apps\Other\app.exe")),
+        process(45, Some(r"C:\Apps\Foreground\app.exe")),
+        process(pathless_id, None),
+    ];
+    let windows = Arc::new(BTreeSet::from([42, 45, pathless_id]));
+    let mut executable_paths = BTreeMap::new();
+    assert_eq!(
+        visible_window_group_ids(
+            &processes,
+            &BTreeSet::from([45]),
+            &windows,
+            &mut executable_paths,
+        ),
+        BTreeSet::from([42, 43, pathless_id])
+    );
+    assert!(!executable_paths.contains_key(&42));
+}
+
+#[test]
 fn adaptive_engine_process_keeps_relative_restraints_when_foreground_saturates_cpu() {
     let settings = AdaptiveEngineProcessSettings {
         cpu_pressure_restraint_enabled: true,
