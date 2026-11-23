@@ -1366,12 +1366,12 @@ impl Editor {
                     .on_press_maybe(p.can_save(presets, index).then_some(Message::SavePreset)),
             );
         }
-        Some(widgets::modal_frame(
-            header,
-            scrollable(form).height(Fill),
-            footer,
-            (800, 680),
-        ))
+        let frame = widgets::modal_frame(header, scrollable(form).height(Fill), footer, (800, 680));
+        Some(if editable {
+            super::modal::dismiss_on_escape(frame, Message::ClosePreset)
+        } else {
+            frame
+        })
     }
     pub(super) fn presets_panel<'a>(
         &'a self,

@@ -469,7 +469,12 @@ impl Editor {
         if !self.error.is_empty() {
             body = body.push(text(self.error.clone()).style(text::danger));
         }
-        super::widgets::modal_frame(header, body, footer, (1200, 850))
+        let frame = super::widgets::modal_frame(header, body, footer, (1200, 850));
+        if self.read_only {
+            frame
+        } else {
+            super::modal::dismiss_on_escape(frame, Message::Cancel)
+        }
     }
 
     fn tuning_view<'a>(
