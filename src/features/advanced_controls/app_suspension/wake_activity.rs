@@ -291,55 +291,64 @@ pub(super) fn enable_tcp6_data_stats(row: &MIB_TCP6ROW) {
     }
 }
 
-pub(super) fn tcp4_data_stats(row: &MIB_TCPROW_LH) -> Option<NetworkActivityCounters> {
-    let mut rod = TCP_ESTATS_DATA_ROD_v0::default();
-    // SAFETY: row is fully initialized; unused buffers are null and rod is writable for exactly
-    // the supplied output size.
-    let status = unsafe {
-        GetPerTcpConnectionEStats(
-            row,
-            TcpConnectionEstatsData,
-            null_mut(),
-            0,
-            0,
-            null_mut(),
-            0,
-            0,
-            &mut rod as *mut _ as *mut u8,
-            0,
-            mem::size_of::<TCP_ESTATS_DATA_ROD_v0>() as u32,
-        )
+fn read_tcp_data_stats(
+    read: impl FnOnce(&mut TCP_ESTATS_DATA_RW_v0, &mut TCP_ESTATS_DATA_ROD_v0) -> u32,
+) -> Option<NetworkActivityCounters> {
+    let mut rw = TCP_ESTATS_DATA_RW_v0 {
+        EnableCollection: false,
     };
-
-    (status == NO_ERROR).then_some(NetworkActivityCounters {
+    let mut rod = TCP_ESTATS_DATA_ROD_v0::default();
+    // Windows can report success with undefined counters when collection is disabled.
+    if read(&mut rw, &mut rod) != NO_ERROR || !rw.EnableCollection {
+        return None;
+    }
+    Some(NetworkActivityCounters {
         bytes_in: rod.DataBytesIn,
         bytes_out: rod.DataBytesOut,
     })
 }
 
-pub(super) fn tcp6_data_stats(row: &MIB_TCP6ROW) -> Option<NetworkActivityCounters> {
-    let mut rod = TCP_ESTATS_DATA_ROD_v0::default();
-    // SAFETY: row is fully initialized; unused buffers are null and rod is writable for exactly
-    // the supplied output size.
-    let status = unsafe {
-        GetPerTcp6ConnectionEStats(
-            row,
-            TcpConnectionEstatsData,
-            null_mut(),
-            0,
-            0,
-            null_mut(),
-            0,
-            0,
-            &mut rod as *mut _ as *mut u8,
-            0,
-            mem::size_of::<TCP_ESTATS_DATA_ROD_v0>() as u32,
-        )
-    };
+fn tcp4_data_stats(row: &MIB_TCPROW_LH) -> Option<NetworkActivityCounters> {
+    read_tcp_data_stats(|rw, rod| {
+        // SAFETY: row is initialized, the writable buffers match the version-zero data
+        // structures and supplied sizes, and the unused static-data buffer is null.
+        unsafe {
+            GetPerTcpConnectionEStats(
+                row,
+                TcpConnectionEstatsData,
+                ptr::from_mut(rw).cast(),
+                0,
+                mem::size_of::<TCP_ESTATS_DATA_RW_v0>() as u32,
+                null_mut(),
+                0,
+                0,
+                ptr::from_mut(rod).cast(),
+                0,
+                mem::size_of::<TCP_ESTATS_DATA_ROD_v0>() as u32,
+            )
+        }
+    })
+}
 
-    (status == NO_ERROR).then_some(NetworkActivityCounters {
-        bytes_in: rod.DataBytesIn,
-        bytes_out: rod.DataBytesOut,
+fn tcp6_data_stats(row: &MIB_TCP6ROW) -> Option<NetworkActivityCounters> {
+    read_tcp_data_stats(|rw, rod| {
+        // SAFETY: row is initialized, the writable buffers match the version-zero data
+        // structures and supplied sizes, and the unused static-data buffer is null.
+        unsafe {
+            GetPerTcp6ConnectionEStats(
+                row,
+                TcpConnectionEstatsData,
+                ptr::from_mut(rw).cast(),
+                0,
+                mem::size_of::<TCP_ESTATS_DATA_RW_v0>() as u32,
+                null_mut(),
+                0,
+                0,
+                ptr::from_mut(rod).cast(),
+                0,
+                mem::size_of::<TCP_ESTATS_DATA_ROD_v0>() as u32,
+            )
+        }
     })
 }
 
@@ -423,4 +432,31 @@ pub(super) fn should_skip_foreground_process(
 ) -> bool {
     process_id == foreground_process_id
         || same_executable_path(executable_path, foreground_executable_path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use windows_sys::Win32::Foundation::ERROR_ACCESS_DENIED;
+
+    #[test]
+    fn tcp_counters_require_a_successful_read_with_collection_enabled() {
+        let counters = NetworkActivityCounters {
+            bytes_in: 120,
+            bytes_out: 56,
+        };
+        for (status, enabled, expected) in [
+            (NO_ERROR, false, None),
+            (ERROR_ACCESS_DENIED, true, None),
+            (NO_ERROR, true, Some(counters)),
+        ] {
+            let actual = read_tcp_data_stats(|rw, rod| {
+                rw.EnableCollection = enabled;
+                rod.DataBytesIn = counters.bytes_in;
+                rod.DataBytesOut = counters.bytes_out;
+                status
+            });
+            assert_eq!(actual, expected);
+        }
+    }
 }

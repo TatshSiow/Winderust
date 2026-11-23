@@ -884,7 +884,8 @@ User-facing behavior:
 
 Network wake in `src/features/advanced_controls/app_suspension/wake_activity.rs`
 enumerates IPv4 and IPv6 TCP connections with their owning PIDs. It compares the
-per-connection payload byte counters between successive observations.
+per-connection payload byte counters between successive observations after
+verifying that each EStats query succeeded and `EnableCollection` is set.
 [TCP tables](https://learn.microsoft.com/en-us/windows/win32/api/iphlpapi/nf-iphlpapi-getextendedtcptable),
 [IPv4 counters](https://learn.microsoft.com/en-us/windows/win32/api/iphlpapi/nf-iphlpapi-getpertcpconnectionestats),
 [IPv6 counters](https://learn.microsoft.com/en-us/windows/win32/api/iphlpapi/nf-iphlpapi-getpertcp6connectionestats)
