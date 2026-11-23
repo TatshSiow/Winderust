@@ -31,45 +31,24 @@ pub(super) fn process_appearance_refresh_interval(
     }
 }
 
-pub(super) fn input_hook_required(settings: &Settings) -> bool {
-    input_hook_required_for_profile(settings)
-        || settings
-            .on_battery
-            .as_deref()
-            .is_some_and(input_hook_required_for_profile)
-}
-
-fn input_hook_required_for_profile(settings: &Settings) -> bool {
-    settings.general.enabled
-        && (activity_input_hook_required(settings) || app_suspension_input_hook_required(settings))
-}
-
 pub(super) fn input_hook_config(settings: &Settings) -> InputHookConfig {
-    let plugged_in_app_suspension = app_suspension_input_hook_required(settings);
-    let battery = settings.on_battery.as_deref();
-    let battery_app_suspension = battery.is_some_and(app_suspension_input_hook_required);
-    InputHookConfig {
-        keyboard: settings.by_activity.input_detection.keyboard
-            || plugged_in_app_suspension
-            || battery.is_some_and(|settings| settings.by_activity.input_detection.keyboard)
-            || battery_app_suspension,
-        mouse: settings.by_activity.input_detection.mouse
-            || plugged_in_app_suspension
-            || battery.is_some_and(|settings| settings.by_activity.input_detection.mouse)
-            || battery_app_suspension,
+    let mut config = InputHookConfig::default();
+    for profile in std::iter::once(settings)
+        .chain(settings.on_battery.as_deref())
+        .filter(|profile| profile.general.enabled)
+    {
+        if profile.app_suspension.enabled {
+            return InputHookConfig {
+                keyboard: true,
+                mouse: true,
+            };
+        }
+        if activity_power_plan_required(profile) {
+            config.keyboard |= profile.by_activity.input_detection.keyboard;
+            config.mouse |= profile.by_activity.input_detection.mouse;
+        }
     }
-}
-
-fn app_suspension_input_hook_required(settings: &Settings) -> bool {
-    settings.app_suspension.enabled
-}
-
-fn activity_input_hook_required(settings: &Settings) -> bool {
-    activity_power_plan_required(settings)
-        && settings
-            .by_activity
-            .input_detection
-            .keyboard_or_mouse_enabled()
+    config
 }
 
 pub(super) fn adaptive_engine_process_refresh_interval(settings: &Settings) -> Duration {

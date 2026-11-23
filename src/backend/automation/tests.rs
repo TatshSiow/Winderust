@@ -72,7 +72,7 @@ fn sleep_prevention_keeps_battery_only_automation_and_sleep_events_alive() {
         WindowsAutomationEvent::ForegroundChanged,
     ));
     assert!(!power_plan_checks_required(settings.battery_profile()));
-    assert!(!input_hook_required(&settings));
+    assert_eq!(input_hook_config(&settings), InputHookConfig::default());
     settings.on_battery.as_mut().unwrap().sleep_prevention.rules[0].enabled = false;
     assert!(!automation_worker_required(&settings));
 }
@@ -1843,40 +1843,43 @@ fn default_settings_do_not_poll_power_plans_without_plan_targets() {
 #[test]
 fn input_hook_is_needed_for_activity_input_or_app_suspension() {
     let mut settings = Settings::default();
+    let inactive = InputHookConfig::default();
 
-    assert!(!input_hook_required(&settings));
+    assert_eq!(input_hook_config(&settings), inactive);
 
     settings.by_activity.enabled = true;
     settings.by_activity.power_plans.performance_guid = Some("active-guid".to_owned());
-    assert!(input_hook_required(&settings));
+    assert_ne!(input_hook_config(&settings), inactive);
 
     settings.by_activity.enabled = false;
-    assert!(!input_hook_required(&settings));
+    assert_eq!(input_hook_config(&settings), inactive);
 
     settings.by_activity.enabled = true;
     settings.general.enabled = false;
-    assert!(!input_hook_required(&settings));
+    assert_eq!(input_hook_config(&settings), inactive);
 
     settings.general.enabled = true;
     settings.by_activity.switch_to_performance_on_resume = false;
-    assert!(!input_hook_required(&settings));
+    assert_eq!(input_hook_config(&settings), inactive);
 
     settings.by_activity.switch_to_performance_on_resume = true;
     settings.by_activity.input_detection.keyboard = false;
     settings.by_activity.input_detection.mouse = false;
     settings.by_activity.input_detection.controller = true;
-    assert!(!input_hook_required(&settings));
+    assert_eq!(input_hook_config(&settings), inactive);
 
     settings.app_suspension.enabled = true;
-    assert!(input_hook_required(&settings));
+    assert_ne!(input_hook_config(&settings), inactive);
 
     settings.general.enabled = false;
-    assert!(!input_hook_required(&settings));
+    assert_eq!(input_hook_config(&settings), inactive);
 }
 
 #[test]
 fn input_hook_config_tracks_enabled_input_devices() {
     let mut settings = Settings::default();
+    settings.by_activity.enabled = true;
+    settings.by_activity.power_plans.power_save_guid = Some("idle-guid".to_owned());
 
     settings.by_activity.input_detection.keyboard = true;
     settings.by_activity.input_detection.mouse = false;
@@ -1916,6 +1919,45 @@ fn input_hook_config_tracks_enabled_input_devices() {
             mouse: true,
         }
     );
+}
+
+#[test]
+fn input_hook_config_ignores_inactive_power_profile_devices() {
+    let mut settings = Settings::default();
+    settings.by_activity.enabled = true;
+    settings.by_activity.power_plans.power_save_guid = Some("idle-guid".to_owned());
+    settings.by_activity.input_detection.keyboard = true;
+    settings.by_activity.input_detection.mouse = false;
+    let battery = settings.battery_profile_mut();
+    battery.by_activity.input_detection.keyboard = false;
+    battery.by_activity.input_detection.mouse = true;
+    battery.by_activity.power_plans.power_save_guid = None;
+    let keyboard_only = InputHookConfig {
+        keyboard: true,
+        mouse: false,
+    };
+    assert_eq!(input_hook_config(&settings), keyboard_only);
+
+    let battery = settings.battery_profile_mut();
+    battery.by_activity.power_plans.power_save_guid = Some("battery-idle-guid".to_owned());
+    battery.by_activity.enabled = false;
+    assert_eq!(input_hook_config(&settings), keyboard_only);
+
+    settings.battery_profile_mut().by_activity.enabled = true;
+    let both_devices = InputHookConfig {
+        keyboard: true,
+        mouse: true,
+    };
+    assert_eq!(input_hook_config(&settings), both_devices);
+
+    let battery = settings.battery_profile_mut();
+    battery.general.enabled = false;
+    battery.app_suspension.enabled = true;
+    assert_eq!(input_hook_config(&settings), keyboard_only);
+
+    settings.battery_profile_mut().general.enabled = true;
+    settings.battery_profile_mut().by_activity.enabled = false;
+    assert_eq!(input_hook_config(&settings), both_devices);
 }
 
 #[test]
@@ -2800,6 +2842,23 @@ fn callbacks_deliver_events_for_either_profile_without_polling() {
         profile.by_activity.input_detection.keyboard = true;
         profile.by_activity.input_detection.mouse = false;
         profile.app_suspension.enabled = true;
+        lock_unpoisoned(&shared.state).settings = Arc::new(settings.clone());
+        let before = lock_unpoisoned(&shared.state).change_generation;
+        notify_input_event(
+            &shared,
+            InputHookEvents {
+                keyboard: true,
+                ..Default::default()
+            },
+        );
+        assert_eq!(lock_unpoisoned(&shared.state).change_generation, before);
+
+        let profile = if battery_only {
+            settings.battery_profile_mut()
+        } else {
+            &mut settings
+        };
+        profile.by_activity.power_plans.power_save_guid = Some("idle-guid".to_owned());
         lock_unpoisoned(&shared.state).settings = Arc::new(settings.clone());
         notify_input_event(
             &shared,

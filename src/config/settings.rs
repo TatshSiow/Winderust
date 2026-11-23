@@ -2743,10 +2743,6 @@ impl InputDetectionSettings {
     pub const fn any_enabled(&self) -> bool {
         self.keyboard || self.mouse || self.controller
     }
-
-    pub const fn keyboard_or_mouse_enabled(&self) -> bool {
-        self.keyboard || self.mouse
-    }
 }
 
 impl WeekdaySetting {

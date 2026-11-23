@@ -369,7 +369,7 @@ mod tests {
             assert!(windows_event_wake_required(&settings, event));
         }
         assert!(!power_plan_checks_required(&settings));
-        assert!(!input_hook_required(&settings));
+        assert_eq!(input_hook_config(&settings), InputHookConfig::default());
         let now = Instant::now();
         let mut scheduler = RefreshScheduler::new(now);
         scheduler.schedule_after(

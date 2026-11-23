@@ -77,19 +77,17 @@ pub(super) fn notify_input_event(shared: &SharedAutomationState, events: InputHo
         return;
     }
     state.input_activity.record(events, Instant::now());
-    if !input_hook_should_check(&state.settings, events) {
+    let input_activity = input_hook_should_check_activity(&state.settings, events);
+    let app_switch = input_hook_should_check_app_switch(&state.settings, events);
+    let app_switch_mouse_click =
+        input_hook_should_check_app_switch_mouse_click(&state.settings, events);
+    if !(input_activity || app_switch || app_switch_mouse_click) {
         return;
     }
 
-    if input_hook_should_check_activity(&state.settings, events) {
-        state.pending_events.input_activity = true;
-    }
-    if input_hook_should_check_app_switch(&state.settings, events) {
-        state.pending_events.app_switch = true;
-    }
-    if input_hook_should_check_app_switch_mouse_click(&state.settings, events) {
-        state.pending_events.app_switch_mouse_click = true;
-    }
+    state.pending_events.input_activity |= input_activity;
+    state.pending_events.app_switch |= app_switch;
+    state.pending_events.app_switch_mouse_click |= app_switch_mouse_click;
     state.change_generation = state.change_generation.wrapping_add(1);
     shared.changed.notify_one();
 }

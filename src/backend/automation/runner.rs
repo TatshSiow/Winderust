@@ -2986,7 +2986,7 @@ mod settings_tests {
         settings.by_activity.idle_timeout_seconds = 30;
         settings.by_activity.power_plans.power_save_guid = Some("idle".into());
         settings.by_activity.switch_to_performance_on_resume = false;
-        assert!(input_hook_required(&settings));
+        assert_ne!(input_hook_config(&settings), InputHookConfig::default());
 
         for selected in 1..8 {
             settings.by_activity.input_detection.keyboard = selected & 1 != 0;

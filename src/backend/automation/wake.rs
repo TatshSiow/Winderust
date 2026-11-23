@@ -27,12 +27,6 @@ pub(super) fn wait_for_wake(
         state.stop_requested
     }
 }
-pub(super) fn input_hook_should_check(settings: &Settings, events: InputHookEvents) -> bool {
-    input_hook_should_check_activity(settings, events)
-        || input_hook_should_check_app_switch(settings, events)
-        || input_hook_should_check_app_switch_mouse_click(settings, events)
-}
-
 pub(super) fn input_hook_should_check_activity(
     settings: &Settings,
     events: InputHookEvents,
@@ -41,7 +35,7 @@ pub(super) fn input_hook_should_check_activity(
         .chain(settings.on_battery.as_deref())
         .any(|settings| {
             settings.general.enabled
-                && settings.by_activity.enabled
+                && activity_power_plan_required(settings)
                 && ((events.keyboard && settings.by_activity.input_detection.keyboard)
                     || (events.mouse && settings.by_activity.input_detection.mouse))
         })

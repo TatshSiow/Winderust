@@ -1079,13 +1079,13 @@ impl RuntimeHandle {
             return;
         }
         let mut input_hook = lock_unpoisoned(&self.input_hook);
-        if !input_hook_required(&settings.value) {
+        let config = input_hook_config(&settings.value);
+        if config == InputHookConfig::default() {
             input_hook.take();
-            configure_input_activity(&self.shared, InputHookConfig::default());
+            configure_input_activity(&self.shared, config);
             return;
         }
 
-        let config = input_hook_config(&settings.value);
         if input_hook
             .as_ref()
             .is_some_and(|input_hook| input_hook.config() == config)
@@ -2442,7 +2442,7 @@ mod keep_running_intake_tests {
             assert!(windows_event_wake_required(&settings, event));
         }
         assert!(!power_plan_checks_required(&settings));
-        assert!(!input_hook_required(&settings));
+        assert_eq!(input_hook_config(&settings), InputHookConfig::default());
         let now = Instant::now();
         let mut scheduler = RefreshScheduler::new(now);
         scheduler.schedule_after(

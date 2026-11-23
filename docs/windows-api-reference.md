@@ -236,6 +236,10 @@ The watcher distinguishes ordinary [power-setting notifications](https://learn.m
 
 By Activity uses per-source physical keyboard/mouse timestamps from `src/activity/input_tracker.rs` and controller polling in `src/backend/automation/runner.rs`. Classification and idle deadlines use only selected sources. Observation starts with a full idle grace period and unavailable selected sources remain Unknown. Home uses the runtime observation for the matching power source, enabled input devices, and idle timeout.
 
+By Activity requests the selected physical input hooks only from enabled power
+profiles with a configured plan that can run. App Suspension requests both hooks
+while enabled so switch and click events can release manually suspended apps.
+
 ## System Tray Lifecycle
 
 `src/platform/windows/menu_theme.rs` prepares the native tray menu before each opening. It follows Windows' app light/dark preference using private UxTheme ordinals 135 (`SetPreferredAppMode`, Default=0 / AllowDark=1), 133 (`AllowDarkModeForWindow`), 104 (`RefreshImmersiveColorPolicyState`), and 136 (`FlushMenuThemes`), as used by [Microsoft PowerToys](https://github.com/microsoft/PowerToys/blob/main/src/modules/ZoomIt/ZoomIt/Utility.cpp). These are undocumented exports, not stable SDK contracts. [RtlGetVersion](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdm/nf-wdm-rtlgetversion) gates the changed ordinal-135 signature to Windows 10 build 18362 or later; all exports must resolve from a System32-only `LoadLibraryExW` load retained for the process lifetime. Missing support preserves the standard menu. [SystemParametersInfoW](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-systemparametersinfow) with `SPI_GETHIGHCONTRAST` preserves native high-contrast rendering; failed accessibility queries also select Default. No owner-drawn menu or persistent Windows preference change is used.
