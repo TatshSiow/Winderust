@@ -5,10 +5,13 @@ use crate::ui::scrolling::scrollable;
 use crate::{
     action_log::{ActionLogEntry, ActionLogFeature},
     automation::RuntimeStatusSnapshot,
-    config::Settings,
+    config::{PowerSourceProfile, Settings},
     control::instance_limits::CountObservation,
     features::{
-        advanced_controls::instance_limits::{InstanceLimitsSnapshot, NotificationStatus},
+        advanced_controls::{
+            instance_limits::{InstanceLimitsSnapshot, NotificationStatus},
+            sleep_prevention::SleepPreventionSnapshot,
+        },
         winderust_features::memory_trim::MemoryTrimStatus,
     },
     power::PowerPlan,
@@ -85,6 +88,7 @@ pub(super) fn view<'a>(
     settings: &Settings,
     runtime: &'a RuntimeStatusSnapshot,
     plans: &[PowerPlan],
+    plugged_in: Option<bool>,
 ) -> Option<Element<'a, Message>> {
     if page == Page::PowerPlanControl {
         return Some(power_plan_control::status_view(
@@ -105,6 +109,18 @@ pub(super) fn view<'a>(
     };
     let instance_limits = (page == Page::InstanceLimits)
         .then(|| instance_limits_status(settings, &runtime.feature_status.instance_limits));
+    let sleep = (page == Page::SleepPrevention)
+        .then_some(&runtime.feature_status.sleep_prevention)
+        .filter(|snapshot| {
+            plugged_in.is_none_or(|plugged_in| {
+                let current = if plugged_in {
+                    PowerSourceProfile::PluggedIn
+                } else {
+                    PowerSourceProfile::OnBattery
+                };
+                snapshot.source == Some(current)
+            })
+        });
     let summary = if let Some(limits) = &instance_limits {
         FeatureStatusSummary {
             scanned: None,
@@ -113,6 +129,15 @@ pub(super) fn view<'a>(
             skipped: None,
             last_error: limits.last_error,
             action_log_feature: ActionLogFeature::InstanceLimits,
+        }
+    } else if page == Page::SleepPrevention {
+        FeatureStatusSummary {
+            scanned: None,
+            adjusted: None,
+            protected_or_denied: None,
+            skipped: None,
+            last_error: sleep.and_then(|snapshot| snapshot.last_error.as_deref()),
+            action_log_feature: ActionLogFeature::SleepPrevention,
         }
     } else if let Some(feature) = power_feature {
         FeatureStatusSummary {
@@ -127,13 +152,11 @@ pub(super) fn view<'a>(
         feature_status_summary(page, runtime)?
     };
     let available = runtime.generation != 0;
-    let state = sidebar_state(
-        page,
-        settings,
-        runtime,
-        &summary,
-        instance_limits.as_ref().map(|limits| limits.state),
-    );
+    let observed_state = match page {
+        Page::SleepPrevention => Some(sleep_prevention_state(sleep)),
+        _ => instance_limits.as_ref().map(|limits| limits.state),
+    };
+    let state = sidebar_state(page, settings, runtime, &summary, observed_state);
     let (state_label, detail, color) = match (page, state) {
         (Page::SleepPrevention, FeatureRunState::Running) => (
             "sleep_prevention.request_accepted",
@@ -217,37 +240,34 @@ pub(super) fn view<'a>(
             .spacing(design::space::CONTROL),
         ));
     } else if page == Page::SleepPrevention {
-        let sleep = &runtime.feature_status.sleep_prevention;
+        let sleep = sleep.filter(|_| available);
+        let observed = sleep.filter(|snapshot| snapshot.observation_known);
         let accepted = |requested| {
-            if !available {
-                t!("common.unknown")
-            } else if requested {
-                t!("sleep_prevention.request_accepted")
-            } else {
-                t!("sleep_prevention.not_requested")
-            }
-            .to_string()
+            t!(match requested {
+                Some(true) => "sleep_prevention.request_accepted",
+                Some(false) => "sleep_prevention.not_requested",
+                None => "common.unknown",
+            })
+            .into_owned()
         };
         body = body.push(section(
             "sleep_prevention.requests",
             column![
                 metric(
                     "sleep_prevention.matching_rules",
-                    count((available && sleep.observation_known).then_some(sleep.matched_rules))
+                    count(observed.map(|snapshot| snapshot.matched_rules))
                 ),
                 metric(
                     "sleep_prevention.matching_processes",
-                    count(
-                        (available && sleep.observation_known).then_some(sleep.matched_processes)
-                    )
+                    count(observed.map(|snapshot| snapshot.matched_processes))
                 ),
                 metric(
                     "sleep_prevention.system_request",
-                    accepted(sleep.system_requested)
+                    accepted(sleep.map(|snapshot| snapshot.system_requested))
                 ),
                 metric(
                     "sleep_prevention.display_request",
-                    accepted(sleep.display_requested)
+                    accepted(sleep.map(|snapshot| snapshot.display_requested))
                 ),
             ]
             .spacing(design::space::CONTROL),
@@ -586,12 +606,25 @@ fn instance_limits_status<'a>(
     }
 }
 
+fn sleep_prevention_state(sleep: Option<&SleepPreventionSnapshot>) -> FeatureRunState {
+    let Some(sleep) = sleep.filter(|snapshot| snapshot.observation_known) else {
+        return FeatureRunState::Unknown;
+    };
+    if sleep.system_requested {
+        FeatureRunState::Running
+    } else if !sleep.suppressed_apps.is_empty() && sleep.requesting_apps.is_empty() {
+        FeatureRunState::Paused
+    } else {
+        FeatureRunState::Waiting
+    }
+}
+
 fn sidebar_state(
     page: Page,
     settings: &Settings,
     runtime: &RuntimeStatusSnapshot,
     summary: &FeatureStatusSummary<'_>,
-    instance_limits_state: Option<FeatureRunState>,
+    observed_state: Option<FeatureRunState>,
 ) -> FeatureRunState {
     use crate::control::power_plan::PowerPlanOwner;
     use crate::rules::DecisionState;
@@ -634,7 +667,7 @@ fn sidebar_state(
     {
         return FeatureRunState::Error;
     }
-    if let Some(state) = instance_limits_state {
+    if let Some(state) = observed_state {
         return state;
     }
     let plan = &runtime.power_plan_status;
@@ -716,18 +749,6 @@ fn sidebar_state(
             FeatureRunState::Running
         } else if awaiting_observation {
             FeatureRunState::Unknown
-        } else {
-            FeatureRunState::Waiting
-        };
-    }
-    if page == Page::SleepPrevention {
-        let sleep = &features.sleep_prevention;
-        return if !sleep.observation_known {
-            FeatureRunState::Unknown
-        } else if sleep.system_requested {
-            FeatureRunState::Running
-        } else if !sleep.suppressed_apps.is_empty() && sleep.requesting_apps.is_empty() {
-            FeatureRunState::Paused
         } else {
             FeatureRunState::Waiting
         };
@@ -1075,17 +1096,6 @@ fn feature_status_summary(
                 action_log_feature: ActionLogFeature::AppSuspension,
             }
         }
-        Page::SleepPrevention => {
-            let status = &runtime.feature_status.sleep_prevention;
-            FeatureStatusSummary {
-                scanned: status.observation_known.then_some(status.matched_processes),
-                adjusted: None,
-                protected_or_denied: None,
-                skipped: None,
-                last_error: status.last_error.as_deref(),
-                action_log_feature: ActionLogFeature::SleepPrevention,
-            }
-        }
         Page::TimerResolution => {
             let status = &runtime.feature_status.timer_resolution;
             FeatureStatusSummary {
@@ -1255,9 +1265,7 @@ mod tests {
         }
     }
 
-    #[test]
-    fn sidebar_shows_a_current_error_alongside_an_older_failed_action() {
-        use crate::action_log::{ActionLog, ActionLogResult};
+    fn rail_text(mut rail: Element<'_, Message>) -> Vec<String> {
         use iced::advanced::{
             layout,
             widget::{Id, Operation, Tree},
@@ -1276,6 +1284,22 @@ mod tests {
                 self.0.push(content.to_owned());
             }
         }
+
+        let renderer = iced::Renderer::new(design::typography::FONT, iced::Pixels(14.0));
+        let mut tree = Tree::new(&rail);
+        let size = iced::Size::new(216.0, 560.0);
+        let node =
+            rail.as_widget_mut()
+                .layout(&mut tree, &renderer, &layout::Limits::new(size, size));
+        let mut details = Details::default();
+        rail.as_widget_mut()
+            .operate(&mut tree, Layout::new(&node), &renderer, &mut details);
+        details.0
+    }
+
+    #[test]
+    fn sidebar_shows_a_current_error_alongside_an_older_failed_action() {
+        use crate::action_log::{ActionLog, ActionLogResult};
 
         let mut settings = Settings::default();
         settings.general.enabled = true;
@@ -1296,24 +1320,102 @@ mod tests {
         let features = std::sync::Arc::make_mut(&mut runtime.feature_status);
         features.io_priority.last_error = Some("current restore failure".to_owned());
 
-        let mut rail = view(Page::IoPriority, &settings, &runtime, &[]).unwrap();
-        let renderer = iced::Renderer::new(design::typography::FONT, iced::Pixels(14.0));
-        let mut tree = Tree::new(&rail);
-        let size = iced::Size::new(216.0, 560.0);
-        let node =
-            rail.as_widget_mut()
-                .layout(&mut tree, &renderer, &layout::Limits::new(size, size));
-        let mut details = Details::default();
-        rail.as_widget_mut()
-            .operate(&mut tree, Layout::new(&node), &renderer, &mut details);
+        let details = rail_text(view(Page::IoPriority, &settings, &runtime, &[], None).unwrap());
+        assert!(details.iter().any(|text| text == "current restore failure"));
         assert!(details
-            .0
-            .iter()
-            .any(|text| text == "current restore failure"));
-        assert!(details
-            .0
             .iter()
             .any(|text| text.ends_with(" - older apply failure")));
+    }
+
+    #[test]
+    fn sleep_prevention_rail_waits_for_the_current_power_source_and_keeps_history() {
+        use crate::action_log::{ActionLog, ActionLogResult};
+
+        fn value<'a>(rail: &'a [String], key: &str) -> &'a str {
+            let label = t!(key);
+            rail.windows(2)
+                .find(|pair| pair[0] == label)
+                .map(|pair| pair[1].as_str())
+                .expect("status metric")
+        }
+
+        let mut settings = Settings::default();
+        settings.general.enabled = true;
+        settings.sleep_prevention.enabled = true;
+        let mut log = ActionLog::new(4);
+        for (result, reason) in [
+            (ActionLogResult::Applied, "previous request accepted"),
+            (ActionLogResult::Failed, "older clear failure"),
+        ] {
+            log.record(
+                ActionLogFeature::SleepPrevention,
+                None,
+                "System",
+                result,
+                reason,
+            );
+        }
+        let mut runtime = RuntimeStatusSnapshot {
+            generation: 1,
+            action_log_summaries: log.summaries().into(),
+            ..Default::default()
+        };
+        for (source, plugged_in) in [
+            (PowerSourceProfile::PluggedIn, true),
+            (PowerSourceProfile::OnBattery, false),
+        ] {
+            std::sync::Arc::make_mut(&mut runtime.feature_status).sleep_prevention =
+                SleepPreventionSnapshot {
+                    source: Some(source),
+                    enabled: true,
+                    observation_known: true,
+                    matched_rules: 2,
+                    matched_processes: 3,
+                    system_requested: true,
+                    display_requested: true,
+                    last_error: Some("current source error".into()),
+                    ..Default::default()
+                };
+            let capture = |observed| {
+                rail_text(view(Page::SleepPrevention, &settings, &runtime, &[], observed).unwrap())
+            };
+
+            for observed in [Some(plugged_in), None] {
+                let current = capture(observed);
+                assert_eq!(value(&current, "sleep_prevention.matching_rules"), "2");
+                assert_eq!(value(&current, "sleep_prevention.matching_processes"), "3");
+                for request in [
+                    "sleep_prevention.system_request",
+                    "sleep_prevention.display_request",
+                ] {
+                    assert_eq!(
+                        value(&current, request),
+                        t!("sleep_prevention.request_accepted")
+                    );
+                }
+                assert!(current.iter().any(|text| text == "current source error"));
+            }
+
+            let stale = capture(Some(!plugged_in));
+            assert_eq!(stale[0], t!("common.unknown"));
+            assert_eq!(
+                value(&stale, "sleep_prevention.matching_rules"),
+                count(None)
+            );
+            assert_eq!(
+                value(&stale, "sleep_prevention.matching_processes"),
+                count(None)
+            );
+            for request in [
+                "sleep_prevention.system_request",
+                "sleep_prevention.display_request",
+            ] {
+                assert_eq!(value(&stale, request), t!("common.unknown"));
+            }
+            assert!(!stale.iter().any(|text| text == "current source error"));
+            assert_eq!(value(&stale, "common.success_count"), "1");
+            assert_eq!(value(&stale, "common.failed_count"), "1");
+        }
     }
 
     #[test]
