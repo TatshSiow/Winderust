@@ -465,10 +465,10 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
     }
 
     fn observe_active_plan(&mut self, actual_guid: &str) -> Result<(), String> {
+        // The active scheme is verified even if the recovery journal cannot release ownership.
+        self.current_guid = Some(actual_guid.to_owned());
         if self.ownership_release_pending {
-            self.relinquish_ownership()?;
-            self.current_guid = Some(actual_guid.to_owned());
-            return Ok(());
+            return self.relinquish_ownership();
         }
         if let Some(mut uncertain) = self.uncertain_switch.take() {
             let transition = &uncertain.transition;
@@ -479,9 +479,7 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
                 // Commit was never compensated, so even its previous value now
                 // represents a later external selection.
                 self.uncertain_switch = Some(uncertain);
-                self.relinquish_ownership()?;
-                self.current_guid = Some(actual_guid.to_owned());
-                return Ok(());
+                return self.relinquish_ownership();
             }
             if let Err(error) = uncertain.recovery.resolve(at_target) {
                 self.uncertain_switch = Some(uncertain);
@@ -519,7 +517,6 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
         if external_break {
             self.relinquish_ownership()?;
         }
-        self.current_guid = Some(actual_guid.to_owned());
         Ok(())
     }
 
@@ -554,7 +551,6 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
             .map_err(ManualPowerPlanError::SwitchFailed)?;
         if let Err(error) = self.observe_active_plan(&previous_guid) {
             let target_is_active = same_guid(&previous_guid, target_guid);
-            self.current_guid = Some(previous_guid);
             return Err(if target_is_active {
                 ManualPowerPlanError::ActiveRecoveryPending(error)
             } else {
@@ -636,13 +632,12 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
                 match failure.state {
                     FailedSwitchState::Previous => self.current_guid = Some(previous_guid),
                     FailedSwitchState::External(actual_guid) => {
+                        self.current_guid = Some(actual_guid);
                         // The transaction has released its recovery intent (and journal lock).
                         if let Err(forget_error) = self.relinquish_ownership() {
                             error.push_str(&format!(
                                 " Relinquishing power-plan ownership also failed: {forget_error}"
                             ));
-                        } else {
-                            self.current_guid = Some(actual_guid);
                         }
                     }
                     FailedSwitchState::Pending {
@@ -679,8 +674,8 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
     ) -> Result<bool, String> {
         let actual_guid = self.read_active_guid()?;
         if self.ownership_release_pending || !same_guid(&actual_guid, expected_guid) {
-            self.relinquish_ownership()?;
             self.current_guid = Some(actual_guid);
+            self.relinquish_ownership()?;
             return Ok(false);
         }
         let transition = self
@@ -3071,6 +3066,7 @@ mod tests {
         controller.platform.failure = Some(FailurePoint::Forget);
         assert!(controller.refresh_active_plan(now).is_err());
         assert!(controller.ownership_release_pending);
+        assert_eq!(controller.current_guid(), Some("external"));
         assert_eq!(controller.platform.journal.borrow().len(), 1);
         assert_eq!(controller.platform.pending.borrow().len(), 1);
         controller.platform.active = "second".to_owned();
@@ -3119,6 +3115,10 @@ mod tests {
                 .is_err());
             assert!(controller.shutdown(now).is_err());
             assert_eq!(controller.platform.active, "second");
+            assert_eq!(
+                controller.current_guid(),
+                Some(if failed_query { "first" } else { "second" })
+            );
             assert!(controller.uncertain_switch.is_some());
             assert_eq!(controller.platform.journal.borrow().len(), 1);
             assert_eq!(controller.platform.pending.borrow().len(), 1);
@@ -3742,6 +3742,7 @@ mod tests {
             .reconcile_ordinary(decision(Some("replacement")), now)
             .is_err());
         assert!(controller.ownership_release_pending);
+        assert_eq!(controller.current_guid(), Some("external"));
         assert_eq!(
             controller.ordinary_original_guid.as_deref(),
             Some("original")
