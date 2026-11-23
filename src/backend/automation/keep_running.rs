@@ -756,43 +756,43 @@ impl<P: Platform> Coordinator<P> {
                 {
                     if let Phase::Ready(launch) = flight.phase {
                         // Re-enumerate immediately before the shared intake reservation, never use the cycle cache.
+                        let owner = &mut self.owners[index];
                         let exclude = P::launch_key(&launch);
-                        let fresh =
-                            P::scan_fresh(&self.owners[index].rule, &context, exclude.as_ref());
+                        let fresh = P::scan_fresh(&owner.rule, &context, exclude.as_ref());
                         let now = clock();
-                        let disposition = if let Ok(members) = fresh {
-                            let keys: Vec<_> = members.iter().map(P::key).collect();
-                            let owner = &mut self.owners[index];
-                            let observation = Observation::Complete {
-                                observed_at: now,
-                                context: &binding,
-                                members: &keys,
-                            };
-                            let disposition = reserve(
-                                &owner.rule,
-                                &mut owner.policy,
-                                &flight.ticket,
-                                now,
-                                observation,
-                            );
-                            for member in members {
-                                owner.members.entry(P::key(&member)).or_insert(member);
+                        let disposition = match fresh {
+                            Ok(members) => {
+                                let keys: Vec<_> = members.iter().map(P::key).collect();
+                                let observation = Observation::Complete {
+                                    observed_at: now,
+                                    context: &binding,
+                                    members: &keys,
+                                };
+                                let disposition = reserve(
+                                    &owner.rule,
+                                    &mut owner.policy,
+                                    &flight.ticket,
+                                    now,
+                                    observation,
+                                );
+                                for member in members {
+                                    owner.members.entry(P::key(&member)).or_insert(member);
+                                }
+                                disposition
                             }
-                            disposition
-                        } else if let Err(error) = fresh {
-                            let owner = &mut self.owners[index];
-                            owner.last_error = Some(RuleError::Pending(error.message));
-                            if matches!(error.kind, FailureKind::UnsupportedContext) {
-                                owner.policy.pause(PauseReason::UnsupportedContext);
+                            Err(error) => {
+                                known = false;
+                                owner.last_error = Some(RuleError::Pending(error.message));
+                                if matches!(error.kind, FailureKind::UnsupportedContext) {
+                                    owner.policy.pause(PauseReason::UnsupportedContext);
+                                }
+                                owner.policy.timeout(now, &flight.ticket);
+                                if owner.policy.disposal_required(&flight.ticket) {
+                                    CommitDisposition::DisposeProvisional
+                                } else {
+                                    CommitDisposition::Deferred
+                                }
                             }
-                            owner.policy.timeout(now, &flight.ticket);
-                            if owner.policy.disposal_required(&flight.ticket) {
-                                CommitDisposition::DisposeProvisional
-                            } else {
-                                CommitDisposition::Deferred
-                            }
-                        } else {
-                            unreachable!("fresh observation is either members or an error")
                         };
                         flight.phase = match disposition {
                             CommitDisposition::Reserved => match self.send(Work::Commit(launch)) {

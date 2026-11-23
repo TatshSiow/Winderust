@@ -14,7 +14,7 @@ struct State {
     committed: usize,
     disposed: usize,
     fail_cleanup: bool,
-    incomplete: bool,
+    incomplete_admission_scan: bool,
     scan_cost: u64,
     elapsed: u64,
     arrival_on_fresh_scan: Option<ProcessTargetKey>,
@@ -90,12 +90,6 @@ impl Platform for Fake {
     ) -> Result<Vec<ProcessTargetKey>, Failure> {
         let mut state = state().0.lock().unwrap();
         state.elapsed += state.scan_cost;
-        if state.incomplete {
-            return Err(Failure {
-                message: "incomplete scan".into(),
-                kind: FailureKind::Retryable,
-            });
-        }
         let present = if let Some(catalog) = catalog {
             let (captures, scans) = CATALOG_CALLS.get();
             CATALOG_CALLS.set((captures + usize::from(catalog.get().is_none()), scans + 1));
@@ -113,6 +107,19 @@ impl Platform for Fake {
             })
             .cloned()
             .collect())
+    }
+    fn scan_fresh(
+        rule: &KeepRunningRule,
+        context: &(),
+        exclude: Option<&ProcessTargetKey>,
+    ) -> Result<Vec<ProcessTargetKey>, Failure> {
+        if exclude.is_some() && state().0.lock().unwrap().incomplete_admission_scan {
+            return Err(Failure {
+                message: "incomplete admission scan".into(),
+                kind: FailureKind::Retryable,
+            });
+        }
+        Self::scan(rule, context, exclude, None)
     }
     fn key(member: &ProcessTargetKey) -> ProcessTargetKey {
         member.clone()
@@ -461,30 +468,43 @@ fn bounded_worker_routes_late_results_and_never_disposes_accepted_children() {
     wait_for(|state| state.prepared == 1);
     edit(|state| {
         state.held = false;
-        state.incomplete = true;
+        state.incomplete_admission_scan = true;
     });
     let deadline = Instant::now() + Duration::from_secs(5);
-    while !matches!(
-        coordinator.flight.as_ref().map(|flight| &flight.phase),
-        Some(Phase::Ready(_))
-    ) && Instant::now() < deadline
-    {
-        tick(
+    let unavailable = loop {
+        let snapshot = tick(
             &mut coordinator,
             &settings,
             now + Duration::from_secs(2),
             true,
         );
+        if matches!(
+            coordinator.flight.as_ref().map(|flight| &flight.phase),
+            Some(Phase::Ready(_))
+        ) {
+            break snapshot;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "fake worker did not become ready"
+        );
         std::thread::yield_now();
-    }
+    };
+    assert!(!unavailable.observation_known);
+    assert_eq!(
+        unavailable.last_error.as_deref(),
+        Some("incomplete admission scan")
+    );
     assert_eq!(state().0.lock().unwrap().committed, 0);
-    edit(|state| state.incomplete = false);
-    tick(
+    edit(|state| state.incomplete_admission_scan = false);
+    let recovered = tick(
         &mut coordinator,
         &settings,
         now + Duration::from_secs(2),
         false,
     );
+    assert!(recovered.observation_known);
+    assert!(recovered.last_error.is_none());
     assert_eq!(state().0.lock().unwrap().committed, 0);
     tick(
         &mut coordinator,
