@@ -692,6 +692,9 @@ impl RuntimeCore {
             self.by_cpu_load_scheduler.reset();
             self.adaptive_engine_process_manager
                 .invalidate_allocation_selection();
+            if adaptive_power_plan_waits_for_source(configured, plugged_in) {
+                self.power_plan_controller.reset_adaptive_demand();
+            }
         }
         changed || explicitly_changed
     }
@@ -1803,6 +1806,12 @@ impl RuntimeCore {
         self.power_plan_controller.has_pending_cleanup()
     }
 
+    pub(super) fn adaptive_power_plan_waiting_for_source(&self) -> bool {
+        self.last_settings.as_ref().is_some_and(|observed| {
+            adaptive_power_plan_waits_for_source(&observed.configured, observed.plugged_in)
+        })
+    }
+
     pub(super) fn has_temporary_power_plan(&self) -> bool {
         self.power_plan_controller.has_temporary_plan()
     }
@@ -2153,6 +2162,7 @@ impl RuntimeCore {
         let now = Instant::now();
         // Save can disable Adaptive Processor Power and submit a staged selection together.
         if !(settings.general.enabled && adaptive_power_plan_required(settings))
+            && !self.adaptive_power_plan_waiting_for_source()
             && self.power_plan_controller.has_pending_cleanup()
         {
             self.power_plan_controller
@@ -2170,9 +2180,9 @@ impl RuntimeCore {
         result.map(|_| ()).map_err(Into::into)
     }
 
-    pub(super) fn refresh_active_plan(&mut self) -> Result<(), ActivePlanCheckError> {
+    pub(super) fn refresh_active_plan(&mut self, force: bool) -> Result<(), ActivePlanCheckError> {
         self.power_plan_controller
-            .refresh_active_plan_for_status(Instant::now(), true)
+            .refresh_active_plan_for_status(Instant::now(), force)
     }
 
     pub(super) fn refresh_cpu_usage(&mut self) {
@@ -2196,18 +2206,21 @@ impl RuntimeCore {
     }
 
     pub(super) fn power_plan_status(&mut self) -> (PowerPlanStatus, Option<&PowerPlanRuleContext>) {
+        let adaptive_waits_for_source = self.adaptive_power_plan_waiting_for_source();
         // Cleanup can complete between Adaptive Processor Power updates.
         if self.adaptive_processor_power_error.is_some()
             && !self.power_plan_controller.has_pending_cleanup()
-            && self.last_settings.as_ref().is_some_and(|observed| {
-                let settings = observed.effective();
-                !feature_refresh_required(settings, adaptive_power_plan_required(settings))
-            })
+            && (adaptive_waits_for_source
+                || self.last_settings.as_ref().is_some_and(|observed| {
+                    let settings = observed.effective();
+                    !feature_refresh_required(settings, adaptive_power_plan_required(settings))
+                }))
         {
             self.adaptive_processor_power_error = None;
         }
         let mut status = self.power_plan_controller.status();
         status.adaptive_processor_power_error = self.adaptive_processor_power_error.clone();
+        status.adaptive_processor_power_waiting_for_source = adaptive_waits_for_source;
         let stop_state = self.last_settings.as_ref().and_then(|settings| {
             ordinary_power_plan_stop(settings.effective(), settings.plugged_in)
                 .map(|(state, _)| state)
@@ -2242,6 +2255,7 @@ impl RuntimeCore {
                 PowerPlanStatus {
                     active_plan_read_error: status.active_plan_read_error,
                     adaptive_processor_power_error: status.adaptive_processor_power_error,
+                    adaptive_processor_power_waiting_for_source: adaptive_waits_for_source,
                     current_guid: status.current_guid,
                     decision_state: Some(decision_state),
                     ..Default::default()
@@ -2386,7 +2400,7 @@ mod settings_tests {
 
     #[test]
     #[allow(clippy::field_reassign_with_default)] // Keep this status-only fixture free of native shutdown.
-    fn disabled_adaptive_power_clears_errors_after_the_managed_plan_is_released() {
+    fn inactive_adaptive_power_clears_errors_after_the_managed_plan_is_released() {
         const CLEANUP_ERROR: &str = "Adaptive plan cleanup failed";
         const APPLY_ERROR: &str = "Adaptive plan apply failed";
         let profiles = |master, ac, battery| {
@@ -2403,6 +2417,7 @@ mod settings_tests {
             (Some(true), true, false, true),
             (Some(false), true, true, false),
             (Some(false), false, true, true),
+            (None, true, false, true),
         ] {
             let mut runner = RuntimeCore::default();
             runner.shutdown_started = true;

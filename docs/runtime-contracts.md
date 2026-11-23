@@ -424,13 +424,23 @@ Read the relevant section before changing feature policy, ownership, restoration
 - Adaptive Processor Power starts off. Saving an enablement or tuning change for one
   source preserves the other source's existing values. The former Adaptive Engine
   processor-power switch has no runtime effect. Previously saved tuning stays readable.
+- When Windows cannot report a power source and Adaptive Processor Power policy
+  differs between the saved profiles, the worker waits for a known source. It
+  keeps a plan still owned by Adaptive Processor Power, checks the actual active
+  plan, and defers applying or releasing based on a profile. A lower demand tier
+  requires fresh observations after the wait. Turning off automation or both
+  profiles still releases owned state. Equivalent profiles can run during an
+  unknown reading.
 - The landing-page selector verifies the chosen installed plan through the
   runtime power-plan controller after Save. Manual switching is unavailable
-  while Windows is using the plan owned by Adaptive Processor Power. A successful manual
-  change ends the current restoration episode and becomes the baseline for later
-  automatic changes. If Windows reports the selected plan as active and the
-  recovery update remains unconfirmed, Save and Exit keeps the app open. Save
-  retries recovery against the current Windows plan before allowing a new switch.
+  while Windows is using the plan owned by Adaptive Processor Power. A staged
+  selection can release that plan when Save also disables the active policy.
+  An unresolved source-dependent policy still protects the managed plan.
+  A successful manual change ends the current restoration episode and becomes
+  the baseline for later automatic changes. If Windows reports the selected
+  plan as active and the recovery update remains unconfirmed, Save and Exit
+  keeps the app open. Save retries recovery against the current Windows plan
+  before allowing a new switch.
   Enabled rules can switch plans again. The temporary Winderust Adaptive plan
   is reserved for Adaptive Processor Power.
 - Managed adaptive-plan recovery recognizes only the current `Winderust Adaptive` name and description.

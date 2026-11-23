@@ -238,6 +238,7 @@ fn power_plan_status_is_published_as_an_independent_runtime_segment() {
     let status = PowerPlanStatus {
         active_plan_read_error: None,
         adaptive_processor_power_error: None,
+        adaptive_processor_power_waiting_for_source: true,
         apply_failed: false,
         restoring_previous: false,
         rule_index: Some(0),
@@ -1306,6 +1307,46 @@ fn automation_worker_runs_for_adaptive_power_plan_alone() {
         &settings,
         Some(false)
     )));
+}
+
+#[test]
+fn adaptive_processor_power_waits_only_for_source_dependent_policy() {
+    let mut settings = Settings::default();
+    settings.general.enabled = true;
+    settings.adaptive_engine.adaptive_processor_power_enabled = true;
+    settings
+        .adaptive_engine
+        .base_processor_policy
+        .core_parking_min = 100;
+    assert!(!adaptive_power_plan_waits_for_source(&settings, None));
+
+    let battery = &mut settings.battery_profile_mut().adaptive_engine;
+    battery.enabled = true;
+    battery.base_processor_policy.core_parking_min = 101;
+    assert!(!adaptive_power_plan_waits_for_source(&settings, None));
+
+    settings
+        .battery_profile_mut()
+        .adaptive_engine
+        .base_processor_policy
+        .performance_max = 60;
+    assert!(adaptive_power_plan_waits_for_source(&settings, None));
+    assert!(!adaptive_power_plan_waits_for_source(&settings, Some(true)));
+    assert!(!adaptive_power_plan_waits_for_source(
+        &settings,
+        Some(false)
+    ));
+
+    settings.adaptive_engine.adaptive_processor_power_enabled = false;
+    assert!(adaptive_power_plan_waits_for_source(&settings, None));
+    settings.general.enabled = false;
+    assert!(!adaptive_power_plan_waits_for_source(&settings, None));
+    settings.general.enabled = true;
+    settings
+        .battery_profile_mut()
+        .adaptive_engine
+        .adaptive_processor_power_enabled = false;
+    assert!(!adaptive_power_plan_waits_for_source(&settings, None));
 }
 
 #[test]

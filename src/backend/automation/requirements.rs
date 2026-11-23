@@ -167,6 +167,28 @@ pub(super) fn ordinary_power_plan_waits_for_source(
         && (power_plan_checks_required(settings) || power_plan_checks_required(battery))
 }
 
+pub(super) fn adaptive_power_plan_waits_for_source(
+    settings: &Settings,
+    plugged_in: Option<bool>,
+) -> bool {
+    if plugged_in.is_some() || !settings.general.enabled {
+        return false;
+    }
+    let Some(battery) = settings.on_battery.as_deref() else {
+        return false;
+    };
+    let ac = &settings.adaptive_engine;
+    let battery = &battery.adaptive_engine;
+    ac.adaptive_processor_power_enabled != battery.adaptive_processor_power_enabled
+        || (ac.adaptive_processor_power_enabled
+            && (ac.base_processor_policy.normalized()
+                != battery.base_processor_policy.normalized()
+                || ac.background_pressure_profile.normalized()
+                    != battery.background_pressure_profile.normalized()
+                || ac.focus_and_launch_profile.normalized()
+                    != battery.focus_and_launch_profile.normalized()))
+}
+
 pub(super) fn automation_worker_required(settings: &Settings) -> bool {
     keep_running_required(settings)
         || instance_limits_required(settings)

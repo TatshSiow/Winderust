@@ -1361,7 +1361,7 @@ fn run_background_automation(
             scheduler.schedule_now(RefreshDomain::KeepRunning, event_now);
         }
         if wake_events.power_changed || wake_events.session_changed {
-            if let Err(ActivePlanCheckError::Operation(error)) = runner.refresh_active_plan() {
+            if let Err(ActivePlanCheckError::Operation(error)) = runner.refresh_active_plan(true) {
                 update_worker_error(&shared, Some(error));
             }
         }
@@ -1435,7 +1435,14 @@ fn run_background_automation(
             || feature_refresh_required(settings, adaptive_engine_process_required(settings));
         let bottleneck_classifier_refresh_required =
             !hidden_to_tray && bottleneck_classifier_required(settings);
-        let adaptive_power_plan_refresh_required = settings_changed
+        let adaptive_waits_for_source = runner.adaptive_power_plan_waiting_for_source();
+        let adaptive_power_plan_refresh_interval = if adaptive_waits_for_source {
+            configured_check_interval(settings)
+        } else {
+            ADAPTIVE_POWER_PLAN_REFRESH_INTERVAL
+        };
+        let adaptive_power_plan_refresh_required = adaptive_waits_for_source
+            || settings_changed
             || feature_refresh_required(settings, adaptive_power_plan_required(settings))
             || runner.adaptive_power_plan_managed();
         let process_priority_refresh_required = settings_changed
@@ -1875,11 +1882,19 @@ fn run_background_automation(
         if adaptive_power_plan_refresh_required
             && scheduler.is_due(RefreshDomain::AdaptivePowerPlan, now)
         {
-            runner.run_adaptive_power_plan_update(settings, &mut observations);
+            if adaptive_waits_for_source {
+                if let Err(ActivePlanCheckError::Operation(error)) =
+                    runner.refresh_active_plan(false)
+                {
+                    update_worker_error(&shared, Some(error));
+                }
+            } else {
+                runner.run_adaptive_power_plan_update(settings, &mut observations);
+            }
             scheduler.schedule_after(
                 RefreshDomain::AdaptivePowerPlan,
                 now,
-                ADAPTIVE_POWER_PLAN_REFRESH_INTERVAL,
+                adaptive_power_plan_refresh_interval,
             );
         }
         if let Some(error) = runner.retry_control_releases(&shared, Instant::now()) {
@@ -2009,7 +2024,7 @@ fn run_background_automation(
                 (
                     adaptive_power_plan_refresh_required,
                     RefreshDomain::AdaptivePowerPlan,
-                    ADAPTIVE_POWER_PLAN_REFRESH_INTERVAL,
+                    adaptive_power_plan_refresh_interval,
                 ),
                 (
                     process_priority_refresh_required,

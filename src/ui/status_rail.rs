@@ -507,15 +507,20 @@ fn adaptive_processor_power_view(
     let enabled =
         settings.general.enabled && settings.adaptive_engine.adaptive_processor_power_enabled;
     let (state, error) = adaptive_processor_power_state(enabled, runtime, plans);
+    let plan_status = &runtime.power_plan_status;
     let (label, mut detail, color) = state.status_keys();
-    if state == FeatureRunState::Waiting && !enabled {
-        detail = "adaptive_processor_power.releasing_plan";
+    if state == FeatureRunState::Waiting {
+        if plan_status.adaptive_processor_power_waiting_for_source {
+            detail = "adaptive_processor_power.waiting_for_power_source";
+        } else if !enabled {
+            detail = "adaptive_processor_power.releasing_plan";
+        }
     }
     let mut body = status_body(label, t!(detail).into_owned(), color);
     if let Some(error) = error {
         body = body.push(detail_row("sidebar_status.current_error", error.to_owned()));
     }
-    let plan = power_plan_control::current_plan_name(&runtime.power_plan_status, plans);
+    let plan = power_plan_control::current_plan_name(plan_status, plans);
     body = body.push(section(
         "common.current_power_plan",
         column![text(plan).wrapping(text::Wrapping::WordOrGlyph)],
@@ -530,12 +535,15 @@ fn adaptive_processor_power_state<'a>(
 ) -> (FeatureRunState, Option<&'a str>) {
     let plan = &runtime.power_plan_status;
     let managed = power_plan_control::managed_by_adaptive_processor_power(plan, plans);
+    let waiting_for_source = plan.adaptive_processor_power_waiting_for_source;
     let error = plan.adaptive_processor_power_error.as_deref().or(plan
         .active_plan_read_error
         .as_deref()
-        .filter(|_| enabled || managed));
+        .filter(|_| managed || (enabled && !waiting_for_source)));
     let state = if error.is_some() {
         FeatureRunState::Error
+    } else if waiting_for_source {
+        FeatureRunState::Waiting
     } else if !enabled {
         if managed {
             FeatureRunState::Waiting
@@ -1201,6 +1209,38 @@ mod tests {
             adaptive_processor_power_state(false, &runtime, &[]),
             (FeatureRunState::Inactive, None)
         );
+    }
+
+    #[test]
+    fn adaptive_processor_power_rail_distinguishes_source_wait_from_restoration() {
+        use crate::control::power_plan::{PowerPlanOwner, PowerPlanStatus};
+
+        let settings = Settings::default();
+        let mut runtime = RuntimeStatusSnapshot {
+            generation: 1,
+            power_plan_status: PowerPlanStatus {
+                current_guid: Some("adaptive".into()),
+                target_guid: Some("adaptive".into()),
+                owner: Some(PowerPlanOwner::AdaptiveProcessorPower),
+                adaptive_processor_power_waiting_for_source: true,
+                ..Default::default()
+            }
+            .into(),
+            ..Default::default()
+        };
+        let labels = rail_text(adaptive_processor_power_view(&settings, &runtime, &[]));
+        assert_eq!(labels[0], t!("common.waiting"));
+        assert_eq!(
+            labels[1],
+            t!("adaptive_processor_power.waiting_for_power_source")
+        );
+        assert!(labels.iter().any(|label| label == "Winderust Adaptive"));
+
+        std::sync::Arc::make_mut(&mut runtime.power_plan_status)
+            .adaptive_processor_power_waiting_for_source = false;
+        let labels = rail_text(adaptive_processor_power_view(&settings, &runtime, &[]));
+        assert_eq!(labels[0], t!("common.waiting"));
+        assert_eq!(labels[1], t!("adaptive_processor_power.releasing_plan"));
     }
 
     #[test]

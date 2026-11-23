@@ -739,6 +739,7 @@ adaptive_processor_power:
   intro_2: "Manual plan selection and other power plan rules wait while Winderust Adaptive is active. Disabling the feature releases the temporary plan."
   enable: "Enable Adaptive Processor Power"
   enable_help: "Uses a temporary Windows power plan for the selected power source."
+  waiting_for_power_source: "Waiting for Windows to report the power source."
   releasing_plan: "Restoring the previous power plan."
   preset_help: "Select a preset to stage tuning for the chosen power source. Save to apply it."
   built_in_presets: "Built-in presets"

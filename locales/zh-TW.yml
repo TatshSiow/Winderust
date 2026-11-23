@@ -741,6 +741,7 @@ adaptive_processor_power:
   intro_2: "Winderust Adaptive 生效時，手動選擇電源計畫與其他切換規則會等待。停用此功能後，會釋出暫時的電源計畫。"
   enable: "啟用自適應處理器電源"
   enable_help: "為所選電源來源使用暫時的 Windows 電源計畫。"
+  waiting_for_power_source: "正在等待 Windows 回報電源來源。"
   releasing_plan: "正在還原先前的電源計畫。"
   preset_help: "選擇預設以調整所選電源來源的設定，儲存後套用。"
   built_in_presets: "內建預設"

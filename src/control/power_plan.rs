@@ -54,6 +54,7 @@ impl From<ActivePlanCheckError> for String {
 pub(crate) struct PowerPlanStatus {
     pub(crate) active_plan_read_error: Option<String>,
     pub(crate) adaptive_processor_power_error: Option<String>,
+    pub(crate) adaptive_processor_power_waiting_for_source: bool,
     pub(crate) apply_failed: bool,
     pub(crate) restoring_previous: bool,
     pub(crate) rule_index: Option<usize>,
@@ -375,6 +376,7 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
         PowerPlanStatus {
             active_plan_read_error: self.active_plan_read_error.clone(),
             adaptive_processor_power_error: None,
+            adaptive_processor_power_waiting_for_source: false,
             apply_failed: decision_target.as_deref().is_some_and(|guid| {
                 self.switch_failures
                     .has_key_failure(&switch_failure_key(guid))
@@ -871,6 +873,12 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
                     plan.owner.label()
                 ))
             }
+        }
+    }
+
+    pub(crate) fn reset_adaptive_demand(&mut self) {
+        if let Some(plan) = &mut self.adaptive_plan {
+            plan.lower_demand_since = None;
         }
     }
 
