@@ -83,6 +83,20 @@ fn equivalent_presets_keep_one_selected_row_per_source() {
         editor.active_preset(&settings),
         Some(Custom("Battery Quiet"))
     );
+
+    editor.update(&mut settings, Message::DeletePreset(1));
+    assert_eq!(editor.active_preset(&settings), Some(BuiltIn(Balanced)));
+    settings.cancel();
+    editor.discard_preset_selection();
+    editor.reset_drafts();
+    assert!(!settings.has_unsaved_changes());
+    assert_eq!(
+        editor.active_preset(&settings),
+        Some(Custom("Battery Quiet"))
+    );
+    settings.select_power_source(PluggedIn);
+    editor.reset_drafts();
+    assert_eq!(editor.active_preset(&settings), Some(Custom("AC Quiet")));
 }
 
 #[test]

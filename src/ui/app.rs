@@ -2211,6 +2211,7 @@ impl WinderustApp {
                 self.power_plan_control.selected_guid = None;
                 let previous_channel = self.settings.global().general.update_channel;
                 self.settings.cancel();
+                self.adaptive_processor_power.discard_preset_selection();
                 if self.power_tuning.dirty {
                     self.power_tuning.discard_values(&self.power_plans);
                 }
@@ -2276,6 +2277,7 @@ impl WinderustApp {
                             let previous_channel = self.settings.global().general.update_channel;
                             match self.settings.import_toml_from(&path) {
                                 Ok(outcome) => {
+                                    self.adaptive_processor_power.commit_preset_selection();
                                     let tray_warning = self.settings_replaced(previous_channel);
                                     let startup_warning =
                                         outcome.startup_registration_error().map(|error| {
@@ -2340,6 +2342,7 @@ impl WinderustApp {
                 return Task::none();
             }
         };
+        self.adaptive_processor_power.commit_preset_selection();
         let startup_warning = outcome
             .startup_registration_error()
             .map(|error| t!("settings.saved_startup_failed", error = error).into_owned());

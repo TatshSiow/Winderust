@@ -11,7 +11,7 @@ use rust_i18n::t;
 
 mod presets;
 pub(super) use presets::BuiltInPreset;
-use presets::{PresetChoice, PresetDraft};
+use presets::{CustomPresetSelection, PresetChoice, PresetDraft};
 
 #[cfg(test)]
 mod editor_tests;
@@ -33,7 +33,7 @@ pub(super) struct Editor {
     numbers: NumberInputs,
     tab: Tab,
     preset_draft: Option<PresetDraft>,
-    selected_presets: [Option<PresetChoice<String>>; 2],
+    selected_presets: [Option<PresetChoice<CustomPresetSelection>>; 2],
 }
 
 #[derive(Debug, Clone)]
@@ -106,8 +106,7 @@ impl Editor {
                     numbers.drafts.clear();
                     let source = settings.selected_power_source();
                     edit_settings(settings, |target| preset.apply(target, source));
-                    self.selected_presets[source as usize] =
-                        Some(PresetChoice::Custom(preset.name));
+                    self.select_custom_preset(source, preset.name);
                 }
             }
             Message::DeletePreset(index) => {
