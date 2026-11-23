@@ -418,33 +418,44 @@ pub(super) fn view<'a>(
     }
     if page == Page::AdaptiveEngine {
         use crate::bottleneck_classifier::BottleneckState;
-        let status = &runtime.feature_status.bottleneck_classifier;
-        let key = match status.state {
-            BottleneckState::Unknown => "adaptive_engine.bottleneck_unknown",
-            BottleneckState::Headroom => "adaptive_engine.bottleneck_headroom",
-            BottleneckState::CpuBound => "adaptive_engine.bottleneck_cpu_bound",
-            BottleneckState::GpuBound => "adaptive_engine.bottleneck_gpu_bound",
-            BottleneckState::Mixed => "adaptive_engine.bottleneck_mixed",
+        let enabled = settings.general.enabled && settings.adaptive_engine.enabled;
+        let status = enabled
+            .then_some(&runtime.feature_status.bottleneck_classifier)
+            .filter(|status| status.enabled);
+        let error = status.and_then(|status| status.last_error.as_deref());
+        let key = if !enabled {
+            "common.inactive"
+        } else if error.is_some() {
+            "common.unavailable"
+        } else {
+            match status.map(|status| status.state).unwrap_or_default() {
+                BottleneckState::Unknown => "adaptive_engine.bottleneck_unknown",
+                BottleneckState::Headroom => "adaptive_engine.bottleneck_headroom",
+                BottleneckState::CpuBound => "adaptive_engine.bottleneck_cpu_bound",
+                BottleneckState::GpuBound => "adaptive_engine.bottleneck_gpu_bound",
+                BottleneckState::Mixed => "adaptive_engine.bottleneck_mixed",
+            }
         };
-        body = body.push(section(
-            "adaptive_engine.bottleneck_classifier",
-            column![
-                metric("common.status", t!(key).to_string()),
-                metric(
-                    "adaptive_engine.total_cpu",
-                    percent(status.total_cpu_tenths)
-                ),
-                metric(
-                    "adaptive_engine.busiest_cpu",
-                    percent(status.busiest_cpu_tenths)
-                ),
-                metric(
-                    "adaptive_engine.busiest_gpu",
-                    percent(status.busiest_gpu_tenths)
-                )
-            ]
-            .spacing(design::space::CONTROL),
-        ));
+        let mut readings = column![
+            metric("common.status", t!(key).to_string()),
+            metric(
+                "adaptive_engine.total_cpu",
+                percent(status.and_then(|status| status.total_cpu_tenths))
+            ),
+            metric(
+                "adaptive_engine.busiest_cpu",
+                percent(status.and_then(|status| status.busiest_cpu_tenths))
+            ),
+            metric(
+                "adaptive_engine.busiest_gpu",
+                percent(status.and_then(|status| status.busiest_gpu_tenths))
+            )
+        ]
+        .spacing(design::space::CONTROL);
+        if let Some(error) = error {
+            readings = readings.push(detail_row("sidebar_status.current_error", error.to_owned()));
+        }
+        body = body.push(section("adaptive_engine.bottleneck_classifier", readings));
     }
     if page == Page::BackgroundEfficiency
         && runtime
@@ -1295,6 +1306,89 @@ mod tests {
         rail.as_widget_mut()
             .operate(&mut tree, Layout::new(&node), &renderer, &mut details);
         details.0
+    }
+
+    #[test]
+    fn bottleneck_rail_distinguishes_inactive_priming_and_unavailable_readings() {
+        use crate::bottleneck_classifier::{BottleneckSnapshot, BottleneckState};
+
+        let mut settings = Settings::default();
+        settings.general.enabled = true;
+        settings.adaptive_engine.enabled = true;
+        let status_text = |settings: &Settings, snapshot, key| {
+            let mut runtime = RuntimeStatusSnapshot {
+                generation: 1,
+                ..Default::default()
+            };
+            std::sync::Arc::make_mut(&mut runtime.feature_status).bottleneck_classifier = snapshot;
+            let rail = view(Page::AdaptiveEngine, settings, &runtime, &[], Some(true)).unwrap();
+            let title = t!("adaptive_engine.bottleneck_classifier");
+            let mut values = rail_text(rail)
+                .into_iter()
+                .skip_while(|value| value != title.as_ref())
+                .skip(1);
+            assert_eq!(values.next(), Some(t!("common.status").into_owned()));
+            assert_eq!(values.next(), Some(t!(key).into_owned()));
+            values.collect::<Vec<_>>()
+        };
+
+        let collecting = "adaptive_engine.bottleneck_unknown";
+        let startup = status_text(&settings, BottleneckSnapshot::default(), collecting);
+        assert_eq!(
+            startup
+                .iter()
+                .filter(|value| value.as_str() == "\u{2014}")
+                .count(),
+            3
+        );
+
+        let priming = BottleneckSnapshot {
+            enabled: true,
+            total_cpu_tenths: Some(420),
+            ..Default::default()
+        };
+        let pending = status_text(&settings, priming.clone(), collecting);
+        assert!(pending.iter().any(|value| value == "42.0%"));
+
+        let pdh_error = "PDH GPU Engine query failed with status 0xC0000BB8.";
+        let failure = BottleneckSnapshot {
+            last_error: Some(pdh_error.into()),
+            ..priming.clone()
+        };
+        let unavailable = status_text(&settings, failure.clone(), "common.unavailable");
+        assert!(unavailable.iter().any(|value| value == "42.0%"));
+        assert!(unavailable.iter().any(|value| value == pdh_error));
+
+        let recovered = BottleneckSnapshot {
+            state: BottleneckState::GpuBound,
+            busiest_gpu_tenths: Some(875),
+            ..priming
+        };
+        let healthy = status_text(
+            &settings,
+            recovered.clone(),
+            "adaptive_engine.bottleneck_gpu_bound",
+        );
+        assert!(healthy.iter().any(|value| value == "87.5%"));
+        assert!(!healthy.iter().any(|value| value == pdh_error));
+
+        settings.adaptive_engine.enabled = false;
+        let inactive = status_text(&settings, failure, "common.inactive");
+        assert!(!inactive.iter().any(|value| value == pdh_error));
+        assert_eq!(
+            inactive
+                .iter()
+                .filter(|value| value.as_str() == "\u{2014}")
+                .count(),
+            3
+        );
+
+        settings.adaptive_engine.enabled = true;
+        settings.general.enabled = false;
+        assert_eq!(
+            status_text(&settings, recovered, "common.inactive"),
+            inactive
+        );
     }
 
     #[test]

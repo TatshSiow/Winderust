@@ -75,7 +75,7 @@ impl BottleneckClassifier {
             self.candidate = raw;
             self.candidate_samples = 1;
         }
-        if self.candidate_samples >= STABLE_SAMPLE_COUNT {
+        if raw == BottleneckState::Unknown || self.candidate_samples >= STABLE_SAMPLE_COUNT {
             self.stable = raw;
         }
     }
@@ -153,5 +153,14 @@ mod tests {
         assert_eq!(classifier.stable, BottleneckState::GpuBound);
         classifier.stabilize(BottleneckState::CpuBound);
         assert_eq!(classifier.stable, BottleneckState::GpuBound);
+
+        classifier.stabilize(BottleneckState::Unknown);
+        assert_eq!(classifier.stable, BottleneckState::Unknown);
+        for _ in 0..2 {
+            classifier.stabilize(BottleneckState::CpuBound);
+            assert_eq!(classifier.stable, BottleneckState::Unknown);
+        }
+        classifier.stabilize(BottleneckState::CpuBound);
+        assert_eq!(classifier.stable, BottleneckState::CpuBound);
     }
 }
