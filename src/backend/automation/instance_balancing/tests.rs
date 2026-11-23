@@ -8,6 +8,47 @@ use crate::{
 use std::{cell::RefCell, rc::Rc};
 
 #[test]
+fn waiting_detail_preserves_capacity_and_only_its_diagnostic() {
+    use InstanceBalancingDetail::{
+        InsufficientCapacity, WaitingForInstances, WaitingForStableCohort,
+    };
+    use InstanceBalancingExclusion::{Diagnostic, ExplicitSelection};
+
+    let cohorts = [
+        (InsufficientCapacity, "capacity cohort"),
+        (WaitingForStableCohort, "stable cohort"),
+        (WaitingForInstances, "empty cohort"),
+    ];
+    for order in [[0, 1, 2], [2, 1, 0]] {
+        let mut snapshot = InstanceBalancingSnapshot {
+            detail: Some(WaitingForInstances),
+            ..Default::default()
+        };
+        let mut waiting_exclusions = Vec::new();
+        for index in order {
+            let (detail, process_name) = &cohorts[index];
+            snapshot.record_rule_detail(
+                detail.clone(),
+                vec![
+                    ExplicitSelection {
+                        process_name: (*process_name).to_owned(),
+                        pid: index as u32 + 1,
+                    },
+                    Diagnostic((*process_name).to_owned()),
+                ],
+                &mut waiting_exclusions,
+            );
+        }
+        assert_eq!(snapshot.detail, Some(InsufficientCapacity));
+        assert_eq!(waiting_exclusions, [Diagnostic("capacity cohort".into())]);
+        assert_eq!(snapshot.exclusions.len(), 3);
+        assert!(snapshot.exclusions.iter().zip(order).all(|(row, index)| {
+            matches!(row, ExplicitSelection { pid, .. } if *pid == index as u32 + 1)
+        }));
+    }
+}
+
+#[test]
 fn explicit_cpu_rules_exclude_matching_instances_without_rejecting_unrelated_paths() {
     let explicit_rule = |path: &str| CpuAllocationRule {
         enabled: true,

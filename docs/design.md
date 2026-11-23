@@ -223,6 +223,8 @@ hover/press; background shading supplies feedback.
   power sources. Use executable-path rules with activation, edit and delete actions;
   keep configuration editable while disabled. Its Info / Status panel shows the
   actual assignment or waiting reason without presenting preferences as reserved cores.
+  When several cohorts are waiting, the rail prioritizes insufficient core capacity,
+  then cohort stability, then missing instances. The Action Log records each rule's result.
 - Core Presets use compact read-only rows; custom presets use the same row geometry with edit and
   delete actions. Resting rows have no fill or divider, and hover supplies the background. Add,
   edit, and view use the existing full-window modal style.

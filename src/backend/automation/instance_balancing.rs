@@ -35,6 +35,30 @@ pub(crate) struct InstanceBalancingSnapshot {
 }
 
 impl InstanceBalancingSnapshot {
+    fn record_rule_detail(
+        &mut self,
+        detail: InstanceBalancingDetail,
+        exclusions: Vec<InstanceBalancingExclusion>,
+        waiting_exclusions: &mut Vec<InstanceBalancingExclusion>,
+    ) {
+        let preferred = detail.waiting_priority()
+            >= self
+                .detail
+                .as_ref()
+                .map_or(0, InstanceBalancingDetail::waiting_priority);
+        if preferred {
+            self.detail = Some(detail);
+            waiting_exclusions.clear();
+        }
+        for exclusion in exclusions {
+            if exclusion.is_explicit_selection() {
+                self.exclusions.push(exclusion);
+            } else if preferred {
+                waiting_exclusions.push(exclusion);
+            }
+        }
+    }
+
     pub(crate) fn message(&self) -> Option<String> {
         self.detail
             .as_ref()
@@ -54,6 +78,15 @@ pub(crate) enum InstanceBalancingDetail {
 }
 
 impl InstanceBalancingDetail {
+    fn waiting_priority(&self) -> u8 {
+        match self {
+            Self::InsufficientCapacity => 3,
+            Self::WaitingForStableCohort => 2,
+            Self::WaitingForInstances => 1,
+            _ => 0,
+        }
+    }
+
     fn message(&self, exclusions: &[InstanceBalancingExclusion]) -> String {
         let mut message = match self {
             Self::Disabled => t!("instance_balancing.disabled"),
@@ -564,7 +597,7 @@ impl RuntimeCore {
             runtime.dirty = false;
             return snapshot;
         }
-        let last_rule = enabled.last().copied();
+        let mut waiting_exclusions = Vec::new();
         let rule_count = enabled.len();
         let mut observed_rules = 0;
         for (index, observation) in enabled.into_iter().zip(observations) {
@@ -712,11 +745,7 @@ impl RuntimeCore {
                 );
                 rule.last_action = Some((outcome, detail.clone(), exclusions.clone()));
             }
-            snapshot.detail = Some(detail);
-            if Some(index) != last_rule {
-                exclusions.retain(InstanceBalancingExclusion::is_explicit_selection);
-            }
-            snapshot.exclusions.extend(exclusions);
+            snapshot.record_rule_detail(detail, exclusions, &mut waiting_exclusions);
             if let Some(error) = release(
                 runtime,
                 &mut self.cpu_allocation_coordinator,
@@ -732,15 +761,13 @@ impl RuntimeCore {
         let assigned = snapshot.adjusted_processes;
         if let Some(error) = &snapshot.last_error {
             snapshot.detail = Some(InstanceBalancingDetail::Diagnostic(error.clone()));
+            if assigned == 0 {
+                snapshot.exclusions.clear();
+            }
         } else if assigned > 0 {
             snapshot.detail = Some(InstanceBalancingDetail::Assigned(assigned));
-        }
-        if assigned > 0 {
-            snapshot
-                .exclusions
-                .retain(InstanceBalancingExclusion::is_explicit_selection);
-        } else if snapshot.last_error.is_some() {
-            snapshot.exclusions.clear();
+        } else {
+            snapshot.exclusions.extend(waiting_exclusions);
         }
         snapshot
     }
