@@ -55,11 +55,17 @@ pub(crate) enum InterruptTimingError {
 
 type Outcome = Result<InterruptTimingReport, InterruptTimingError>;
 
+pub(crate) enum CaptureUpdate {
+    CleanupPending(InterruptTimingError),
+    Finished(Outcome),
+}
+
 #[derive(Debug)]
 pub(crate) struct InterruptTimingCapture {
     cancel_signal: Option<Sender<()>>,
     outcome: Option<Receiver<Outcome>>,
     deadline: Instant,
+    cleanup_pending: bool,
 }
 
 impl InterruptTimingCapture {
@@ -85,6 +91,7 @@ impl InterruptTimingCapture {
             cancel_signal: Some(cancel_signal),
             outcome: Some(outcome),
             deadline: deadline + CLEANUP_GRACE,
+            cleanup_pending: false,
         })
     }
 
@@ -96,16 +103,22 @@ impl InterruptTimingCapture {
         }
     }
 
-    pub(crate) fn poll(&mut self) -> Option<Outcome> {
+    pub(crate) fn poll(&mut self) -> Option<CaptureUpdate> {
         let result = match self.outcome.as_ref()?.try_recv() {
             Ok(result) => result,
-            Err(TryRecvError::Empty) if Instant::now() < self.deadline => return None,
-            Err(TryRecvError::Empty) => Err(pending_timeout()),
+            Err(TryRecvError::Empty) => {
+                if self.cleanup_pending || Instant::now() < self.deadline {
+                    return None;
+                }
+                self.cleanup_pending = true;
+                self.cancel();
+                return Some(CaptureUpdate::CleanupPending(pending_timeout()));
+            }
             Err(error) => Err(worker_error(error)),
         };
         self.outcome.take();
         self.cancel();
-        Some(result)
+        Some(CaptureUpdate::Finished(result))
     }
 
     pub(crate) fn finish(mut self) -> Result<(), InterruptTimingError> {
@@ -119,6 +132,20 @@ impl InterruptTimingCapture {
             Err(RecvTimeoutError::Timeout) => Err(pending_timeout()),
             Err(error) => Err(worker_error(error)),
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn expired_for_test() -> (Self, Sender<Outcome>) {
+        let (sender, outcome) = mpsc::channel();
+        (
+            Self {
+                cancel_signal: None,
+                outcome: Some(outcome),
+                deadline: Instant::now(),
+                cleanup_pending: false,
+            },
+            sender,
+        )
     }
 }
 

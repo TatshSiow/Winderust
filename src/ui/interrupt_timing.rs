@@ -1,6 +1,6 @@
 use super::{design, widgets};
 use crate::backend::interrupt_timing::{
-    export_report, InterruptKind, InterruptTimingCapture, InterruptTimingError,
+    export_report, CaptureUpdate, InterruptKind, InterruptTimingCapture, InterruptTimingError,
     InterruptTimingReport,
 };
 use iced::widget::{column, row, text, Column, Row, Text};
@@ -46,9 +46,15 @@ enum CaptureStatus {
     Idle,
     Capturing {
         capture: InterruptTimingCapture,
-        cancelling: bool,
+        phase: CapturePhase,
     },
     Failed(InterruptTimingError),
+}
+
+enum CapturePhase {
+    Recording,
+    Cancelling,
+    WaitingForCleanup(InterruptTimingError),
 }
 
 struct CompletedReport {
@@ -64,14 +70,14 @@ impl State {
                 self.capture = match InterruptTimingCapture::start() {
                     Ok(capture) => CaptureStatus::Capturing {
                         capture,
-                        cancelling: false,
+                        phase: CapturePhase::Recording,
                     },
                     Err(error) => Self::failed(error),
                 };
             }
             Message::Run => {}
             Message::Cancel => self.cancel(),
-            Message::Export if self.can_run() => {
+            Message::Export if self.can_export() => {
                 if let Some(completed) = &mut self.completed {
                     completed.export = ExportStatus::ChoosingDestination;
                     return Task::perform(
@@ -116,10 +122,20 @@ impl State {
     }
 
     fn is_capturing(&self) -> bool {
-        matches!(self.capture, CaptureStatus::Capturing { .. })
+        matches!(
+            self.capture,
+            CaptureStatus::Capturing {
+                phase: CapturePhase::Recording | CapturePhase::Cancelling,
+                ..
+            }
+        )
     }
 
     fn can_run(&self) -> bool {
+        !matches!(self.capture, CaptureStatus::Capturing { .. }) && self.can_export()
+    }
+
+    fn can_export(&self) -> bool {
         !self.is_capturing()
             && self
                 .completed
@@ -141,24 +157,23 @@ impl State {
     }
 
     pub(super) fn subscription(&self) -> Subscription<()> {
-        if self.is_capturing() {
-            iced::time::every(Duration::from_millis(100)).map(|_| ())
-        } else {
-            Subscription::none()
-        }
+        let period = match self.capture {
+            CaptureStatus::Capturing {
+                phase: CapturePhase::WaitingForCleanup(_),
+                ..
+            } => Duration::from_secs(1),
+            CaptureStatus::Capturing { .. } => Duration::from_millis(100),
+            _ => return Subscription::none(),
+        };
+        iced::time::every(period).map(|_| ())
     }
 
     fn cancel(&mut self) {
-        let CaptureStatus::Capturing {
-            capture,
-            cancelling,
-        } = &mut self.capture
-        else {
-            return;
-        };
-        if !*cancelling {
-            capture.cancel();
-            *cancelling = true;
+        if let CaptureStatus::Capturing { capture, phase } = &mut self.capture {
+            if matches!(phase, CapturePhase::Recording) {
+                capture.cancel();
+                *phase = CapturePhase::Cancelling;
+            }
         }
     }
 
@@ -171,29 +186,43 @@ impl State {
     }
 
     pub(super) fn poll(&mut self) {
-        if let CaptureStatus::Capturing {
-            capture,
-            cancelling,
-        } = &mut self.capture
-        {
-            if let Some(result) = capture.poll() {
-                self.capture = match result {
-                    Ok(_) if *cancelling => Self::failed(InterruptTimingError::Cancelled),
-                    Ok(report) => {
-                        self.completed = Some(CompletedReport {
-                            report,
-                            per_cpu_expanded: false,
-                            export: ExportStatus::Ready,
-                        });
-                        CaptureStatus::Idle
+        if let CaptureStatus::Capturing { capture, phase } = &mut self.capture {
+            match capture.poll() {
+                None => {}
+                Some(CaptureUpdate::CleanupPending(error)) => {
+                    Self::log_failure(&error);
+                    *phase = CapturePhase::WaitingForCleanup(error);
+                }
+                Some(CaptureUpdate::Finished(result)) => {
+                    self.capture = match (result, phase) {
+                        (
+                            Ok(_) | Err(InterruptTimingError::Cancelled),
+                            CapturePhase::WaitingForCleanup(error),
+                        ) => CaptureStatus::Failed(error.clone()),
+                        (Ok(_), CapturePhase::Cancelling) => {
+                            Self::failed(InterruptTimingError::Cancelled)
+                        }
+                        (Ok(report), CapturePhase::Recording) => {
+                            self.completed = Some(CompletedReport {
+                                report,
+                                per_cpu_expanded: false,
+                                export: ExportStatus::Ready,
+                            });
+                            CaptureStatus::Idle
+                        }
+                        (Err(error), _) => Self::failed(error),
                     }
-                    Err(error) => Self::failed(error),
-                };
+                }
             }
         }
     }
 
     fn failed(error: InterruptTimingError) -> CaptureStatus {
+        Self::log_failure(&error);
+        CaptureStatus::Failed(error)
+    }
+
+    fn log_failure(error: &InterruptTimingError) {
         if matches!(
             error,
             InterruptTimingError::Worker(_)
@@ -202,15 +231,16 @@ impl State {
         ) {
             crate::backend::diagnostics::error(&format!("Interrupt Timing failed with {error}"));
         }
-        CaptureStatus::Failed(error)
     }
 
     pub(super) fn view(&self) -> Element<'_, Message> {
         let button = match &self.capture {
-            CaptureStatus::Capturing { cancelling, .. } => {
-                widgets::action_button(t!("common.cancel"))
-                    .on_press_maybe((!*cancelling).then_some(Message::Cancel))
-            }
+            CaptureStatus::Capturing {
+                phase: phase @ (CapturePhase::Recording | CapturePhase::Cancelling),
+                ..
+            } => widgets::action_button(t!("common.cancel")).on_press_maybe(
+                matches!(phase, CapturePhase::Recording).then_some(Message::Cancel),
+            ),
             _ => widgets::action_button(t!("interrupt_timing.run"))
                 .on_press_maybe(self.can_run().then_some(Message::Run)),
         };
@@ -218,10 +248,10 @@ impl State {
             .spacing(design::space::SMALL);
         let status = match &self.capture {
             CaptureStatus::Idle => None,
-            CaptureStatus::Capturing { cancelling, .. } => Some(if *cancelling {
-                "interrupt_timing.cancelling"
-            } else {
-                "interrupt_timing.capturing"
+            CaptureStatus::Capturing { phase, .. } => Some(match phase {
+                CapturePhase::Recording => "interrupt_timing.capturing",
+                CapturePhase::Cancelling => "interrupt_timing.cancelling",
+                CapturePhase::WaitingForCleanup(_) => "interrupt_timing.timed_out_cleanup",
             }),
             CaptureStatus::Failed(error) => Some(match error {
                 InterruptTimingError::AccessDenied => "interrupt_timing.access_denied",
@@ -467,11 +497,9 @@ fn result_cell<'a>(label: Cow<'a, str>, header: bool) -> Text<'a> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn report_export_is_single_flight_and_keeps_the_capture() {
-        assert_eq!(State::default().update(Message::Export, None).units(), 0);
-        let report = InterruptTimingReport {
-            events_lost: 1,
+    fn report(events_lost: u32) -> InterruptTimingReport {
+        InterruptTimingReport {
+            events_lost,
             buffers_lost: 0,
             invalid_intervals: 0,
             incomplete_intervals: 0,
@@ -479,7 +507,65 @@ mod tests {
             unresolved_attribution: 0,
             modules: Vec::new(),
             per_cpu: None,
-        };
+        }
+    }
+
+    #[test]
+    fn timeout_keeps_cleanup_pending_and_preserves_the_previous_report() {
+        let previous = report(1);
+        let cleanup_error = InterruptTimingError::Worker("ETW cleanup failed".into());
+        for (outcome, expected_error) in [
+            (Ok(report(2)), None),
+            (Err(InterruptTimingError::Cancelled), None),
+            (Err(cleanup_error.clone()), Some(cleanup_error)),
+        ] {
+            let (capture, sender) = InterruptTimingCapture::expired_for_test();
+            let mut state = State {
+                capture: CaptureStatus::Capturing {
+                    capture,
+                    phase: CapturePhase::Cancelling,
+                },
+                completed: Some(CompletedReport {
+                    report: previous.clone(),
+                    per_cpu_expanded: true,
+                    export: ExportStatus::Ready,
+                }),
+            };
+
+            state.poll();
+            assert!(!state.can_run());
+            assert!(!state.is_capturing());
+            let CaptureStatus::Capturing {
+                capture,
+                phase: CapturePhase::WaitingForCleanup(timeout),
+            } = &mut state.capture
+            else {
+                panic!("timeout must retain the capture receiver");
+            };
+            assert!(matches!(timeout, InterruptTimingError::TimedOut(_)));
+            assert!(capture.poll().is_none());
+            let expected_error = expected_error.unwrap_or_else(|| timeout.clone());
+
+            assert!(state.update(Message::Export, None).units() > 0);
+            drop(state.update(Message::ExportChosen(None), None));
+            sender.send(outcome).unwrap();
+            state.poll();
+            assert!(state.can_run());
+            assert!(
+                matches!(&state.capture, CaptureStatus::Failed(error) if error == &expected_error)
+            );
+            assert!(matches!(
+                &state.completed,
+                Some(CompletedReport { report, per_cpu_expanded: true, export: ExportStatus::Ready })
+                    if report == &previous
+            ));
+        }
+    }
+
+    #[test]
+    fn report_export_is_single_flight_and_keeps_the_capture() {
+        assert_eq!(State::default().update(Message::Export, None).units(), 0);
+        let report = report(1);
         let mut state = State {
             completed: Some(CompletedReport {
                 report: report.clone(),
