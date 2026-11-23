@@ -984,6 +984,10 @@ handle remains open. Windows retains the process ID until all handles close and
 the process object is freed. [Process IDs and handle lifetime](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/ns-processthreadsapi-process_information)
 The running-app picker uses the same query handle for image and service-account
 checks after process discovery confirms non-critical status and control access.
+`list_processes_with` keeps the query handle open while reading the session by
+PID so a returned session belongs to the same process as the handle metadata.
+A failed query open still allows a best-effort session lookup for display.
+Toolhelp process names and parent IDs come from the earlier snapshot.
 
 Implementation paths: process account/session capture and one-time target validation are in
 `src/foreground/process_list.rs`; rule-driven filtering is applied by the

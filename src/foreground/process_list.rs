@@ -678,8 +678,9 @@ fn list_processes_with(
 ) -> Result<Vec<ProcessInfo>, String> {
     let mut processes = list_process_entries()?;
     for process in &mut processes {
+        let handle = open_process_for_query(process.id);
         process.session_id = process_session_id(process.id);
-        let Some(handle) = open_process_for_query(process.id) else {
+        let Some(handle) = handle else {
             continue;
         };
         process.creation_time = handle.process_creation_time();
