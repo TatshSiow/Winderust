@@ -9,6 +9,7 @@ use crate::{
     control::instance_limits::CountObservation,
     features::{
         advanced_controls::{
+            app_suspension::AppSuspensionStatus,
             instance_limits::{InstanceLimitsSnapshot, NotificationStatus},
             sleep_prevention::SleepPreventionSnapshot,
         },
@@ -185,6 +186,16 @@ pub(super) fn view<'a>(
             (
                 "sidebar_status.paused",
                 "cpu_limiter.waiting_for_power_source",
+                "common.waiting",
+            )
+        }
+        (Page::AppSuspension, FeatureRunState::Paused)
+            if runtime.feature_status.app_suspension.status
+                == AppSuspensionStatus::PowerSourceUnknown =>
+        {
+            (
+                "sidebar_status.paused",
+                "app_suspension.status.power_source_unknown",
                 "common.waiting",
             )
         }
@@ -712,8 +723,15 @@ fn sidebar_state(
             return FeatureRunState::Error;
         }
     } else if page == Page::AppSuspension {
-        use crate::features::advanced_controls::app_suspension::AppSuspensionStatus;
         let suspension = &runtime.feature_status.app_suspension;
+        if settings.general.enabled && suspension.status == AppSuspensionStatus::PowerSourceUnknown
+        {
+            return if runtime.worker_error.is_some() || summary.last_error.is_some() {
+                FeatureRunState::Error
+            } else {
+                FeatureRunState::Paused
+            };
+        }
         if !suspension.status_unknown
             && matches!(
                 suspension.status,
@@ -1386,6 +1404,36 @@ mod tests {
         rail.as_widget_mut()
             .operate(&mut tree, Layout::new(&node), &renderer, &mut details);
         details.0
+    }
+
+    #[test]
+    fn app_suspension_rail_explains_source_wait_and_preserves_release_error() {
+        let settings = Settings::default();
+        assert!(!settings.app_suspension.enabled);
+        let mut runtime = RuntimeStatusSnapshot {
+            generation: 1,
+            ..Default::default()
+        };
+        let status = &mut std::sync::Arc::make_mut(&mut runtime.feature_status).app_suspension;
+        status.enabled = true;
+        status.status_unknown = true;
+        status.status = AppSuspensionStatus::PowerSourceUnknown;
+        let text = |runtime: &RuntimeStatusSnapshot| {
+            rail_text(view(Page::AppSuspension, &settings, runtime, &[], None).unwrap())
+        };
+        let rail = text(&runtime);
+        assert!(rail
+            .iter()
+            .any(|line| line == t!("sidebar_status.paused").as_ref()));
+        assert!(rail
+            .iter()
+            .any(|line| line == t!("app_suspension.status.power_source_unknown").as_ref()));
+
+        std::sync::Arc::make_mut(&mut runtime.feature_status)
+            .app_suspension
+            .last_error = Some("Exact job thaw failed.".to_owned());
+        let rail = text(&runtime);
+        assert!(rail.iter().any(|line| line == "Exact job thaw failed."));
     }
 
     #[test]

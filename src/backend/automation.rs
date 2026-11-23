@@ -23,7 +23,7 @@ use crate::{
     adaptive_engine_process::{
         AdaptiveEngineProcessManager, AdaptiveEngineProcessSnapshot, AdaptiveEngineProcessUpdate,
     },
-    app_suspension::{AppSuspensionManager, AppSuspensionSnapshot, AppSuspensionStatus},
+    app_suspension::{self, AppSuspensionManager, AppSuspensionSnapshot, AppSuspensionStatus},
     application::settings::{AutoExclusionPatch, RuntimeSettingsSnapshot, SettingsRevision},
     background_efficiency::{BackgroundEfficiencyManager, BackgroundEfficiencySnapshot},
     bottleneck_classifier::{BottleneckClassifier, BottleneckSnapshot},
@@ -1253,6 +1253,9 @@ fn run_background_automation(
         let cpu_limiter_waits_for_source = plugged_in.is_none() && cpu_limiter_policy_varies;
         let cpu_limiter_active = !cpu_limiter_waits_for_source
             && feature_refresh_required(settings, cpu_limiter_required(settings));
+        let app_suspension_policy_varies = (plugged_in.is_none() || !windows_event_watcher_active)
+            && app_suspension_policy_varies_by_source(&configured_settings);
+        let app_suspension_waits_for_source = plugged_in.is_none() && app_suspension_policy_varies;
         let mut observations = CycleObservations::default();
         let hidden_to_tray = tray_hidden();
         let adaptive_engine_enabled = settings.adaptive_engine.enabled;
@@ -1261,11 +1264,15 @@ fn run_background_automation(
             adaptive_engine_enabled,
             ECO_QOS_REFRESH_INTERVAL,
         );
-        let app_suspension_refresh_interval = automation_refresh_interval(
-            hidden_to_tray,
-            adaptive_engine_enabled,
-            APP_SUSPENSION_REFRESH_INTERVAL,
-        );
+        let app_suspension_refresh_interval = if app_suspension_waits_for_source {
+            APP_SUSPENSION_REFRESH_INTERVAL
+        } else {
+            automation_refresh_interval(
+                hidden_to_tray,
+                adaptive_engine_enabled,
+                APP_SUSPENSION_REFRESH_INTERVAL,
+            )
+        };
         let cpu_sets_soft_refresh_interval = automation_refresh_interval(
             hidden_to_tray,
             adaptive_engine_enabled,
@@ -1410,7 +1417,11 @@ fn run_background_automation(
                 if let Some(app_suspension_status) = app_suspension_status {
                     update_app_suspension_status(
                         &shared,
-                        app_suspension_release_status(app_suspension_status, settings),
+                        app_suspension_release_status(
+                            app_suspension_status,
+                            settings,
+                            app_suspension_waits_for_source,
+                        ),
                     );
                 }
             }
@@ -1426,6 +1437,7 @@ fn run_background_automation(
         let background_efficiency_refresh_required = settings_changed
             || feature_refresh_required(settings, settings.background_efficiency.enabled);
         let app_suspension_refresh_required = settings_changed
+            || app_suspension_waits_for_source
             || feature_refresh_required(settings, app_suspension_required(settings))
             || app_suspension_command_requested
             || runner.app_suspension_active();
@@ -1532,7 +1544,11 @@ fn run_background_automation(
             {
                 update_app_suspension_status(
                     &shared,
-                    app_suspension_release_status(app_suspension_status, settings),
+                    app_suspension_release_status(
+                        app_suspension_status,
+                        settings,
+                        app_suspension_waits_for_source,
+                    ),
                 );
             }
             scheduler.schedule_after(
@@ -1653,6 +1669,7 @@ fn run_background_automation(
         } else {
             runner.run_process_control_commands(
                 settings,
+                app_suspension_waits_for_source,
                 process_control_commands,
                 &mut observations,
             )
@@ -1671,8 +1688,12 @@ fn run_background_automation(
             );
         }
         if app_suspension_refresh_required && scheduler.is_due(RefreshDomain::AppSuspension, now) {
-            let app_suspension_status =
-                runner.run_app_suspension_update(settings, &[], &mut observations);
+            let app_suspension_status = runner.run_app_suspension_update(
+                settings,
+                app_suspension_waits_for_source,
+                &[],
+                &mut observations,
+            );
             update_app_suspension_status(&shared, app_suspension_status);
             scheduler.schedule_after(
                 RefreshDomain::AppSuspension,
@@ -2145,7 +2166,8 @@ fn run_background_automation(
         }
         if !windows_event_watcher_active
             && (adaptive_enablement_varies_by_source(&configured_settings)
-                || cpu_limiter_policy_varies)
+                || cpu_limiter_policy_varies
+                || app_suspension_policy_varies)
         {
             wait_for = Some(min_worker_wait(wait_for, Duration::from_secs(1)));
         }

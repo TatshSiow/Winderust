@@ -23,7 +23,7 @@ use windows_sys::Win32::{
 
 use crate::audio_activity::active_audio_process_ids;
 
-use crate::config::AppSuspensionSettings;
+use crate::config::{AppSuspensionRule, AppSuspensionSettings};
 use crate::foreground::{
     process_list::{
         catalog_process_executable_path, executable_basename_may_match, normalize_path_slashes,
@@ -82,6 +82,7 @@ pub enum AppSuspensionStatus {
     Disabled,
     NoRulesConfigured,
     Unsupported,
+    PowerSourceUnknown,
     ForegroundUnknown,
     SessionUnknown,
     Active,
@@ -95,6 +96,7 @@ impl fmt::Display for AppSuspensionStatus {
             Self::Disabled => "app_suspension.status.disabled",
             Self::NoRulesConfigured => "app_suspension.status.no_rules_configured",
             Self::Unsupported => "app_suspension.status.unsupported",
+            Self::PowerSourceUnknown => "app_suspension.status.power_source_unknown",
             Self::ForegroundUnknown => "app_suspension.status.foreground_unknown",
             Self::SessionUnknown => "app_suspension.status.session_unknown",
             Self::Active => "app_suspension.status.active",
@@ -421,6 +423,7 @@ impl AppSuspensionManager {
         controller: &mut SuspensionController,
         settings: &AppSuspensionSettings,
         automation_enabled: bool,
+        waits_for_source: bool,
         allow_cross_session_process_control: bool,
         foreground_process_id: Option<u32>,
         manual_freeze_processes: &[String],
@@ -458,6 +461,29 @@ impl AppSuspensionManager {
             );
         }
 
+        if waits_for_source {
+            let mut previous_thaws = std::mem::take(&mut self.temporary_thawed);
+            let failed = self.clear_automatic(controller, action_log, "power source is unknown");
+            previous_thaws.retain(|_, thaw| {
+                thaw.reason == TemporaryThawReason::UserIntent && now < thaw.thaw_until
+            });
+            self.temporary_thawed = previous_thaws;
+            let mut status = self.snapshot(
+                true,
+                self.job_freeze_unsupported,
+                0,
+                failed,
+                if self.job_freeze_unsupported {
+                    AppSuspensionStatus::Unsupported
+                } else {
+                    AppSuspensionStatus::PowerSourceUnknown
+                },
+                None,
+            );
+            status.status_unknown = true;
+            return status;
+        }
+
         if !settings.enabled {
             let failed = self.clear_automatic(controller, action_log, "App Suspension disabled");
             self.failure_suppression.clear();
@@ -472,13 +498,10 @@ impl AppSuspensionManager {
             );
         }
 
-        let enabled_rules = settings
-            .suspendable_apps
-            .iter()
-            .filter(|rule| rule.enabled && Path::new(rule.executable_path.trim()).is_absolute());
-        let enabled_process_names = enabled_rules
+        let enabled_paths = enabled_rules(settings).map(|(_, path)| path);
+        let enabled_process_names = enabled_paths
             .clone()
-            .filter_map(|rule| Path::new(rule.executable_path.trim_start()).file_name())
+            .filter_map(|path| Path::new(path).file_name())
             .filter_map(|name| name.to_str())
             .collect::<Vec<_>>();
         if enabled_process_names.is_empty() {
@@ -642,23 +665,21 @@ impl AppSuspensionManager {
             );
         }
         self.running_apps = running_apps;
-        let enabled_paths = enabled_rules
-            .map(|rule| rule.executable_path.trim_start())
-            .filter(|executable_path| {
-                if unresolved.is_empty() {
-                    return true;
-                }
-                let path = Path::new(executable_path);
-                path.file_name()
-                    .and_then(|name| name.to_str())
-                    .is_none_or(|name| {
-                        !unresolved.iter().any(|(candidate, observed_path)| {
-                            executable_basename_may_match(candidate, name)
-                                && observed_path
-                                    .is_none_or(|observed| same_executable_path(observed, path))
-                        })
+        let enabled_paths = enabled_paths.filter(|executable_path| {
+            if unresolved.is_empty() {
+                return true;
+            }
+            let path = Path::new(executable_path);
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_none_or(|name| {
+                    !unresolved.iter().any(|(candidate, observed_path)| {
+                        executable_basename_may_match(candidate, name)
+                            && observed_path
+                                .is_none_or(|observed| same_executable_path(observed, path))
                     })
-            });
+                })
+        });
         if !self
             .observed_rule_paths
             .as_ref()
@@ -1532,15 +1553,9 @@ impl AppSuspensionManager {
         now: Instant,
         action_log: &mut ActionLog,
     ) -> usize {
-        if !settings.temporary_thaw_enabled
-            || settings.temporary_thaw_interval_seconds == 0
-            || settings.temporary_thaw_duration_seconds == 0
-        {
+        let Some((interval, duration)) = scheduled_thaw(settings) else {
             return 0;
-        }
-
-        let interval = Duration::from_secs(settings.temporary_thaw_interval_seconds);
-        let duration = bounded_suspension_duration(settings.temporary_thaw_duration_seconds);
+        };
         let process_ids = self
             .suspended
             .iter()
@@ -2122,6 +2137,73 @@ impl AppSuspensionManager {
     }
 }
 
+fn enabled_rules(
+    settings: &AppSuspensionSettings,
+) -> impl Iterator<Item = (&AppSuspensionRule, &str)> + Clone {
+    settings.suspendable_apps.iter().filter_map(|rule| {
+        let path = rule.executable_path.trim_start();
+        let executable = Path::new(path);
+        (rule.enabled
+            && executable.is_absolute()
+            && executable.file_name().is_some()
+            && !is_builtin_excluded(path))
+        .then_some((rule, path))
+    })
+}
+
+pub(crate) fn has_enabled_rules(settings: &AppSuspensionSettings) -> bool {
+    enabled_rules(settings).next().is_some()
+}
+
+pub(crate) fn same_app_suspension_policy(
+    ac: &AppSuspensionSettings,
+    battery: &AppSuspensionSettings,
+) -> bool {
+    if ac == battery {
+        return true;
+    }
+    let ac_active = ac.enabled && has_enabled_rules(ac);
+    let battery_active = battery.enabled && has_enabled_rules(battery);
+    if !ac_active || !battery_active {
+        return ac_active == battery_active;
+    }
+
+    ac.background_delay_seconds == battery.background_delay_seconds
+        && scheduled_thaw(ac) == scheduled_thaw(battery)
+        && app_suspension_rule_policy(ac).eq(app_suspension_rule_policy(battery))
+}
+
+fn app_suspension_rule_policy(
+    settings: &AppSuspensionSettings,
+) -> impl Iterator<Item = impl PartialEq + '_> {
+    // Only identical native spellings establish a shared policy without opening files.
+    // Preserve order because differently spelled rules can later match the same app.
+    enabled_rules(settings).map(move |(rule, path)| {
+        let network = (settings.network_wake_enabled && rule.network_wake_enabled).then(|| {
+            (
+                rule.network_download_threshold_bytes,
+                rule.network_upload_threshold_bytes,
+                network_wake_duration(settings),
+            )
+        });
+        let audio = (settings.audio_wake_enabled && rule.audio_wake_enabled)
+            .then(|| audio_wake_duration(settings));
+        (normalize_path_slashes(path), network, audio)
+    })
+}
+
+fn scheduled_thaw(settings: &AppSuspensionSettings) -> Option<(Duration, Duration)> {
+    (settings.temporary_thaw_enabled
+        && settings.temporary_thaw_interval_seconds > 0
+        && settings.temporary_thaw_duration_seconds > 0)
+        .then(|| {
+            (
+                Duration::from_secs(settings.temporary_thaw_interval_seconds),
+                bounded_suspension_duration(settings.temporary_thaw_duration_seconds),
+            )
+        })
+}
+
 pub fn is_builtin_excluded(process_name: &str) -> bool {
     suspension_control::is_builtin_excluded(process_name)
 }
@@ -2304,6 +2386,7 @@ mod tests {
             &AppSuspensionSettings::default(),
             true,
             false,
+            false,
             None,
             &[],
             &mut observations,
@@ -2336,6 +2419,7 @@ mod tests {
                 &mut controller,
                 &settings,
                 true,
+                false,
                 false,
                 None,
                 &[],
@@ -2375,6 +2459,7 @@ mod tests {
             &AppSuspensionSettings::default(),
             false,
             false,
+            false,
             None,
             &[],
             &mut observations,
@@ -2384,6 +2469,68 @@ mod tests {
         assert_eq!(status.suspended_process_instances, vec![(7, 8)]);
         assert!(manager.suspended.contains_key(&7));
         assert!(!manager.suspended.contains_key(&8));
+        assert!(controller.contains_process(7));
+        assert!(!controller.contains_process(8));
+    }
+
+    #[test]
+    fn unknown_power_source_releases_rule_freezes_and_preserves_user_thaw() {
+        let mut manager = AppSuspensionManager::default();
+        let mut controller = SuspensionController::default();
+        let mut log = ActionLog::new(8);
+        let now = Instant::now();
+        for (process_id, manual) in [(7, true), (8, false)] {
+            let name = format!("{process_id}.exe");
+            let path = format!("C:/Apps/{name}");
+            insert_inert(&mut controller, process_id, &name, &path, true);
+            manager.suspended.insert(
+                process_id,
+                SuspendedProcess {
+                    process_name: name,
+                    executable_path: path.into(),
+                    creation_time: u64::from(process_id) + 1,
+                    suspended_since: now,
+                    manual,
+                },
+            );
+        }
+        for (process_id, reason, until) in [
+            (
+                9,
+                TemporaryThawReason::UserIntent,
+                now + Duration::from_secs(10),
+            ),
+            (
+                10,
+                TemporaryThawReason::AudioWake,
+                now + Duration::from_secs(10),
+            ),
+            (11, TemporaryThawReason::UserIntent, now),
+        ] {
+            manager.set_temporary_thaw(
+                process_id,
+                format!("{process_id}.exe"),
+                format!("C:/Apps/{process_id}.exe").into(),
+                until,
+                reason,
+            );
+        }
+        let status = manager.update(
+            &mut controller,
+            &AppSuspensionSettings::default(),
+            true,
+            true,
+            false,
+            None,
+            &[],
+            &mut CycleObservations::default(),
+            &mut log,
+        );
+
+        assert_eq!(status.status, AppSuspensionStatus::PowerSourceUnknown);
+        assert!(status.status_unknown);
+        assert_eq!(status.suspended_process_instances, [(7, 8)]);
+        assert_eq!(status.temporary_thawed_apps, ["C:/Apps/9.exe"]);
         assert!(controller.contains_process(7));
         assert!(!controller.contains_process(8));
     }
@@ -2419,6 +2566,7 @@ mod tests {
             &mut controller,
             &settings,
             true,
+            false,
             false,
             None,
             &[],
@@ -2504,6 +2652,7 @@ mod tests {
             &mut SuspensionController::default(),
             &settings,
             true,
+            false,
             true,
             Some(foreground_id),
             &[],
@@ -3142,6 +3291,7 @@ mod tests {
             &mut controller,
             &settings,
             true,
+            false,
             false,
             Some(u32::MAX),
             &[],

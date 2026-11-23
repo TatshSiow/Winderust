@@ -1132,6 +1132,7 @@ mod tests {
             &mut controller,
             &settings,
             true,
+            false,
             true,
             Some(7),
             &[],

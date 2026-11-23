@@ -71,12 +71,17 @@ pub(super) fn adaptive_engine_process_required(settings: &Settings) -> bool {
 }
 
 pub(super) fn app_suspension_required(settings: &Settings) -> bool {
-    settings.app_suspension.enabled
-        && settings
-            .app_suspension
-            .suspendable_apps
-            .iter()
-            .any(|rule| enabled_executable_path_rule(rule.enabled, &rule.executable_path))
+    settings.app_suspension.enabled && app_suspension::has_enabled_rules(&settings.app_suspension)
+}
+
+pub(super) fn app_suspension_policy_varies_by_source(settings: &Settings) -> bool {
+    settings.general.enabled
+        && settings.on_battery.as_deref().is_some_and(|battery| {
+            !app_suspension::same_app_suspension_policy(
+                &settings.app_suspension,
+                &battery.app_suspension,
+            )
+        })
 }
 
 pub(super) fn cpu_sets_soft_required(settings: &Settings) -> bool {

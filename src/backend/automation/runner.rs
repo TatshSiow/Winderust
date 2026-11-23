@@ -26,7 +26,19 @@ fn app_suspension_lock_failure(error: String) -> AppSuspensionSnapshot {
 pub(super) fn app_suspension_release_status(
     mut status: AppSuspensionSnapshot,
     settings: &Settings,
+    waits_for_source: bool,
 ) -> AppSuspensionSnapshot {
+    if waits_for_source {
+        if !matches!(status.status, AppSuspensionStatus::Error(_)) {
+            status.status = if status.unsupported {
+                AppSuspensionStatus::Unsupported
+            } else {
+                AppSuspensionStatus::PowerSourceUnknown
+            };
+        }
+        status.status_unknown = true;
+        return status;
+    }
     status.status = if !settings.general.enabled {
         AppSuspensionStatus::AutomationDisabled
     } else if !settings.app_suspension.enabled {
@@ -518,7 +530,7 @@ impl RuntimeCore {
         collect_restore_error(
             &mut errors,
             "App Suspension",
-            self.run_app_suspension_update(&settings, &[], &mut observations)
+            self.run_app_suspension_update(&settings, false, &[], &mut observations)
                 .last_error,
         );
         let suspension = Arc::clone(&self.app_suspension_controller);
@@ -811,15 +823,21 @@ impl RuntimeCore {
     pub(super) fn run_app_suspension_update(
         &mut self,
         settings: &Settings,
+        waits_for_source: bool,
         manual_freeze_processes: &[String],
         observations: &mut CycleObservations,
     ) -> AppSuspensionSnapshot {
-        let foreground_process_id = observations.foreground_process_id();
+        let foreground_process_id = if waits_for_source {
+            None
+        } else {
+            observations.foreground_process_id()
+        };
         self.with_app_suspension(|manager, controller, action_log| {
             let status = manager.update(
                 controller,
                 &settings.app_suspension,
                 settings.general.enabled,
+                waits_for_source,
                 settings.general.allow_cross_session_process_control,
                 foreground_process_id,
                 manual_freeze_processes,
@@ -1339,6 +1357,7 @@ impl RuntimeCore {
     pub(super) fn run_process_control_commands(
         &mut self,
         settings: &Settings,
+        app_suspension_waits_for_source: bool,
         commands: VecDeque<ProcessControlCommand>,
         observations: &mut CycleObservations,
     ) -> ProcessControlCommandStatuses {
@@ -1528,6 +1547,7 @@ impl RuntimeCore {
                     let (status, reply) = if freeze {
                         let status = self.run_app_suspension_update(
                             settings,
+                            app_suspension_waits_for_source,
                             std::slice::from_ref(&executable_path),
                             observations,
                         );
@@ -1555,7 +1575,11 @@ impl RuntimeCore {
                                 Path::new(&executable_path),
                                 action_log,
                             );
-                            let status = app_suspension_release_status(status, settings);
+                            let status = app_suspension_release_status(
+                                status,
+                                settings,
+                                app_suspension_waits_for_source,
+                            );
                             let reply = match &status.last_error {
                                 Some(error) => {
                                     Err(RuntimeCommandError::CommandFailed(error.clone()))
@@ -1568,6 +1592,7 @@ impl RuntimeCore {
                             let status = app_suspension_release_status(
                                 app_suspension_lock_failure(error.clone()),
                                 settings,
+                                app_suspension_waits_for_source,
                             );
                             (status, Err(RuntimeCommandError::CommandFailed(error)))
                         })

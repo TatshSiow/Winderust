@@ -797,6 +797,7 @@ app_suspension:
     disabled: "App Suspension disabled."
     no_rules_configured: "No App Suspension rules configured."
     unsupported: "App Suspension unavailable: Windows Job Object freeze is not supported on this system."
+    power_source_unknown: "Waiting for Windows to report the power source before suspending apps."
     foreground_unknown: "Paused: foreground app is unknown."
     session_unknown: "Paused: current Windows session is unknown."
     active: "App Suspension active."

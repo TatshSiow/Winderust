@@ -489,6 +489,7 @@ fn can_suspend(
 ) -> bool {
     let path = rule.executable_path.trim_start();
     status.enabled
+        && status.status != app_suspension::AppSuspensionStatus::PowerSourceUnknown
         && !status.unsupported
         && rule.enabled
         && !unavailable
@@ -738,8 +739,12 @@ mod tests {
         let live = &s.app_suspension;
         let rule = &live.suspendable_apps[0];
         assert!(can_suspend(rule, &status, false, Some(live)));
+        status.status = app_suspension::AppSuspensionStatus::PowerSourceUnknown;
+        assert!(!can_suspend(rule, &status, false, Some(live)));
+        status.status = app_suspension::AppSuspensionStatus::Active;
         status.unsupported = true;
         assert!(!can_suspend(rule, &status, false, Some(live)));
+        status.status = app_suspension::AppSuspensionStatus::PowerSourceUnknown;
         status.suspended_apps.push(p.clone());
         assert_eq!(
             e.update(&mut s, &status, &unavailable, Message::Toggle(0)),

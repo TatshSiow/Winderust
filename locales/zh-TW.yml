@@ -799,6 +799,7 @@ app_suspension:
     disabled: "應用程式暫停已停用。"
     no_rules_configured: "尚未設定應用程式暫停規則。"
     unsupported: "應用程式暫停無法使用：此系統不支援 Windows Job Object 凍結。"
+    power_source_unknown: "正在等待 Windows 回報電源來源，期間不會暫停新的應用程式。"
     foreground_unknown: "暫停：無法確認前景應用程式。"
     session_unknown: "暫停：無法確認目前的 Windows 工作階段。"
     active: "應用程式暫停正在執行。"

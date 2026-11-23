@@ -2063,6 +2063,39 @@ fn app_suspension_uses_windows_events_without_enabling_process_scan() {
 }
 
 #[test]
+fn app_suspension_source_checks_follow_actionable_rules() {
+    let mut settings = Settings::default();
+    let battery = &mut settings.battery_profile_mut().app_suspension;
+    battery.enabled = true;
+    battery
+        .suspendable_apps
+        .push(app_suspension_rule("chat.exe"));
+    assert!(!app_suspension_policy_varies_by_source(&settings));
+
+    settings
+        .battery_profile_mut()
+        .app_suspension
+        .suspendable_apps[0]
+        .executable_path = r"C:\Apps\chat.exe".to_owned();
+    assert!(app_suspension_policy_varies_by_source(&settings));
+    assert!(automation_worker_required(&settings));
+
+    settings.app_suspension = settings.battery_profile().app_suspension.clone();
+    settings
+        .battery_profile_mut()
+        .app_suspension
+        .suspendable_apps[0]
+        .executable_path = "  C:/Apps/chat.exe".to_owned();
+    assert!(!app_suspension_policy_varies_by_source(&settings));
+    settings
+        .battery_profile_mut()
+        .app_suspension
+        .suspendable_apps[0]
+        .executable_path = "C:/Apps/CHAT.EXE".to_owned();
+    assert!(app_suspension_policy_varies_by_source(&settings));
+}
+
+#[test]
 fn system_appearance_uses_windows_events_without_power_automation() {
     let mut settings = Settings::default();
     settings.general.enabled = false;
