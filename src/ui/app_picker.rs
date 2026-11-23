@@ -247,11 +247,12 @@ impl<M: Clone> Picker<'_, M> {
                         .center_y(20)
                         .into()
                 });
-            let path = candidate.info.image_path.to_string_lossy().into_owned();
+            let path = candidate.info.image_path.to_string_lossy();
+            let selection = available.then(|| (self.select)(path.as_ref().to_owned()));
             let detail = if *available {
-                path.clone()
+                path.into_owned()
             } else {
-                format!("{} ? {}", t!("app_suspension.indicator.unavailable"), path)
+                format!("{} · {path}", t!("app_suspension.indicator.unavailable"))
             };
             let content = row![
                 icon,
@@ -282,7 +283,7 @@ impl<M: Clone> Picker<'_, M> {
                     } else {
                         widgets::quiet
                     })
-                    .on_press_maybe(available.then(|| (self.select)(path))),
+                    .on_press_maybe(selection),
             );
         }
         let footer = widgets::button(
