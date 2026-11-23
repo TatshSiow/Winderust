@@ -18,8 +18,8 @@ use crate::{
     },
     foreground::{
         is_foreground_process, process_executable_path, process_failure_key,
-        process_list::catalog_process_executable_path, process_session_id, same_executable_path,
-        ProcessInfo, ProtectedProcesses,
+        process_list::{catalog_process_executable_path, power_profile_executable_path_key},
+        process_session_id, same_executable_path, ProcessInfo, ProtectedProcesses,
     },
     rules::{execution_failure_suppression_threshold, ExecutionFailureTracker},
     runtime::observations::CycleObservations,
@@ -589,9 +589,7 @@ pub(crate) fn same_limit_policy(ac: &CpuLimiterSettings, battery: &CpuLimiterSet
             .filter(|rule| valid_rule(rule))
             .map(|rule| {
                 (
-                    crate::foreground::process_list::normalize_path_slashes(
-                        rule.executable_path.trim_start(),
-                    ),
+                    power_profile_executable_path_key(rule.executable_path.trim_start()),
                     [(true, false), (false, true), (false, false)].map(|(focused, visible)| {
                         resolved_allowed_cpu_time_percent(settings, rule, focused, visible)
                     }),

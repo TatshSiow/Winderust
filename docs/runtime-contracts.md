@@ -139,6 +139,9 @@ Read the relevant section before changing feature policy, ownership, restoration
   still requires Windows access, built-in exclusions, and exact identity validation.
   Executable-path comparisons preserve whitespace in native filenames. Treat
   access denied as skipped unless it exposes an implementation bug.
+- App Suspension, CPU Limiter, and Memory Trim compare ordinary slash separators
+  as interchangeable across saved power profiles. Verbatim Windows paths retain
+  their exact saved spelling for this comparison.
 - Keep High/Realtime priority out of automatic paths; broad App Suspension stays
   narrow and opt-in. Restore owned state on disable, rule mismatch, observed exit,
   or shutdown without bypassing identity and external-state checks.

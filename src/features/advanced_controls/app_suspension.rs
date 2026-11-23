@@ -27,7 +27,7 @@ use crate::config::{AppSuspensionRule, AppSuspensionSettings};
 use crate::foreground::{
     process_list::{
         catalog_process_executable_path, executable_basename_may_match, normalize_path_slashes,
-        verified_process_executable_path,
+        power_profile_executable_path_key, verified_process_executable_path,
     },
     process_session_id, same_executable_path, ProcessActionTarget,
 };
@@ -2176,7 +2176,6 @@ pub(crate) fn same_app_suspension_policy(
 fn app_suspension_rule_policy(
     settings: &AppSuspensionSettings,
 ) -> impl Iterator<Item = impl PartialEq + '_> {
-    // Only identical native spellings establish a shared policy without opening files.
     // Preserve order because differently spelled rules can later match the same app.
     enabled_rules(settings).map(move |(rule, path)| {
         let network = (settings.network_wake_enabled && rule.network_wake_enabled).then(|| {
@@ -2188,7 +2187,7 @@ fn app_suspension_rule_policy(
         });
         let audio = (settings.audio_wake_enabled && rule.audio_wake_enabled)
             .then(|| audio_wake_duration(settings));
-        (normalize_path_slashes(path), network, audio)
+        (power_profile_executable_path_key(path), network, audio)
     })
 }
 

@@ -926,6 +926,16 @@ pub(crate) fn normalize_path_slashes(path: &str) -> Cow<'_, str> {
     }
 }
 
+pub(crate) fn power_profile_executable_path_key(path: &str) -> Cow<'_, str> {
+    let normalized = normalize_path_slashes(path);
+    // Preserve verbatim paths, including spellings that normalize to the verbatim prefix.
+    if normalized.starts_with(r"\\?\") {
+        Cow::Borrowed(path)
+    } else {
+        normalized
+    }
+}
+
 // Native executable paths preserve literal filename whitespace.
 pub fn same_executable_path(left: &Path, right: &Path) -> bool {
     if left.as_os_str() == right.as_os_str() {
@@ -1986,6 +1996,30 @@ mod tests {
             let different = format!("{prefix}ü\u{1f681}.exe");
             assert!(same_executable_name(&upper, &lower));
             assert!(!same_executable_name(&upper, &different));
+        }
+    }
+
+    #[test]
+    fn power_profile_keys_preserve_verbatim_path_spellings() {
+        for (left, right, equivalent) in [
+            (r"C:\Apps\worker.exe", "C:/Apps/worker.exe", true),
+            (
+                r"\\server\share\Apps\worker.exe",
+                "//server/share/Apps/worker.exe",
+                true,
+            ),
+            (r"\\?\C:\Apps\worker.exe", r"\\?\C:\Apps/worker.exe", false),
+            (r"\\?\C:\Apps\worker.exe", "//?/C:/Apps/worker.exe", false),
+            (
+                r"\\?\UNC\server\share\Apps\worker.exe",
+                r"\\?\UNC\server\share\Apps/worker.exe",
+                false,
+            ),
+        ] {
+            assert_eq!(
+                power_profile_executable_path_key(left) == power_profile_executable_path_key(right),
+                equivalent
+            );
         }
     }
 

@@ -22,7 +22,7 @@ use crate::{
     cpu::{process_cpu_usage_percent, ProcessCpuSample},
     foreground::{
         contains_process_name, executable_grouping_key, process_executable_path,
-        process_list::{catalog_process_executable_path, normalize_path_slashes},
+        process_list::{catalog_process_executable_path, power_profile_executable_path_key},
         same_executable_path, should_ignore_foreground_process,
         EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS,
     },
@@ -114,7 +114,7 @@ fn enabled_exclusions(settings: &MemoryTrimSettings) -> BTreeSet<Cow<'_, str>> {
         .filter(|rule| rule.enabled)
         .map(|rule| rule.executable_path.trim_start())
         .filter(|path| Path::new(path).is_absolute())
-        .map(normalize_path_slashes)
+        .map(power_profile_executable_path_key)
         .collect()
 }
 
