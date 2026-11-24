@@ -245,8 +245,9 @@ hover/press; background shading supplies feedback.
   When several cohorts are waiting, the rail prioritizes insufficient core capacity,
   then cohort stability, then missing instances. The Action Log records each rule's result.
 - CPU Sets (Soft) and Processor Affinity (Hard) label their built-in section Core Presets. A preview
-  shows the saved selection and its topology validation. Select a preset for a specific rule
-  policy column to stage it.
+  shows the saved selection and its topology validation. Keep topology status, selection errors,
+  and the review action above the processor grid. Keep duplicate-name feedback beside the name.
+  Select a preset for a specific rule policy column to stage it.
 - Verified, fully representable L3 selections appear as Cache Domain presets
   with group and cache-size labels. Missing cache metadata creates no inferred
   preset. Unsupported saved selections remain visible; selection controls do

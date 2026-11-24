@@ -515,33 +515,24 @@ impl Editor {
                 Some(i) != self.editing_preset
                     && p.name.trim().eq_ignore_ascii_case(self.preset_name.trim())
             });
-        let mut body = column![
-            super::widgets::heading(
-                t!("common.preset_details").to_string(),
-                design::typography::BODY
-            ),
-            super::widgets::settings_card(super::widgets::settings_rows([
-                column![
-                    text(t!("cpu_allocation.preset_name").to_string()),
-                    text_input(
-                        &t!("cpu_allocation.preset_name_placeholder"),
-                        &self.preset_name
-                    )
-                    .on_input_maybe((!self.preset_read_only).then_some(Message::PresetName)),
-                    text(t!("cpu_allocation.preset_name_help").to_string()).style(text::secondary)
-                ]
-                .spacing(design::space::SMALL)
-                .into(),
-                column![
-                    text(t!("cpu_allocation.selected_logical_cpus").to_string()),
-                    cpus.wrap(),
-                    text(selection_text(&self.preset_selection))
-                ]
-                .spacing(design::space::SMALL)
-                .into(),
-            ]))
+        let mut name = column![
+            text(t!("cpu_allocation.preset_name").to_string()),
+            text_input(
+                &t!("cpu_allocation.preset_name_placeholder"),
+                &self.preset_name
+            )
+            .on_input_maybe((!self.preset_read_only).then_some(Message::PresetName)),
+            text(t!("cpu_allocation.preset_name_help").to_string()).style(text::secondary)
         ]
-        .spacing(design::space::MEDIUM);
+        .spacing(design::space::SMALL);
+        if !self.preset_read_only && !self.preset_name.trim().is_empty() && !valid_name {
+            name = name.push(
+                text(t!("cpu_allocation.duplicate_preset_name").to_string()).style(text::danger),
+            );
+        }
+
+        let mut selection = column![text(t!("cpu_allocation.selected_logical_cpus").to_string())]
+            .spacing(design::space::SMALL);
         if let Ok(topology) = &catalog.topology {
             let cores = topology
                 .processors()
@@ -549,7 +540,7 @@ impl Editor {
                 .map(|cpu| cpu.core)
                 .collect::<std::collections::BTreeSet<_>>()
                 .len();
-            body = body.push(
+            selection = selection.push(
                 text(
                     t!(
                         "cpu_allocation.topology_summary",
@@ -563,7 +554,22 @@ impl Editor {
                 .style(text::secondary),
             );
         }
+        if let Some(error) = &validation_error {
+            selection = selection.push(text(error.clone()).style(text::danger));
+        }
+        if !self.error.is_empty() && validation_error.as_deref() != Some(self.error.as_str()) {
+            selection = selection.push(text(self.error.clone()).style(text::danger));
+        }
         if !self.preset_read_only {
+            if catalog.error(&self.preset_selection).is_some() {
+                if let Some(reviewed) = catalog.reviewed(&self.preset_selection) {
+                    selection = selection.push(
+                        button(text(t!("cpu_allocation.use_this_selection").to_string()))
+                            .on_press(Message::PresetSelection(reviewed)),
+                    );
+                }
+            }
+
             let mut choices = row![].spacing(design::space::TIGHT);
             for preset in &catalog.presets {
                 choices = choices.push(
@@ -571,27 +577,22 @@ impl Editor {
                         .on_press(Message::PresetSelection(preset.0.clone())),
                 );
             }
-            body = body.push(choices.wrap());
-            if catalog.error(&self.preset_selection).is_some() {
-                if let Some(reviewed) = catalog.reviewed(&self.preset_selection) {
-                    body = body.push(
-                        button(text(t!("cpu_allocation.use_this_selection").to_string()))
-                            .on_press(Message::PresetSelection(reviewed)),
-                    );
-                }
-            }
+            selection = selection.push(choices.wrap());
         }
-        if let Some(error) = &validation_error {
-            body = body.push(text(error.clone()).style(text::danger));
-        }
-        if !self.error.is_empty() && validation_error.as_deref() != Some(self.error.as_str()) {
-            body = body.push(text(self.error.clone()).style(text::danger));
-        }
-        if !self.preset_read_only && !self.preset_name.trim().is_empty() && !valid_name {
-            body = body.push(
-                text(t!("cpu_allocation.duplicate_preset_name").to_string()).style(text::danger),
-            );
-        }
+        let selection = selection
+            .push(cpus.wrap())
+            .push(text(selection_text(&self.preset_selection)));
+        let body = column![
+            super::widgets::heading(
+                t!("common.preset_details").to_string(),
+                design::typography::BODY
+            ),
+            super::widgets::settings_card(super::widgets::settings_rows([
+                name.into(),
+                selection.into(),
+            ]))
+        ]
+        .spacing(design::space::MEDIUM);
         let mut footer = row![
             iced::widget::Space::new().width(Fill),
             action_button(

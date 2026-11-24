@@ -4,7 +4,7 @@ use crate::backend::power_source::is_plugged_in;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 static REQUESTED: AtomicBool = AtomicBool::new(false);
-const EXTRA_STATES: usize = 73;
+const EXTRA_STATES: usize = 77;
 pub(super) struct Run {
     pages: Vec<Page>,
     index: usize,
@@ -66,6 +66,8 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                     | 69
                     | 71
                     | 72
+                    | 74
+                    | 76
             )
         });
         let page = match extra {
@@ -94,8 +96,8 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             Some(39) => Page::ProcessList,
             Some(40) => Page::LanguageAndAppearance,
             Some(41) => Page::AdaptiveEngine,
-            Some(44) => Page::CpuSetsSoft,
-            Some(45) => Page::ProcessorAffinityHard,
+            Some(44 | 73 | 76) => Page::CpuSetsSoft,
+            Some(45 | 74 | 75) => Page::ProcessorAffinityHard,
             Some(46) => Page::AdvancedPowerPlanTuning,
             Some(47) => Page::AdaptiveEngine,
             Some(48) => Page::ProcessList,
@@ -858,8 +860,11 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             let _ = app.update(Message::AdaptiveProcessorPower(PowerMessage::NewPreset));
             assert!(app.adaptive_processor_power.preset_open());
         }
+        if let Some(index @ 73..=76) = extra {
+            exercise_cpu_preset_dialog(app, index);
+        }
         let size = match extra {
-            Some(35..=37 | 40 | 42 | 44..=50 | 52..=69 | 71..=72) => iced::Size::new(900.0, 620.0),
+            Some(35..=37 | 40 | 42 | 44..=50 | 52..=69 | 71..=76) => iced::Size::new(900.0, 620.0),
             Some(30) => iced::Size::new(1280.0, 720.0),
             Some(31) => iced::Size::new(1440.0, 900.0),
             Some(32) => iced::Size::new(1920.0, 720.0),
@@ -928,6 +933,55 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
     } else {
         Some(Task::none())
     }
+}
+
+fn exercise_cpu_preset_dialog(app: &mut WinderustApp, index: usize) {
+    use crate::{config::CpuAllocationPreset, cpu_topology::CpuSelection};
+    use cpu_allocation::{Kind, Message as PresetMessage, SelectionCatalog};
+
+    let kind = if matches!(index, 73 | 76) {
+        Kind::Soft
+    } else {
+        Kind::Hard
+    };
+    let selection = SelectionCatalog::capture(kind)
+        .all_selection()
+        .expect("render-smoke requires a readable CPU topology");
+    let message = if matches!(index, 75 | 76) {
+        let preset = CpuAllocationPreset {
+            name: "Preset to review".into(),
+            selection: CpuSelection::new(selection.processors().to_vec(), None)
+                .expect("an unbound selection preserves the saved logical processors"),
+        };
+        let preset_index = app.settings.global().cpu_allocation_presets.len();
+        app.settings.edit_global(|settings| {
+            settings.cpu_allocation_presets.push(preset);
+            if index == 76 {
+                settings.cpu_allocation_presets.push(CpuAllocationPreset {
+                    name: "Example preset".into(),
+                    selection,
+                });
+            }
+        });
+        app.settings = SettingsEditor::with_settings((*app.settings).clone());
+        PresetMessage::EditPreset(preset_index)
+    } else {
+        PresetMessage::ViewPreset("Example preset".into(), selection)
+    };
+    let before = app.settings.global().cpu_allocation_presets.clone();
+    let _ = app.update(Message::Allocation(kind, message));
+    if index == 76 {
+        let _ = app.update(Message::Allocation(
+            kind,
+            PresetMessage::PresetName("Example preset".into()),
+        ));
+    }
+    let editor = match kind {
+        Kind::Soft => &app.soft_allocation,
+        Kind::Hard => &app.hard_allocation,
+    };
+    assert!(editor.preset_open());
+    assert_eq!(app.settings.global().cpu_allocation_presets, before);
 }
 
 fn exercise_adaptive_processor_power_presets(app: &mut WinderustApp) {
