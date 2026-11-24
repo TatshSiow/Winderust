@@ -11,23 +11,28 @@ use std::{
 
 use rust_i18n::t;
 use windows_sys::Win32::{
-    Foundation::{GetLastError, ERROR_CLASS_ALREADY_EXISTS, HWND, LPARAM, LRESULT, POINT, WPARAM},
+    Foundation::{
+        GetLastError, ERROR_CLASS_ALREADY_EXISTS, HWND, LPARAM, LRESULT, POINT, RECT, S_OK, WPARAM,
+    },
     System::LibraryLoader::GetModuleHandleW,
     UI::{
         Shell::{
-            Shell_NotifyIconW, NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_TIP, NIIF_ERROR, NIIF_WARNING,
-            NIM_ADD, NIM_DELETE, NIM_MODIFY, NIN_BALLOONUSERCLICK, NOTIFYICONDATAW,
+            Shell_NotifyIconGetRect, Shell_NotifyIconW, NIF_ICON, NIF_INFO, NIF_MESSAGE,
+            NIF_SHOWTIP, NIF_TIP, NIIF_ERROR, NIIF_WARNING, NIM_ADD, NIM_DELETE, NIM_MODIFY,
+            NIM_SETFOCUS, NIM_SETVERSION, NINF_KEY, NIN_BALLOONUSERCLICK, NIN_SELECT,
+            NOTIFYICONDATAW, NOTIFYICONIDENTIFIER, NOTIFYICON_VERSION_4,
         },
         WindowsAndMessaging::{
             AppendMenuW, ChangeWindowMessageFilterEx, CreatePopupMenu, CreateWindowExW,
             DefWindowProcW, DestroyMenu, DestroyWindow, DispatchMessageW, EndMenu, GetCursorPos,
             GetForegroundWindow, GetMessageW, IsIconic, LoadImageW, PostMessageW, PostQuitMessage,
             RegisterClassW, RegisterWindowMessageW, SendMessageW, SetForegroundWindow, ShowWindow,
-            TrackPopupMenu, TranslateMessage, HICON, ICON_BIG, ICON_SMALL, IMAGE_ICON,
+            TrackPopupMenuEx, TranslateMessage, HICON, ICON_BIG, ICON_SMALL, IMAGE_ICON,
             LR_DEFAULTSIZE, LR_SHARED, MF_CHECKED, MF_GRAYED, MF_POPUP, MF_SEPARATOR, MF_STRING,
-            MSG, MSGFLT_ALLOW, PBT_APMPOWERSTATUSCHANGE, SW_RESTORE, SW_SHOW, TPM_RETURNCMD,
-            TPM_RIGHTBUTTON, WM_APP, WM_CLOSE, WM_HOTKEY, WM_LBUTTONDBLCLK, WM_LBUTTONUP,
-            WM_POWERBROADCAST, WM_RBUTTONUP, WM_SETICON, WNDCLASSW,
+            MSG, MSGFLT_ALLOW, PBT_APMPOWERSTATUSCHANGE, SW_RESTORE, SW_SHOW, TPMPARAMS,
+            TPM_RETURNCMD, TPM_RIGHTBUTTON, TPM_VERTICAL, WM_APP, WM_CLOSE, WM_CONTEXTMENU,
+            WM_HOTKEY, WM_LBUTTONDBLCLK, WM_LBUTTONUP, WM_NULL, WM_POWERBROADCAST, WM_SETICON,
+            WNDCLASSW,
         },
     },
 };
@@ -38,6 +43,7 @@ mod show_winderust_shortcut;
 pub(crate) use show_winderust_shortcut::{PreparedShortcut, ShortcutError};
 
 const TRAY_UID: u32 = 1;
+const NIN_KEYSELECT: u32 = NIN_SELECT | NINF_KEY;
 const WM_TRAYICON: u32 = WM_APP + 1;
 const WM_STOP_TRAY: u32 = WM_APP + 2;
 const MENU_SHOW: usize = 1001;
@@ -152,7 +158,7 @@ pub(crate) fn show_notification(
         return Err(NotificationError::TrayUnavailable);
     }
     let mut data = notify_data(hwnd as HWND);
-    data.uFlags = NIF_INFO;
+    data.uFlags = NIF_INFO | NIF_SHOWTIP;
     data.dwInfoFlags = if critical { NIIF_ERROR } else { NIIF_WARNING };
     write_wide_fixed(&mut data.szInfoTitle, title);
     write_wide_fixed(&mut data.szInfo, body);
@@ -334,18 +340,25 @@ impl TrayIcon {
             return Err("Failed to allow taskbar recreation notifications.".into());
         }
         let mut data = notify_data(self.hwnd);
-        data.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
+        data.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP | NIF_SHOWTIP;
         data.uCallbackMessage = WM_TRAYICON;
         data.hIcon = load_app_icon();
         write_wide_fixed(&mut data.szTip, "Winderust");
         // SAFETY: data identifies the live window and uses a shared icon handle.
-        self.registered = unsafe { Shell_NotifyIconW(NIM_ADD, &data) } != 0;
-        if self.registered {
-            NOTIFICATION_WINDOW.store(self.hwnd as isize, Ordering::Release);
-            Ok(())
-        } else {
-            Err("Failed to add Winderust to the system tray.".into())
+        if unsafe { Shell_NotifyIconW(NIM_ADD, &data) } == 0 {
+            return Err("Failed to add Winderust to the system tray.".into());
         }
+        let mut data = notify_data(self.hwnd);
+        data.Anonymous.uVersion = NOTIFYICON_VERSION_4;
+        // SAFETY: data identifies the icon just added and initializes the version union field.
+        if unsafe { Shell_NotifyIconW(NIM_SETVERSION, &data) } == 0 {
+            // SAFETY: data identifies the just-added icon, whose registration is incomplete.
+            unsafe { Shell_NotifyIconW(NIM_DELETE, &data) };
+            return Err(t!("tray.keyboard_access_unavailable").into_owned());
+        }
+        self.registered = true;
+        NOTIFICATION_WINDOW.store(self.hwnd as isize, Ordering::Release);
+        Ok(())
     }
 }
 
@@ -590,22 +603,42 @@ unsafe extern "system" fn tray_wnd_proc(
     if message == WM_POWERBROADCAST && wparam == PBT_APMPOWERSTATUSCHANGE as usize {
         wake_ui();
     }
-    if message == WM_TRAYICON && wparam as u32 == TRAY_UID {
-        match lparam as u32 {
-            WM_LBUTTONUP | WM_LBUTTONDBLCLK | NIN_BALLOONUSERCLICK => {
+    if message == WM_TRAYICON {
+        match tray_callback(lparam) {
+            Some(TrayCallback::Restore) => {
                 request_restore();
                 return 0;
             }
-            WM_RBUTTONUP => {
+            Some(TrayCallback::OpenMenu) => {
                 show_tray_menu(hwnd);
                 return 0;
             }
-            _ => {}
+            None => {}
         }
     }
 
     // SAFETY: unhandled messages are forwarded with the unchanged window callback arguments.
     unsafe { DefWindowProcW(hwnd, message, wparam, lparam) }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum TrayCallback {
+    Restore,
+    OpenMenu,
+}
+
+fn tray_callback(lparam: LPARAM) -> Option<TrayCallback> {
+    let payload = lparam as u32;
+    if payload >> 16 != TRAY_UID {
+        return None;
+    }
+    match payload & 0xffff {
+        NIN_KEYSELECT | NIN_SELECT | WM_LBUTTONUP | WM_LBUTTONDBLCLK | NIN_BALLOONUSERCLICK => {
+            Some(TrayCallback::Restore)
+        }
+        WM_CONTEXTMENU => Some(TrayCallback::OpenMenu),
+        _ => None,
+    }
 }
 
 pub(crate) fn request_restore() {
@@ -652,18 +685,43 @@ fn append_menu(
 }
 
 fn show_tray_menu(hwnd: HWND) {
-    crate::platform::windows::menu_theme::apply(hwnd);
-    // SAFETY: CreatePopupMenu has no pointer inputs and returns either a menu handle or null.
-    let menu = unsafe { CreatePopupMenu() };
-    if menu.is_null() {
-        return;
-    }
-
     let state = MENU_STATE
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .clone()
         .unwrap_or_default();
+    match track_tray_menu(hwnd, &state) {
+        MENU_SHOW => request_restore(),
+        // The app restores its window and owns confirmation and shutdown.
+        MENU_EXIT => {
+            EXIT_REQUESTED.store(true, Ordering::Relaxed);
+            wake_ui();
+        }
+        command => {
+            let data = notify_data(hwnd);
+            // SAFETY: data identifies this tray host's icon; the shell validates registration.
+            unsafe { Shell_NotifyIconW(NIM_SETFOCUS, &data) };
+            if let Some(action) = menu_action(command, &state) {
+                MENU_ACTIONS
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(action);
+                wake_ui();
+            }
+        }
+    }
+}
+
+fn track_tray_menu(hwnd: HWND, state: &MenuState) -> usize {
+    let Some((point, exclusion)) = tray_menu_placement(hwnd) else {
+        return 0;
+    };
+    crate::platform::windows::menu_theme::apply(hwnd);
+    // SAFETY: CreatePopupMenu has no pointer inputs and returns either a menu handle or null.
+    let menu = unsafe { CreatePopupMenu() };
+    if menu.is_null() {
+        return 0;
+    }
     let built = append_menu(menu, MENU_SHOW, &t!("tray.show_winderust"), MF_STRING)
         && append_menu(menu, 0, "", MF_SEPARATOR)
         && append_menu(
@@ -707,48 +765,58 @@ fn show_tray_menu(hwnd: HWND) {
     if !built {
         // SAFETY: this call owns the menu and any successfully attached submenus.
         unsafe { DestroyMenu(menu) };
-        return;
+        return 0;
     }
 
-    let mut point = POINT { x: 0, y: 0 };
-    // SAFETY: point is writable, and hwnd is the live application window from the callback.
+    // SAFETY: hwnd and menu are live. The optional exclusion rectangle stays alive through
+    // tracking, after which this call destroys the owned menu and posts a pointer-free WM_NULL.
     unsafe {
-        GetCursorPos(&mut point);
         SetForegroundWindow(hwnd);
-    }
-
-    // SAFETY: menu and hwnd are live for the duration of the call; a null exclusion rectangle is
-    // permitted. The owned menu is destroyed exactly once after TrackPopupMenu returns.
-    let command = unsafe {
-        let command = TrackPopupMenu(
+        let command = TrackPopupMenuEx(
             menu,
-            TPM_RETURNCMD | TPM_RIGHTBUTTON,
+            TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_VERTICAL,
             point.x,
             point.y,
-            0,
             hwnd,
-            null(),
+            exclusion.as_ref().map_or(null(), std::ptr::from_ref),
         );
         DestroyMenu(menu);
-        command
-    };
+        PostMessageW(hwnd, WM_NULL, 0, 0);
+        command as usize
+    }
+}
 
-    match command as usize {
-        MENU_SHOW => request_restore(),
-        // The app restores its window and owns confirmation and shutdown.
-        MENU_EXIT => EXIT_REQUESTED.store(true, Ordering::Relaxed),
-        command => {
-            if let Some(action) = menu_action(command, &state) {
-                MENU_ACTIONS
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .push(action);
-            }
-        }
+fn tray_menu_placement(hwnd: HWND) -> Option<(POINT, Option<TPMPARAMS>)> {
+    let icon = NOTIFYICONIDENTIFIER {
+        cbSize: size_of::<NOTIFYICONIDENTIFIER>() as u32,
+        hWnd: hwnd,
+        uID: TRAY_UID,
+        ..Default::default()
+    };
+    let mut rect = RECT::default();
+    // WM_CONTEXTMENU does not have documented anchor coordinates in its callback payload.
+    // SAFETY: icon identifies the tray host's registered icon and rect is writable.
+    if unsafe { Shell_NotifyIconGetRect(&icon, &mut rect) } == S_OK {
+        let (point, exclusion) = icon_menu_placement(rect);
+        return Some((point, Some(exclusion)));
     }
-    if command != 0 {
-        wake_ui();
-    }
+    let mut point = POINT::default();
+    // SAFETY: point is writable. This fallback is used if the shell cannot locate the icon.
+    let found_cursor = unsafe { GetCursorPos(&mut point) } != 0;
+    found_cursor.then_some((point, None))
+}
+
+fn icon_menu_placement(rect: RECT) -> (POINT, TPMPARAMS) {
+    (
+        POINT {
+            x: rect.left,
+            y: rect.top,
+        },
+        TPMPARAMS {
+            cbSize: size_of::<TPMPARAMS>() as u32,
+            rcExclude: rect,
+        },
+    )
 }
 
 pub(crate) fn set_hidden_to_tray(hidden: bool) {
@@ -769,6 +837,85 @@ pub(crate) fn set_hidden_to_tray(hidden: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn tray_callback_payload(icon: u32, event: u32) -> LPARAM {
+        ((icon << 16) | event) as LPARAM
+    }
+
+    #[test]
+    fn tray_callbacks_use_the_version_four_icon_id_and_event() {
+        use windows_sys::Win32::UI::WindowsAndMessaging::WM_RBUTTONUP;
+
+        for event in [
+            NIN_KEYSELECT,
+            NIN_SELECT,
+            WM_LBUTTONUP,
+            WM_LBUTTONDBLCLK,
+            NIN_BALLOONUSERCLICK,
+        ] {
+            assert_eq!(
+                tray_callback(tray_callback_payload(TRAY_UID, event)),
+                Some(TrayCallback::Restore)
+            );
+        }
+        assert_eq!(
+            tray_callback(tray_callback_payload(TRAY_UID, WM_CONTEXTMENU)),
+            Some(TrayCallback::OpenMenu)
+        );
+        assert_eq!(
+            tray_callback(tray_callback_payload(TRAY_UID, WM_RBUTTONUP)),
+            None
+        );
+        assert_eq!(
+            tray_callback(tray_callback_payload(TRAY_UID + 1, WM_CONTEXTMENU)),
+            None
+        );
+        assert_eq!(tray_callback(WM_CONTEXTMENU as LPARAM), None);
+    }
+
+    #[test]
+    fn tray_menu_anchor_and_exclusion_preserve_negative_screen_coordinates() {
+        let rect = RECT {
+            left: -1800,
+            top: -54,
+            right: -1780,
+            bottom: -34,
+        };
+        let (point, exclusion) = icon_menu_placement(rect);
+        assert_eq!((point.x, point.y), (-1800, -54));
+        let excluded = exclusion.rcExclude;
+        assert_eq!(
+            (excluded.left, excluded.top, excluded.right, excluded.bottom),
+            (-1800, -54, -1780, -34)
+        );
+    }
+
+    #[test]
+    #[ignore = "Exercises the restore mailbox on a private tray window without installing a shell icon"]
+    fn tray_keyboard_activation_requests_restore_on_native_owner() {
+        let (hwnd, thread, _) = start_tray_window().expect("start independent tray host");
+        take_restore_requested();
+        let activate = |icon| {
+            // SAFETY: hwnd is this test's live hidden window, and the callback is pointer-free.
+            unsafe {
+                SendMessageW(
+                    hwnd,
+                    WM_TRAYICON,
+                    WPARAM::MAX,
+                    tray_callback_payload(icon, NIN_KEYSELECT),
+                )
+            };
+            take_restore_requested()
+        };
+        let wrong_icon = activate(TRAY_UID + 1);
+        let correct_icon = activate(TRAY_UID);
+        let duplicate_restore = take_restore_requested();
+        // SAFETY: WM_STOP_TRAY carries no pointers and stops the test's tray owner.
+        let stopped = unsafe { PostMessageW(hwnd, WM_STOP_TRAY, 0, 0) } != 0;
+        assert!(stopped);
+        assert!(thread.join().is_ok());
+        assert!(!wrong_icon && correct_icon && !duplicate_restore);
+    }
 
     #[test]
     fn window_caption_and_switcher_use_the_embedded_app_icon() {

@@ -27,6 +27,7 @@ app:
 
 tray:
   notification_icon_unavailable: "Windows notification tray icon is unavailable."
+  keyboard_access_unavailable: "Windows could not enable keyboard access for the Winderust notification area icon."
   notification_rejected: "Windows rejected the notification."
   show_winderust: "Show Winderust"
   exit: "Exit"
