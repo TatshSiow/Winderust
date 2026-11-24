@@ -4,7 +4,7 @@ use crate::backend::power_source::is_plugged_in;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 static REQUESTED: AtomicBool = AtomicBool::new(false);
-const EXTRA_STATES: usize = 84;
+const EXTRA_STATES: usize = 87;
 pub(super) struct Run {
     pages: Vec<Page>,
     index: usize,
@@ -72,6 +72,8 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                     | 80
                     | 82
                     | 83
+                    | 85
+                    | 86
             )
         });
         let page = match extra {
@@ -87,7 +89,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             Some(14) => Page::ProcessList,
             Some(15) => Page::PowerPlanControl,
             Some(16) => Page::ActionLog,
-            Some(17 | 24) => Page::AdaptiveEngine,
+            Some(17 | 24 | 84..=85) => Page::AdaptiveEngine,
             Some(18) => Page::EfficiencyMode,
             Some(19) => Page::ByActivity,
             Some(20) => Page::AdvancedPowerPlanTuning,
@@ -105,7 +107,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             Some(46) => Page::AdvancedPowerPlanTuning,
             Some(47) => Page::AdaptiveEngine,
             Some(48 | 79..=80) => Page::ProcessList,
-            Some(49) => Page::ActionLog,
+            Some(49 | 86) => Page::ActionLog,
             Some(50 | 77..=78) => Page::WinderustBehaviour,
             Some(51..=53) => Page::ResourceThresholds,
             Some(54..=57 | 81) => Page::ByCpuLoad,
@@ -700,7 +702,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             app.settings.io_priority.enabled = true;
             app.settings = SettingsEditor::with_settings((*app.settings).clone());
         }
-        if matches!(extra, Some(13 | 16 | 29..=34 | 38 | 42 | 43 | 49)) {
+        if matches!(extra, Some(13 | 16 | 29..=34 | 38 | 42 | 43 | 49 | 86)) {
             use crate::action_log::{ActionLogEntry, ActionLogFeature, ActionLogResult};
             app.status.action_log_entries = Arc::new(
                 (0..10)
@@ -893,7 +895,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             exercise_settings_export(app);
         }
         if matches!(extra, Some(79..=80)) {
-            let _ = app.update(Message::Cancel);
+            app.settings = SettingsEditor::with_settings(app.settings.global().clone());
             let context = extra == Some(79);
             app.processes.show_copy_path_fixture(context);
             assert_eq!(app.processes.context_open(), context);
@@ -925,8 +927,52 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             let _ = app.update(Message::SidePanelTab(SidePanelTab::Status));
             assert_eq!(app.side_panel_tab, SidePanelTab::Status);
         }
+        if matches!(extra, Some(84..=85)) {
+            use adaptive_engine::{Message as AdaptiveMessage, TuningGroup, TuningTab};
+
+            let tab = if extra == Some(84) {
+                app.adaptive.reset_drafts();
+                app.settings.general.enabled = false;
+                app.settings = SettingsEditor::with_settings(app.settings.global().clone());
+                let enabled = !app
+                    .settings
+                    .adaptive_engine_process
+                    .cpu_pressure_restraint_enabled;
+                let _ = app.update(Message::Adaptive(AdaptiveMessage::Toggle(
+                    |settings, value| {
+                        settings
+                            .adaptive_engine_process
+                            .cpu_pressure_restraint_enabled = value;
+                    },
+                    enabled,
+                )));
+                let _ = app.update(Message::Adaptive(AdaptiveMessage::Collapse(
+                    TuningGroup::SharedDetection,
+                )));
+                let _ = app.update(Message::ToggleSidePanel);
+                TuningTab::CpuBehaviour
+            } else {
+                TuningTab::CustomRules
+            };
+            let pending = app.settings.adaptive_engine_process.clone();
+            let _ = app.update(Message::Adaptive(AdaptiveMessage::TuningTab(tab)));
+            assert_eq!(app.settings.adaptive_engine_process, pending);
+            assert!(app.pending_settings_changes());
+        }
+        if extra == Some(86) {
+            app.settings = SettingsEditor::with_settings(app.settings.global().clone());
+            let mode =
+                if app.settings.advanced.action_log_mode == crate::config::ActionLogMode::Full {
+                    crate::config::ActionLogMode::Warning
+                } else {
+                    crate::config::ActionLogMode::Full
+                };
+            let _ = app.update(Message::ActionLog(action_log::Message::LogMode(mode)));
+            let _ = app.update(Message::ToggleSidePanel);
+            assert!(app.pending_settings_changes());
+        }
         let size = match extra {
-            Some(35..=37 | 40 | 42 | 44..=50 | 52..=69 | 71..=83) => iced::Size::new(900.0, 620.0),
+            Some(35..=37 | 40 | 42 | 44..=50 | 52..=69 | 71..=86) => iced::Size::new(900.0, 620.0),
             Some(30) => iced::Size::new(1280.0, 720.0),
             Some(31) => iced::Size::new(1440.0, 900.0),
             Some(32) => iced::Size::new(1920.0, 720.0),
@@ -979,6 +1025,12 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
     if matches!(extra, Some(77..=78)) && run.ticks == 3 {
         return Some(iced::widget::operation::snap_to(
             "settings-content",
+            iced::widget::scrollable::RelativeOffset { x: 0.0, y: 1.0 },
+        ));
+    }
+    if extra == Some(84) && run.ticks == 3 {
+        return Some(iced::widget::operation::snap_to(
+            "adaptive-engine-content",
             iced::widget::scrollable::RelativeOffset { x: 0.0, y: 1.0 },
         ));
     }

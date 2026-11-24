@@ -418,10 +418,6 @@ impl Editor {
         self.live_numbers.validation_error()
     }
 
-    pub(super) fn shows_custom_rules(&self) -> bool {
-        self.tuning_tabs[0] == TuningTab::CustomRules
-    }
-
     pub(super) fn preset_open(&self) -> bool {
         self.draft.is_some()
     }
@@ -903,6 +899,11 @@ impl Editor {
                     true,
                     super::motion::Effect::Content(tab as u64),
                 ))
+                .id(if preset {
+                    "adaptive-engine-preset-content"
+                } else {
+                    "adaptive-engine-content"
+                })
                 .width(Fill)
                 .height(Fill),
             )

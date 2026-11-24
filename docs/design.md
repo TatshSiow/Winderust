@@ -32,6 +32,8 @@ Prefer visible state, compact controls, and predictable rows. Use restrained acc
   beside the control and longer explanations in Info.
 - Distinguish a switch's configured state, an unsaved edit, and the last verified
   result from Windows. Use the shared Save and Discard flow for settings changes.
+  Reserve space for the Save notice below editors so it leaves their controls
+  and scrollbars reachable at the minimum window size.
 - Make core tasks keyboard-operable with visible focus and predictable focus return.
   Give controls meaningful Windows UI Automation names and states. Use at least
   4.5:1 contrast for normal text across supported themes and accent choices. Use

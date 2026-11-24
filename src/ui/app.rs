@@ -3323,6 +3323,7 @@ impl WinderustApp {
         let save_notice_in_editor = matches!(
             self.page,
             Page::PowerPlanControl
+                | Page::AdaptiveEngine
                 | Page::AdaptiveProcessorPower
                 | Page::AppSuspension
                 | Page::CpuLimiter
@@ -3342,12 +3343,13 @@ impl WinderustApp {
                 | Page::CpuSetsSoft
                 | Page::ProcessorAffinityHard
                 | Page::ResourceThresholds
+                | Page::ActionLog
                 | Page::WinderustBehaviour
                 | Page::LanguageAndAppearance
                 | Page::ExperimentalFeatures
+                | Page::Win32PrioritySeparation
                 | Page::About
-        ) || priority_kind(self.page).is_some()
-            || (self.page == Page::AdaptiveEngine && self.adaptive.shows_custom_rules());
+        ) || priority_kind(self.page).is_some();
         let save_card =
             || widgets::settings_card(self.save_notice(settings_are_pending)).width(360);
         let content = container(super::motion::wrap(
