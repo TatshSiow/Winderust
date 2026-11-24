@@ -4,7 +4,7 @@ use crate::backend::power_source::is_plugged_in;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 static REQUESTED: AtomicBool = AtomicBool::new(false);
-const EXTRA_STATES: usize = 72;
+const EXTRA_STATES: usize = 73;
 pub(super) struct Run {
     pages: Vec<Page>,
     index: usize,
@@ -65,6 +65,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                     | 67
                     | 69
                     | 71
+                    | 72
             )
         });
         let page = match extra {
@@ -84,7 +85,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             Some(18) => Page::EfficiencyMode,
             Some(19) => Page::ByActivity,
             Some(20) => Page::AdvancedPowerPlanTuning,
-            Some(21) => Page::AppSuspension,
+            Some(21 | 72) => Page::AppSuspension,
             Some(22) => Page::LanguageAndAppearance,
             Some(23) => Page::About,
             Some(25) => Page::ProcessPriority,
@@ -327,6 +328,11 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                 assert!(!app.pending_editor());
                 assert_eq!(app.settings.by_time, before);
             }
+        }
+        if extra == Some(72) {
+            let _ = app.update(Message::AdaptiveProcessorPower(
+                adaptive_processor_power::Message::CancelPreset,
+            ));
         }
         let was_open = app.side_panel_open;
         let navigate = app.update(Message::Page(page));
@@ -633,7 +639,18 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             app.settings.app_suspension.enabled = true;
             let before = app.settings.app_suspension.clone();
             let _ = app.update(Message::Suspension(app_suspension::Message::ToggleSettings));
+            for group in [1, 2] {
+                let _ = app.update(Message::Suspension(app_suspension::Message::Group(group)));
+            }
             assert_eq!(app.settings.app_suspension, before);
+        }
+        if matches!(extra, Some(21 | 72)) {
+            assert_eq!(app.page, Page::AppSuspension);
+            app.settings.app_suspension.suspendable_apps =
+                vec![super::super::process_rules::new_app_suspension_rule(
+                    r"C:\Apps\Example\example.exe",
+                )];
+            app.settings = SettingsEditor::with_settings((*app.settings).clone());
         }
         if extra == Some(24) {
             let _ = app.update(Message::Adaptive(adaptive_engine::Message::TuningTab(
@@ -842,7 +859,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             assert!(app.adaptive_processor_power.preset_open());
         }
         let size = match extra {
-            Some(35..=37 | 40 | 42 | 44..=50 | 52..=69 | 71) => iced::Size::new(900.0, 620.0),
+            Some(35..=37 | 40 | 42 | 44..=50 | 52..=69 | 71..=72) => iced::Size::new(900.0, 620.0),
             Some(30) => iced::Size::new(1280.0, 720.0),
             Some(31) => iced::Size::new(1440.0, 900.0),
             Some(32) => iced::Size::new(1920.0, 720.0),
@@ -883,6 +900,12 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
     if matches!(extra, Some(56 | 57)) && run.ticks == 3 {
         return Some(iced::widget::operation::snap_to(
             "by-cpu-load-rule-details",
+            iced::widget::scrollable::RelativeOffset { x: 0.0, y: 1.0 },
+        ));
+    }
+    if extra == Some(72) && run.ticks == 3 {
+        return Some(iced::widget::operation::snap_to(
+            "app-suspension-settings",
             iced::widget::scrollable::RelativeOffset { x: 0.0, y: 1.0 },
         ));
     }

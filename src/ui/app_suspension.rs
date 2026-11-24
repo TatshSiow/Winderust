@@ -346,7 +346,16 @@ impl Editor {
             Self::can_add(s, exact_path_input(&self.path), unavailable).then_some(Message::Add),
             |path| Some(!app_suspension::contains_process(unavailable, path)),
         );
-        body = body.push(super::widgets::settings_card(picker));
+        body = body.push(super::widgets::settings_card(
+            column![
+                picker,
+                text(t!("app_suspension.tcp_thresholds_help").to_string())
+                    .size(design::typography::SECONDARY)
+                    .style(text::secondary)
+                    .wrapping(text::Wrapping::WordOrGlyph),
+            ]
+            .spacing(design::space::SMALL),
+        ));
         let mut cards = Vec::new();
         for (i, r) in s.suspendable_apps.iter().enumerate() {
             let path = r.executable_path.trim_start();
@@ -447,7 +456,10 @@ impl Editor {
         if let Some(error) = &status.last_error {
             body = body.push(text(error.clone()));
         }
-        scrollable(body).height(Fill).into()
+        scrollable(body)
+            .id("app-suspension-settings")
+            .height(Fill)
+            .into()
     }
 
     fn delay_row(

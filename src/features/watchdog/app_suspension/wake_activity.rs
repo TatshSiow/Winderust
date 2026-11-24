@@ -193,7 +193,7 @@ pub(super) fn add_tcp_connections(
 }
 
 pub(super) fn tcp4_connection_key(row: &MIB_TCPROW_OWNER_PID) -> Option<String> {
-    is_network_intent_tcp_state(row.dwState).then(|| {
+    is_monitored_tcp_state(row.dwState).then(|| {
         format!(
             "tcp4:{}:{}:{}:{}",
             row.dwLocalAddr, row.dwLocalPort, row.dwRemoteAddr, row.dwRemotePort
@@ -202,7 +202,7 @@ pub(super) fn tcp4_connection_key(row: &MIB_TCPROW_OWNER_PID) -> Option<String> 
 }
 
 pub(super) fn tcp6_connection_key(row: &MIB_TCP6ROW_OWNER_PID) -> Option<String> {
-    is_network_intent_tcp_state(row.dwState).then(|| {
+    is_monitored_tcp_state(row.dwState).then(|| {
         format!(
             "tcp6:{:?}:{}:{:?}:{}:{}:{}",
             row.ucLocalAddr,
@@ -352,7 +352,7 @@ fn tcp6_data_stats(row: &MIB_TCP6ROW) -> Option<NetworkActivityCounters> {
     })
 }
 
-pub(super) fn is_network_intent_tcp_state(state: u32) -> bool {
+pub(super) fn is_monitored_tcp_state(state: u32) -> bool {
     matches!(
         state,
         TCP_STATE_SYN_SENT | TCP_STATE_SYN_RECEIVED | TCP_STATE_ESTABLISHED
@@ -366,7 +366,7 @@ pub(super) fn query_ip_helper_table(
     let first_status = query(null_mut(), &mut size);
     if first_status != ERROR_INSUFFICIENT_BUFFER && first_status != NO_ERROR {
         return Err(format!(
-            "Network intent detection failed to size IP Helper table with error {first_status}."
+            "TCP activity detection failed to size IP Helper table with error {first_status}."
         ));
     }
 
@@ -382,7 +382,7 @@ pub(super) fn query_ip_helper_table(
     }
     if status != NO_ERROR {
         return Err(format!(
-            "Network intent detection failed to read IP Helper table with error {status}."
+            "TCP activity detection failed to read IP Helper table with error {status}."
         ));
     }
 
