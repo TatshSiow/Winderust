@@ -1559,6 +1559,10 @@ fn format_bytes_per_second(bytes_per_second: f64) -> String {
         format!("{:.1} MB/s", bytes_per_second / MB)
     } else if bytes_per_second >= KB {
         format!("{:.1} KB/s", bytes_per_second / KB)
+    } else if bytes_per_second > 0.0 && bytes_per_second < 0.1 {
+        "<0.1 B/s".into()
+    } else if bytes_per_second > 0.0 && bytes_per_second < 1.0 {
+        format!("{bytes_per_second:.1} B/s")
     } else {
         format!("{bytes_per_second:.0} B/s")
     }
@@ -2990,6 +2994,10 @@ mod tests {
     }
     #[test]
     fn network_chart_and_headers_use_the_same_byte_rates() {
+        assert_eq!(format_bytes_per_second(0.0), "0 B/s");
+        assert_eq!(format_bytes_per_second(0.5), "0.5 B/s");
+        assert_eq!(format_bytes_per_second(0.01), "<0.1 B/s");
+
         let mut model = Model::default();
         model.record(Sample {
             network: NetworkUsageSnapshot {
