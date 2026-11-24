@@ -15,7 +15,7 @@ use crate::features::watchdog::memory_trim::MemoryTrimStatus;
 use crate::ui::scrolling::scrollable;
 use crate::ui::Page;
 use iced::widget::{canvas, column, container, responsive, row, text};
-use iced::{mouse, Element, Fill, Point, Rectangle, Renderer, Theme};
+use iced::{keyboard::key::Named, mouse, Element, Fill, Point, Rectangle, Renderer, Theme};
 use rust_i18n::t;
 use std::{
     cell::RefCell,
@@ -208,13 +208,28 @@ pub(super) struct Model {
     latest: Sample,
     history: VecDeque<Sample>,
     hovered: [Option<usize>; 4],
+    inspection: Option<ChartInspection>,
     recent_log_widths: RefCell<RecentLogWidths>,
 }
 #[derive(Debug, Clone)]
 pub(super) enum Message {
     Navigate(Page),
     HoverChart(ChartKind, Option<usize>),
+    InspectChart(ChartKind, HistoryAction),
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum HistoryAction {
+    Step { newer: bool },
+    Clear,
+}
+
+#[derive(Clone, Copy)]
+struct ChartInspection {
+    kind: ChartKind,
+    at: Option<Instant>,
+}
+
 impl Model {
     #[cfg(any(test, feature = "render-smoke"))]
     pub(super) fn populate_smoke_history(&mut self) {
@@ -299,6 +314,43 @@ impl Model {
     pub(super) fn hover_chart(&mut self, kind: ChartKind, slot: Option<usize>) {
         self.hovered[kind as usize] = slot;
     }
+
+    pub(super) fn inspect_chart(&mut self, kind: ChartKind, action: HistoryAction) {
+        let current = self.inspection_for(kind);
+        match action {
+            HistoryAction::Clear if current.is_some() => self.inspection = None,
+            HistoryAction::Step { newer } => {
+                let chart = self.chart_at(kind, self.chart_end(Instant::now()));
+                let current = current
+                    .filter(|_| chart.inspected.is_some())
+                    .and_then(|inspection| inspection.at);
+                self.inspection = Some(ChartInspection {
+                    kind,
+                    at: chart.history_time(current, newer),
+                });
+            }
+            HistoryAction::Clear => {}
+        }
+    }
+
+    fn inspection_for(&self, kind: ChartKind) -> Option<ChartInspection> {
+        self.inspection.filter(|inspection| inspection.kind == kind)
+    }
+
+    fn overdue(&self, now: Instant) -> bool {
+        self.latest
+            .captured_at
+            .is_some_and(|at| now.saturating_duration_since(at.instant) > MAX_SAMPLE_GAP)
+    }
+
+    fn chart_end(&self, now: Instant) -> Option<Instant> {
+        if self.overdue(now) {
+            Some(now)
+        } else {
+            self.latest.captured_at.map(|stamp| stamp.instant)
+        }
+    }
+
     pub(super) fn view<'a>(
         &'a self,
         settings: &'a Settings,
@@ -306,11 +358,8 @@ impl Model {
     ) -> Element<'a, Message> {
         responsive(move |size| {
             let now = Instant::now();
-            let latest_at = self.latest.captured_at.map(|stamp| stamp.instant);
-            let overdue =
-                latest_at.is_some_and(|at| now.saturating_duration_since(at) > MAX_SAMPLE_GAP);
-            let chart_end = if overdue { Some(now) } else { latest_at };
-            let displayed_sample = if overdue {
+            let chart_end = self.chart_end(now);
+            let displayed_sample = if self.overdue(now) {
                 Sample::default()
             } else {
                 self.latest
@@ -549,14 +598,7 @@ impl Model {
             if !label.is_empty() {
                 legend = legend.push(
                     row![
-                        container(iced::widget::Space::new())
-                            .width(8)
-                            .height(8)
-                            .style(move |theme: &Theme| container::Style {
-                                background: Some(chart_colors(theme)[series].into()),
-                                border: iced::border::rounded(4),
-                                ..Default::default()
-                            }),
+                        chart_key(series, 8),
                         text(label).size(design::typography::BADGE),
                     ]
                     .spacing(design::space::CONTROL)
@@ -565,8 +607,15 @@ impl Model {
             }
         }
         let tip = chart
-            .tooltip_content(self, self.hovered[kind as usize])
+            .readout(self, self.hovered[kind as usize])
+            .map(ChartReadout::tooltip)
             .unwrap_or_else(|| iced::widget::Space::new().into());
+        let history = chart.readout(self, chart.inspected);
+        let empty_history = self
+            .inspection_for(kind)
+            .is_some_and(|inspection| inspection.at.is_none())
+            && chart.history_time(None, true).is_none();
+        let inspecting = history.is_some() || empty_history;
         // Chart tooltip content owns its inset background and cursor spacing.
         let plot = iced::widget::tooltip(
             canvas(chart).width(Fill).height((height - 136.0).max(64.0)),
@@ -577,42 +626,54 @@ impl Model {
         .delay(std::time::Duration::ZERO)
         .style(|_| container::Style::default());
         let is_io = matches!(kind, ChartKind::Io | ChartKind::Network);
-        let (right_value, primary): (_, Element<'static, Message>) = if is_io {
-            let details = column![
-                text(format!("{first}: {first_value}"))
-                    .size(design::typography::SECTION)
-                    .style(|theme| text::Style {
-                        color: Some(chart_text_color(theme, 0))
-                    }),
-                text(format!("{second}: {second_value}"))
-                    .size(design::typography::SECTION)
-                    .style(|theme| text::Style {
-                        color: Some(chart_text_color(theme, 1))
-                    }),
-            ]
-            .spacing(design::space::TIGHT);
-            (total, details.into())
-        } else {
-            let details = column![
-                super::widgets::heading(total, design::typography::TITLE),
-                text(if kind == ChartKind::Memory {
-                    format!("{first}: {first_value}")
-                } else {
-                    String::new()
-                })
-                .size(design::typography::CAPTION)
-                .style(text::secondary),
-            ]
-            .spacing(design::space::TIGHT);
-            (second_value, details.into())
-        };
-        let right_label = if is_io { t!("home.io_total") } else { second };
-        container(
+        let (right_label, right_value, primary): (_, _, Element<'static, Message>) =
+            if let Some(history) = history {
+                let mut values = column![].spacing(design::space::TIGHT);
+                for (series, label) in history.values.into_iter().enumerate() {
+                    if let Some(label) = label {
+                        values = values.push(chart_metric(label, series));
+                    }
+                }
+                (
+                    t!("home.chart_history_at", time = history.time).into_owned(),
+                    String::new(),
+                    values.into(),
+                )
+            } else if empty_history {
+                (
+                    t!("home.chart_history").into_owned(),
+                    String::new(),
+                    text(t!("home.chart_history_empty").into_owned())
+                        .style(text::secondary)
+                        .into(),
+                )
+            } else if is_io {
+                let details = column![
+                    chart_metric(format!("{first}: {first_value}"), 0),
+                    chart_metric(format!("{second}: {second_value}"), 1),
+                ]
+                .spacing(design::space::TIGHT);
+                (t!("home.io_total").into_owned(), total, details.into())
+            } else {
+                let details = column![
+                    super::widgets::heading(total, design::typography::TITLE),
+                    text(if kind == ChartKind::Memory {
+                        format!("{first}: {first_value}")
+                    } else {
+                        String::new()
+                    })
+                    .size(design::typography::CAPTION)
+                    .style(text::secondary),
+                ]
+                .spacing(design::space::TIGHT);
+                (second.into_owned(), second_value, details.into())
+            };
+        let card = container(
             column![
                 row![
                     super::widgets::heading(title.to_string(), design::typography::SECTION)
                         .width(Fill),
-                    text(right_label.to_string())
+                    text(right_label)
                         .size(design::typography::CAPTION)
                         .style(text::secondary),
                 ]
@@ -641,8 +702,28 @@ impl Model {
         .padding(design::space::LARGE as u16)
         .height(height)
         .width(Fill)
-        .style(super::widgets::surface)
-        .into()
+        .style(super::widgets::surface);
+        super::motion::wrap_keys(
+            card.into(),
+            kind.focus_id(),
+            true,
+            move |key, modifiers, _| {
+                if !modifiers.is_empty() {
+                    return None;
+                }
+                let action = match key {
+                    Named::ArrowLeft | Named::ArrowRight => HistoryAction::Step {
+                        newer: key == Named::ArrowRight,
+                    },
+                    Named::Escape if inspecting => HistoryAction::Clear,
+                    _ => return None,
+                };
+                Some((
+                    Message::InspectChart(kind, action),
+                    action != HistoryAction::Clear,
+                ))
+            },
+        )
     }
     fn history_sample(&self, slot: usize) -> Option<&Sample> {
         let first_slot = HISTORY_LEN - self.history.len();
@@ -721,10 +802,22 @@ impl Model {
                 .flatten()
                 .fold(1.0, f64::max),
         };
+        let inspected = self
+            .inspection_for(kind)
+            .and_then(|inspection| inspection.at)
+            .and_then(|time| {
+                samples.iter().position(|sample| {
+                    sample.as_ref().is_some_and(|sample| {
+                        sample.has_reading()
+                            && sample.captured_at.is_some_and(|at| at.instant == time)
+                    })
+                })
+            });
         Chart {
             samples,
             maximum,
             kind,
+            inspected,
         }
     }
 }
@@ -886,6 +979,15 @@ pub(super) enum ChartKind {
     Network,
 }
 impl ChartKind {
+    pub(super) fn focus_id(self) -> &'static str {
+        match self {
+            Self::Cpu => "home-chart-cpu",
+            Self::Memory => "home-chart-memory",
+            Self::Io => "home-chart-disk-io",
+            Self::Network => "home-chart-network-io",
+        }
+    }
+
     fn tooltip_labels(self, sample: &Sample) -> [String; 2] {
         match self {
             Self::Cpu => [
@@ -947,6 +1049,7 @@ struct Chart {
     samples: [Option<ChartSample>; HISTORY_LEN],
     maximum: f64,
     kind: ChartKind,
+    inspected: Option<usize>,
 }
 #[derive(Default)]
 struct ChartState {
@@ -957,6 +1060,9 @@ struct ChartState {
 fn chart_colors(theme: &Theme) -> [iced::Color; 2] {
     let palette = theme.palette();
     let background = theme.extended_palette().background.neutral.color;
+    if design::is_contrast(theme) {
+        return [palette.primary, palette.text].map(|color| design::readable_on(color, background));
+    }
     let [first, second] = [
         palette.primary,
         iced::theme::palette::mix(palette.primary, palette.text, 0.5),
@@ -981,11 +1087,79 @@ fn chart_colors(theme: &Theme) -> [iced::Color; 2] {
     [first, second]
 }
 
+fn chart_key(series: usize, size: u16) -> iced::widget::Container<'static, Message> {
+    container(iced::widget::Space::new())
+        .width(u32::from(size))
+        .height(u32::from(size))
+        .style(move |theme: &Theme| container::Style {
+            background: Some(chart_colors(theme)[series].into()),
+            border: iced::border::rounded(if design::is_contrast(theme) && series == 1 {
+                0.0
+            } else {
+                f32::from(size) / 2.0
+            }),
+            ..Default::default()
+        })
+}
+
+fn chart_point(point: Point, radius: f32, square: bool) -> canvas::Path {
+    if square {
+        canvas::Path::rectangle(
+            Point::new(point.x - radius, point.y - radius),
+            iced::Size::new(radius * 2.0, radius * 2.0),
+        )
+    } else {
+        canvas::Path::circle(point, radius)
+    }
+}
+
 fn chart_text_color(theme: &Theme, series: usize) -> iced::Color {
     design::readable_on(
         chart_colors(theme)[series],
         theme.extended_palette().background.weak.color,
     )
+}
+
+fn chart_metric(label: String, series: usize) -> iced::widget::Text<'static> {
+    text(label)
+        .size(design::typography::SECTION)
+        .style(move |theme| text::Style {
+            color: Some(chart_text_color(theme, series)),
+        })
+}
+
+struct ChartReadout {
+    time: String,
+    values: [Option<String>; 2],
+}
+
+impl ChartReadout {
+    fn tooltip(self) -> Element<'static, Message> {
+        let mut content = column![text(self.time)
+            .size(design::typography::CAPTION)
+            .style(text::secondary)]
+        .spacing(design::space::TIGHT);
+        for (series, value) in self.values.into_iter().enumerate() {
+            if let Some(value) = value {
+                content = content.push(
+                    row![
+                        chart_key(series, 6),
+                        text(value).size(design::typography::SECONDARY),
+                    ]
+                    .spacing(design::space::SMALL)
+                    .align_y(iced::Center),
+                );
+            }
+        }
+        row![
+            iced::widget::Space::new().width(12),
+            container(content)
+                .padding(design::space::MEDIUM as u16)
+                .max_width(280)
+                .style(super::widgets::tooltip_surface),
+        ]
+        .into()
+    }
 }
 
 impl Chart {
@@ -1011,11 +1185,21 @@ impl Chart {
             .map(|(slot, _, _)| slot)
     }
 
-    fn tooltip_content(
-        &self,
-        model: &Model,
-        slot: Option<usize>,
-    ) -> Option<Element<'static, Message>> {
+    fn history_time(&self, current: Option<Instant>, newer: bool) -> Option<Instant> {
+        let mut times = self.samples.iter().flatten().filter_map(|sample| {
+            sample
+                .captured_at
+                .filter(|_| sample.has_reading())
+                .map(|stamp| stamp.instant)
+        });
+        match current {
+            None => times.next_back(),
+            Some(time) if newer => times.find(|next| *next > time).or(current),
+            Some(time) => times.rfind(|next| *next < time).or(current),
+        }
+    }
+
+    fn readout(&self, model: &Model, slot: Option<usize>) -> Option<ChartReadout> {
         let slot = slot?;
         let sample = self.sample_at(slot)?;
         let labels = self.kind.tooltip_labels(model.history_sample(slot)?);
@@ -1039,39 +1223,16 @@ impl Chart {
             ChartKind::Io => [t!("home.io_read"), t!("home.io_write")],
             ChartKind::Network => [t!("home.network_download"), t!("home.network_upload")],
         };
-        let mut content = column![text(time)
-            .size(design::typography::CAPTION)
-            .style(text::secondary)]
-        .spacing(design::space::TIGHT);
-        for (series, (name, label)) in names.into_iter().zip(labels).enumerate() {
-            if !name.is_empty() {
-                content = content.push(
-                    row![
-                        container(iced::widget::Space::new())
-                            .width(6)
-                            .height(6)
-                            .style(move |theme: &Theme| container::Style {
-                                background: Some(chart_colors(theme)[series].into()),
-                                border: iced::border::rounded(3),
-                                ..Default::default()
-                            }),
-                        text(format!("{name}: {label}")).size(design::typography::SECONDARY),
-                    ]
-                    .spacing(design::space::SMALL)
-                    .align_y(iced::Center),
-                );
-            }
-        }
-        Some(
-            row![
-                iced::widget::Space::new().width(12),
-                container(content)
-                    .padding(design::space::MEDIUM as u16)
-                    .max_width(280)
-                    .style(super::widgets::tooltip_surface),
-            ]
-            .into(),
-        )
+        let values = std::array::from_fn(|series| {
+            let name = &names[series];
+            let label = if sample.reading[series].is_some() {
+                labels[series].as_str().into()
+            } else {
+                t!("common.unavailable")
+            };
+            (!name.is_empty()).then(|| format!("{name}: {label}"))
+        });
+        Some(ChartReadout { time, values })
     }
 }
 
@@ -1130,7 +1291,7 @@ impl canvas::Program<Message> for Chart {
             *state.drawn.borrow_mut() = Some((self.clone(), theme.clone(), state.hovered));
         }
         vec![state.cache.draw(renderer, bounds.size(), |frame| {
-            self.draw_chart(frame, theme, bounds, state.hovered);
+            self.draw_chart(frame, theme, bounds, state.hovered.or(self.inspected));
         })]
     }
 }
@@ -1150,7 +1311,13 @@ impl Chart {
         );
         let height = (bounds.height - 28.0).max(1.0);
         let width = (bounds.width - CHART_AXIS_WIDTH).max(1.0);
+        let contrast = design::is_contrast(theme);
         let grid = theme.extended_palette().background.strong.color;
+        let grid = if contrast {
+            grid.scale_alpha(0.32)
+        } else {
+            grid
+        };
         for fraction in [0.0, 0.5, 1.0] {
             frame.stroke(
                 &canvas::Path::line(
@@ -1196,6 +1363,11 @@ impl Chart {
         let series_count = if self.kind == ChartKind::Memory { 1 } else { 2 };
         let colors = chart_colors(theme);
         for (series, color) in colors.into_iter().take(series_count).enumerate() {
+            let dashed = contrast && series == 1;
+            let mut stroke = canvas::Stroke::default().with_width(1.8).with_color(color);
+            if dashed {
+                stroke.line_dash.segments = &[5.0, 3.0];
+            }
             for run in self
                 .samples
                 .chunk_by(|previous, next| match (previous, next) {
@@ -1213,28 +1385,27 @@ impl Chart {
                     continue;
                 };
                 let Some(last) = line.next_back() else {
-                    frame.fill(&canvas::Path::circle(first, 2.0), color);
+                    frame.fill(&chart_point(first, 2.0, dashed), color);
                     continue;
                 };
-                let area = canvas::Path::new(|path| {
-                    path.move_to(Point::new(first.x, height));
-                    for point in points() {
-                        path.line_to(point);
-                    }
-                    path.line_to(Point::new(last.x, height));
-                    path.close();
-                });
-                frame.fill(&area, color.scale_alpha(CHART_FILL_ALPHA));
+                if !contrast {
+                    let area = canvas::Path::new(|path| {
+                        path.move_to(Point::new(first.x, height));
+                        for point in points() {
+                            path.line_to(point);
+                        }
+                        path.line_to(Point::new(last.x, height));
+                        path.close();
+                    });
+                    frame.fill(&area, color.scale_alpha(CHART_FILL_ALPHA));
+                }
                 let path = canvas::Path::new(|path| {
                     path.move_to(first);
                     for point in points().skip(1) {
                         path.line_to(point);
                     }
                 });
-                frame.stroke(
-                    &path,
-                    canvas::Stroke::default().with_width(1.8).with_color(color),
-                );
+                frame.stroke(&path, stroke);
             }
         }
         if let Some(slot) = hovered {
@@ -1254,7 +1425,7 @@ impl Chart {
                     let Some(point) = sample.point(series, width, height, self.maximum) else {
                         continue;
                     };
-                    let marker = canvas::Path::circle(point, 4.0);
+                    let marker = chart_point(point, 4.0, contrast && series == 1);
                     frame.fill(&marker, color);
                     frame.stroke(
                         &marker,
@@ -2154,6 +2325,193 @@ mod tests {
     }
 
     #[test]
+    fn focused_chart_arrows_show_a_readout_and_escape_restores_live_values() {
+        use iced::advanced::{
+            layout,
+            widget::{Id, Operation, Tree},
+            Layout, Shell,
+        };
+        use iced::{keyboard, Event};
+
+        #[derive(Default)]
+        struct Labels(Vec<String>);
+        impl Operation for Labels {
+            fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation)) {
+                operate(self);
+            }
+
+            fn text(&mut self, _id: Option<&Id>, _bounds: Rectangle, value: &str) {
+                self.0.push(value.to_owned());
+            }
+        }
+
+        let renderer = Renderer::new(design::typography::FONT, iced::Pixels(14.0));
+        let kind = ChartKind::Io;
+        for width in [306.0, 568.0] {
+            let viewport = Rectangle::with_size(iced::Size::new(width, 200.0));
+            let mut model = Model::default();
+            model.populate_smoke_history();
+            let mut tree = Tree::empty();
+            for (focus, key, modifiers, action) in [
+                (false, Named::ArrowLeft, keyboard::Modifiers::empty(), None),
+                (true, Named::ArrowLeft, keyboard::Modifiers::CTRL, None),
+                (
+                    true,
+                    Named::ArrowLeft,
+                    keyboard::Modifiers::empty(),
+                    Some(HistoryAction::Step { newer: false }),
+                ),
+                (
+                    true,
+                    Named::ArrowLeft,
+                    keyboard::Modifiers::empty(),
+                    Some(HistoryAction::Step { newer: false }),
+                ),
+                (
+                    true,
+                    Named::ArrowRight,
+                    keyboard::Modifiers::empty(),
+                    Some(HistoryAction::Step { newer: true }),
+                ),
+                (
+                    true,
+                    Named::Escape,
+                    keyboard::Modifiers::empty(),
+                    Some(HistoryAction::Clear),
+                ),
+                (true, Named::Escape, keyboard::Modifiers::empty(), None),
+            ] {
+                let chart = model.chart(kind);
+                let expected = chart.readout(&model, chart.inspected);
+                let mut view = model.chart_card(kind, chart, 200.0, model.latest);
+                tree.diff(&view);
+                let node = view.as_widget_mut().layout(
+                    &mut tree,
+                    &renderer,
+                    &layout::Limits::new(iced::Size::ZERO, viewport.size()),
+                );
+                let layout = Layout::new(&node);
+                assert_eq!(layout.bounds().height, viewport.height);
+                let mut labels = Labels::default();
+                view.as_widget_mut()
+                    .operate(&mut tree, layout, &renderer, &mut labels);
+                if let Some(history) = expected {
+                    assert!(labels
+                        .0
+                        .contains(&t!("home.chart_history_at", time = history.time).into_owned()));
+                    assert!(history
+                        .values
+                        .into_iter()
+                        .flatten()
+                        .all(|value| labels.0.contains(&value)));
+                } else {
+                    assert!(labels.0.contains(&t!("home.io_total").into_owned()));
+                }
+                if focus {
+                    view.as_widget_mut().operate(
+                        &mut tree,
+                        layout,
+                        &renderer,
+                        &mut iced::advanced::widget::operation::focusable::focus(
+                            kind.focus_id().into(),
+                        ),
+                    );
+                }
+                let mut messages = Vec::new();
+                let mut shell = Shell::new(&mut messages);
+                view.as_widget_mut().update(
+                    &mut tree,
+                    &Event::Keyboard(keyboard::Event::KeyPressed {
+                        key: keyboard::Key::Named(key),
+                        modified_key: keyboard::Key::Named(key),
+                        physical_key: keyboard::key::Physical::Unidentified(
+                            keyboard::key::NativeCode::Unidentified,
+                        ),
+                        location: keyboard::Location::Standard,
+                        modifiers,
+                        text: None,
+                        repeat: false,
+                    }),
+                    layout,
+                    mouse::Cursor::Unavailable,
+                    &renderer,
+                    &mut iced::advanced::clipboard::Null,
+                    &mut shell,
+                    &viewport,
+                );
+                assert_eq!(shell.is_event_captured(), action.is_some());
+                match messages.as_slice() {
+                    [] => assert_eq!(action, None),
+                    [Message::InspectChart(chart, actual)] => {
+                        assert_eq!((*chart, Some(*actual)), (kind, action));
+                        model.inspect_chart(*chart, *actual);
+                    }
+                    _ => panic!("unexpected chart events: {messages:?}"),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn chart_inspection_skips_gaps_stays_on_the_recording_and_expires() {
+        let mut model = Model::default();
+        let kind = ChartKind::Io;
+        let older = HistoryAction::Step { newer: false };
+        let newer = HistoryAction::Step { newer: true };
+        model.inspect_chart(kind, older);
+        assert!(model.inspection_for(kind).unwrap().at.is_none());
+
+        let start = Instant::now();
+        for (second, read, write) in [
+            (0, Some(0.0), None),
+            (1, None, None),
+            (2, None, Some(15_000.0)),
+        ] {
+            model.record(Sample {
+                captured_at: Some(fixture_timestamp(
+                    start,
+                    std::time::Duration::from_secs(second),
+                )),
+                io: IoUsageSnapshot {
+                    read_bytes_per_second: read,
+                    write_bytes_per_second: write,
+                    ..Default::default()
+                },
+                ..Default::default()
+            });
+        }
+        model.inspect_chart(kind, older);
+        let chart = model.chart(kind);
+        assert_eq!(chart.inspected, Some(HISTORY_LEN - 1));
+        model.inspect_chart(kind, older);
+        let chart = model.chart(kind);
+        assert_eq!(chart.inspected, Some(HISTORY_LEN - 3));
+        assert_eq!(
+            chart.readout(&model, chart.inspected).unwrap().values,
+            [
+                Some(format!("{}: 0 B/s", t!("home.io_read"))),
+                Some(format!(
+                    "{}: {}",
+                    t!("home.io_write"),
+                    t!("common.unavailable")
+                )),
+            ]
+        );
+        model.record(Sample {
+            captured_at: Some(fixture_timestamp(start, std::time::Duration::from_secs(3))),
+            ..Default::default()
+        });
+        assert_eq!(model.chart(kind).inspected, Some(HISTORY_LEN - 4));
+        model.inspect_chart(kind, newer);
+        assert_eq!(model.chart(kind).inspected, Some(HISTORY_LEN - 2));
+        let expired = model.chart_at(
+            kind,
+            Some(start + HISTORY_WINDOW + std::time::Duration::from_secs(3)),
+        );
+        assert_eq!(expired.inspected, None);
+    }
+
+    #[test]
     fn chart_timestamps_preserve_missing_intervals_and_expire_paused_history() {
         let mut model = Model::default();
         let start = Instant::now();
@@ -2212,9 +2570,7 @@ mod tests {
         assert_eq!(chart.sample_at(HISTORY_LEN - 2).unwrap().seconds_ago, 2.0);
         assert!(chart.sample_at(HISTORY_LEN - 1).is_none());
         assert!(chart.sample_at(HISTORY_LEN - 3).is_none());
-        assert!(chart
-            .tooltip_content(&model, Some(HISTORY_LEN - 3))
-            .is_none());
+        assert!(chart.readout(&model, Some(HISTORY_LEN - 3)).is_none());
         assert_eq!(
             model
                 .chart(ChartKind::Memory)
@@ -2708,6 +3064,7 @@ mod tests {
                 kind: ChartKind::Memory,
                 maximum: 100.0,
                 samples,
+                inspected: None,
             };
             renderer.reset(bounds);
             for geometry in chart.draw(
@@ -2836,6 +3193,7 @@ mod tests {
                 }),
                 maximum,
                 kind,
+                inspected: None,
             };
             let chart_bounds = Rectangle::with_size(size);
             renderer.reset(bounds);
@@ -2904,6 +3262,7 @@ mod tests {
             }),
             maximum: 100.0,
             kind: ChartKind::Cpu,
+            inspected: None,
         };
         let bounds = Rectangle::with_size(iced::Size::new(590.0, 110.0));
         let mut state = ChartState::default();
@@ -2984,6 +3343,62 @@ mod tests {
                 ]
             );
         }
+    }
+
+    #[test]
+    fn contrast_chart_distinguishes_equal_foregrounds_with_line_patterns() {
+        use crate::platform::windows::appearance::ContrastColors;
+        use canvas::Program;
+        use iced::advanced::{
+            graphics::geometry::Renderer as _, renderer::Headless as _, renderer::Renderer as _,
+        };
+
+        let theme = design::contrast_theme(ContrastColors {
+            window: 0x000000,
+            window_text: 0xffffff,
+            highlight: 0xffffff,
+            highlight_text: 0x000000,
+        });
+        assert_eq!(chart_colors(&theme), [iced::Color::WHITE; 2]);
+        let chart = Chart {
+            kind: ChartKind::Cpu,
+            maximum: 100.0,
+            samples: std::array::from_fn(|slot| {
+                Some(ChartSample {
+                    captured_at: None,
+                    seconds_ago: (HISTORY_LEN - slot - 1) as f64,
+                    reading: [Some(75.0), Some(25.0)],
+                })
+            }),
+            inspected: None,
+        };
+        let size = iced::Size::new(320, 110);
+        let bounds = Rectangle::with_size(iced::Size::new(320.0, 110.0));
+        let mut renderer = Renderer::new(design::typography::FONT, iced::Pixels(14.0));
+        renderer.reset(bounds);
+        for geometry in chart.draw(
+            &ChartState::default(),
+            &renderer,
+            &theme,
+            bounds,
+            mouse::Cursor::Unavailable,
+        ) {
+            renderer.draw_geometry(geometry);
+        }
+        let rgba = renderer.screenshot(size, 1.0, iced::Color::BLACK);
+        let pixel = |x: usize, y: usize| rgba[(y * 320 + x) * 4];
+        let bright = |y| (12..244).filter(|&x| pixel(x, y) > 180).count();
+        assert_eq!(bright(20), 232, "the first series is a solid stroke");
+        let second = bright(61);
+        assert!(
+            (100..190).contains(&second),
+            "the second series has visible dashes and gaps: {second}"
+        );
+        let grid = pixel(17, 40).max(pixel(17, 41));
+        assert!(
+            (1..130).contains(&grid),
+            "the grid stays visible and subdued: {grid}"
+        );
     }
 
     #[test]

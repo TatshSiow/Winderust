@@ -1212,6 +1212,9 @@ impl WinderustApp {
             Message::Home(home::Message::HoverChart(kind, slot)) => {
                 self.home.hover_chart(kind, slot)
             }
+            Message::Home(home::Message::InspectChart(kind, action)) => {
+                self.home.inspect_chart(kind, action)
+            }
             Message::Sample(result) => {
                 self.sampling = false;
                 match result {

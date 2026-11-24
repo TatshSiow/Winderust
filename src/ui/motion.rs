@@ -59,11 +59,11 @@ struct Motion<'a, M> {
     action: Option<KeyboardAction<'a, M>>,
 }
 pub(super) type Action<'a, M> = Box<dyn Fn() -> M + 'a>;
-type KeyHandler<M> = fn(Named, Modifiers, Rectangle) -> Option<(M, bool)>;
+type KeyHandler<'a, M> = Box<dyn Fn(Named, Modifiers, Rectangle) -> Option<(M, bool)> + 'a>;
 
 enum KeyboardAction<'a, M> {
     Activate(Action<'a, M>),
-    Keys { id: Id, handle: KeyHandler<M> },
+    Keys { id: Id, handle: KeyHandler<'a, M> },
 }
 
 pub(super) fn wrap<'a, M: 'a>(
@@ -92,7 +92,7 @@ pub(super) fn wrap_keys<'a, M: 'a>(
     content: Element<'a, M>,
     id: &'static str,
     enabled: bool,
-    handle: KeyHandler<M>,
+    handle: impl Fn(Named, Modifiers, Rectangle) -> Option<(M, bool)> + 'a,
 ) -> Element<'a, M> {
     Element::new(Motion {
         content,
@@ -100,7 +100,7 @@ pub(super) fn wrap_keys<'a, M: 'a>(
         effect: Effect::Visible,
         action: enabled.then(|| KeyboardAction::Keys {
             id: Id::new(id),
-            handle,
+            handle: Box::new(handle),
         }),
     })
 }
