@@ -39,6 +39,7 @@ pub(super) struct Editor {
 #[derive(Debug, Clone)]
 pub(super) enum Message {
     Tab(Tab),
+    StagePreset(PresetChoice<usize>),
     PreviewBuiltIn(BuiltInPreset),
     PreviewCustom(usize),
     UsePreset,
@@ -69,6 +70,7 @@ impl Editor {
         let numbers = &mut self.numbers;
         match message {
             Message::Tab(tab) => self.tab = tab,
+            Message::StagePreset(choice) => self.stage_preset(settings, choice),
             Message::PreviewBuiltIn(preset) => {
                 self.preview_preset(settings, PresetChoice::BuiltIn(preset));
             }
@@ -233,6 +235,7 @@ impl Editor {
                 s.adaptive_engine.adaptive_processor_power_enabled,
                 Some(Message::Enabled),
             ),
+            self.preset_picker(s),
             container(tabs.wrap()).style(widgets::tab_bar),
             text(t!(help_key).to_string())
                 .size(design::typography::SECONDARY)
@@ -451,7 +454,7 @@ mod tests {
                 let layout = layout::Layout::new(&node);
                 let body = unwrap_single_child(layout);
                 let mut messages = Vec::new();
-                for card in body.children().skip(4).step_by(2) {
+                for card in body.children().skip(5).step_by(2) {
                     let rows = unwrap_single_child(card);
                     assert_eq!(rows.children().len(), 3, "one policy, divider and mode");
                     let policy = rows.children().next().unwrap();
@@ -571,9 +574,9 @@ mod tests {
         assert!(!settings.has_unsaved_changes());
         editor.update(
             &mut settings,
-            Message::PreviewBuiltIn(BuiltInPreset::Balanced),
+            Message::StagePreset(PresetChoice::BuiltIn(BuiltInPreset::Balanced)),
         );
-        editor.update(&mut settings, Message::UsePreset);
+        assert!(!editor.preset_open());
         assert!(editor.validation_error().is_none());
         assert!(!settings.has_unsaved_changes());
     }

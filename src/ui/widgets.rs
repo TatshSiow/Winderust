@@ -306,7 +306,60 @@ pub(super) fn tab_style(
     style
 }
 
-pub(super) fn preset_footer<'a, M: Clone + 'a>(label: String, message: M) -> Element<'a, M> {
+pub(super) fn preset_list<'a, M: 'a>() -> iced::widget::Column<'a, M> {
+    iced::widget::Column::new()
+        .spacing(design::space::MEDIUM)
+        .padding([0, design::space::MEDIUM as u16])
+}
+
+pub(super) fn preset_row<'a, M: Clone + 'a>(
+    label: impl text::IntoFragment<'a>,
+    preview: M,
+    edit_and_delete: Option<(M, M)>,
+) -> Element<'a, M> {
+    let name = button(
+        text(label)
+            .size(design::typography::BODY)
+            .line_height(text::LineHeight::Absolute(iced::Pixels(
+                (design::BUTTON_HEIGHT - 2 * design::space::CONTROL) as f32,
+            )))
+            .wrapping(text::Wrapping::WordOrGlyph)
+            .width(Fill),
+    )
+    .width(Fill)
+    .padding([design::space::CONTROL as u16, design::space::MEDIUM as u16])
+    .style(quiet)
+    .on_press(preview);
+    let mut row = row![name]
+        .spacing(design::space::TIGHT)
+        .align_y(iced::Center);
+    if let Some((edit, delete)) = edit_and_delete {
+        row = row
+            .push(tooltip(
+                icon_button("icons/pencil.svg").on_press(edit),
+                text(rust_i18n::t!("common.edit").to_string()),
+                iced::widget::tooltip::Position::Top,
+            ))
+            .push(rule_delete_button(Some(delete)));
+    }
+    row.into()
+}
+
+pub(super) fn preset_panel<'a, M: Clone + 'a>(
+    list: iced::widget::Column<'a, M>,
+    label: String,
+    message: M,
+) -> Element<'a, M> {
+    iced::widget::column![
+        super::scrolling::scrollable(list).width(Fill).height(Fill),
+        preset_footer(label, message),
+    ]
+    .spacing(design::space::MEDIUM)
+    .height(Fill)
+    .into()
+}
+
+fn preset_footer<'a, M: Clone + 'a>(label: String, message: M) -> Element<'a, M> {
     iced::widget::column![
         iced::widget::rule::horizontal(1),
         iced::widget::container(
@@ -567,6 +620,32 @@ where
         selected.map(|value| value.borrow().clone()),
         on_selected,
     )
+}
+
+pub(super) fn preset_select<'a, T, M>(
+    options: impl Into<Rc<[T]>> + 'a,
+    selected: Option<T>,
+    on_selected: impl Fn(T) -> M + 'a,
+) -> super::select::Select<'a, T, M>
+where
+    T: ToString + PartialEq + Clone + 'static,
+    M: Clone + 'a,
+{
+    pick_list(options, selected, on_selected)
+        .width(280)
+        .placeholder(rust_i18n::t!("common.custom").to_string())
+}
+
+pub(super) fn preset_picker_card<'a, M: 'a>(
+    label: &str,
+    control: impl Into<Element<'a, M>>,
+) -> Element<'a, M> {
+    settings_card(
+        row![setting_title(label), control.into()]
+            .spacing(design::space::SMALL)
+            .align_y(iced::Center),
+    )
+    .into()
 }
 
 pub(super) fn select_field(

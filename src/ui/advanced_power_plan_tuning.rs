@@ -1,6 +1,6 @@
 use super::widgets::{
-    action_button, button, icon_button, pick_list, power_plan_label, processor_boost_mode_label,
-    slider, text_input,
+    action_button, icon_button, pick_list, power_plan_label, preset_select,
+    processor_boost_mode_label, slider, text_input,
 };
 use super::{design, power_plan_control};
 use crate::application::{
@@ -117,6 +117,7 @@ pub(super) enum SchedulingField {
 #[derive(Debug, Clone, Copy)]
 pub(super) enum PresetTarget {
     BuiltIn(ProcessorPowerPreset),
+    CustomPreview(usize),
     Custom(Option<usize>),
 }
 struct PresetEditor {
@@ -872,7 +873,7 @@ impl Editor {
                         preset_label(p),
                         AdvancedPowerPlanTuningValues::for_preset(p),
                     ),
-                    PresetTarget::Custom(Some(i)) => {
+                    PresetTarget::CustomPreview(i) | PresetTarget::Custom(Some(i)) => {
                         let Some(p) = settings.global().advanced_power_plan_tuning_presets.get(i)
                         else {
                             return;
@@ -1063,11 +1064,9 @@ impl Editor {
                 ),
             ] {
                 let selected = self.selected_preset(source, values, &options);
-                let action = pick_list(Rc::clone(&options), selected, move |p| {
+                let action = preset_select(Rc::clone(&options), selected, move |p| {
                     Message::Load(source, p)
-                })
-                .placeholder(t!("common.custom").to_string())
-                .width(280);
+                });
                 let mut controls = Vec::new();
                 for (field, label, value) in fields(values.processor) {
                     controls.push(
@@ -1270,9 +1269,9 @@ impl Editor {
         let p = self.preset.as_ref()?;
         let editable = matches!(p.target, PresetTarget::Custom(_));
         let title = match p.target {
-            PresetTarget::BuiltIn(_) => p.name.clone(),
-            PresetTarget::Custom(None) => t!("processor_power.add_preset").to_string(),
-            PresetTarget::Custom(Some(_)) => t!("common.edit").to_string(),
+            PresetTarget::BuiltIn(_) | PresetTarget::CustomPreview(_) => p.name.clone(),
+            PresetTarget::Custom(None) => t!("common.add_preset").to_string(),
+            PresetTarget::Custom(Some(_)) => t!("common.edit_preset").to_string(),
         };
         let header = row![
             text(title).width(Fill),
@@ -1384,62 +1383,41 @@ impl Editor {
         &'a self,
         presets: &'a [AdvancedPowerPlanTuningPreset],
     ) -> Element<'a, Message> {
-        let mut rail = column![super::widgets::heading(
-            t!("processor_power.built_in_presets").to_string(),
-            design::typography::SECONDARY
-        )]
-        .spacing(design::space::MEDIUM)
-        .padding([0, design::space::MEDIUM as u16]);
-        for p in BUILT_INS {
-            rail = rail.push(
-                row![
-                    button(
-                        iced::widget::container(text(preset_label(p)))
-                            .center_y(design::NAVIGATION_ROW_HEIGHT - 10)
-                    )
-                    .width(Fill)
-                    .style(super::widgets::quiet)
-                    .on_press(Message::OpenPreset(PresetTarget::BuiltIn(p))),
-                    icon_button("icons/info.svg")
-                        .on_press(Message::OpenPreset(PresetTarget::BuiltIn(p)))
-                ]
-                .spacing(design::space::TIGHT)
-                .align_y(iced::Center),
-            );
-        }
-        rail = rail.push(super::widgets::heading(
-            t!("processor_power.custom_presets").to_string(),
+        use super::widgets;
+        let mut rail = widgets::preset_list().push(widgets::heading(
+            t!("common.built_in_presets").to_string(),
             design::typography::SECONDARY,
         ));
-        for (i, p) in presets.iter().enumerate() {
-            rail = rail.push(
-                row![
-                    button(text(p.name.clone()))
-                        .width(Fill)
-                        .style(super::widgets::quiet)
-                        .on_press(Message::OpenPreset(PresetTarget::Custom(Some(i)))),
-                    super::widgets::tooltip(
-                        icon_button("icons/pencil.svg")
-                            .on_press(Message::OpenPreset(PresetTarget::Custom(Some(i)))),
-                        text(t!("common.edit").to_string()),
-                        iced::widget::tooltip::Position::Top
-                    ),
-                    super::widgets::rule_delete_button(Some(Message::Remove(i)))
-                ]
-                .spacing(design::space::TIGHT)
-                .align_y(iced::Center),
-            );
+        for p in BUILT_INS {
+            rail = rail.push(widgets::preset_row(
+                preset_label(p),
+                Message::OpenPreset(PresetTarget::BuiltIn(p)),
+                None,
+            ));
         }
-        column![
-            scrollable(rail).height(Fill).width(Fill),
-            super::widgets::preset_footer(
-                t!("processor_power.add_preset").to_string(),
-                Message::OpenPreset(PresetTarget::Custom(None))
-            )
-        ]
-        .spacing(design::space::MEDIUM)
-        .height(Fill)
-        .into()
+        rail = rail.push(widgets::heading(
+            t!("common.custom_presets").to_string(),
+            design::typography::SECONDARY,
+        ));
+        if presets.is_empty() {
+            rail =
+                rail.push(text(t!("common.no_custom_presets").to_string()).style(text::secondary));
+        }
+        for (i, p) in presets.iter().enumerate() {
+            rail = rail.push(widgets::preset_row(
+                p.name.as_str(),
+                Message::OpenPreset(PresetTarget::CustomPreview(i)),
+                Some((
+                    Message::OpenPreset(PresetTarget::Custom(Some(i))),
+                    Message::Remove(i),
+                )),
+            ));
+        }
+        widgets::preset_panel(
+            rail,
+            t!("common.add_preset").to_string(),
+            Message::OpenPreset(PresetTarget::Custom(None)),
+        )
     }
 }
 const BUILT_INS: [ProcessorPowerPreset; 3] = [
@@ -3051,5 +3029,18 @@ mod tests {
             Message::PresetValueText(Field::Parking, "99".into()),
         );
         assert_eq!(e.preset.as_ref().unwrap().values, balanced);
+        let saved = saved_presets(&settings)[0].clone();
+        e.update(
+            &mut settings,
+            &[],
+            Message::OpenPreset(PresetTarget::CustomPreview(0)),
+        );
+        e.update(&mut settings, &[], Message::PresetName("Changed".into()));
+        e.update(&mut settings, &[], Message::SavePreset);
+        let preview = e.preset.as_ref().unwrap();
+        assert_eq!(preview.name, saved.name);
+        assert_eq!(preview.values, saved.values);
+        assert!(!e.has_pending_editor());
+        assert_eq!(saved_presets(&settings), &[saved]);
     }
 }

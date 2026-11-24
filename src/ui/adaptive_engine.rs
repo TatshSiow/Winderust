@@ -1,5 +1,8 @@
 use super::design;
-use super::widgets::{action_button, button, checkbox, icon_button, pick_list, text_input};
+use super::widgets::{
+    action_button, checkbox, icon_button, pick_list, preset_list, preset_panel, preset_picker_card,
+    preset_row, preset_select, text_input,
+};
 use crate::application::SettingsEditor;
 use crate::config::*;
 use crate::ui::process_rules::{
@@ -54,7 +57,7 @@ pub(super) struct Editor {
     selected_preset: Option<Choice<usize>>,
     draft: Option<Settings>,
     editing: Option<usize>,
-    read_only: bool,
+    preview: Option<(PowerSourceProfile, usize)>,
     tuning_tabs: [TuningTab; 2],
     expanded: [[bool; 3]; 2],
     path: String,
@@ -105,7 +108,9 @@ pub(super) enum Message {
     ZoneMask(crate::cpu_topology::CpuSelection),
     BuiltIn(BuiltInAdaptiveEnginePreset),
     ViewBuiltIn(BuiltInAdaptiveEnginePreset),
+    ViewCustom(usize),
     Apply(usize),
+    UsePreset,
     Edit(usize),
     New,
     Name(String),
@@ -125,6 +130,7 @@ impl Editor {
         if matches!(
             m,
             Message::ViewBuiltIn(_)
+                | Message::ViewCustom(_)
                 | Message::Edit(_)
                 | Message::New
                 | Message::Cancel
@@ -145,41 +151,59 @@ impl Editor {
                     *value = !*value;
                 }
             }
-            Message::ViewBuiltIn(p) => {
-                let mut draft = (**s).clone();
-                apply_built_in_adaptive_engine_preset(&mut draft, p);
-                self.draft = Some(draft);
-                self.read_only = true;
-                self.name = built_in_adaptive_engine_preset_label(p);
-            }
-            Message::Cancel => self.draft = None,
-            Message::BuiltIn(p) => {
-                self.error.clear();
-                self.live_numbers.drafts.clear();
-                self.selected_preset = BuiltInAdaptiveEnginePreset::ALL
+            message @ (Message::ViewBuiltIn(p) | Message::BuiltIn(p)) => {
+                let Some(index) = BuiltInAdaptiveEnginePreset::ALL
                     .iter()
                     .position(|v| *v == p)
-                    .map(|i| Choice(i, built_in_adaptive_engine_preset_label(p)));
+                else {
+                    return;
+                };
+                let name = built_in_adaptive_engine_preset_label(p);
                 let mut draft = (**s).clone();
                 apply_built_in_adaptive_engine_preset(&mut draft, p);
-                let preset = capture_adaptive_engine_preset(&draft, String::new());
-                apply_adaptive_engine_preset(s, &preset);
+                if matches!(message, Message::ViewBuiltIn(_)) {
+                    self.draft = Some(draft);
+                    self.name = name;
+                    self.editing = None;
+                    self.preview = Some((s.selected_power_source(), index));
+                } else {
+                    self.stage_preset(s, index, &capture_adaptive_engine_preset(&draft, name));
+                }
+            }
+            Message::Cancel => {
+                self.draft = None;
+                self.preview = None;
             }
             Message::Apply(i) => {
                 if let Some(p) = s.global().adaptive_engine_presets.get(i).cloned() {
-                    self.error.clear();
-                    self.live_numbers.drafts.clear();
-                    self.selected_preset = Some(Choice(i + 4, p.name.clone()));
-                    apply_adaptive_engine_preset(s, &p)
+                    self.stage_preset(s, i + BuiltInAdaptiveEnginePreset::ALL.len(), &p);
                 }
             }
-            Message::Edit(i) => {
+            Message::UsePreset => {
+                let Some((_, index)) = self
+                    .preview
+                    .filter(|(source, _)| *source == s.selected_power_source())
+                else {
+                    return;
+                };
+                let Some(draft) = self.draft.take() else {
+                    return;
+                };
+                self.preview = None;
+                let preset = capture_adaptive_engine_preset(&draft, self.name.clone());
+                self.stage_preset(s, index, &preset);
+            }
+            message @ (Message::ViewCustom(i) | Message::Edit(i)) => {
                 if let Some(p) = s.global().adaptive_engine_presets.get(i) {
                     let mut draft = (**s).clone();
                     apply_adaptive_engine_preset(&mut draft, p);
                     self.name = p.name.clone();
-                    self.editing = Some(i);
-                    self.read_only = false;
+                    let preview = matches!(message, Message::ViewCustom(_));
+                    self.editing = (!preview).then_some(i);
+                    self.preview = preview.then_some((
+                        s.selected_power_source(),
+                        i + BuiltInAdaptiveEnginePreset::ALL.len(),
+                    ));
                     self.draft = Some(draft);
                 }
             }
@@ -187,11 +211,14 @@ impl Editor {
                 self.draft = Some((**s).clone());
                 self.name.clear();
                 self.editing = None;
-                self.read_only = false;
+                self.preview = None;
             }
-            Message::Name(v) => self.name = v,
+            Message::Name(v) if self.preview.is_none() => self.name = v,
             Message::Save => {
                 if let Some(draft) = &self.draft {
+                    if self.preview.is_some() {
+                        return;
+                    }
                     if let Err(error) = draft
                         .adaptive_engine_process
                         .dynamic_resource_zone_settings
@@ -201,8 +228,7 @@ impl Editor {
                         return;
                     }
                     let name = self.name.trim();
-                    if !self.read_only
-                        && self.preset_numbers.invalid().is_none()
+                    if self.preset_numbers.invalid().is_none()
                         && !name.is_empty()
                         && !s
                             .global()
@@ -238,10 +264,11 @@ impl Editor {
                     });
                 }
                 self.draft = None;
+                self.preview = None;
                 self.preset_numbers.drafts.clear();
             }
             Message::UseCurrent => {
-                if !self.read_only {
+                if self.preview.is_none() {
                     self.draft = Some((**s).clone())
                 }
             }
@@ -268,7 +295,7 @@ impl Editor {
                 }
             }
             edit => {
-                if self.draft.is_some() && self.read_only {
+                if self.preview.is_some() {
                     return;
                 }
                 if let Message::Mask(selection) | Message::ZoneMask(selection) = &edit {
@@ -307,6 +334,18 @@ impl Editor {
             }
         }
     }
+    fn stage_preset(
+        &mut self,
+        settings: &mut SettingsEditor,
+        index: usize,
+        preset: &AdaptiveEnginePreset,
+    ) {
+        self.error.clear();
+        self.live_numbers.drafts.clear();
+        self.selected_preset = Some(Choice(index, preset.name.clone()));
+        apply_adaptive_engine_preset(settings, preset);
+    }
+
     fn set_cpu_selection(
         &mut self,
         s: &mut SettingsEditor,
@@ -314,7 +353,7 @@ impl Editor {
         selection: crate::cpu_topology::CpuSelection,
         topology: &Result<crate::cpu_topology::CpuTopology, String>,
     ) {
-        if self.draft.is_some() && self.read_only {
+        if self.preview.is_some() {
             return;
         }
         if let Err(error) = super::cpu_allocation::verify_selection_against(
@@ -380,7 +419,7 @@ impl Editor {
         self.draft.is_some()
     }
     pub(super) fn has_pending_editor(&self) -> bool {
-        self.preset_open() && !self.read_only
+        self.preset_open() && self.preview.is_none()
     }
     pub(super) fn view<'a>(
         &'a self,
@@ -397,13 +436,14 @@ impl Editor {
         candidates: &'a [super::app_picker::Candidate],
     ) -> Element<'a, Message> {
         use iced::widget::Space;
-        let title = if self.read_only {
+        let read_only = self.preview.is_some();
+        let title = if read_only {
             self.name.clone()
         } else {
             t!(if self.editing.is_some() {
-                "adaptive_engine.edit_preset"
+                "common.edit_preset"
             } else {
-                "adaptive_engine.add_preset"
+                "common.add_preset"
             })
             .to_string()
         };
@@ -412,44 +452,34 @@ impl Editor {
             icon_button("icons/x.svg").on_press(Message::Cancel)
         ]
         .align_y(iced::Center);
-        let name = super::widgets::settings_card(
-            column![
-                text(t!("adaptive_engine.preset_name").to_string()),
-                text_input(&t!("adaptive_engine.preset_name_placeholder"), &self.name)
-                    .on_input_maybe((!self.read_only).then_some(Message::Name)),
-                text(t!("adaptive_engine.preset_name_help").to_string()).style(text::secondary)
-            ]
-            .spacing(design::space::SMALL),
-        );
         let mut footer = row![Space::new().width(Fill)]
             .spacing(design::space::SMALL)
             .align_y(iced::Center);
-        if let Some(index) = self.editing.filter(|_| !self.read_only) {
+        if let Some(index) = self.editing {
             footer = footer.push(
                 action_button(t!("common.remove").to_string())
                     .style(super::widgets::danger_button)
                     .on_press(Message::Delete(index)),
             );
         }
-        if !self.read_only {
+        if !read_only {
             footer = footer.push(
                 action_button(t!("adaptive_engine.use_current_settings").to_string())
                     .on_press(Message::UseCurrent),
             );
         }
         footer = footer.push(
-            action_button(
-                t!(if self.read_only {
-                    "common.close"
-                } else {
-                    "common.cancel"
-                })
-                .to_string(),
-            )
-            .style(super::widgets::tertiary_button)
-            .on_press(Message::Cancel),
+            action_button(t!("common.cancel").to_string())
+                .style(super::widgets::tertiary_button)
+                .on_press(Message::Cancel),
         );
-        if !self.read_only {
+        if read_only {
+            footer = footer.push(
+                action_button(t!("common.use_preset").to_string())
+                    .style(super::widgets::primary_button)
+                    .on_press(Message::UsePreset),
+            );
+        } else {
             footer = footer.push(
                 action_button(t!("common.save").to_string())
                     .style(super::widgets::primary_button)
@@ -459,21 +489,29 @@ impl Editor {
                     ),
             );
         }
-        let mut body = column![
-            super::widgets::heading(
-                t!("common.preset_details").to_string(),
-                design::typography::BODY
-            ),
-            name,
-            self.tuning_view(live, candidates, None)
-        ]
+        let mut body = column![super::widgets::heading(
+            t!("common.preset_details").to_string(),
+            design::typography::BODY
+        )]
         .spacing(design::space::MEDIUM)
         .height(Fill);
+        if !read_only {
+            body = body.push(super::widgets::settings_card(
+                column![
+                    text(t!("adaptive_engine.preset_name").to_string()),
+                    text_input(&t!("adaptive_engine.preset_name_placeholder"), &self.name)
+                        .on_input(Message::Name),
+                    text(t!("adaptive_engine.preset_name_help").to_string()).style(text::secondary)
+                ]
+                .spacing(design::space::SMALL),
+            ));
+        }
+        body = body.push(self.tuning_view(live, candidates, None));
         if !self.error.is_empty() {
             body = body.push(text(self.error.clone()).style(text::danger));
         }
         let frame = super::widgets::modal_frame(header, body, footer, (1200, 850));
-        if self.read_only {
+        if read_only {
             frame
         } else {
             super::modal::dismiss_on_escape(frame, Message::Cancel)
@@ -497,7 +535,7 @@ impl Editor {
         } else {
             &self.live_numbers
         };
-        let editable = !preset || !self.read_only;
+        let editable = !preset || self.preview.is_none();
         let mut body = column![].spacing(super::widgets::CARD_GAP);
         macro_rules! number {($key:expr,$min:expr,$max:expr,$($field:ident).+) => {{
             let key=stringify!($($field).+);
@@ -528,26 +566,23 @@ impl Editor {
                 .enumerate()
                 .map(|(i, p)| Choice(i, built_in_adaptive_engine_preset_label(p)))
                 .collect();
+            let built_ins = options.len();
             options.extend(
                 live.adaptive_engine_presets
                     .iter()
                     .enumerate()
-                    .map(|(i, p)| Choice(i + 4, p.name.clone())),
+                    .map(|(i, p)| Choice(i + built_ins, p.name.clone())),
             );
             let selected = self.selected_preset(live, &options);
-            body = body.push(super::widgets::settings_card(
-                row![
-                    setting_label("adaptive_engine.preset").width(Fill),
-                    pick_list(options, selected, |choice| if choice.0 < 4 {
-                        Message::BuiltIn(BuiltInAdaptiveEnginePreset::ALL[choice.0])
+            body = body.push(preset_picker_card(
+                "adaptive_engine.preset",
+                preset_select(options, selected, move |choice| {
+                    if let Some(&preset) = BuiltInAdaptiveEnginePreset::ALL.get(choice.0) {
+                        Message::BuiltIn(preset)
                     } else {
-                        Message::Apply(choice.0 - 4)
-                    })
-                    .width(280)
-                    .placeholder(t!("common.custom").to_string())
-                ]
-                .spacing(design::space::SMALL)
-                .align_y(iced::Center),
+                        Message::Apply(choice.0 - built_ins)
+                    }
+                }),
             ));
         }
         let tab = self.tuning_tabs[usize::from(preset)];
@@ -870,65 +905,33 @@ impl Editor {
         .into()
     }
     pub(super) fn presets_panel<'a>(&'a self, live: &'a SettingsEditor) -> Element<'a, Message> {
-        let mut rail = column![super::widgets::heading(
-            t!("adaptive_engine.built_in_presets").to_string(),
-            design::typography::SECONDARY
-        )]
-        .spacing(design::space::MEDIUM)
-        .padding([0, design::space::MEDIUM as u16]);
+        let mut rail = preset_list().push(super::widgets::heading(
+            t!("common.built_in_presets").to_string(),
+            design::typography::SECONDARY,
+        ));
         for p in BuiltInAdaptiveEnginePreset::ALL {
-            rail = rail.push(
-                row![
-                    button(
-                        iced::widget::container(text(built_in_adaptive_engine_preset_label(p)))
-                            .center_y(design::NAVIGATION_ROW_HEIGHT - 10)
-                    )
-                    .width(Fill)
-                    .style(super::widgets::quiet)
-                    .on_press(Message::BuiltIn(p)),
-                    icon_button("icons/info.svg").on_press(Message::ViewBuiltIn(p))
-                ]
-                .spacing(design::space::TIGHT)
-                .align_y(iced::Center),
-            );
+            rail = rail.push(preset_row(
+                built_in_adaptive_engine_preset_label(p),
+                Message::ViewBuiltIn(p),
+                None,
+            ));
         }
         rail = rail.push(super::widgets::heading(
-            t!("adaptive_engine.custom_presets").to_string(),
+            t!("common.custom_presets").to_string(),
             design::typography::SECONDARY,
         ));
         if live.adaptive_engine_presets.is_empty() {
-            rail = rail.push(
-                text(t!("adaptive_engine.no_custom_presets").to_string()).style(text::secondary),
-            );
+            rail =
+                rail.push(text(t!("common.no_custom_presets").to_string()).style(text::secondary));
         }
         for (i, p) in live.adaptive_engine_presets.iter().enumerate() {
-            rail = rail.push(
-                row![
-                    button(text(p.name.clone()))
-                        .width(Fill)
-                        .style(super::widgets::quiet)
-                        .on_press(Message::Apply(i)),
-                    super::widgets::tooltip(
-                        icon_button("icons/pencil.svg").on_press(Message::Edit(i)),
-                        text(t!("adaptive_engine.edit_preset").to_string()),
-                        iced::widget::tooltip::Position::Top,
-                    ),
-                    super::widgets::rule_delete_button(Some(Message::Delete(i)))
-                ]
-                .spacing(design::space::TIGHT)
-                .align_y(iced::Center),
-            );
+            rail = rail.push(preset_row(
+                p.name.as_str(),
+                Message::ViewCustom(i),
+                Some((Message::Edit(i), Message::Delete(i))),
+            ));
         }
-        column![
-            scrollable(rail).width(Fill).height(Fill),
-            super::widgets::preset_footer(
-                t!("adaptive_engine.add_preset").to_string(),
-                Message::New
-            ),
-        ]
-        .spacing(design::space::MEDIUM)
-        .height(Fill)
-        .into()
+        preset_panel(rail, t!("common.add_preset").to_string(), Message::New)
     }
 }
 fn setting_label(key: &str) -> iced::widget::Column<'static, Message> {
@@ -1147,6 +1150,50 @@ mod tests {
         assert_eq!(settings.adaptive_engine_presets[0].name, "Second");
         editor.update(&mut settings, Message::Delete(10));
         assert_eq!(settings.adaptive_engine_presets.len(), 1);
+    }
+
+    #[test]
+    fn sidebar_preview_stages_shown_tuning_only_on_its_source() {
+        let mut live = Settings::default();
+        let mut custom = capture_adaptive_engine_preset(&live, "Custom preview".into());
+        custom.adaptive_engine_process.reaction_time_ms = 1900;
+        live.adaptive_engine_presets.push(custom);
+
+        for preview in [
+            Message::ViewBuiltIn(BuiltInAdaptiveEnginePreset::Speed),
+            Message::ViewCustom(0),
+        ] {
+            let mut settings = SettingsEditor::with_settings(live.clone());
+            settings.select_power_source(PowerSourceProfile::OnBattery);
+            let mut editor = Editor::default();
+            editor.update(&mut settings, preview.clone());
+            assert!(editor.preset_open());
+            assert!(!editor.has_pending_editor());
+            editor.update(&mut settings, Message::Cancel);
+            assert_eq!(settings.global(), &live);
+
+            editor.update(&mut settings, preview);
+            let shown = editor
+                .draft
+                .as_ref()
+                .unwrap()
+                .adaptive_engine_process
+                .clone();
+            settings.select_power_source(PowerSourceProfile::PluggedIn);
+            editor.update(&mut settings, Message::UsePreset);
+            assert_eq!(settings.global(), &live);
+            assert!(editor.preset_open());
+
+            settings.select_power_source(PowerSourceProfile::OnBattery);
+            editor.update(&mut settings, Message::UsePreset);
+            assert_eq!(settings.adaptive_engine_process, shown);
+            assert_eq!(
+                settings.global().adaptive_engine_process,
+                live.adaptive_engine_process
+            );
+            assert_eq!(settings.persisted(), &live);
+            assert!(!editor.preset_open());
+        }
     }
 
     #[test]

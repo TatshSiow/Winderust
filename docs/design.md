@@ -170,7 +170,7 @@ hover/press; background shading supplies feedback.
   configuration while Adaptive Engine is off.
 - Adaptive Engine uses the right-rail Info / Status / Presets tabs. Built-in presets are read-only. Custom presets can be added, renamed, refreshed from the current CPU Behaviour tuning, and deleted. The live page also exposes Custom Rules. The preset editor spans the available modal width and keeps its own draft.
 - Priority Control uses Focus / Visible Window / Background dropdown columns and expandable detail cards. Turning a row off does not lock its configuration. Runtime precedence and protection rules live in [Runtime contracts](runtime-contracts.md).
-- Adaptive Processor Power lives under Power Plan Control. Its A/C and Battery editors each have an enable switch, off by default. The right side panel's Presets tab lists built-in and custom presets. Add preset names a copy of the selected source's current tuning. Custom presets can be renamed, refreshed from the editor, and removed. Both sources share the list. Selecting a preset opens a read-only preview of the base policy and demand values for the selected source. Use preset stages that tuning, and closing the preview preserves existing edits. List edits and tuning use the shared Save and Discard flow. Configuration remains editable while the feature is off.
+- Adaptive Processor Power lives under Power Plan Control. Its Plugged In and On Battery editors each have an enable switch, off by default, with a Preset dropdown below it. Both editors share the preset library. The dropdown stages tuning for the selected source. The Presets tab opens a read-only preview of the base policy and demand values for that source. Use preset stages the preview, and closing it preserves existing edits. Add preset names a copy of the selected source's tuning. List edits and tuning use the shared Save and Discard flow. Configuration remains editable while the feature is off.
 - The Base Processor Policy tab shows the Idle settings and the baseline inherited by higher-demand profiles. The Demand Profiles tab explains automatic profile selection and shows one boost policy and one boost mode each for Background Pressure and Focus and Launch. The Save notice reserves space below the editor so the last dropdown stays reachable while editing.
 - The Adaptive Processor Power Status rail reports live ownership, errors, and restoration. The source profile selected for editing can differ from the live power source.
 - Prefer one setting per row when possible.
@@ -230,9 +230,9 @@ hover/press; background shading supplies feedback.
   actual assignment or waiting reason without presenting preferences as reserved cores.
   When several cohorts are waiting, the rail prioritizes insufficient core capacity,
   then cohort stability, then missing instances. The Action Log records each rule's result.
-- Core Presets use compact read-only rows; custom presets use the same row geometry with edit and
-  delete actions. Resting rows have no fill or divider, and hover supplies the background. Add,
-  edit, and view use the existing full-window modal style.
+- CPU Sets (Soft) and Processor Affinity (Hard) label their built-in section Core Presets. A preview
+  shows the saved selection and its topology validation. Select a preset for a specific rule
+  policy column to stage it.
 - Verified, fully representable L3 selections appear as Cache Domain presets
   with group and cache-size labels. Missing cache metadata creates no inferred
   preset. Unsupported saved selections remain visible; selection controls do
@@ -389,7 +389,8 @@ hover/press; background shading supplies feedback.
 - Removing a rule, exclusion, or custom preset immediately updates the settings draft.
   Save commits and Discard restores; do not add a second removal confirmation.
 - Side panels follow tabs (when present), main title, subtitle, then content. Subtitles stay outside cards. Put primary panel actions in the bottom footer.
-- Feature info belongs in a full-height scrollable Info tab in the right sidebar. Order shared tabs left to right as Info / Status / Presets, omitting unavailable tabs. Adaptive Engine, CPU Sets (Soft), and Processor Affinity (Hard) use all three; Advanced Power Plan Tuning uses Info / Presets. Reset to Info on navigation. Pages with only feature information show it directly without a lone tab. Remove the header info action and inline page disclosure; retain essential setting consequences and live warnings beside their controls.
+- Presets tabs share a scrollable list and pinned Add preset footer. Names wrap in neutral rows with hover feedback. Selecting a name opens a read-only preview; custom rows have separate edit and delete icons and the custom section has an empty state. Use the shared dialog frame, with each editor grouping its own fields. Page and group preset dropdowns stage settings for the current editor. Save or the feature's Apply review confirms the change.
+- Feature info belongs in a full-height scrollable Info tab in the right sidebar. Order shared tabs left to right as Info / Status / Presets, omitting unavailable tabs. Adaptive Engine, Adaptive Processor Power, CPU Sets (Soft), and Processor Affinity (Hard) use all three. Advanced Power Plan Tuning uses Info / Presets. Reset to Info on navigation. Pages with only feature information show it directly without a lone tab. Remove the header info action and inline page disclosure; retain essential setting consequences and live warnings beside their controls.
 - Use shared rule tables and icon edit/delete actions. Reuse existing modal layouts: name first, related settings together, actions at the bottom.
 - Keep breadcrumbs anchored at the top left. Power-source selectors stay beneath the breadcrumb; page-level reference stays in the right sidebar.
 - Quit confirmation is centered over a dimmed window. With unsaved changes show Cancel, Save and quit, and Quit without saving; otherwise show Cancel and Quit. Shutdown errors stay visible.

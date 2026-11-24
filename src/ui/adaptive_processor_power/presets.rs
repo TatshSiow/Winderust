@@ -23,8 +23,8 @@ pub(super) struct PresetPreview {
     built_in: Option<BuiltInPreset>,
 }
 
-#[derive(Debug, PartialEq, Eq)]
-pub(super) enum PresetChoice<Name> {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(in crate::ui) enum PresetChoice<Name> {
     BuiltIn(BuiltInPreset),
     Custom(Name),
 }
@@ -168,61 +168,49 @@ impl Editor {
         settings: &SettingsEditor,
         choice: PresetChoice<usize>,
     ) {
-        let source = settings.selected_power_source();
-        let (preset, built_in) = match choice {
-            PresetChoice::BuiltIn(preset) => {
-                let mut values = settings.adaptive_engine.clone();
-                preset.apply(&mut values, source);
-                (
-                    AdaptiveProcessorPowerPreset::capture(preset.label(), &values, source),
-                    Some(preset),
-                )
-            }
-            PresetChoice::Custom(index) => {
-                let Some(preset) = settings
-                    .global()
-                    .adaptive_processor_power_presets
-                    .get(index)
-                else {
-                    return;
-                };
-                (preset.clone(), None)
-            }
-        };
-        self.preset_dialog = Some(PresetDialog::Preview(PresetPreview {
-            preset,
-            source,
-            built_in,
-        }));
+        if let Some(preview) = PresetPreview::resolve(settings, choice) {
+            self.preset_dialog = Some(PresetDialog::Preview(preview));
+        }
+    }
+
+    pub(super) fn stage_preset(
+        &mut self,
+        settings: &mut SettingsEditor,
+        choice: PresetChoice<usize>,
+    ) {
+        if self.preset_open() {
+            return;
+        }
+        if let Some(preset) = PresetPreview::resolve(settings, choice) {
+            self.stage_preset_values(settings, preset);
+        }
     }
 
     pub(super) fn use_preset(&mut self, settings: &mut SettingsEditor) {
-        let Some(PresetDialog::Preview(preview)) = &self.preset_dialog else {
+        let Some(PresetDialog::Preview(preview)) = self.preset_dialog.take_if(|dialog| {
+            matches!(dialog, PresetDialog::Preview(preview) if preview.source == settings.selected_power_source())
+        }) else {
             return;
         };
-        let source = preview.source;
-        if source != settings.selected_power_source() {
-            return;
-        }
+        self.stage_preset_values(settings, preview);
+    }
+
+    fn stage_preset_values(&mut self, settings: &mut SettingsEditor, preview: PresetPreview) {
+        let PresetPreview {
+            preset,
+            source,
+            built_in,
+        } = preview;
         let saved = settings.persisted();
         let saved_target = match source {
             PowerSourceProfile::PluggedIn => saved,
             PowerSourceProfile::OnBattery => saved.battery_profile(),
         };
-        let staged = !preview
-            .preset
-            .matches(&saved_target.adaptive_engine, source)
-            || (preview.built_in.is_none()
-                && !saved
-                    .adaptive_processor_power_presets
-                    .contains(&preview.preset));
+        let staged = !preset.matches(&saved_target.adaptive_engine, source)
+            || (built_in.is_none() && !saved.adaptive_processor_power_presets.contains(&preset));
         self.numbers.drafts.clear();
-        edit_settings(settings, |target| preview.preset.apply(target, source));
-        let selected = preview.built_in.map_or_else(
-            || PresetChoice::Custom(preview.preset.name.clone()),
-            PresetChoice::BuiltIn,
-        );
-        self.preset_dialog = None;
+        edit_settings(settings, |target| preset.apply(target, source));
+        let selected = built_in.map_or(PresetChoice::Custom(preset.name), PresetChoice::BuiltIn);
         self.selected_presets[source as usize].choose(Some(selected), staged);
     }
 
@@ -320,69 +308,79 @@ impl Editor {
             .or_else(|| presets.iter().find_map(custom))
     }
 
+    pub(super) fn preset_picker(&self, settings: &SettingsEditor) -> Element<'_, Message> {
+        let mut options: Vec<_> = BuiltInPreset::ALL
+            .into_iter()
+            .map(|preset| widgets::Choice(PresetChoice::BuiltIn(preset), preset.label()))
+            .collect();
+        let built_in_count = options.len();
+        let active = self.active_preset(settings);
+        let mut selected = match active {
+            Some(PresetChoice::BuiltIn(preset)) => options
+                .iter()
+                .find(|option| option.0 == PresetChoice::BuiltIn(preset))
+                .cloned(),
+            _ => None,
+        };
+        for (index, preset) in settings
+            .global()
+            .adaptive_processor_power_presets
+            .iter()
+            .enumerate()
+        {
+            let name = preset.name.as_str();
+            let label = if options[..built_in_count]
+                .iter()
+                .any(|option| same_preset_name(&option.1, name))
+            {
+                t!("adaptive_processor_power.custom_preset_option", name = name).to_string()
+            } else {
+                preset.name.clone()
+            };
+            let choice = widgets::Choice(PresetChoice::Custom(index), label);
+            if active == Some(PresetChoice::Custom(name)) {
+                selected = Some(choice.clone());
+            }
+            options.push(choice);
+        }
+        widgets::preset_picker_card(
+            "adaptive_processor_power.preset",
+            widgets::preset_select(options, selected, |choice| Message::StagePreset(choice.0)),
+        )
+    }
+
     pub(in crate::ui) fn presets_panel<'a>(
         &'a self,
         settings: &'a SettingsEditor,
     ) -> Element<'a, Message> {
-        let active = self.active_preset(settings);
         let heading = |label| widgets::heading(label, design::typography::SECONDARY);
-        let mut list = column![
-            text(t!("adaptive_processor_power.preset_help").to_string())
-                .size(design::typography::SECONDARY)
-                .style(text::secondary)
-                .width(Fill),
-            heading(t!("adaptive_processor_power.built_in_presets").to_string()),
-        ]
-        .spacing(design::space::SMALL)
-        .padding([0, design::space::MEDIUM as u16]);
+        let mut list =
+            widgets::preset_list().push(heading(t!("common.built_in_presets").to_string()));
         for preset in BuiltInPreset::ALL {
-            list = list.push(preset_button(
+            list = list.push(widgets::preset_row(
                 preset.label(),
-                active == Some(PresetChoice::BuiltIn(preset)),
                 Message::PreviewBuiltIn(preset),
+                None,
             ));
         }
         let presets = &settings.global().adaptive_processor_power_presets;
-        list = list.push(heading(
-            t!("adaptive_processor_power.custom_presets").to_string(),
-        ));
+        list = list.push(heading(t!("common.custom_presets").to_string()));
         if presets.is_empty() {
-            list = list.push(
-                text(t!("adaptive_processor_power.no_custom_presets").to_string())
-                    .size(design::typography::SECONDARY)
-                    .style(text::secondary),
-            );
+            list =
+                list.push(text(t!("common.no_custom_presets").to_string()).style(text::secondary));
         }
         for (index, preset) in presets.iter().enumerate() {
-            list = list.push(
-                row![
-                    preset_button(
-                        preset.name.as_str(),
-                        active == Some(PresetChoice::Custom(preset.name.as_str())),
-                        Message::PreviewCustom(index),
-                    ),
-                    widgets::tooltip(
-                        widgets::icon_button("icons/pencil.svg")
-                            .on_press(Message::EditPreset(index)),
-                        text(t!("common.edit").to_string()),
-                        iced::widget::tooltip::Position::Top,
-                    ),
-                    widgets::rule_delete_button(Some(Message::DeletePreset(index))),
-                ]
-                .spacing(design::space::TIGHT)
-                .align_y(iced::Center),
-            );
+            list = list.push(widgets::preset_row(
+                preset.name.as_str(),
+                Message::PreviewCustom(index),
+                Some((Message::EditPreset(index), Message::DeletePreset(index))),
+            ));
         }
-        column![
-            scrollable(list).width(Fill).height(Fill),
-            widgets::preset_footer(
-                t!("adaptive_processor_power.add_preset").to_string(),
-                Message::NewPreset,
-            ),
-        ]
-        .spacing(design::space::MEDIUM)
-        .height(Fill)
-        .into()
+        widgets::preset_panel(
+            list,
+            t!("common.add_preset").to_string(),
+            Message::NewPreset,
+        )
     }
 
     pub(in crate::ui) fn preset_modal(
@@ -401,9 +399,9 @@ impl Editor {
         let header = row![
             text(
                 t!(if editing {
-                    "adaptive_processor_power.edit_preset"
+                    "common.edit_preset"
                 } else {
-                    "adaptive_processor_power.add_preset"
+                    "common.add_preset"
                 })
                 .to_string()
             )
@@ -411,7 +409,7 @@ impl Editor {
             widgets::icon_button("icons/x.svg").on_press(Message::CancelPreset),
         ]
         .align_y(iced::Center);
-        let mut body = column![
+        let mut details = column![
             text(t!("adaptive_processor_power.preset_name").to_string()),
             widgets::text_input(
                 &t!("adaptive_processor_power.preset_name_placeholder"),
@@ -423,29 +421,37 @@ impl Editor {
         ]
         .spacing(design::space::SMALL);
         if editing {
-            body = body.push(
+            details = details.push(
                 widgets::checkbox(draft.use_current_values)
                     .label(t!("adaptive_processor_power.use_current_settings").to_string())
                     .on_toggle(Message::UseCurrentPresetValues),
             );
         }
         if draft.use_current_values {
-            body = body.push(
+            details = details.push(
                 text(t!("adaptive_processor_power.preset_creator_help").to_string())
                     .size(design::typography::SECONDARY)
                     .style(text::secondary)
                     .width(Fill),
             );
             if let Some(error) = validation_error {
-                body = body.push(text(error).style(text::danger));
+                details = details.push(text(error).style(text::danger));
             }
         }
         if draft.name_conflicts(&settings.global().adaptive_processor_power_presets) {
-            body = body.push(
+            details = details.push(
                 text(t!("adaptive_processor_power.duplicate_preset_name").to_string())
                     .style(text::danger),
             );
         }
+        let body = column![
+            widgets::heading(
+                t!("common.preset_details").to_string(),
+                design::typography::BODY
+            ),
+            widgets::settings_card(details)
+        ]
+        .spacing(widgets::CARD_GAP);
         let footer = row![
             widgets::action_button(t!("common.cancel").to_string())
                 .style(widgets::tertiary_button)
@@ -460,7 +466,7 @@ impl Editor {
                 header,
                 scrollable(body).width(Fill).height(Fill),
                 footer,
-                (500, 310),
+                (500, 360),
             ),
             Message::CancelPreset,
         ))
@@ -468,6 +474,33 @@ impl Editor {
 }
 
 impl PresetPreview {
+    fn resolve(settings: &SettingsEditor, choice: PresetChoice<usize>) -> Option<Self> {
+        let source = settings.selected_power_source();
+        let (preset, built_in) = match choice {
+            PresetChoice::BuiltIn(preset) => {
+                let mut values = settings.adaptive_engine.clone();
+                preset.apply(&mut values, source);
+                (
+                    AdaptiveProcessorPowerPreset::capture(preset.label(), &values, source),
+                    Some(preset),
+                )
+            }
+            PresetChoice::Custom(index) => (
+                settings
+                    .global()
+                    .adaptive_processor_power_presets
+                    .get(index)?
+                    .clone(),
+                None,
+            ),
+        };
+        Some(Self {
+            preset,
+            source,
+            built_in,
+        })
+    }
+
     fn view(&self) -> Element<'_, Message> {
         let mut values = AdaptiveEngineSettings::default();
         self.preset.apply(&mut values, self.source);
@@ -518,7 +551,7 @@ impl PresetPreview {
             widgets::action_button(t!("common.cancel").into_owned())
                 .style(widgets::tertiary_button)
                 .on_press(Message::CancelPreset),
-            widgets::action_button(t!("adaptive_processor_power.use_preset").into_owned())
+            widgets::action_button(t!("common.use_preset").into_owned())
                 .style(widgets::primary_button)
                 .on_press(Message::UsePreset),
         ]
@@ -564,22 +597,6 @@ fn preview_row(label: &str, value: String) -> Element<'static, Message> {
 
 fn same_preset_name(left: &str, right: &str) -> bool {
     left.trim().eq_ignore_ascii_case(right.trim())
-}
-
-fn preset_button<'a>(
-    label: impl iced::widget::text::IntoFragment<'a>,
-    matches: bool,
-    message: Message,
-) -> Element<'a, Message> {
-    widgets::button(
-        text(label)
-            .width(Fill)
-            .wrapping(text::Wrapping::WordOrGlyph),
-    )
-    .width(Fill)
-    .style(move |theme, status| widgets::tab_style(theme, status, matches))
-    .on_press(message)
-    .into()
 }
 
 #[cfg(test)]

@@ -453,9 +453,9 @@ impl Editor {
             self.preset_name.clone()
         } else {
             t!(if self.editing_preset.is_some() {
-                "common.edit"
+                "common.edit_preset"
             } else {
-                "cpu_allocation.add_preset"
+                "common.add_preset"
             })
             .to_string()
         };
@@ -627,69 +627,41 @@ impl Editor {
         s: &'a SettingsEditor,
         kind: Kind,
     ) -> Element<'a, Message> {
+        use super::widgets;
         let catalog = SelectionCatalog::capture(kind);
-        let mut rail = column![super::widgets::heading(
-            t!("cpu_allocation.core_presets").to_string(),
-            design::typography::SECONDARY
-        ),]
-        .spacing(design::space::MEDIUM)
-        .padding([0, design::space::MEDIUM as u16]);
-        rail = rail
+        let mut rail = widgets::preset_list()
+            .push(widgets::heading(
+                t!("cpu_allocation.core_presets").to_string(),
+                design::typography::SECONDARY,
+            ))
             .push(text(t!("cpu_allocation.cache_domains_help").to_string()).style(text::secondary));
-        for preset in catalog.presets {
-            let message = Message::ViewPreset(preset.1.clone(), preset.0);
-            rail = rail.push(
-                row![
-                    button(
-                        iced::widget::container(text(preset.1))
-                            .center_y(design::NAVIGATION_ROW_HEIGHT - 10)
-                    )
-                    .width(Fill)
-                    .style(super::widgets::quiet)
-                    .on_press(message.clone()),
-                    icon_button("icons/info.svg").on_press(message)
-                ]
-                .align_y(iced::Center)
-                .spacing(design::space::TIGHT),
-            );
+        for widgets::Choice(selection, label) in catalog.presets {
+            rail = rail.push(widgets::preset_row(
+                label.clone(),
+                Message::ViewPreset(label, selection),
+                None,
+            ));
         }
-        rail = rail.push(super::widgets::heading(
-            t!("adaptive_engine.custom_presets").to_string(),
+        rail = rail.push(widgets::heading(
+            t!("common.custom_presets").to_string(),
             design::typography::SECONDARY,
         ));
         if s.cpu_allocation_presets.is_empty() {
-            rail = rail.push(
-                text(t!("cpu_allocation.no_custom_presets").to_string()).style(text::secondary),
-            );
+            rail =
+                rail.push(text(t!("common.no_custom_presets").to_string()).style(text::secondary));
         }
         for (i, p) in s.cpu_allocation_presets.iter().enumerate() {
-            rail = rail.push(
-                row![
-                    button(text(p.name.clone()))
-                        .width(Fill)
-                        .style(super::widgets::quiet)
-                        .on_press(Message::EditPreset(i)),
-                    super::widgets::tooltip(
-                        icon_button("icons/pencil.svg").on_press(Message::EditPreset(i)),
-                        text(t!("common.edit").to_string()),
-                        iced::widget::tooltip::Position::Top
-                    ),
-                    super::widgets::rule_delete_button(Some(Message::DeletePreset(i)))
-                ]
-                .align_y(iced::Center)
-                .spacing(design::space::TIGHT),
-            );
+            rail = rail.push(widgets::preset_row(
+                p.name.as_str(),
+                Message::ViewPreset(p.name.clone(), p.selection.clone()),
+                Some((Message::EditPreset(i), Message::DeletePreset(i))),
+            ));
         }
-        column![
-            scrollable(rail).width(Fill).height(Fill),
-            super::widgets::preset_footer(
-                t!("cpu_allocation.add_preset").to_string(),
-                Message::NewPreset
-            ),
-        ]
-        .spacing(design::space::MEDIUM)
-        .height(Fill)
-        .into()
+        widgets::preset_panel(
+            rail,
+            t!("common.add_preset").to_string(),
+            Message::NewPreset,
+        )
     }
 }
 fn can_add(s: &Settings, path: &str) -> bool {
@@ -1285,8 +1257,17 @@ mod tests {
         });
         let mut settings = SettingsEditor::with_settings(settings);
         let mut editor = Editor::default();
+        editor.update(
+            &mut settings,
+            Kind::Hard,
+            Message::ViewPreset("saved".into(), selection.clone()),
+        );
+        assert_eq!(editor.preset_selection, selection);
+        assert!(!editor.has_pending_editor());
+        editor.update(&mut settings, Kind::Hard, Message::ClosePreset);
         editor.update(&mut settings, Kind::Soft, Message::EditPreset(0));
         assert_eq!(editor.preset_selection, selection);
+        assert!(editor.has_pending_editor());
         assert_eq!(settings.cpu_allocation_presets[0].selection, selection);
         editor.update(&mut settings, Kind::Soft, Message::ClosePreset);
         assert_eq!(settings.cpu_allocation_presets[0].selection, selection);
