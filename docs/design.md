@@ -228,7 +228,8 @@ hover/press; background shading supplies feedback.
   restoration switch.
 - The Power Plan Control side panel's Status tab shows the active Windows plan,
   the current automation decision, and lower-priority modes that also selected
-  a plan in the same pass. The current-plan card stays compact.
+  a plan in the same pass. The current-plan card stays compact. Ordinary rule Status rails
+  identify a confirmed pause due to Adaptive Processor Power, A/C, or missing observations.
 - By Focus and By Running App default to matching an executable path. Executable
   name rules match the same filename across paths. By Focus evaluates the app with
   input focus. Process List edits individual path rules. The rule editors accept

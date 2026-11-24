@@ -4,7 +4,7 @@ use crate::backend::power_source::is_plugged_in;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 static REQUESTED: AtomicBool = AtomicBool::new(false);
-const EXTRA_STATES: usize = 81;
+const EXTRA_STATES: usize = 84;
 pub(super) struct Run {
     pages: Vec<Page>,
     index: usize,
@@ -70,6 +70,8 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                     | 76
                     | 78
                     | 80
+                    | 82
+                    | 83
             )
         });
         let page = match extra {
@@ -80,7 +82,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             Some(4 | 6..=10) => Page::AdaptiveEngine,
             Some(5 | 70 | 71) => Page::AdaptiveProcessorPower,
             Some(11) => Page::MemoryTrim,
-            Some(12) => Page::ByFocus,
+            Some(12 | 82) => Page::ByFocus,
             Some(13) => Page::Home,
             Some(14) => Page::ProcessList,
             Some(15) => Page::PowerPlanControl,
@@ -106,11 +108,12 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             Some(49) => Page::ActionLog,
             Some(50 | 77..=78) => Page::WinderustBehaviour,
             Some(51..=53) => Page::ResourceThresholds,
-            Some(54..=57) => Page::ByCpuLoad,
+            Some(54..=57 | 81) => Page::ByCpuLoad,
             Some(58..=59) => Page::SleepPrevention,
             Some(60..=61) => Page::KeepRunning,
             Some(62..=65) => Page::InstanceLimits,
             Some(66..=69) => Page::InstanceBalancing,
+            Some(83) => Page::ByTime,
             _ => run.pages[run.index % run.pages.len()],
         };
         run.ticks = 1;
@@ -895,8 +898,35 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             app.processes.show_copy_path_fixture(context);
             assert_eq!(app.processes.context_open(), context);
         }
+        if matches!(extra, Some(81..=83)) {
+            use crate::control::power_plan::{PowerPlanOwner, PowerPlanStatus};
+            use crate::rules::DecisionState;
+
+            let mut settings = app.settings.global().clone();
+            settings.general.enabled = true;
+            *navigation::feature_toggle(page).expect("power rule has a switch")(&mut settings) =
+                true;
+            app.settings = SettingsEditor::with_settings(settings);
+            app.status.generation = app.status.generation.max(1);
+            let guid = "381b4222-f694-41f0-9685-ff5bb260df2e";
+            let owner = (extra == Some(83)).then_some(PowerPlanOwner::AdaptiveProcessorPower);
+            app.status.power_plan_status = Arc::new(PowerPlanStatus {
+                owner,
+                current_guid: Some(guid.into()),
+                target_guid: owner.map(|_| guid.into()),
+                decision_state: Some(if extra == Some(82) {
+                    DecisionState::WaitingForObservation
+                } else {
+                    DecisionState::PausedWhilePluggedIn
+                }),
+                ..Default::default()
+            });
+            let _ = app.update(Message::ToggleSidePanel);
+            let _ = app.update(Message::SidePanelTab(SidePanelTab::Status));
+            assert_eq!(app.side_panel_tab, SidePanelTab::Status);
+        }
         let size = match extra {
-            Some(35..=37 | 40 | 42 | 44..=50 | 52..=69 | 71..=80) => iced::Size::new(900.0, 620.0),
+            Some(35..=37 | 40 | 42 | 44..=50 | 52..=69 | 71..=83) => iced::Size::new(900.0, 620.0),
             Some(30) => iced::Size::new(1280.0, 720.0),
             Some(31) => iced::Size::new(1440.0, 900.0),
             Some(32) => iced::Size::new(1920.0, 720.0),

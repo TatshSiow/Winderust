@@ -6,7 +6,7 @@ use crate::{
     action_log::{ActionLogEntry, ActionLogFeature},
     automation::RuntimeStatusSnapshot,
     config::{PowerSourceProfile, Settings},
-    control::instance_limits::CountObservation,
+    control::{instance_limits::CountObservation, power_plan::PowerPlanOwner},
     features::watchdog::{
         app_suspension::AppSuspensionStatus,
         instance_limits::{InstanceLimitsSnapshot, NotificationStatus},
@@ -14,6 +14,7 @@ use crate::{
         sleep_prevention::SleepPreventionSnapshot,
     },
     power::PowerPlan,
+    rules::DecisionState,
     ui::Page,
 };
 use iced::widget::{column, container, row, text};
@@ -183,6 +184,24 @@ pub(super) fn view<'a>(
     };
     let state = sidebar_state(page, settings, runtime, &summary, observed_state);
     let (state_label, detail, color) = match (page, state) {
+        (_, FeatureRunState::Paused) if power_feature.is_some() => {
+            let plan = &runtime.power_plan_status;
+            let (label, fallback, color) = state.status_keys();
+            let detail = match (plan.owner, plan.decision_state) {
+                (Some(PowerPlanOwner::AdaptiveProcessorPower), _)
+                    if power_plan_control::managed_by_adaptive_processor_power(plan, plans) =>
+                {
+                    "power_plan_control.switch_managed_active"
+                }
+                (Some(PowerPlanOwner::AdaptiveProcessorPower), _) => fallback,
+                (_, Some(DecisionState::PausedWhilePluggedIn)) => "power_plan_control.paused_on_ac",
+                (_, Some(DecisionState::WaitingForObservation)) => {
+                    "power_plan_control.waiting_for_observation"
+                }
+                _ => fallback,
+            };
+            (label, detail, color)
+        }
         (_, FeatureRunState::Paused) if waiting_for_power_source(page, runtime) => (
             "sidebar_status.paused",
             "home.power_source_unavailable",
@@ -825,8 +844,6 @@ fn sidebar_state(
     summary: &FeatureStatusSummary<'_>,
     observed_state: Option<FeatureRunState>,
 ) -> FeatureRunState {
-    use crate::control::power_plan::PowerPlanOwner;
-    use crate::rules::DecisionState;
     if waiting_for_power_source(page, runtime) {
         return if runtime.worker_error.is_some() || summary.last_error.is_some() {
             FeatureRunState::Error
@@ -2238,6 +2255,84 @@ mod tests {
         assert_eq!(state(&settings, &runtime), FeatureRunState::Error);
         settings.instance_balancing.enabled = false;
         assert_eq!(state(&settings, &runtime), FeatureRunState::Inactive);
+    }
+
+    #[test]
+    fn ordinary_power_rule_rails_explain_pause_reasons() {
+        use crate::control::power_plan::PowerPlanStatus;
+
+        let pages = [
+            Page::ByActivity,
+            Page::ByFocus,
+            Page::ByRunningApp,
+            Page::ByCpuLoad,
+            Page::ByTime,
+        ];
+        let mut settings = Settings::default();
+        settings.general.enabled = true;
+        for page in pages {
+            *super::super::navigation::feature_toggle(page).unwrap()(&mut settings) = true;
+        }
+        let mut runtime = RuntimeStatusSnapshot {
+            generation: 1,
+            ..Default::default()
+        };
+        let assert_rail = |page,
+                           settings: &Settings,
+                           runtime: &RuntimeStatusSnapshot,
+                           label: &str,
+                           detail: &str| {
+            let text = rail_text(view(page, settings, runtime, &[], None).unwrap());
+            assert_eq!(text[0], t!(label), "{page:?}");
+            assert_eq!(text[1], t!(detail), "{page:?}");
+        };
+        for (owner, decision, detail) in [
+            (
+                None,
+                DecisionState::PausedWhilePluggedIn,
+                "power_plan_control.paused_on_ac",
+            ),
+            (
+                None,
+                DecisionState::WaitingForObservation,
+                "power_plan_control.waiting_for_observation",
+            ),
+            (
+                Some(PowerPlanOwner::AdaptiveProcessorPower),
+                DecisionState::PausedWhilePluggedIn,
+                "power_plan_control.switch_managed_active",
+            ),
+        ] {
+            *std::sync::Arc::make_mut(&mut runtime.power_plan_status) = PowerPlanStatus {
+                owner,
+                decision_state: Some(decision),
+                current_guid: Some("active".into()),
+                target_guid: owner.map(|_| "active".into()),
+                ..Default::default()
+            };
+            for page in pages {
+                assert_rail(page, &settings, &runtime, "sidebar_status.paused", detail);
+            }
+        }
+
+        settings.by_time.enabled = false;
+        assert_rail(
+            Page::ByTime,
+            &settings,
+            &runtime,
+            "common.inactive",
+            "sidebar_status.inactive_help",
+        );
+        settings.by_time.enabled = true;
+        std::sync::Arc::make_mut(&mut runtime.power_plan_status).active_plan_read_error =
+            Some("Could not read the active plan.".into());
+        assert_rail(
+            Page::ByTime,
+            &settings,
+            &runtime,
+            "common.error",
+            "sidebar_status.error_help",
+        );
     }
 
     #[test]
