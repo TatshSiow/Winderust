@@ -281,9 +281,10 @@ hover/press; background shading supplies feedback.
 
 ### Advanced Power Plan Tuning
 
-- Offer saved Windows plans in the target selector. If the temporary Winderust
-  Adaptive plan is active, show it as the active plan while the selected saved
-  plan remains editable.
+- Offer saved Windows plans in the target selector. Keep the observed Windows
+  power mode and any inactive-plan or mode override message in the target card.
+  If the temporary Winderust Adaptive plan is active, show it as the active plan
+  while the selected saved plan remains editable.
 - Show Performance Boost Mode and the long- and short-running thread policies
   separately for Plugged In and On Battery. Offer all six scheduling choices
   for recognized policy values. For unavailable controls, distinguish missing,

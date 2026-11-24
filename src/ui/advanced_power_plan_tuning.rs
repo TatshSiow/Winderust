@@ -989,24 +989,14 @@ impl Editor {
             .collect::<Vec<_>>();
         let selected =
             target_plan.map(|plan| PlanChoice(plan.guid.clone(), power_plan_label(plan)));
-        let mut body = column![
-            super::widgets::settings_card(
-                row![
-                    text(t!("processor_power.target_plan").to_string()).width(Fill),
-                    pick_list(choices, selected, |p| Message::Plan(p.0))
-                ]
-                .spacing(design::space::MEDIUM)
-                .align_y(iced::Center)
-            ),
-            text(
-                t!(
-                    "processor_power.effective_power_mode",
-                    mode = mode_label(mode)
-                )
-                .to_string()
+        let mut mode_context = column![text(
+            t!(
+                "processor_power.effective_power_mode",
+                mode = mode_label(mode)
             )
-        ]
-        .spacing(super::widgets::CARD_GAP);
+            .to_string()
+        )]
+        .spacing(design::space::TIGHT);
         if let Some(plan) = target_plan {
             if !plan.active {
                 let active = plans
@@ -1024,16 +1014,31 @@ impl Editor {
                     Some(plan) => t!("processor_power.target_plan_inactive", plan = plan),
                     None => t!("processor_power.active_plan_unavailable"),
                 };
-                body = body.push(text(message.into_owned()));
+                mode_context = mode_context
+                    .push(text(message.into_owned()).wrapping(text::Wrapping::WordOrGlyph));
             } else if self.personality == Some(PowerPlanPersonality::Balanced)
                 && !matches!(
                     mode,
                     EffectivePowerMode::Unknown | EffectivePowerMode::Balanced
                 )
             {
-                body = body.push(text(t!("processor_power.overlay_warning").to_string()));
+                mode_context = mode_context.push(
+                    text(t!("processor_power.overlay_warning").to_string())
+                        .wrapping(text::Wrapping::WordOrGlyph),
+                );
             }
         }
+        let mut body = column![super::widgets::settings_card(
+            super::widgets::settings_rows([
+                super::widgets::setting_row(
+                    "processor_power.target_plan",
+                    pick_list(choices, selected, |p| Message::Plan(p.0)),
+                )
+                .into(),
+                mode_context.into(),
+            ])
+        )]
+        .spacing(super::widgets::CARD_GAP);
         if let (Some(values), Some(readback)) = (self.values, self.readback) {
             let options: Rc<[_]> = BUILT_INS
                 .into_iter()
