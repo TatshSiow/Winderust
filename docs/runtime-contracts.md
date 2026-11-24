@@ -5,6 +5,13 @@ Read the relevant section before changing feature policy, ownership, restoration
 ## Application boundaries
 
 - Automation worker lifetime uses the complete AC/Battery configuration; policy application still uses only the active profile. An idle profile waits for events when the other profile requires automation.
+- Scoped path matching for Resource Thresholds, its Match Preview, and Sleep
+  Prevention selects candidates from one Toolhelp process snapshot using the
+  rule selector or prior process ID before reading process metadata. Each row's
+  first metadata attempt stays with that catalog. A later full catalog request
+  fills the remaining rows from the same snapshot, and scoped callers reuse a
+  complete path-enriched catalog when available. Exact path, process identity,
+  and protection checks still apply. The next pass takes a fresh snapshot.
 - Action Log entries and summaries remain in memory across automation worker
   restarts. The worker publishes its cleanup entries as it returns the log.
   Clear resets both without reusing sequence numbers.
@@ -238,8 +245,8 @@ Read the relevant section before changing feature policy, ownership, restoration
   Portable settings use the existing `watchdog` TOML key for these rules.
 - Each rule selects one absolute `executable_path` or one exact `executable_name`.
   Executable name rules resolve known absolute image paths from current process
-  observations. Resource Thresholds enriches enabled selector candidates and exact
-  prior incident members when the cycle has no full path catalog to reuse. Combined by
+  observations. The scoped catalog includes enabled selector candidates and
+  prior incident PIDs for exact identity verification. Combined by
   path is the default scope and keeps a separate usage total and incident for
   each path. Per instance evaluates each verified PID and
   creation time independently and includes the PID in notifications. A failed

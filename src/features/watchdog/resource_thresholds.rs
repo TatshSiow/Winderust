@@ -153,10 +153,10 @@ fn needs_path_observation(
     settings: &ResourceThresholdsSettings,
     prior_members: &BTreeSet<ProcessIdentity>,
 ) -> bool {
-    // Missing paths on prior members still interrupt their incident's observation.
-    process
-        .creation_time
-        .is_some_and(|time| prior_members.contains(&(process.id, time)))
+    // A snapshot PID can still belong to a prior member before its creation time is read.
+    let first = (process.id, process.creation_time.unwrap_or(0));
+    let last = (process.id, process.creation_time.unwrap_or(u64::MAX));
+    prior_members.range(first..=last).next().is_some()
         || settings
             .rules
             .iter()
@@ -686,7 +686,7 @@ mod tests {
     }
 
     #[test]
-    fn path_observation_keeps_selector_candidates_and_exact_prior_members() {
+    fn path_observation_keeps_selector_candidates_and_possible_prior_members() {
         let mut disabled = ResourceThresholdsRule::new(r"C:\Apps\disabled.exe".into());
         disabled.enabled = false;
         let settings = ResourceThresholdsSettings {
@@ -716,6 +716,8 @@ mod tests {
                 expected
             );
         }
+        process.creation_time = None;
+        assert!(needs_path_observation(&process, &settings, &prior_members));
         process.creation_time = Some(11);
         assert!(needs_path_observation(&process, &settings, &prior_members));
     }

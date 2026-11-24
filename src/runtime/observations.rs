@@ -10,8 +10,11 @@ use crate::{
     cpu::{process_cpu_usage_percent, ProcessCpuSample},
     foreground::{
         active_window::{process_from_id, ForegroundProcess},
-        foreground_process_id, list_processes,
-        process_list::{enrich_process_paths, list_process_ancestry, process_cpu_times},
+        foreground_process_id,
+        process_list::{
+            enrich_process_paths, list_process_ancestry, list_process_entries,
+            observe_process_metadata, process_cpu_times,
+        },
         top_level_window_process_ids, visible_window_process_ids, ProcessInfo,
     },
 };
@@ -86,7 +89,8 @@ impl<T> Observation<T> {
 
 #[derive(Clone, Copy)]
 struct ObservationSources {
-    processes: fn() -> Result<Vec<ProcessInfo>, String>,
+    process_entries: fn() -> Result<Vec<ProcessInfo>, String>,
+    process_metadata: fn(&mut ProcessInfo),
     enrich_process_paths: fn(&mut [ProcessInfo]),
     foreground_process_id: fn() -> Option<u32>,
     process_from_id: fn(u32) -> Option<ForegroundProcess>,
@@ -98,7 +102,8 @@ struct ObservationSources {
 impl Default for ObservationSources {
     fn default() -> Self {
         Self {
-            processes: list_processes,
+            process_entries: list_process_entries,
+            process_metadata: |process| drop(observe_process_metadata(process)),
             enrich_process_paths,
             foreground_process_id,
             process_from_id,
@@ -116,6 +121,8 @@ impl Default for ObservationSources {
 pub(crate) struct CycleObservations {
     sources: ObservationSources,
     processes: Observation<Arc<[ProcessInfo]>>,
+    // Remember the first metadata attempt per PID until the full catalog is filled.
+    partial_process_metadata: Option<BTreeSet<u32>>,
     process_paths_enriched: bool,
     foreground_ancestry: Observation<Arc<[ProcessInfo]>>,
     adaptive_workload: Option<AdaptiveWorkload>,
@@ -158,6 +165,7 @@ impl CycleObservations {
         Self {
             sources,
             processes: Observation::NotRequested,
+            partial_process_metadata: Some(BTreeSet::new()),
             process_paths_enriched: false,
             foreground_ancestry: Observation::NotRequested,
             adaptive_workload: None,
@@ -174,6 +182,7 @@ impl CycleObservations {
     pub(crate) fn with_processes(processes: Vec<ProcessInfo>) -> Self {
         Self {
             processes: Observation::Available(Arc::from(processes)),
+            partial_process_metadata: None,
             ..Self::default()
         }
     }
@@ -238,10 +247,8 @@ impl CycleObservations {
         &mut self,
         foreground_id: u32,
     ) -> Result<Arc<[ProcessInfo]>, String> {
-        match &self.processes {
-            Observation::Available(processes) => return Ok(Arc::clone(processes)),
-            Observation::Unavailable(error) => return Err(error.clone()),
-            Observation::NotRequested => {}
+        if !matches!(self.processes, Observation::NotRequested) {
+            return self.processes();
         }
         if matches!(self.foreground_ancestry, Observation::NotRequested) {
             self.foreground_ancestry = match list_process_ancestry(foreground_id) {
@@ -256,62 +263,79 @@ impl CycleObservations {
         }
     }
 
-    pub(crate) fn processes(&mut self) -> Result<Arc<[ProcessInfo]>, String> {
+    fn ensure_process_entries(&mut self) -> Result<(), String> {
         if matches!(self.processes, Observation::NotRequested) {
-            self.processes = match (self.sources.processes)() {
+            self.processes = match (self.sources.process_entries)() {
                 Ok(processes) => Observation::Available(Arc::from(processes)),
                 Err(error) => Observation::Unavailable(error),
             };
         }
 
         match &self.processes {
-            Observation::Available(processes) => Ok(Arc::clone(processes)),
+            Observation::Available(_) => Ok(()),
             Observation::Unavailable(error) => Err(error.clone()),
             Observation::NotRequested => unreachable!("process observation was just requested"),
         }
     }
 
-    pub(crate) fn processes_with_paths(&mut self) -> Result<Arc<[ProcessInfo]>, String> {
-        if matches!(self.processes, Observation::NotRequested) {
-            drop(self.processes()?);
+    pub(crate) fn processes(&mut self) -> Result<Arc<[ProcessInfo]>, String> {
+        self.ensure_process_entries()?;
+        let Observation::Available(processes) = &mut self.processes else {
+            unreachable!("process observation just succeeded")
+        };
+        if let Some(observed) = self.partial_process_metadata.take() {
+            for process in Arc::make_mut(processes) {
+                if !observed.contains(&process.id) {
+                    (self.sources.process_metadata)(process);
+                }
+            }
         }
+        Ok(Arc::clone(processes))
+    }
+
+    pub(crate) fn processes_with_paths(&mut self) -> Result<Arc<[ProcessInfo]>, String> {
+        drop(self.processes()?);
+        let Observation::Available(processes) = &mut self.processes else {
+            unreachable!("process observation just succeeded")
+        };
         if !self.process_paths_enriched {
-            let Observation::Available(processes) = &mut self.processes else {
-                return match &self.processes {
-                    Observation::Unavailable(error) => Err(error.clone()),
-                    Observation::NotRequested | Observation::Available(_) => {
-                        unreachable!("process observation was already initialized")
-                    }
-                };
-            };
             enrich_observed_paths(Arc::make_mut(processes), self.sources.enrich_process_paths);
             self.process_paths_enriched = true;
         }
-        match &self.processes {
-            Observation::Available(processes) => Ok(Arc::clone(processes)),
-            Observation::Unavailable(error) => Err(error.clone()),
-            Observation::NotRequested => unreachable!("process observation was initialized"),
-        }
+        Ok(Arc::clone(processes))
     }
 
-    /// Reuses completed enrichment or enriches only selected rows from the current catalog.
+    /// Selects candidates using snapshot names and PIDs before reading metadata and paths.
     pub(crate) fn processes_for_path_matching(
         &mut self,
         mut is_candidate: impl FnMut(&ProcessInfo) -> bool,
     ) -> Result<Cow<'_, [ProcessInfo]>, String> {
-        drop(self.processes()?);
-        let Observation::Available(processes) = &self.processes else {
+        self.ensure_process_entries()?;
+        let Observation::Available(processes) = &mut self.processes else {
             unreachable!("process observation just succeeded")
         };
         if self.process_paths_enriched {
-            return Ok(Cow::Borrowed(processes.as_ref()));
+            return Ok(Cow::Borrowed(processes));
         }
 
-        let mut candidates: Vec<_> = processes
-            .iter()
-            .filter(|process| is_candidate(process))
-            .cloned()
-            .collect();
+        let mut candidates: Vec<_> = if let Some(observed) = &mut self.partial_process_metadata {
+            let mut candidates = Vec::new();
+            for process in Arc::make_mut(processes) {
+                if is_candidate(process) {
+                    if observed.insert(process.id) {
+                        (self.sources.process_metadata)(process);
+                    }
+                    candidates.push(process.clone());
+                }
+            }
+            candidates
+        } else {
+            processes
+                .iter()
+                .filter(|process| is_candidate(process))
+                .cloned()
+                .collect()
+        };
         enrich_observed_paths(&mut candidates, self.sources.enrich_process_paths);
         Ok(Cow::Owned(candidates))
     }
@@ -582,7 +606,7 @@ mod tests {
                     sampled_at: start + Duration::from_secs(seconds),
                 })),
                 sources: ObservationSources {
-                    processes: || Err("background list requested".into()),
+                    process_entries: || Err("background list requested".into()),
                     ..ObservationSources::default()
                 },
                 ..CycleObservations::default()
@@ -694,6 +718,58 @@ mod tests {
     }
 
     #[test]
+    fn sparse_paths_defer_unrelated_metadata_and_reuse_first_attempts() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        static METADATA_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+        PROCESS_CALLS.store(0, Ordering::Relaxed);
+        METADATA_CALLS.store(0, Ordering::Relaxed);
+        let mut observations = CycleObservations::with_sources(ObservationSources {
+            process_entries: || {
+                let row = processes()?.remove(0);
+                Ok((1..=3)
+                    .map(|id| ProcessInfo {
+                        id,
+                        creation_time: None,
+                        image_path: None,
+                        ..row.clone()
+                    })
+                    .collect())
+            },
+            process_metadata: |process| {
+                METADATA_CALLS.fetch_add(1, Ordering::Relaxed);
+                process.creation_time = (process.id != 2).then_some(u64::from(process.id));
+            },
+            enrich_process_paths: |processes| {
+                for process in processes {
+                    process.creation_time = Some(u64::from(process.id));
+                    process.image_path = Some(PathBuf::from(r"C:\Apps\test.exe"));
+                }
+            },
+            ..ObservationSources::default()
+        });
+
+        for _ in 0..2 {
+            let selected = observations
+                .processes_for_path_matching(|process| process.id <= 2)
+                .unwrap();
+            assert_eq!(selected.len(), 2);
+            assert_eq!(selected[0].creation_time, Some(1));
+            assert!(selected[0].image_path.is_some());
+            assert!(selected[1].creation_time.is_none());
+            assert!(selected[1].image_path.is_none());
+            assert_eq!(METADATA_CALLS.load(Ordering::Relaxed), 2);
+        }
+
+        let full = observations.foreground_process_ancestry(1).unwrap();
+        assert_eq!(full[2].creation_time, Some(3));
+        assert!(full[1].creation_time.is_none());
+        assert!(Arc::ptr_eq(&full, &observations.processes().unwrap()));
+        assert_eq!(METADATA_CALLS.load(Ordering::Relaxed), 3);
+        assert_eq!(PROCESS_CALLS.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
     fn enrichment_defers_new_generations_without_changing_cached_workload() {
         let _guard = TEST_LOCK.lock().unwrap();
         fn initial() -> Result<Vec<ProcessInfo>, String> {
@@ -725,7 +801,8 @@ mod tests {
             }
         }
         let mut observations = CycleObservations::with_sources(ObservationSources {
-            processes: initial,
+            process_entries: initial,
+            process_metadata: |_| {},
             enrich_process_paths: enrich,
             foreground_process_id: foreground_id,
             process_from_id: foreground_process,
@@ -993,7 +1070,8 @@ mod tests {
         }
 
         let mut observations = CycleObservations::with_sources(ObservationSources {
-            processes,
+            process_entries: processes,
+            process_metadata: |_| {},
             enrich_process_paths: enrich_paths,
             foreground_process_id: foreground_id,
             process_from_id: foreground_process,
@@ -1104,7 +1182,8 @@ mod tests {
 
         let path = r"C:\Apps\test.exe";
         let mut observations = CycleObservations::with_sources(ObservationSources {
-            processes: raw_processes,
+            process_entries: raw_processes,
+            process_metadata: |_| {},
             enrich_process_paths: |processes| {
                 enrich_paths(processes);
                 processes[1].image_path = Some(PathBuf::from(r"C:\Apps\foreground.exe"));
@@ -1213,7 +1292,8 @@ mod tests {
         PROCESS_CALLS.store(0, Ordering::Relaxed);
         VISIBLE_WINDOW_CALLS.store(0, Ordering::Relaxed);
         let mut observations = CycleObservations::with_sources(ObservationSources {
-            processes: unavailable_processes,
+            process_entries: unavailable_processes,
+            process_metadata: |_| {},
             enrich_process_paths: enrich_paths,
             foreground_process_id: foreground_id,
             process_from_id: foreground_process,

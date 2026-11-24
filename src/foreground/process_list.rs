@@ -669,27 +669,27 @@ pub fn process_candidates_from_processes(processes: &[ProcessInfo]) -> Vec<Proce
     candidates.into_values().collect()
 }
 
-pub fn list_processes() -> Result<Vec<ProcessInfo>, String> {
-    list_processes_with(|_, _| {})
-}
-
 fn list_processes_with(
     mut enrich: impl FnMut(&mut ProcessInfo, &WinHandle),
 ) -> Result<Vec<ProcessInfo>, String> {
     let mut processes = list_process_entries()?;
     for process in &mut processes {
-        let handle = open_process_for_query(process.id);
-        process.session_id = process_session_id(process.id);
-        let Some(handle) = handle else {
-            continue;
-        };
-        process.creation_time = handle.process_creation_time();
-        process.is_critical = process_critical_from_handle(&handle);
-        process.can_set_information = process_protection_from_handle(&handle) == Some(false)
-            && process_has_access(process.id, PROCESS_SET_INFORMATION);
-        enrich(process, &handle);
+        if let Some(handle) = observe_process_metadata(process) {
+            enrich(process, &handle);
+        }
     }
     Ok(processes)
+}
+
+pub(crate) fn observe_process_metadata(process: &mut ProcessInfo) -> Option<WinHandle> {
+    let handle = open_process_for_query(process.id);
+    process.session_id = process_session_id(process.id);
+    let handle = handle?;
+    process.creation_time = handle.process_creation_time();
+    process.is_critical = process_critical_from_handle(&handle);
+    process.can_set_information = process_protection_from_handle(&handle) == Some(false)
+        && process_has_access(process.id, PROCESS_SET_INFORMATION);
+    Some(handle)
 }
 
 pub(crate) fn list_process_ancestry(root: u32) -> Result<Vec<ProcessInfo>, String> {
@@ -715,7 +715,7 @@ pub(crate) fn list_process_ancestry(root: u32) -> Result<Vec<ProcessInfo>, Strin
     Ok(processes)
 }
 
-fn list_process_entries() -> Result<Vec<ProcessInfo>, String> {
+pub(crate) fn list_process_entries() -> Result<Vec<ProcessInfo>, String> {
     let snapshot = process_snapshot()?;
     let mut entry = PROCESSENTRY32W {
         dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
@@ -1685,7 +1685,7 @@ mod tests {
     fn process_snapshot_captures_the_current_process_creation_time() {
         // SAFETY: GetCurrentProcessId takes no arguments and has no caller requirements.
         let process_id = unsafe { GetCurrentProcessId() };
-        let processes = list_processes().expect("process snapshot is available");
+        let processes = list_processes_with(|_, _| {}).expect("process snapshot is available");
         let current = processes
             .iter()
             .find(|process| process.id == process_id)

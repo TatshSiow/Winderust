@@ -723,7 +723,7 @@ $runtimeObservationConsumers = @(
 )
 Assert-NoSourceMatch `
     -Boundary 'runtime feature consumers use CycleObservations instead of raw process/window collectors' `
-    -Pattern '(^|[^A-Za-z0-9_.])(list_processes(_with_paths)?|foreground_process(_id)?|visible_window_process_ids|top_level_window_process_ids|process_from_id)\(' `
+    -Pattern '(^|[^A-Za-z0-9_.])(list_process_entries|list_processes_with_paths|observe_process_metadata|foreground_process(_id)?|visible_window_process_ids|top_level_window_process_ids|process_from_id)\(' `
     -Paths $runtimeObservationConsumers
 
 Assert-NoSourceMatch `
