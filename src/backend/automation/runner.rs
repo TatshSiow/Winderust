@@ -200,6 +200,7 @@ enum ResourceThresholdsRestartOutcome {
     Applied,
     AlreadyRestarted,
     CoolingDown,
+    BlockedByAppSuspension,
 }
 
 #[derive(Default)]
@@ -243,6 +244,7 @@ impl ResourceThresholdsActionCycle {
         targets: &[crate::foreground::ProcessActionTarget],
         cooldowns: &mut Vec<(PathBuf, Instant)>,
         now: Instant,
+        blocked_by_app_suspension: impl FnOnce() -> Result<bool, String>,
         restart: impl FnOnce() -> crate::control::process_restart::RestartResult,
     ) -> Result<ResourceThresholdsRestartOutcome, String> {
         let mut key: Vec<_> = targets
@@ -263,13 +265,18 @@ impl ResourceThresholdsActionCycle {
         };
         let outcome = (|| {
             cooldowns.retain(|(_, deadline)| now < *deadline);
-            if let Some(path) = targets.first().map(|target| &target.executable_path) {
-                if cooldowns
+            let path = targets.first().map(|target| &target.executable_path);
+            if path.is_some_and(|path| {
+                cooldowns
                     .iter()
                     .any(|(active_path, _)| same_executable_path(active_path, path))
-                {
-                    return Ok(ResourceThresholdsRestartOutcome::CoolingDown);
-                }
+            }) {
+                return Ok(ResourceThresholdsRestartOutcome::CoolingDown);
+            }
+            if blocked_by_app_suspension()? {
+                return Ok(ResourceThresholdsRestartOutcome::BlockedByAppSuspension);
+            }
+            if let Some(path) = path {
                 cooldowns.push((path.clone(), now + RESOURCE_THRESHOLDS_RESTART_COOLDOWN));
             }
             let outcome = restart();
@@ -363,6 +370,17 @@ impl RuntimeCore {
                             &mut self.resource_thresholds_restart_cooldowns,
                             Instant::now(),
                             || {
+                                self.app_suspension_controller
+                                    .lock()
+                                    .map_err(|_| {
+                                        "Shared suspension state is unavailable.".to_owned()
+                                    })?
+                                    .app_suspension_blocks_restart(
+                                        &event.targets,
+                                        settings.general.allow_cross_session_process_control,
+                                    )
+                            },
+                            || {
                                 self.keep_running
                                     .pause_targets(&event.targets, PauseReason::ResourceThresholds);
                                 crate::control::process_restart::restart_app(
@@ -386,6 +404,10 @@ impl RuntimeCore {
                                     "resource_thresholds.restart_cooldown",
                                     seconds = RESOURCE_THRESHOLDS_RESTART_COOLDOWN.as_secs()
                                 ),
+                            ),
+                            ResourceThresholdsRestartOutcome::BlockedByAppSuspension => (
+                                ActionLogResult::Skipped,
+                                t!("resource_thresholds.restart_app_suspended"),
                             ),
                         })
                 } else if let Some(reason) = actions.skipped_termination_reason(&event.targets) {
@@ -3455,10 +3477,16 @@ mod resource_thresholds_action_tests {
             } else {
                 "resource_thresholds.termination_already_handled"
             };
-            let _ = cycle.restart_once(&targets, &mut Vec::new(), now, || RestartResult {
-                termination_handled: vec![(1, 1), (2, 2)],
-                result,
-            });
+            let _ = cycle.restart_once(
+                &targets,
+                &mut Vec::new(),
+                now,
+                || Ok(false),
+                || RestartResult {
+                    termination_handled: vec![(1, 1), (2, 2)],
+                    result,
+                },
+            );
             assert_eq!(cycle.skipped_termination_reason(&targets), Some(expected));
             assert_eq!(
                 cycle.skipped_termination_reason(&[target(2), target(1)]),
@@ -3469,10 +3497,16 @@ mod resource_thresholds_action_tests {
             assert_eq!(cycle.skipped_termination_reason(&[replacement]), None);
         }
         let mut cycle = ResourceThresholdsActionCycle::default();
-        let _ = cycle.restart_once(&[target(3)], &mut Vec::new(), now, || RestartResult {
-            termination_handled: vec![(3, 3)],
-            result: Ok(()),
-        });
+        let _ = cycle.restart_once(
+            &[target(3)],
+            &mut Vec::new(),
+            now,
+            || Ok(false),
+            || RestartResult {
+                termination_handled: vec![(3, 3)],
+                result: Ok(()),
+            },
+        );
         cycle.termination_handled.insert((1, 1));
         assert_eq!(cycle.skipped_termination_reason(&targets), None);
         cycle.termination_handled.insert((2, 2));
@@ -3510,13 +3544,19 @@ mod resource_thresholds_action_tests {
                 ),
             ] {
                 assert_eq!(
-                    cycle.restart_once(&batch, &mut cooldowns, start, || {
-                        launches += 1;
-                        RestartResult {
-                            termination_handled: vec![(1, 1)],
-                            result: result.clone(),
-                        }
-                    }),
+                    cycle.restart_once(
+                        &batch,
+                        &mut cooldowns,
+                        start,
+                        || Ok(false),
+                        || {
+                            launches += 1;
+                            RestartResult {
+                                termination_handled: vec![(1, 1)],
+                                result: result.clone(),
+                            }
+                        },
+                    ),
                     result.clone().map(|()| success)
                 );
             }
@@ -3532,6 +3572,7 @@ mod resource_thresholds_action_tests {
                     std::slice::from_ref(&replacement),
                     &mut cooldowns,
                     just_before_expiry,
+                    || panic!("Cooldown must not query App Suspension"),
                     || panic!("Cooldown must not attempt a restart"),
                 ),
                 Ok(ResourceThresholdsRestartOutcome::CoolingDown)
@@ -3544,12 +3585,16 @@ mod resource_thresholds_action_tests {
             let mut independent = target(4);
             independent.executable_path = r"C:\Other\app.exe".into();
             assert_eq!(
-                next_cycle.restart_once(&[independent], &mut cooldowns, just_before_expiry, || {
-                    RestartResult {
+                next_cycle.restart_once(
+                    &[independent],
+                    &mut cooldowns,
+                    just_before_expiry,
+                    || Ok(false),
+                    || RestartResult {
                         termination_handled: Vec::new(),
                         result: Ok(()),
-                    }
-                },),
+                    },
+                ),
                 Ok(ResourceThresholdsRestartOutcome::Applied)
             );
             assert_eq!(
@@ -3557,6 +3602,7 @@ mod resource_thresholds_action_tests {
                     &[replacement],
                     &mut cooldowns,
                     start + RESOURCE_THRESHOLDS_RESTART_COOLDOWN,
+                    || Ok(false),
                     || RestartResult {
                         termination_handled: vec![(3, 3)],
                         result: Ok(())
@@ -3564,6 +3610,42 @@ mod resource_thresholds_action_tests {
                 ),
                 Ok(ResourceThresholdsRestartOutcome::Applied)
             );
+        }
+    }
+
+    #[test]
+    fn frozen_or_unverified_targets_leave_restart_cooldown_and_termination_untouched() {
+        let targets = [ProcessActionTarget {
+            id: 1,
+            name: "app.exe".into(),
+            executable_path: r"C:\Apps\app.exe".into(),
+            creation_time: 1,
+            session_id: Some(1),
+            is_service_account: Some(false),
+        }];
+        let now = Instant::now();
+        let mut cooldowns = Vec::new();
+        for (blocked, expected) in [
+            (
+                Ok(true),
+                Ok(ResourceThresholdsRestartOutcome::BlockedByAppSuspension),
+            ),
+            (
+                Err("Job membership unavailable".to_owned()),
+                Err("Job membership unavailable".to_owned()),
+            ),
+        ] {
+            let mut cycle = ResourceThresholdsActionCycle::default();
+            let outcome = cycle.restart_once(
+                &targets,
+                &mut cooldowns,
+                now,
+                || blocked,
+                || panic!("Blocked restart must not pause Keep Running or stop the app"),
+            );
+            assert_eq!(outcome, expected);
+            assert!(cooldowns.is_empty());
+            assert_eq!(cycle.skipped_termination_reason(&targets), None);
         }
     }
 }

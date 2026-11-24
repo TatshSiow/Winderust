@@ -71,11 +71,11 @@ Read the relevant section before changing feature policy, ownership, restoration
   reservation. Watcher loss pauses pending retries even if coverage returns
   before the worker processes the loss. Native calls run after unlocking. Later
   intents pause subsequent retries; they cannot roll back a committed launch.
-  Manual Stop/Stop Process Tree
-  and Resource Thresholds Terminate or Restart attempts pause affected rules before acting, even
-  when the attempt fails. Confirmation of Stop Process Tree submits the captured
-  roots for pausing before the fresh tree scan. Verified descendants are paused
-  before termination is attempted.
+  Manual Stop/Stop Process Tree and eligible Resource Thresholds Terminate or
+  Restart attempts pause affected rules before acting, even when the attempt
+  fails. Confirmation of Stop Process Tree submits the captured roots for
+  pausing before the fresh tree scan. Verified descendants are paused before
+  termination is attempted.
 - Closing to tray retains this owner. Suspend/session changes require Resume;
   power-source handoff does not reset global rules. Disable and Exit never stop
   an accepted replacement. Fresh launches are not crash-helper recovery records.
@@ -276,6 +276,12 @@ Read the relevant section before changing feature policy, ownership, restoration
   Resource Thresholds settings, automation enablement, and cross-session policy.
   A changed policy or pending shutdown, suspend/resume, or session change cancels
   that incident's response before Keep Running is paused or a restart cooldown starts.
+- Before Restart reserves a cooldown or pauses Keep Running, it checks each exact
+  target against jobs App Suspension has frozen, including jobs awaiting a thaw
+  retry. This covers descendants that inherited membership. A match records a
+  skipped Restart. An unavailable identity or membership check records a
+  failure. Action Log and notifications report the reason when their settings
+  allow it. An independently configured Terminate response can still run.
 - `RuntimeCore` executes automatic termination through `ProcessTerminationController`,
   preserving exact identity, protected-process and helper exclusions, current
   cross-session policy, and Windows access checks. The controller preflights

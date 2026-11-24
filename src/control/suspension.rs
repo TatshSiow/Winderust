@@ -212,6 +212,55 @@ impl Default for SuspensionController<WindowsSuspensionPlatform> {
     }
 }
 
+impl SuspensionController<WindowsSuspensionPlatform> {
+    pub(crate) fn app_suspension_blocks_restart(
+        &self,
+        targets: &[ProcessActionTarget],
+        allow_cross_session_process_control: bool,
+    ) -> Result<bool, String> {
+        let frozen_jobs = self
+            .managed
+            .values()
+            .filter(|managed| {
+                // A failed thaw can clear the freeze request while the job stays frozen.
+                managed
+                    .app_suspension_phase
+                    .is_some_and(|frozen| frozen || managed.retry.is_some())
+                    && matches!(
+                        managed.state,
+                        SuspensionState::Frozen | SuspensionState::FrozenCompensationPending
+                    )
+            })
+            .map(|managed| {
+                managed
+                    .handle
+                    .job_handle
+                    .as_ref()
+                    .ok_or("App Suspension job handle is unavailable.")
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        if frozen_jobs.is_empty() {
+            return Ok(false);
+        }
+        // The restart parent can pass the entire job to its replacement, including its freeze.
+        for target in targets {
+            let (_, process) = open_process_for_observation(
+                &ProcessControlTarget::from_action_target(target),
+                allow_cross_session_process_control,
+            )
+            .map_err(|error| error.to_string())?;
+            for job in &frozen_jobs {
+                if windows_job::process_is_in_job(&process, Some(job))
+                    .ok_or("Could not verify App Suspension job membership.")?
+                {
+                    return Ok(true);
+                }
+            }
+        }
+        Ok(false)
+    }
+}
+
 impl<P> SuspensionController<P>
 where
     P: SuspensionPlatform,
@@ -1401,6 +1450,26 @@ mod tests {
             assert!(!controller.contains_process(42));
             assert!(!controller.is_frozen_target(&target.key()));
         }
+    }
+
+    #[test]
+    fn restart_preflight_checks_retained_app_suspension_thaws() {
+        let mut controller = SuspensionController::default();
+        let target = target(7);
+        controller.insert_inert(target.clone(), true);
+        let managed = controller.managed.get_mut(&target.key()).unwrap();
+        managed.app_suspension_phase = Some(false);
+        schedule_retry(managed, "thaw failed".to_owned());
+
+        // The inert job has no Windows handle, so preflight must fail closed until thawed.
+        assert!(controller
+            .app_suspension_blocks_restart(&[], false)
+            .is_err());
+        controller.thaw_keep_target(&target, true).unwrap();
+        assert_eq!(
+            controller.app_suspension_blocks_restart(&[], false),
+            Ok(false)
+        );
     }
 
     #[test]

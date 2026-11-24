@@ -1267,6 +1267,7 @@ resource_thresholds:
   restart_already_restarted: "Restart skipped. A Resource Thresholds action already restarted this app."
   termination_already_handled: "Skipped termination. An earlier Resource Thresholds action already requested termination or confirmed exit for these process instances."
   restart_cooldown: "Restart skipped during the %{seconds}-second cooldown."
+  restart_app_suspended: "Restart skipped because App Suspension has frozen the app."
   restart_failed: "Restart failed: %{error}"
   invalid: "Enable at least one monitor. For At or above, use 0 < warning < critical ≤ maximum. For At or below, use 0 ≤ critical < warning < maximum."
   monitored: "Monitored processes"

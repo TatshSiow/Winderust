@@ -1270,6 +1270,7 @@ resource_thresholds:
   restart_already_restarted: "已略過重新啟動。資源門檻動作已重新啟動此程式。"
   termination_already_handled: "已略過終止。先前的資源門檻動作已要求終止這些處理程序執行個體，或已確認它們結束。"
   restart_cooldown: "仍在 %{seconds} 秒的冷卻期間，已略過重新啟動。"
+  restart_app_suspended: "此程式已由應用程式暫停功能暫停，已略過重新啟動。"
   restart_failed: "重新啟動失敗：%{error}"
   invalid: "請至少啟用一個監控項目。達到或高於門檻須符合 0 < 警告 < 嚴重 ≤ 上限。達到或低於門檻須符合 0 ≤ 嚴重 < 警告 < 上限。"
   monitored: "監控中的處理程序"
