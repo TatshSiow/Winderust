@@ -260,20 +260,39 @@ impl Focus {
 
     pub(super) fn draw(&self, renderer: &mut Renderer, theme: &Theme, bounds: Rectangle) {
         if self.0 {
-            renderer.fill_quad(
-                renderer::Quad {
-                    bounds,
-                    border: iced::Border {
-                        color: theme.palette().text,
-                        width: 2.0,
-                        radius: super::design::CONTROL_RADIUS.into(),
-                    },
-                    ..Default::default()
-                },
-                iced::Color::TRANSPARENT,
-            );
+            draw_ring(renderer, theme, bounds);
         }
     }
+}
+
+pub(super) fn draw_ring(renderer: &mut Renderer, theme: &Theme, mut bounds: Rectangle) {
+    let palette = theme.palette();
+    let mut ring = |bounds, color| {
+        renderer.fill_quad(
+            renderer::Quad {
+                bounds,
+                border: iced::Border {
+                    color,
+                    width: 2.0,
+                    radius: super::design::CONTROL_RADIUS.into(),
+                },
+                ..Default::default()
+            },
+            iced::Color::TRANSPARENT,
+        );
+    };
+    if super::design::is_contrast(theme) && bounds.width > 8.0 && bounds.height > 8.0 {
+        let inset = |bounds: Rectangle| Rectangle {
+            x: bounds.x + 2.0,
+            y: bounds.y + 2.0,
+            width: bounds.width - 4.0,
+            height: bounds.height - 4.0,
+        };
+        bounds = inset(bounds);
+        ring(bounds, palette.background);
+        bounds = inset(bounds);
+    }
+    ring(bounds, palette.text);
 }
 
 #[cfg(test)]

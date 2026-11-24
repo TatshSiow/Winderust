@@ -169,8 +169,13 @@ pub(super) fn item_style(
         super::widgets::quiet(theme, status)
     };
     if focused {
-        style.border.color = super::widgets::accent_text(theme, style.background);
-        style.border.width = 2.0;
+        if super::design::is_contrast(theme) {
+            style.border.color = theme.palette().text;
+            style.border.width = 3.0;
+        } else {
+            style.border.color = super::widgets::accent_text(theme, style.background);
+            style.border.width = 2.0;
+        }
     }
     style
 }

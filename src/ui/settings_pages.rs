@@ -953,7 +953,8 @@ fn channel_label(v: UpdateChannel) -> String {
     .to_string()
 }
 pub(super) fn theme(s: &GeneralSettings) -> Theme {
-    let system = match crate::platform::windows::appearance::read() {
+    use crate::platform::windows::appearance;
+    let system = match appearance::read() {
         Ok(appearance) => Some(appearance),
         Err(error) => {
             eprintln!("Unable to read Windows appearance: {error}");
@@ -967,10 +968,28 @@ pub(super) fn theme(s: &GeneralSettings) -> Theme {
                 .is_some_and(|appearance| appearance.animations),
         ),
     );
+    let contrast = if s.theme_mode == AppThemeMode::System {
+        appearance::contrast_colors()
+    } else {
+        None
+    };
+    theme_from_appearance(s, system.as_ref(), contrast)
+}
+
+pub(super) fn theme_from_appearance(
+    s: &GeneralSettings,
+    system: Option<&crate::platform::windows::appearance::Appearance>,
+    contrast: Option<crate::platform::windows::appearance::ContrastColors>,
+) -> Theme {
     let light = match s.theme_mode {
         AppThemeMode::Light => true,
         AppThemeMode::Dark | AppThemeMode::Amoled => false,
-        AppThemeMode::System => system.as_ref().is_none_or(|appearance| appearance.light),
+        AppThemeMode::System => {
+            if let Some(colors) = contrast {
+                return design::contrast_theme(colors);
+            }
+            system.is_none_or(|appearance| appearance.light)
+        }
     };
     let accent = if s.accent.source == AccentColorSource::Custom {
         Some(rgb(s.accent.custom_color))
@@ -1503,6 +1522,47 @@ mod tests {
         assert_eq!(e.download.as_deref(), Some("https://example.com"));
         assert!(e.update_failed);
         assert!(e.show_update);
+    }
+
+    #[test]
+    fn windows_contrast_applies_only_to_system_and_preserves_saved_accent() {
+        use crate::platform::windows::appearance::{Appearance, ContrastColors};
+        let contrast = Some(ContrastColors {
+            window: 0x000000,
+            window_text: 0xffffff,
+            highlight: 0xfaf080,
+            highlight_text: 0x000000,
+        });
+        let mut settings = Settings::default().general;
+        settings.theme_mode = AppThemeMode::System;
+        settings.accent.source = AccentColorSource::Custom;
+        settings.accent.custom_color = 0x3366aa;
+        let windows = Appearance {
+            light: false,
+            accent: 0xabcdef,
+            animations: false,
+        };
+        let theme = theme_from_appearance(&settings, None, contrast);
+        assert!(design::is_contrast(&theme));
+        assert_eq!(theme.palette().primary, rgb(0xfaf080));
+        let theme = theme_from_appearance(&settings, Some(&windows), None);
+        assert!(!design::is_contrast(&theme));
+        assert!(theme.extended_palette().is_dark);
+        assert_eq!(theme.palette().primary, rgb(0x3366aa));
+        for mode in [
+            AppThemeMode::Light,
+            AppThemeMode::Dark,
+            AppThemeMode::Amoled,
+        ] {
+            settings.theme_mode = mode;
+            let theme = theme_from_appearance(&settings, Some(&windows), contrast);
+            assert!(!design::is_contrast(&theme));
+            assert_eq!(
+                theme.extended_palette().is_dark,
+                mode != AppThemeMode::Light
+            );
+            assert_eq!(theme.palette().primary, rgb(0x3366aa));
+        }
     }
 
     #[test]

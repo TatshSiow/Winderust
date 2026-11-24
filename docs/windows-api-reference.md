@@ -1101,11 +1101,13 @@ state.
 
 ## Appearance change notifications
 
-- `src/backend/windows_events.rs` routes WM_SETTINGCHANGE, WM_THEMECHANGED, and
-  WM_DWMCOLORIZATIONCOLORCHANGED through AppearanceChanged. The runtime generation
-  makes `src/ui/app.rs` rebuild the shared Iced theme using the current preferences.
-- References: [WM_THEMECHANGED](https://learn.microsoft.com/en-us/windows/win32/winmsg/wm-themechanged),
-  [WM_DWMCOLORIZATIONCOLORCHANGED](https://learn.microsoft.com/en-us/windows/win32/dwm/wm-dwmcolorizationcolorchanged).
+- `src/backend/windows_events.rs` routes WM_SETTINGCHANGE, WM_THEMECHANGED,
+  WM_DWMCOLORIZATIONCOLORCHANGED, and WM_SYSCOLORCHANGE through AppearanceChanged.
+  The runtime generation makes `src/ui/app.rs` rebuild the shared Iced theme
+  using the current preferences. [WM_SETTINGCHANGE](https://learn.microsoft.com/en-us/windows/win32/winmsg/wm-settingchange),
+  [WM_THEMECHANGED](https://learn.microsoft.com/en-us/windows/win32/winmsg/wm-themechanged),
+  [WM_DWMCOLORIZATIONCOLORCHANGED](https://learn.microsoft.com/en-us/windows/win32/dwm/wm-dwmcolorizationcolorchanged),
+  [WM_SYSCOLORCHANGE](https://learn.microsoft.com/en-us/windows/win32/gdi/wm-syscolorchange).
 - `src/platform/windows/appearance.rs` reads UISettings Foreground and AccentLight2 via
   [GetColorValue](https://learn.microsoft.com/en-us/uwp/api/windows.ui.viewmanagement.uisettings.getcolorvalue).
   Dark system foreground indicates light mode. Each successful
@@ -1113,6 +1115,16 @@ state.
   is balanced after the UISettings object is released. Explicit theme/custom accent
   preferences override system values. API failure is reported and uses the app default palette;
   no undocumented appearance registry fallback is retained.
+- System appearance also checks `SPI_GETHIGHCONTRAST` independently of the
+  WinRT appearance read. If active, `src/platform/windows/appearance.rs` reads
+  `COLOR_WINDOW`/`COLOR_WINDOWTEXT` and `COLOR_HIGHLIGHT`/`COLOR_HIGHLIGHTTEXT`
+  and converts their COLORREF values to RGB for the shared palette. The tray
+  shares the contrast flag reader. Repeated native reads return the same
+  system-owned scheme pointer, which callers leave untouched. Microsoft's .NET
+  implementation documents the discrepancy in the SDK structure guidance.
+  [SystemParametersInfoW](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-systemparametersinfow),
+  [GetSysColor](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getsyscolor),
+  [Microsoft .NET Win32 binding](https://source.dot.net/System.Private.Windows.Core/Windows/Win32/PInvokeCore.SystemParametersInfo.cs.html).
 
 ## Process icon extraction
 

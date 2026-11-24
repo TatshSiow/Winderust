@@ -7,11 +7,9 @@ use windows_sys::Win32::{
         LibraryLoader::{GetProcAddress, LoadLibraryExW, LOAD_LIBRARY_SEARCH_SYSTEM32},
         SystemInformation::OSVERSIONINFOW,
     },
-    UI::{
-        Accessibility::{HCF_HIGHCONTRASTON, HIGHCONTRASTW},
-        WindowsAndMessaging::{SystemParametersInfoW, SPI_GETHIGHCONTRAST},
-    },
 };
+
+use super::appearance::high_contrast_active;
 
 type AppMode = unsafe extern "system" fn(i32) -> i32;
 type WindowMode = unsafe extern "system" fn(HWND, bool) -> bool;
@@ -72,21 +70,8 @@ pub(crate) fn apply(hwnd: HWND) {
     if hwnd.is_null() {
         return;
     }
-    let mut contrast = HIGHCONTRASTW {
-        cbSize: size_of::<HIGHCONTRASTW>() as u32,
-        ..Default::default()
-    };
-    // SAFETY: contrast is writable, correctly sized, and not retained by Windows.
-    let queried = unsafe {
-        SystemParametersInfoW(
-            SPI_GETHIGHCONTRAST,
-            contrast.cbSize,
-            (&mut contrast as *mut HIGHCONTRASTW).cast(),
-            0,
-        )
-    };
     // If accessibility settings cannot be read, preserve the standard system rendering.
-    let allow_dark = queried != 0 && contrast.dwFlags & HCF_HIGHCONTRASTON == 0;
+    let allow_dark = high_contrast_active() == Some(false);
     // SAFETY: these cached exports passed the version/availability checks above, hwnd is
     // the live tray owner, and all calls run on its UI thread before menu creation.
     unsafe {
@@ -133,19 +118,7 @@ mod tests {
             )
         };
         apply(hwnd);
-        let mut contrast = HIGHCONTRASTW {
-            cbSize: size_of::<HIGHCONTRASTW>() as u32,
-            ..Default::default()
-        };
-        // SAFETY: writable, correctly sized accessibility query with no retained pointers.
-        let queried = unsafe {
-            SystemParametersInfoW(
-                SPI_GETHIGHCONTRAST,
-                contrast.cbSize,
-                (&mut contrast as *mut HIGHCONTRASTW).cast(),
-                0,
-            )
-        };
+        let expected = i32::from(high_contrast_active() == Some(false));
         // SAFETY: restore the original process-local mode and release our owned window.
         let selected = unsafe {
             let selected = app(original);
@@ -156,9 +129,6 @@ mod tests {
         };
         assert!(!hwnd.is_null());
         assert_eq!(unchanged, 0);
-        assert_eq!(
-            selected,
-            i32::from(queried != 0 && contrast.dwFlags & HCF_HIGHCONTRASTON == 0)
-        );
+        assert_eq!(selected, expected);
     }
 }

@@ -1,5 +1,5 @@
 //! Native pointer controls with interpolated styles and shared keyboard activation.
-use super::{motion, widgets};
+use super::{design, motion, widgets};
 use iced::{Element, Length, Padding, Theme};
 use std::{cell::Cell, rc::Rc};
 
@@ -50,6 +50,13 @@ impl<'a, M: 'a> Button<'a, M> {
         self.selection = Some((selected, blend.clone()));
         self.style(move |theme, status| {
             let a = widgets::quiet(theme, status);
+            if design::is_contrast(theme) {
+                return if selected {
+                    selected_style(theme, status)
+                } else {
+                    a
+                };
+            }
             let b = selected_style(theme, status);
             let mut result = a;
             result.background = Some(background(
@@ -96,7 +103,7 @@ impl<'a, M: 'a> Button<'a, M> {
         let progress = self.progress.clone();
         self.inner = self.inner.style(move |theme, status| {
             use iced::widget::button::Status;
-            if matches!(status, Status::Disabled | Status::Pressed) {
+            if design::is_contrast(theme) || matches!(status, Status::Disabled | Status::Pressed) {
                 return style(theme, status);
             }
             let a = style(theme, Status::Active);

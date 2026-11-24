@@ -74,6 +74,64 @@ fn tint(gray: u8, accent: iced::Color, amount: f32) -> iced::Color {
     iced::theme::palette::mix(iced::Color::from_rgb8(gray, gray, gray), accent, amount)
 }
 
+const CONTRAST_THEME_NAME: &str = "Winderust Contrast";
+
+pub(super) fn is_contrast(theme: &iced::Theme) -> bool {
+    use iced::theme::Base;
+    theme.name() == CONTRAST_THEME_NAME
+}
+
+pub(super) fn contrast_theme(
+    colors: crate::platform::windows::appearance::ContrastColors,
+) -> iced::Theme {
+    use iced::theme::palette::{Extended, Pair};
+    let rgb =
+        |color: u32| iced::Color::from_rgb8((color >> 16) as u8, (color >> 8) as u8, color as u8);
+    let pair = |color, text| Pair {
+        color,
+        text: readable_on(text, color),
+    };
+    let window = pair(rgb(colors.window), rgb(colors.window_text));
+    let highlight_fill = rgb(colors.highlight);
+    let highlight = pair(highlight_fill, rgb(colors.highlight_text));
+    let foreground = pair(window.text, window.color);
+    // Iced draws selected input text with the same foreground as unselected text.
+    let input_selection = (0..10)
+        .map(|step| iced::theme::palette::mix(highlight_fill, window.color, step as f32 / 10.0))
+        .find(|color| color.relative_contrast(window.text) >= 4.5)
+        .unwrap_or(window.color);
+    let palette = iced::theme::Palette {
+        background: window.color,
+        text: window.text,
+        primary: highlight.color,
+        success: window.text,
+        warning: window.text,
+        danger: window.text,
+    };
+    iced::Theme::custom_with_fn(CONTRAST_THEME_NAME, palette, move |palette| {
+        let mut colors = Extended::generate(palette);
+        let background = &mut colors.background;
+        background.base = window;
+        background.weakest = window;
+        background.weaker = window;
+        background.weak = window;
+        background.neutral = window;
+        background.strong = foreground; // shared control outlines and dividers
+        background.stronger = foreground;
+        background.strongest = foreground;
+        colors.primary.base = highlight;
+        colors.primary.weak = pair(input_selection, window.text);
+        colors.primary.strong = highlight;
+        colors.secondary.base = foreground;
+        colors.secondary.weak = foreground;
+        colors.secondary.strong = foreground;
+        colors.danger.base = foreground;
+        colors.danger.weak = foreground;
+        colors.danger.strong = foreground;
+        colors
+    })
+}
+
 pub(super) fn amoled_theme(accent: Option<iced::Color>) -> iced::Theme {
     use iced::theme::palette::Pair;
     let palette = iced::theme::Palette {
@@ -142,6 +200,45 @@ fn contrasting_neutral(background: iced::Color) -> iced::Color {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn windows_contrast_preserves_opaque_window_and_highlight_pairs() {
+        use crate::platform::windows::appearance::ContrastColors;
+        use iced::Color;
+        for (window, window_text, highlight, highlight_text) in [
+            (0x000000, 0xffffff, 0xffff00, 0x000000),
+            (0xffffff, 0x000000, 0x0055aa, 0xffffff),
+        ] {
+            let theme = super::contrast_theme(ContrastColors {
+                window,
+                window_text,
+                highlight,
+                highlight_text,
+            });
+            let rgb =
+                |color: u32| Color::from_rgb8((color >> 16) as u8, (color >> 8) as u8, color as u8);
+            let colors = theme.extended_palette();
+            for background in [
+                colors.background.base,
+                colors.background.weaker,
+                colors.background.weak,
+                colors.background.neutral,
+            ] {
+                assert_eq!(background.color, rgb(window));
+                assert_eq!(background.text, rgb(window_text));
+            }
+            assert_eq!(colors.primary.base.color, rgb(highlight));
+            assert_eq!(colors.primary.base.text, rgb(highlight_text));
+            assert!(
+                colors
+                    .primary
+                    .weak
+                    .color
+                    .relative_contrast(rgb(window_text))
+                    >= 4.5
+            );
+        }
+    }
+
     #[test]
     fn accent_palette_preserves_fills_and_keeps_text_readable() {
         use crate::config::AppThemeMode;

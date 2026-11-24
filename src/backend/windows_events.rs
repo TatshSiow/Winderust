@@ -33,8 +33,8 @@ use windows_sys::Win32::{
             OBJID_WINDOW, PBT_APMRESUMEAUTOMATIC, PBT_APMRESUMECRITICAL, PBT_APMRESUMESTANDBY,
             PBT_APMRESUMESUSPEND, PBT_APMSUSPEND, PBT_POWERSETTINGCHANGE, PM_NOREMOVE,
             WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS, WM_DWMCOLORIZATIONCOLORCHANGED,
-            WM_POWERBROADCAST, WM_QUIT, WM_SETTINGCHANGE, WM_THEMECHANGED, WM_TIMECHANGE,
-            WM_WTSSESSION_CHANGE, WNDCLASSW,
+            WM_POWERBROADCAST, WM_QUIT, WM_SETTINGCHANGE, WM_SYSCOLORCHANGE, WM_THEMECHANGED,
+            WM_TIMECHANGE, WM_WTSSESSION_CHANGE, WNDCLASSW,
         },
     },
 };
@@ -409,7 +409,7 @@ unsafe extern "system" fn event_window_proc(
             notify_event(WindowsAutomationEvent::ClockChanged);
             0
         }
-        WM_SETTINGCHANGE | WM_THEMECHANGED | WM_DWMCOLORIZATIONCOLORCHANGED => {
+        WM_SETTINGCHANGE | WM_SYSCOLORCHANGE | WM_THEMECHANGED | WM_DWMCOLORIZATIONCOLORCHANGED => {
             // System settings include time-zone changes; recheck without interpreting lparam.
             if message == WM_SETTINGCHANGE {
                 notify_event(WindowsAutomationEvent::ClockChanged);
@@ -541,6 +541,7 @@ mod tests {
         });
         for message in [
             WM_SETTINGCHANGE,
+            WM_SYSCOLORCHANGE,
             WM_THEMECHANGED,
             WM_DWMCOLORIZATIONCOLORCHANGED,
             WM_TIMECHANGE,
@@ -556,6 +557,7 @@ mod tests {
             *events.lock().unwrap(),
             vec![
                 WindowsAutomationEvent::ClockChanged,
+                WindowsAutomationEvent::AppearanceChanged,
                 WindowsAutomationEvent::AppearanceChanged,
                 WindowsAutomationEvent::AppearanceChanged,
                 WindowsAutomationEvent::AppearanceChanged,

@@ -370,10 +370,14 @@ pub(super) fn active_indicator<'a, M: 'a>(active: bool) -> Element<'a, M> {
             .height(18)
             .style(move |theme: &iced::Theme| iced::widget::container::Style {
                 background: Some(
-                    accent_text(
-                        theme,
-                        Some(theme.palette().primary.scale_alpha(0.20).into()),
-                    )
+                    if design::is_contrast(theme) {
+                        theme.extended_palette().primary.base.text
+                    } else {
+                        accent_text(
+                            theme,
+                            Some(theme.palette().primary.scale_alpha(0.20).into()),
+                        )
+                    }
                     .scale_alpha(progress.get())
                     .into(),
                 ),
@@ -424,7 +428,13 @@ pub(super) fn tab_style(
 ) -> iced::widget::button::Style {
     let mut style = quiet(theme, status);
     if active {
-        style.background = selected(theme, status).background;
+        let selected = selected(theme, status);
+        if design::is_contrast(theme) {
+            return selected;
+        }
+        style.background = selected.background;
+    } else if design::is_contrast(theme) {
+        return style;
     }
     style.border.width = 1.0;
     style.border.color = if active {
@@ -625,8 +635,29 @@ pub(super) fn primary_button(
     if status == iced::widget::button::Status::Hovered {
         style.text_color = theme.extended_palette().primary.strong.text;
     }
+    filled_button_outline(theme, status, style)
+}
+
+fn contrast_stroke_width(status: iced::widget::button::Status) -> f32 {
+    use iced::widget::button::Status;
+    match status {
+        Status::Hovered => 2.0,
+        Status::Pressed => 3.0,
+        _ => 1.0,
+    }
+}
+
+fn filled_button_outline(
+    theme: &iced::Theme,
+    status: iced::widget::button::Status,
+    mut style: iced::widget::button::Style,
+) -> iced::widget::button::Style {
     style.border.radius = design::CONTROL_RADIUS.into();
     style.border.width = 1.0;
+    if design::is_contrast(theme) && status != iced::widget::button::Status::Disabled {
+        style.border.color = style.text_color;
+        style.border.width = contrast_stroke_width(status);
+    }
     style
 }
 
@@ -637,6 +668,14 @@ pub(super) fn secondary_button(
     use iced::widget::button::Status;
     let mut style = quiet(theme, status);
     let disabled = status == Status::Disabled;
+    if design::is_contrast(theme) {
+        style.border.width = contrast_stroke_width(status);
+        style.border.color = theme
+            .palette()
+            .text
+            .scale_alpha(if disabled { 0.55 } else { 1.0 });
+        return style;
+    }
     style.border.width = 1.0;
     style.border.color = control_border(theme).scale_alpha(if disabled { 0.35 } else { 0.75 });
     style.background = match status {
@@ -655,6 +694,9 @@ pub(super) fn tertiary_button(
 ) -> iced::widget::button::Style {
     use iced::widget::button::Status;
     let mut style = secondary_button(theme, status);
+    if design::is_contrast(theme) {
+        return style;
+    }
     style.text_color = if status == Status::Disabled {
         muted_color(theme).scale_alpha(0.5)
     } else {
@@ -680,10 +722,7 @@ pub(super) fn danger_button(
     theme: &iced::Theme,
     status: iced::widget::button::Status,
 ) -> iced::widget::button::Style {
-    let mut style = iced::widget::button::danger(theme, status);
-    style.border.radius = design::CONTROL_RADIUS.into();
-    style.border.width = 1.0;
-    style
+    filled_button_outline(theme, status, iced::widget::button::danger(theme, status))
 }
 
 pub(super) const SEARCH_INPUT_PADDING: iced::Padding = iced::Padding {
@@ -726,8 +765,15 @@ pub(super) fn text_input<'a, M: Clone + 'a>(
             style.placeholder = muted_color(theme);
             style.background = theme.extended_palette().background.neutral.color.into();
             style.border.radius = design::CONTROL_RADIUS.into();
-            if matches!(status, iced::widget::text_input::Status::Active) {
-                style.border.color = control_border(theme);
+            match status {
+                iced::widget::text_input::Status::Active => {
+                    style.border.color = control_border(theme);
+                }
+                iced::widget::text_input::Status::Focused { .. } if design::is_contrast(theme) => {
+                    style.border.width = 2.0;
+                    style.border.color = accent_text(theme, None);
+                }
+                _ => {}
             }
             style
         })
@@ -788,7 +834,7 @@ pub(super) fn select_field(
     style.text_color = theme.palette().text;
     style.handle_color = muted_color(theme);
     style.border.radius = design::CONTROL_RADIUS.into();
-    if matches!(status, Status::Hovered) {
+    if matches!(status, Status::Hovered) && !design::is_contrast(theme) {
         style.background =
             iced::theme::palette::mix(background, theme.palette().primary, 0.08).into();
     }
@@ -804,10 +850,9 @@ pub(super) fn select_menu(theme: &iced::Theme) -> iced::widget::overlay::menu::S
     style.background = select_field(theme, iced::widget::pick_list::Status::Active).background;
     style.border.radius = design::CONTROL_RADIUS.into();
     style.text_color = theme.palette().text;
-    style.selected_text_color = theme.palette().text;
-    style.selected_background = selected_control(theme, iced::widget::button::Status::Active)
-        .background
-        .unwrap_or(style.background);
+    let selected = selected_control(theme, iced::widget::button::Status::Active);
+    style.selected_text_color = selected.text_color;
+    style.selected_background = selected.background.unwrap_or(style.background);
     style
 }
 
@@ -1942,6 +1987,12 @@ pub(super) fn selected(
 ) -> iced::widget::button::Style {
     let mut style = quiet(theme, status);
     if status != iced::widget::button::Status::Disabled {
+        if design::is_contrast(theme) {
+            // Composite rows contain independently styled icons and status text.
+            style.border.color = accent_text(theme, None);
+            style.border.width = 2.0;
+            return style;
+        }
         style.background = Some(
             theme
                 .palette()
@@ -1963,6 +2014,13 @@ pub(super) fn selected_control(
     status: iced::widget::button::Status,
 ) -> iced::widget::button::Style {
     let mut style = control_button(theme, status);
+    if design::is_contrast(theme) && status != iced::widget::button::Status::Disabled {
+        let highlight = theme.extended_palette().primary.base;
+        style.background = Some(highlight.color.into());
+        style.text_color = highlight.text;
+        style.border.color = highlight.text;
+        return style;
+    }
     if status == iced::widget::button::Status::Active {
         style.background = Some(theme.palette().primary.scale_alpha(0.15).into());
     }
@@ -1976,6 +2034,13 @@ pub(super) fn quiet(
     use iced::widget::button::{self, Status};
     let mut style = button::text(theme, status);
     style.border.radius = design::CONTROL_RADIUS.into();
+    if design::is_contrast(theme) {
+        if matches!(status, Status::Hovered | Status::Pressed) {
+            style.border.color = accent_text(theme, None);
+            style.border.width = contrast_stroke_width(status) - 1.0;
+        }
+        return style;
+    }
     style.background = match status {
         Status::Hovered => Some(theme.palette().primary.scale_alpha(0.10).into()),
         Status::Pressed => Some(theme.palette().primary.scale_alpha(0.20).into()),
@@ -1994,6 +2059,9 @@ pub(super) fn card(
     style.border = surface.border;
     if matches!(status, Status::Active | Status::Disabled) {
         style.background = surface.background;
+    } else if design::is_contrast(theme) {
+        style.border.width = 2.0;
+        style.border.color = accent_text(theme, None);
     }
     style
 }
@@ -2002,6 +2070,66 @@ pub(super) fn card(
 mod tests {
     use super::*;
     use iced::{widget::button::Status, Theme};
+
+    #[test]
+    fn windows_contrast_menu_uses_paired_selection_colors() {
+        use crate::platform::windows::appearance::ContrastColors;
+        let theme = design::contrast_theme(ContrastColors {
+            window: 0xffffff,
+            window_text: 0x000000,
+            highlight: 0x000000,
+            highlight_text: 0xffffff,
+        });
+        let control = selected_control(&theme, Status::Active);
+        let menu = select_menu(&theme);
+        assert_eq!(control.background, Some(iced::Color::BLACK.into()));
+        assert_eq!(control.text_color, iced::Color::WHITE);
+        assert_eq!(menu.selected_background, iced::Color::BLACK.into());
+        assert_eq!(menu.selected_text_color, iced::Color::WHITE);
+        let composite = selected(&theme, Status::Active);
+        assert_eq!(composite.background, None);
+        assert_eq!(composite.text_color, iced::Color::BLACK);
+        assert_eq!(composite.border.width, 2.0);
+        assert!(composite.border.color.relative_contrast(iced::Color::WHITE) >= 3.0);
+    }
+
+    #[test]
+    fn windows_contrast_buttons_show_hover_and_press_with_readable_outlines() {
+        use crate::platform::windows::appearance::ContrastColors;
+        use iced::{Background, Color};
+        let theme = design::contrast_theme(ContrastColors {
+            window: 0xffffff,
+            window_text: 0x000000,
+            highlight: 0x000000,
+            highlight_text: 0xffffff,
+        });
+        let statuses = [Status::Active, Status::Hovered, Status::Pressed];
+        for style in [
+            primary_button as fn(&Theme, Status) -> _,
+            danger_button,
+            secondary_button,
+            tertiary_button,
+            selected_control,
+        ] {
+            for (status, width) in statuses.into_iter().zip([1.0, 2.0, 3.0]) {
+                let state = style(&theme, status);
+                let fill = match state.background {
+                    Some(Background::Color(fill)) => fill,
+                    _ => Color::WHITE,
+                };
+                assert_eq!(state.border.width, width);
+                assert!(state.border.color.relative_contrast(fill) >= 3.0);
+                assert!(state.text_color.relative_contrast(fill) >= 4.5);
+                for normal in [Theme::Light, Theme::Dark] {
+                    assert_eq!(style(&normal, status).border.width, 1.0);
+                }
+            }
+        }
+        assert_eq!(
+            statuses.map(|status| quiet(&theme, status).border.width),
+            [0.0, 1.0, 2.0],
+        );
+    }
 
     #[test]
     fn power_plan_choices_match_saved_guid_casing_and_keep_unavailable_targets() {

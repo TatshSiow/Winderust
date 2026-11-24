@@ -7,6 +7,58 @@ use windows::{
     },
     UI::ViewManagement::{UIColorType, UISettings},
 };
+use windows_sys::Win32::{
+    Graphics::Gdi::{
+        GetSysColor, COLOR_HIGHLIGHT, COLOR_HIGHLIGHTTEXT, COLOR_WINDOW, COLOR_WINDOWTEXT,
+    },
+    UI::{
+        Accessibility::{HCF_HIGHCONTRASTON, HIGHCONTRASTW},
+        WindowsAndMessaging::{SystemParametersInfoW, SPI_GETHIGHCONTRAST},
+    },
+};
+
+#[derive(Clone, Copy)]
+pub(crate) struct ContrastColors {
+    pub window: u32,
+    pub window_text: u32,
+    pub highlight: u32,
+    pub highlight_text: u32,
+}
+
+pub(super) fn high_contrast_active() -> Option<bool> {
+    let mut contrast = HIGHCONTRASTW {
+        cbSize: std::mem::size_of::<HIGHCONTRASTW>() as u32,
+        ..Default::default()
+    };
+    // SAFETY: the query writes to a correctly sized structure. Its scheme pointer
+    // is system-owned on this GET path and is neither read nor freed here.
+    let queried = unsafe {
+        SystemParametersInfoW(
+            SPI_GETHIGHCONTRAST,
+            contrast.cbSize,
+            (&mut contrast as *mut HIGHCONTRASTW).cast(),
+            0,
+        )
+    };
+    (queried != 0).then_some(contrast.dwFlags & HCF_HIGHCONTRASTON != 0)
+}
+
+pub(crate) fn contrast_colors() -> Option<ContrastColors> {
+    if high_contrast_active() != Some(true) {
+        return None;
+    }
+    fn color(index: windows_sys::Win32::Graphics::Gdi::SYS_COLOR_INDEX) -> u32 {
+        // SAFETY: the caller supplies a defined system color index and no pointers.
+        let bgr = unsafe { GetSysColor(index) };
+        bgr.swap_bytes() >> 8
+    }
+    Some(ContrastColors {
+        window: color(COLOR_WINDOW),
+        window_text: color(COLOR_WINDOWTEXT),
+        highlight: color(COLOR_HIGHLIGHT),
+        highlight_text: color(COLOR_HIGHLIGHTTEXT),
+    })
+}
 
 pub(crate) struct Appearance {
     pub light: bool,

@@ -195,7 +195,7 @@ common:
   remove: "Remove"
   save: "Save"
   theme: "Theme"
-  theme_help: "Choose Light, Dark, or AMOLED (a pure-black background), or follow the Windows theme."
+  theme_help: "Follow Windows, including its contrast theme, or choose Light, Dark, or AMOLED (pure black)."
   language: "Language"
   language_help: "Choose the language used by the interface."
   unknown: "Unknown"

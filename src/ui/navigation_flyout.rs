@@ -118,19 +118,7 @@ impl Widget<Message, Theme, Renderer> for Anchor<'_> {
             viewport,
         );
         if tree.state.downcast_ref::<State>().focused {
-            use iced::advanced::Renderer as _;
-            renderer.fill_quad(
-                renderer::Quad {
-                    bounds: layout.bounds(),
-                    border: iced::Border {
-                        color: theme.palette().text,
-                        width: 2.0,
-                        radius: super::design::CONTROL_RADIUS.into(),
-                    },
-                    ..Default::default()
-                },
-                iced::Color::TRANSPARENT,
-            );
+            super::keyboard_focus::draw_ring(renderer, theme, layout.bounds());
         }
     }
     fn operate(

@@ -105,6 +105,9 @@ impl<'a, T: ToString + PartialEq + Clone + 'a, M: Clone + 'a> Select<'a, T, M> {
         self.option_color = Some(color);
         self.field = self.field.style(move |theme, status| {
             let mut style = widgets::select_field(theme, status);
+            if design::is_contrast(theme) {
+                return style;
+            }
             if let Some(color) = selected.as_ref().and_then(|value| color(value, theme)) {
                 style.text_color = color;
             }
@@ -134,9 +137,13 @@ impl<'a, T: ToString + PartialEq + Clone + 'a, M: Clone + 'a> Select<'a, T, M> {
                         marker,
                         text(option.to_string())
                             .style(move |theme| iced::widget::text::Style {
-                                color: color
-                                    .and_then(|color| color(&option, theme))
-                                    .or_else(|| text::base(theme).color),
+                                color: if design::is_contrast(theme) {
+                                    None
+                                } else {
+                                    color
+                                        .and_then(|color| color(&option, theme))
+                                        .or_else(|| text::base(theme).color)
+                                },
                             })
                             .wrapping(iced::widget::text::Wrapping::None)
                     ]
@@ -150,13 +157,18 @@ impl<'a, T: ToString + PartialEq + Clone + 'a, M: Clone + 'a> Select<'a, T, M> {
                 .clip(true)
                 .padding([0, 0])
                 .style(move |theme, status| {
-                    if selected {
+                    let mut style = if selected {
                         widgets::selected_control(theme, status)
                     } else if keyboard == Some(index) {
                         widgets::quiet(theme, iced::widget::button::Status::Hovered)
                     } else {
                         widgets::quiet(theme, status)
+                    };
+                    if design::is_contrast(theme) && keyboard == Some(index) {
+                        style.border.width = 3.0;
+                        style.border.color = style.text_color;
                     }
+                    style
                 })
                 .on_press(index),
             );

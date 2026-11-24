@@ -1634,8 +1634,16 @@ impl ProcessList {
                         .width(Fill)
                         .on_press(Message::Focus(row_index, self.rows_revision))
                         .style(move |theme, status| {
-                            let mut style = super::widgets::quiet(theme, status);
-                            if focused && matches!(status, iced::widget::button::Status::Active) {
+                            let contrast = design::is_contrast(theme);
+                            let mut style = if focused && contrast {
+                                super::widgets::selected(theme, status)
+                            } else {
+                                super::widgets::quiet(theme, status)
+                            };
+                            if focused
+                                && !contrast
+                                && matches!(status, iced::widget::button::Status::Active)
+                            {
                                 style.background =
                                     Some(theme.palette().primary.scale_alpha(0.15).into());
                             }

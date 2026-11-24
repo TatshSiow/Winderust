@@ -195,7 +195,7 @@ common:
   remove: "移除"
   save: "儲存"
   theme: "佈景主題"
-  theme_help: "選擇淺色、深色或 AMOLED（純黑背景），或跟隨 Windows 佈景主題。"
+  theme_help: "跟隨 Windows 佈景主題（包含對比主題），或選擇淺色、深色或 AMOLED（純黑背景）。"
   language: "語言"
   language_help: "選擇介面使用的語言。"
   unknown: "未知"

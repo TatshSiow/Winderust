@@ -143,7 +143,7 @@ fn control_style(
 ) -> iced::widget::button::Style {
     let mut style = widgets::quiet(theme, status);
     style.border.radius = 0.0.into();
-    if close {
+    if close && !design::is_contrast(theme) {
         style.background = match status {
             iced::widget::button::Status::Hovered => {
                 Some(theme.palette().danger.scale_alpha(0.25).into())
