@@ -368,6 +368,8 @@ process_list:
   status_suspended: "Suspended"
   status_efficiency_mode: "Efficiency Mode"
   cpu_usage: "CPU"
+  cpu_time: "CPU Time"
+  cpu_time_help: "CPU Time shows time spent running across all threads. A group totals its current members."
   working_set: "Working Set"
   private_commit: "Private Commit"
   memory_counter_help: "Working Set measures resident RAM and can include shared pages. Private Commit measures memory Windows has committed for the process's private use."

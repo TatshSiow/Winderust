@@ -1073,6 +1073,10 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
         ) {
             app.side_panel_open = extra == Some(PROCESS_LIST_COMMIT_COMPACT);
             let _ = app.update(Message::Processes(process_list::Message::Column(
+                process_list::Sort::CpuTime,
+                true,
+            )));
+            let _ = app.update(Message::Processes(process_list::Message::Column(
                 process_list::Sort::PrivateCommit,
                 true,
             )));

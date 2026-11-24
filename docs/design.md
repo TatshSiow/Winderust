@@ -179,6 +179,7 @@ hover/press; background shading supplies feedback.
 - Report `Efficiency mode` only when the process has both EcoQoS and `IDLE_PRIORITY_CLASS`, matching Task Manager rather than treating EcoQoS alone as full Efficiency mode.
 - Filters, column visibility, and memory value/percentage controls belong in the Settings side panel.
 - The default Working Set column shows resident RAM in decimal MB or as a percentage of physical RAM. The optional Private Commit column is available under Columns and shows privately committed memory in decimal MB. Sort both columns by bytes and keep missing measurements distinct from zero.
+- The optional CPU Time column shows cumulative user and kernel time as hours, minutes, and seconds. Groups total current members only when every member has a sample. Sort by the full measurement and make unmeasured values visible.
 - Language and Appearance owns the enabled-feature counts toggle. When enabled, the secondary navigation header shows a numeric pill for Watchdog, Power Plan Control, Priority Control, and CPU Control based on the section's enabled modules. The primary rail stays unbadged.
 - Language and Appearance separately owns the feature-card status toggle. When enabled, landing cards backed by a feature switch show Enabled or Disabled in the theme's normal text color.
 - Editable policy cells should use inline dropdown controls. Avoid modal flows for simple policy edits.

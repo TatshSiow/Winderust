@@ -144,16 +144,18 @@ pub(super) enum Sort {
     Pid,
     Status,
     Cpu,
+    CpuTime,
     WorkingSet,
     PrivateCommit,
     User,
 }
 impl Sort {
-    const ALL: [Self; 7] = [
+    const ALL: [Self; 8] = [
         Self::Name,
         Self::Pid,
         Self::Status,
         Self::Cpu,
+        Self::CpuTime,
         Self::WorkingSet,
         Self::PrivateCommit,
         Self::User,
@@ -164,6 +166,7 @@ impl Sort {
             Self::Pid => "process_list.pid",
             Self::Status => "process_list.status",
             Self::Cpu => "process_list.cpu_usage",
+            Self::CpuTime => "process_list.cpu_time",
             Self::WorkingSet => "process_list.working_set",
             Self::PrivateCommit => "process_list.private_commit",
             Self::User => "process_list.user",
@@ -324,7 +327,7 @@ impl Default for ProcessList {
             expanded: HashSet::new(),
             sort: Sort::Name,
             descending: false,
-            columns: Sort::ALL.map(|column| column != Sort::PrivateCommit),
+            columns: Sort::ALL.map(|column| !matches!(column, Sort::CpuTime | Sort::PrivateCommit)),
             column_widths: [None; Sort::ALL.len()],
             resizing: None,
             selected: None,
@@ -514,12 +517,17 @@ impl ProcessList {
                     self.descending = !self.descending;
                 } else {
                     self.sort = sort;
-                    self.descending =
-                        matches!(sort, Sort::Cpu | Sort::WorkingSet | Sort::PrivateCommit);
+                    self.descending = matches!(
+                        sort,
+                        Sort::Cpu | Sort::CpuTime | Sort::WorkingSet | Sort::PrivateCommit
+                    );
                 }
                 self.rebuild();
             }
-            Message::Column(column, v) => self.columns[column as usize] = v,
+            Message::Column(column, visible) => {
+                self.columns[column as usize] = visible;
+                self.fit_visible_columns();
+            }
             Message::Menu(message) => {
                 let task = self.update(*message, settings, runtime);
                 self.selected = None;
@@ -921,7 +929,7 @@ impl ProcessList {
             let minimum = match col {
                 Sort::Name => 160.0,
                 Sort::Status => 140.0,
-                Sort::User | Sort::WorkingSet | Sort::PrivateCommit => 100.0,
+                Sort::CpuTime | Sort::User | Sort::WorkingSet | Sort::PrivateCommit => 100.0,
                 _ => 80.0,
             };
             self.column_widths[*col as usize] = Some((*width + x - start).max(minimum));
@@ -947,8 +955,12 @@ impl ProcessList {
                     |usage| format!("{usage:.1}%"),
                 )
                 .into(),
+            Sort::CpuTime => self
+                .cpu_time_total(entry)
+                .map_or_else(|| t!("common.unknown").into_owned(), format_cpu_time)
+                .into(),
             Sort::WorkingSet => self
-                .memory_total(entry, |sample| sample.working_set_bytes)
+                .resource_total(entry, |sample| sample.working_set_bytes)
                 .map_or_else(
                     || t!("common.unknown").into_owned(),
                     |bytes| {
@@ -957,7 +969,7 @@ impl ProcessList {
                 )
                 .into(),
             Sort::PrivateCommit => self
-                .memory_total(entry, |sample| sample.private_commit_bytes)
+                .resource_total(entry, |sample| sample.private_commit_bytes)
                 .map_or_else(|| t!("common.unknown").into_owned(), format_megabytes)
                 .into(),
             Sort::User => self.user(entry).into(),
@@ -1259,12 +1271,13 @@ impl ProcessList {
                     (Some(left), Some(right)) => left.total_cmp(&right),
                     (left, right) => left.is_some().cmp(&right.is_some()),
                 },
+                Sort::CpuTime => self.cpu_time_total(a).cmp(&self.cpu_time_total(b)),
                 Sort::WorkingSet => self
-                    .memory_total(a, |sample| sample.working_set_bytes)
-                    .cmp(&self.memory_total(b, |sample| sample.working_set_bytes)),
+                    .resource_total(a, |sample| sample.working_set_bytes)
+                    .cmp(&self.resource_total(b, |sample| sample.working_set_bytes)),
                 Sort::PrivateCommit => self
-                    .memory_total(a, |sample| sample.private_commit_bytes)
-                    .cmp(&self.memory_total(b, |sample| sample.private_commit_bytes)),
+                    .resource_total(a, |sample| sample.private_commit_bytes)
+                    .cmp(&self.resource_total(b, |sample| sample.private_commit_bytes)),
                 Sort::User => self.user(a).cmp(&self.user(b)),
                 Sort::Status => self.status_key(a).cmp(self.status_key(b)),
                 Sort::Name => compare_process_names(
@@ -1294,9 +1307,13 @@ impl ProcessList {
             self.rows.extend(children);
         }
         self.offsets = self.row_offsets();
+        self.fit_visible_columns();
+    }
+
+    fn fit_visible_columns(&mut self) {
         if !self.rows.is_empty() {
             for col in Sort::ALL {
-                if self.column_widths[col as usize].is_none() {
+                if self.columns[col as usize] && self.column_widths[col as usize].is_none() {
                     self.column_widths[col as usize] = Some(self.auto_width(col));
                 }
             }
@@ -1308,7 +1325,11 @@ impl ProcessList {
             .map(|i| self.cpu.get(&self.processes[*i].id).copied())
             .sum()
     }
-    fn memory_total(
+    fn cpu_time_total(&self, entry: &Entry) -> Option<u64> {
+        self.resource_total(entry, |sample| Some(sample.cpu.cpu_time_100ns))
+    }
+
+    fn resource_total(
         &self,
         entry: &Entry,
         field: impl Fn(&ProcessResourceSample) -> Option<u64>,
@@ -1402,6 +1423,13 @@ impl ProcessList {
                 checkbox(self.columns[col as usize])
                     .label(col.label())
                     .on_toggle(move |value| Message::Column(col, value)),
+            );
+        }
+        if self.columns[Sort::CpuTime as usize] {
+            filters = filters.push(
+                text(t!("process_list.cpu_time_help").to_string())
+                    .size(design::typography::SECONDARY)
+                    .style(text::secondary),
             );
         }
         let value_label = t!("process_list.metric_value").to_string();
@@ -2414,11 +2442,21 @@ fn measure_column_text(content: &str) -> f32 {
     super::widgets::text_width(content, design::typography::BODY)
 }
 
+fn format_cpu_time(ticks_100ns: u64) -> String {
+    let seconds = ticks_100ns / 10_000_000;
+    format!(
+        "{:02}:{:02}:{:02}",
+        seconds / 3600,
+        seconds / 60 % 60,
+        seconds % 60
+    )
+}
+
 fn column_width(c: Sort) -> f32 {
     match c {
         Sort::Name => 230.0,
         Sort::Pid => 70.0,
-        Sort::Cpu | Sort::WorkingSet => 100.0,
+        Sort::Cpu | Sort::CpuTime | Sort::WorkingSet => 100.0,
         Sort::PrivateCommit => 130.0,
         Sort::Status => 180.0,
         Sort::User => 200.0,
@@ -2504,17 +2542,71 @@ mod tests {
         list.samples.insert(10, sample(1, Some(0), Some(100)));
         list.samples.insert(11, sample(2, None, None));
         assert_eq!(list.cpu_total(&group), None);
-        assert_eq!(list.memory_total(&group, |s| s.working_set_bytes), None);
-        assert_eq!(list.memory_total(&group, |s| s.private_commit_bytes), None);
+        assert_eq!(list.resource_total(&group, |s| s.working_set_bytes), None);
+        assert_eq!(
+            list.resource_total(&group, |s| s.private_commit_bytes),
+            None
+        );
 
         list.cpu.insert(11, 0.0);
         list.samples.insert(11, sample(2, Some(0), Some(42)));
         assert_eq!(list.cpu_total(&group), Some(0.0));
-        assert_eq!(list.memory_total(&group, |s| s.working_set_bytes), Some(0));
         assert_eq!(
-            list.memory_total(&group, |s| s.private_commit_bytes),
+            list.resource_total(&group, |s| s.working_set_bytes),
+            Some(0)
+        );
+        assert_eq!(
+            list.resource_total(&group, |s| s.private_commit_bytes),
             Some(142)
         );
+    }
+
+    #[test]
+    fn cpu_time_totals_use_raw_ticks_and_require_every_group_member() {
+        let mut list = ProcessList {
+            processes: vec![
+                process(10, 1, "z.exe"),
+                process(11, 2, "z.exe"),
+                process(12, 3, "a.exe"),
+            ],
+            grouped: true,
+            sort: Sort::CpuTime,
+            descending: true,
+            ..ProcessList::default()
+        };
+        for (process, cpu_time_100ns) in list
+            .processes
+            .iter()
+            .zip([40_000_002, 40_000_000, 80_000_001])
+        {
+            list.samples.insert(
+                process.id,
+                ProcessResourceSample {
+                    cpu: crate::cpu::ProcessCpuSample {
+                        cpu_time_100ns,
+                        sampled_at: std::time::Instant::now(),
+                    },
+                    creation_time: process.creation_time.unwrap(),
+                    working_set_bytes: None,
+                    private_commit_bytes: None,
+                    efficiency_mode: None,
+                },
+            );
+        }
+        list.rebuild();
+        assert_eq!(list.rows[0].indices, [0, 1]);
+        assert_eq!(list.cell_value(&list.rows[0], Sort::CpuTime), "00:00:08");
+        assert_eq!(list.cell_value(&list.rows[1], Sort::CpuTime), "00:00:08");
+
+        list.samples.remove(&11);
+        list.rebuild();
+        assert_eq!(list.rows[0].indices, [2]);
+        assert_eq!(
+            list.cell_value(&list.rows[1], Sort::CpuTime),
+            t!("common.unknown")
+        );
+        assert_eq!(format_cpu_time(0), "00:00:00");
+        assert_eq!(format_cpu_time(3_661_000_000_000), "101:41:40");
     }
 
     #[test]
@@ -3458,17 +3550,24 @@ mod tests {
     #[test]
     fn last_visible_column_fills_spare_width_and_auto_size_fits_names() {
         let mut list = ProcessList::default();
+        assert!(!list.columns[Sort::CpuTime as usize]);
         assert!(!list.columns[Sort::PrivateCommit as usize]);
         let widths = list.layout_widths(1200.0);
         assert_eq!(
-            widths.iter().sum::<f32>() - widths[Sort::PrivateCommit as usize] + 5.0 * 8.0 + 32.0,
+            widths.iter().sum::<f32>()
+                - widths[Sort::PrivateCommit as usize]
+                - widths[Sort::CpuTime as usize]
+                + 5.0 * 8.0
+                + 32.0,
             1200.0
         );
         list.columns[Sort::PrivateCommit as usize] = true;
         list.columns[Sort::User as usize] = false;
         let widths = list.layout_widths(1200.0);
         assert_eq!(
-            widths[..Sort::User as usize].iter().sum::<f32>() + 5.0 * 8.0 + 32.0,
+            widths[..Sort::User as usize].iter().sum::<f32>() - widths[Sort::CpuTime as usize]
+                + 5.0 * 8.0
+                + 32.0,
             1200.0
         );
         assert_eq!(widths[Sort::Name as usize], column_width(Sort::Name));
@@ -3489,8 +3588,17 @@ mod tests {
         list.rebuild();
         assert!(list.column_width(Sort::Status) >= column_width(Sort::Status));
         for col in Sort::ALL {
-            assert_eq!(list.column_width(col), list.auto_width(col));
+            assert_eq!(
+                list.column_widths[col as usize],
+                list.columns[col as usize].then(|| list.auto_width(col))
+            );
         }
+        list.columns[Sort::CpuTime as usize] = true;
+        list.fit_visible_columns();
+        assert_eq!(
+            list.column_width(Sort::CpuTime),
+            list.auto_width(Sort::CpuTime)
+        );
         list.column_widths[Sort::Name as usize] = Some(400.0);
         list.rebuild();
         assert_eq!(list.column_width(Sort::Name), 400.0);

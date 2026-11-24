@@ -371,6 +371,8 @@ process_list:
   status_suspended: "已暫停"
   status_efficiency_mode: "效率模式"
   cpu_usage: "CPU"
+  cpu_time: "CPU 時間"
+  cpu_time_help: "CPU 時間是所有執行緒使用 CPU 的時間總和。群組會合計目前成員的時間。"
   working_set: "工作集"
   private_commit: "認可大小"
   memory_counter_help: "工作集是常駐實體記憶體的用量，可能包含共用頁面。認可大小是 Windows 為處理程序認可的私人記憶體量。"
