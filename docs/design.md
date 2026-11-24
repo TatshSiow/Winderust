@@ -496,6 +496,7 @@ hover/press; background shading supplies feedback.
   start a fresh rate baseline. The first reading shows Collecting until a
   fresh interval supplies a rate.
 - Enabled Features follows the sampled Windows power source. The feature editors retain their selected profile. Show the feature count only when the power source is known.
+- Show the sampled power source, battery level, charging, and active Energy saver as text in the Enabled Features header. Omit battery details when Windows reports no battery, and label an unknown battery level as unavailable.
 
 
 ## Verification

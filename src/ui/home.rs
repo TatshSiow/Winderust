@@ -7,7 +7,7 @@ use crate::backend::dashboard_metrics::{
     sample_memory_usage, DiskUsageMonitor, IoUsageSnapshot, MemoryUsageSnapshot,
     NetworkUsageMonitor, NetworkUsageSnapshot,
 };
-use crate::backend::power_source::is_plugged_in;
+use crate::backend::power_source::{self, BatteryStatus, PowerStatus};
 use crate::config::{PowerSourceProfile, Settings};
 use crate::cpu::{CpuUsageMonitor, CpuUsageSnapshot};
 use crate::cpu_allocation::CpuAllocationSnapshot;
@@ -115,15 +115,10 @@ impl Default for Sampler {
                             instant: now,
                             wall: SystemTime::now(),
                         }),
-                        power_source: match is_plugged_in() {
-                            Some(true) => {
-                                PowerSourceReading::Available(PowerSourceProfile::PluggedIn)
-                            }
-                            Some(false) => {
-                                PowerSourceReading::Available(PowerSourceProfile::OnBattery)
-                            }
-                            None => PowerSourceReading::Unavailable,
-                        },
+                        power_source: power_source::read().map_or(
+                            PowerSourceReading::Unavailable,
+                            PowerSourceReading::Available,
+                        ),
                         cpu: cpu.sample(),
                         memory: sample_memory_usage(),
                         io: io.sample(),
@@ -146,7 +141,34 @@ pub(super) enum PowerSourceReading {
     #[default]
     Collecting,
     Unavailable,
-    Available(PowerSourceProfile),
+    Available(PowerStatus),
+}
+
+fn power_status_label(status: PowerStatus) -> Option<String> {
+    let mut parts = Vec::with_capacity(4);
+    if let Some(plugged_in) = status.plugged_in {
+        parts.push(if plugged_in {
+            t!("power_source.plugged_in")
+        } else {
+            t!("power_source.on_battery")
+        });
+    }
+    match status.battery {
+        BatteryStatus::Absent => {}
+        BatteryStatus::Unavailable | BatteryStatus::Charging(None) => {
+            parts.push(t!("home.battery_level_unavailable"));
+        }
+        BatteryStatus::Level(percent) | BatteryStatus::Charging(Some(percent)) => {
+            parts.push(t!("home.battery_level", percent = percent));
+        }
+    }
+    if matches!(status.battery, BatteryStatus::Charging(_)) {
+        parts.push(t!("home.battery_charging"));
+    }
+    if status.energy_saver_active {
+        parts.push(t!("home.energy_saver_on"));
+    }
+    (!parts.is_empty()).then(|| parts.join(" · "))
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -205,7 +227,11 @@ impl Model {
                     start,
                     std::time::Duration::from_secs(index as u64),
                 )),
-                power_source: PowerSourceReading::Available(PowerSourceProfile::PluggedIn),
+                power_source: PowerSourceReading::Available(PowerStatus {
+                    plugged_in: Some(true),
+                    battery: BatteryStatus::Charging(Some(74)),
+                    energy_saver_active: true,
+                }),
                 cpu: CpuUsageSnapshot {
                     percent: Some((24.0 + 12.0 * wave) as f32),
                     frequency_mhz: Some((3600.0 + 600.0 * wave) as u32),
@@ -313,8 +339,18 @@ impl Model {
                 }
                 body = body.push(charts);
             }
-            let entries = match self.latest.power_source {
-                PowerSourceReading::Available(source) => {
+            let power_status = match self.latest.power_source {
+                PowerSourceReading::Available(status) => Some(status),
+                _ => None,
+            };
+            let entries = power_status
+                .and_then(|status| status.plugged_in)
+                .map(|plugged_in| {
+                    let source = if plugged_in {
+                        PowerSourceProfile::PluggedIn
+                    } else {
+                        PowerSourceProfile::OnBattery
+                    };
                     let profile = match source {
                         PowerSourceProfile::PluggedIn => settings,
                         PowerSourceProfile::OnBattery => settings.battery_profile(),
@@ -324,16 +360,14 @@ impl Model {
                     } else {
                         ActivityState::Unknown
                     };
-                    Some(enabled_features(
+                    enabled_features(
                         profile,
                         source,
                         &status.feature_status,
                         &displayed_sample,
                         activity,
-                    ))
-                }
-                _ => None,
-            };
+                    )
+                });
             let count = entries.as_ref().map(Vec::len);
             let mut title = row![super::widgets::heading(
                 t!("home.enabled_features").to_string(),
@@ -369,6 +403,14 @@ impl Model {
             } else {
                 column![title, master].spacing(design::space::TIGHT).into()
             };
+            let mut header = column![header].spacing(design::space::TIGHT);
+            if let Some(label) = power_status.and_then(power_status_label) {
+                header = header.push(
+                    text(label)
+                        .size(design::typography::CAPTION)
+                        .style(text::secondary),
+                );
+            }
             let mut features = column![];
             for (page, detail) in entries.into_iter().flatten() {
                 features = features.push(
@@ -407,8 +449,8 @@ impl Model {
             } else {
                 let empty_message = match self.latest.power_source {
                     PowerSourceReading::Collecting => "home.collecting",
-                    PowerSourceReading::Unavailable => "home.power_source_unavailable",
-                    PowerSourceReading::Available(_) => "home.no_enabled_features",
+                    _ if count.is_some() => "home.no_enabled_features",
+                    _ => "home.power_source_unavailable",
                 };
                 container(
                     text(t!(empty_message).to_string())
@@ -444,7 +486,7 @@ impl Model {
                     .height(Fill)
                     .into()
             } else {
-                scrollable(body).height(Fill).into()
+                scrollable(body).id("home-content").height(Fill).into()
             }
         })
         .into()
@@ -1695,6 +1737,41 @@ fn enabled_features(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn power_status_label_reports_only_observed_power_details() {
+        let mut status = PowerStatus {
+            plugged_in: Some(true),
+            battery: BatteryStatus::Charging(Some(74)),
+            energy_saver_active: true,
+        };
+        assert_eq!(
+            power_status_label(status),
+            Some(
+                [
+                    t!("power_source.plugged_in"),
+                    t!("home.battery_level", percent = 74),
+                    t!("home.battery_charging"),
+                    t!("home.energy_saver_on"),
+                ]
+                .join(" · ")
+            )
+        );
+
+        status.battery = BatteryStatus::Absent;
+        status.energy_saver_active = false;
+        assert_eq!(
+            power_status_label(status),
+            Some(t!("power_source.plugged_in").into_owned())
+        );
+
+        status.plugged_in = None;
+        status.battery = BatteryStatus::Unavailable;
+        assert_eq!(
+            power_status_label(status),
+            Some(t!("home.battery_level_unavailable").into_owned())
+        );
+    }
 
     #[test]
     fn adaptive_engine_card_uses_cpu_counts_for_the_sampled_power_source() {
