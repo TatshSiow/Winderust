@@ -54,6 +54,11 @@ Read the relevant section before changing feature policy, ownership, restoration
   Rule rows show Unknown until the current launch configuration has a matching
   worker status. Editing a rule resets its retry state and preserves the state
   of unchanged rules. Rapid edits and reverts still reset affected rules.
+  Notify edits preserve retry state and status. An opted-in rule may request one
+  Windows notification when retries are exhausted. The pending alert is consumed
+  once and checked against the saved rule, pending resets, and current Windows
+  context before delivery. Manual Resume starts a new retry episode. Alert
+  outcomes go to Action Log.
 - This is a fresh launch, not crash diagnosis, saved-session recovery, or the
   Restart in Resource Thresholds. Winderust never reads another app's arguments or
   copies its environment. Unsupported/elevated/service/restricted app contexts
@@ -134,10 +139,11 @@ Read the relevant section before changing feature policy, ownership, restoration
 - Rule edits reset only that rule, while feature/master disable clears all state.
   Status uses the saved rule identities while the worker refreshes, preserving
   reports for unchanged rules and the recorded Action Log history.
-  Notify-only edits and power-source changes preserve incidents. Enabling Notify
+  Notify-only edits and power-source changes preserve incidents. Delivery requires
+  both the feature-wide switch and the rule's Notify setting. Enabling Notify
   requires fresh excess evidence before an unattempted notification, including
-  when the setting is turned off and on between worker snapshots. With Notify off,
-  live status follows count availability and retains notification failures in
+  when the setting is turned off and on between worker snapshots. Live count
+  status follows count availability, and previous notification failures remain in
   Last Failed and the rule card. Pending reset intents survive rapid edits and
   toggles between worker snapshots. Suspend/session
   events discard continuity and stale results while preserving attempted incidents.
@@ -241,7 +247,8 @@ Read the relevant section before changing feature policy, ownership, restoration
   sampling, sustained thresholds, escalation, and rearming. Rules are global across
   power sources. Each uses the default sustained duration or its own override
   (1–3,600 seconds), shared by both monitors and severities. Notification settings
-  apply to all rules. Sampling runs once a second in visible and tray modes.
+  apply to both monitors. Delivery requires both the feature-wide switch and the
+  rule's Notify setting. Sampling runs once a second in visible and tray modes.
   Portable settings use the existing `watchdog` TOML key for these rules.
 - Each rule selects one absolute `executable_path` or one exact `executable_name`.
   Executable name rules resolve known absolute image paths from current process
@@ -261,13 +268,16 @@ Read the relevant section before changing feature policy, ownership, restoration
   Each threshold response uses the eligible processes in its configured scope.
 - Each monitor independently chooses At or above or At or below. At or above is
   the default. It requires `0 < warning < critical <= maximum` and rearms below
-  95% of the threshold. At or below uses notifications only and requires
+  95% of the threshold. At or below uses monitoring with optional notification and requires
   `0 <= critical < warning < maximum`. It rearms above the threshold once usage
   reaches 105% of the threshold or the metric maximum, whichever is lower. A zero
   threshold rearms on any positive measurement. Low readings represent resource
   usage only. Both comparisons include equality when qualifying a threshold.
-- Warning and critical use the shared notification switch and default to
-  notification only. The feature defaults off. When both response levels are
+- Warning and critical default to monitoring with optional notification. The
+  feature defaults off. A rule-level Notify edit preserves sustained samples,
+  incident state, and actions. Delivery checks the current rule's saved Notify
+  setting. Muted threshold events with no automatic action record a Skipped
+  outcome under the Action Log recording level. When both response levels are
   enabled, a critical response subsumes a simultaneous warning for the same
   resource. Each response fires once per incident. Missing samples break only
   the affected resource's sustained interval. Collection gaps, complete
@@ -322,7 +332,11 @@ Read the relevant section before changing feature policy, ownership, restoration
   level, and enabled notifications include the reason. Restart becomes eligible on
   a new incident after the cooldown expires. Independently configured Terminate
   actions can still run during the cooldown.
-- Windows notifications use the existing registered tray icon. Saved enabled global notification rules keep the icon available; hide-on-close remains independent. Notification text includes the actual action result before trigger details; automatic actions complete before their outcomes are formatted. Notification acceptance does not establish that Windows displayed a banner. Quiet-time/user suppression remains Windows-owned. No notification history or runtime settings move outside portable storage.
+- Windows notifications use the existing registered tray icon. Saved enabled rules
+  that can send alerts keep the icon available independently of hide-on-close.
+  Resource Thresholds notification text leads with the actual action outcome.
+  Windows accepts the request and applies its own display and quiet-time settings.
+  Settings stay portable and Action Log entries stay in memory.
 
 ## Power plans
 

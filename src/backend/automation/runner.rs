@@ -468,7 +468,9 @@ impl RuntimeCore {
                     format!("{detail}. {action_detail}"),
                 );
             }
-            if event.notify {
+            if event.notify
+                && resource_thresholds_policy_is_current(shared, settings, Some(event.rule_index))
+            {
                 let result = tray::show_notification(
                     &format!("Winderust {} · {level}", t!("nav.resource_thresholds")),
                     &t!(
@@ -495,6 +497,14 @@ impl RuntimeCore {
                     &event.name,
                     outcome,
                     reason,
+                );
+            } else if event.response.action == ResourceThresholdsAction::None {
+                self.action_log.record(
+                    ActionLogFeature::ResourceThresholds,
+                    process_id,
+                    &event.name,
+                    ActionLogResult::Skipped,
+                    detail,
                 );
             }
         }

@@ -261,3 +261,38 @@ fn notification_opt_in_during_an_unattempted_incident_needs_fresh_proof() {
         vec![InstanceLimitsEvent::Notify(0)]
     );
 }
+
+#[test]
+fn rule_notify_changes_preserve_counts_and_do_not_rearm_attempted_incidents() {
+    let mut manager = manager();
+    let mut settings = manager.settings.clone();
+    settings.rules[0].notify = false;
+    manager.sync(&settings, true);
+
+    let start = Instant::now();
+    let count = [CountObservation::Complete(2)];
+    let observe = |manager: &mut InstanceLimitsManager, seconds| {
+        manager.observe(&count, start + Duration::from_secs(seconds))
+    };
+    assert!(observe(&mut manager, 0).is_empty());
+    assert_eq!(observe(&mut manager, 1), [InstanceLimitsEvent::Excess(0)]);
+
+    let before_opt_in = manager.snapshot();
+    settings.rules[0].notify = true;
+    manager.sync(&settings, true);
+    assert_eq!(manager.snapshot(), before_opt_in);
+    assert!(observe(&mut manager, 2).is_empty());
+    assert_eq!(observe(&mut manager, 3), [InstanceLimitsEvent::Notify(0)]);
+    manager.notification_result(0, Ok(())).unwrap();
+
+    for notify in [false, true] {
+        settings.rules[0].notify = notify;
+        manager.sync(&settings, true);
+    }
+    assert!(observe(&mut manager, 4).is_empty());
+    assert!(observe(&mut manager, 5).is_empty());
+    assert_eq!(
+        manager.snapshot().rules[0].notification,
+        NotificationStatus::Accepted
+    );
+}

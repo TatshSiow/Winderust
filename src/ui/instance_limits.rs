@@ -30,6 +30,7 @@ pub(super) enum Message {
     Edit(usize),
     Remove(usize),
     RuleEnabled(usize, bool),
+    RuleNotify(usize, bool),
     Maximum(String),
     SaveRule,
     CancelRule,
@@ -84,6 +85,11 @@ impl Editor {
                     rule.enabled = enabled;
                 }
             }
+            Message::RuleNotify(index, notify) => {
+                if let Some(rule) = settings.rules.get_mut(index) {
+                    rule.notify = notify;
+                }
+            }
             Message::Maximum(value) => {
                 if let Some((_, _, maximum)) = &mut self.draft {
                     *maximum = value;
@@ -130,12 +136,15 @@ impl Editor {
                         rule.max_instances,
                     )
                 };
-                let header = widgets::process_rule_header(
+                let header = widgets::process_rule_header_with_notify(
                     &rule.executable_path,
                     candidates,
                     widgets::checkbox(rule.enabled)
                         .on_toggle(move |value| Message::RuleEnabled(index, value))
                         .into(),
+                    widgets::rule_notify_checkbox(rule.notify, move |value| {
+                        Message::RuleNotify(index, value)
+                    }),
                     Some(
                         text(label)
                             .size(design::typography::SECONDARY)
@@ -267,7 +276,7 @@ impl Editor {
                 ),
                 widgets::setting_title("common.rules"),
                 widgets::settings_card(picker),
-                widgets::process_rules_table([], rules, true),
+                widgets::process_rules_table_with_notify([], rules, true),
             ]
             .spacing(widgets::CARD_GAP),
         )

@@ -1367,6 +1367,7 @@ fn toml_round_trip_preserves_settings() {
             enabled: true,
             rules: vec![crate::config::KeepRunningRule {
                 enabled: true,
+                notify: true,
                 executable_path: r"C:\Apps\keeper.exe".into(),
                 arguments: r#"--document "C:\Documents\notes.txt""#.into(),
                 working_directory: r"C:\Documents".into(),

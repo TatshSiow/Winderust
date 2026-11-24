@@ -175,6 +175,7 @@ fn attempts_are_spent_before_preparation_and_follow_one_five_thirty_second_delay
             manager.cleanup_ack(&ticket, CleanupOutcome::NoChildCreated),
             CleanupAcknowledgment::Released
         );
+        assert_eq!(manager.take_retry_exhaustion(), index == 2);
     }
     assert_eq!(
         manager.state(),
@@ -186,6 +187,7 @@ fn attempts_are_spent_before_preparation_and_follow_one_five_thirty_second_delay
         manager.state(),
         KeepRunningState::Paused(PauseReason::RetryBudgetExhausted)
     );
+    assert!(!manager.take_retry_exhaustion());
 }
 
 #[test]
@@ -253,6 +255,7 @@ fn short_lived_accepted_launches_exhaust_the_same_episode_until_explicit_resume(
         manager.state(),
         KeepRunningState::Paused(PauseReason::RetryBudgetExhausted)
     );
+    assert!(manager.take_retry_exhaustion());
     assert_eq!(
         manager.try_prepare(at(now, 40), complete(at(now, 40), &context, &[])),
         PrepareDisposition::Wait

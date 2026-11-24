@@ -188,6 +188,7 @@ pub(super) enum Message {
     SaveRule,
     CancelRule,
     RuleEnabled(usize, bool),
+    RuleNotify(usize, bool),
     Tab(ResourceThresholdsResource),
     PreviewMatches,
     MatchPreviewLoaded(Arc<()>, Result<Vec<preview::MatchRow>, String>),
@@ -366,6 +367,11 @@ impl Editor {
                     rule.enabled = value;
                 }
             }
+            Message::RuleNotify(index, value) => {
+                if let Some(rule) = settings.rules.get_mut(index) {
+                    rule.notify = value;
+                }
+            }
             Message::Scope(scope) => {
                 if let Some(draft) = &mut self.draft {
                     draft.rule.scope = scope;
@@ -477,7 +483,7 @@ impl Editor {
                 (
                     widgets::stable_key(&format!("{index}:{value}")),
                     column![
-                        widgets::process_rule_header_with_target(
+                        widgets::process_rule_header_with_target_and_notify(
                             column![
                                 text(label)
                                     .size(design::typography::CAPTION)
@@ -490,6 +496,9 @@ impl Editor {
                             widgets::checkbox(rule.enabled)
                                 .on_toggle(move |value| Message::RuleEnabled(index, value))
                                 .into(),
+                            Some(widgets::rule_notify_checkbox(rule.notify, move |value| {
+                                Message::RuleNotify(index, value)
+                            })),
                             None,
                             ResourceThresholdsResource::ALL
                                 .into_iter()
@@ -560,7 +569,7 @@ impl Editor {
                 ),
                 widgets::setting_title("common.rules"),
                 self.add_rule_card(settings, candidates),
-                widgets::process_rules_table(
+                widgets::process_rules_table_with_notify(
                     [
                         "resource_thresholds.cpu_tab",
                         "resource_thresholds.memory_tab"

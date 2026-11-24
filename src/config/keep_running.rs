@@ -11,6 +11,8 @@ pub struct KeepRunningSettings {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KeepRunningRule {
     pub enabled: bool,
+    #[serde(default)]
+    pub notify: bool,
     pub executable_path: String,
     #[serde(default)]
     pub arguments: String,
@@ -25,10 +27,21 @@ impl KeepRunningRule {
             .unwrap_or_default();
         Self {
             enabled: true,
+            notify: false,
             executable_path,
             arguments: String::new(),
             working_directory,
         }
+    }
+
+    pub(crate) fn same_policy(&self, other: &Self) -> bool {
+        self.enabled == other.enabled && self.same_launch_command(other)
+    }
+
+    pub(crate) fn same_launch_command(&self, other: &Self) -> bool {
+        self.executable_path == other.executable_path
+            && self.arguments == other.arguments
+            && self.working_directory == other.working_directory
     }
 
     pub fn validate(&self) -> Result<(), String> {
@@ -56,6 +69,10 @@ impl KeepRunningRule {
 }
 
 impl KeepRunningSettings {
+    pub(crate) fn notifications_required(&self) -> bool {
+        self.enabled && self.rules.iter().any(|rule| rule.enabled && rule.notify)
+    }
+
     pub fn validate(&self) -> Result<(), String> {
         let mut paths = BTreeSet::new();
         for rule in &self.rules {

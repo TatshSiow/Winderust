@@ -203,6 +203,8 @@ impl ResourceThresholdsScope {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResourceThresholdsRule {
     pub enabled: bool,
+    #[serde(default = "default_notify")]
+    pub notify: bool,
     #[serde(flatten)]
     pub selector: ResourceThresholdsSelector,
     #[serde(default, skip_serializing_if = "ResourceThresholdsScope::is_combined")]
@@ -214,6 +216,10 @@ pub struct ResourceThresholdsRule {
     pub memory_unit: ResourceThresholdsMemoryUnit,
 }
 
+fn default_notify() -> bool {
+    true
+}
+
 impl ResourceThresholdsRule {
     pub fn new(executable_path: String) -> Self {
         Self::with_selector(ResourceThresholdsSelector::ExactPath { executable_path })
@@ -222,6 +228,7 @@ impl ResourceThresholdsRule {
     pub fn with_selector(selector: ResourceThresholdsSelector) -> Self {
         Self {
             enabled: true,
+            notify: true,
             selector,
             scope: ResourceThresholdsScope::default(),
             sustained_seconds: None,
@@ -229,6 +236,26 @@ impl ResourceThresholdsRule {
             memory: ResourceThresholdsMonitor::new(false),
             memory_unit: ResourceThresholdsMemoryUnit::Percent,
         }
+    }
+
+    fn same_monitoring_policy(&self, other: &Self) -> bool {
+        let Self {
+            enabled,
+            notify: _,
+            selector,
+            scope,
+            sustained_seconds,
+            cpu,
+            memory,
+            memory_unit,
+        } = self;
+        *enabled == other.enabled
+            && *selector == other.selector
+            && *scope == other.scope
+            && *sustained_seconds == other.sustained_seconds
+            && *cpu == other.cpu
+            && *memory == other.memory
+            && *memory_unit == other.memory_unit
     }
 
     pub fn monitor(&self, resource: ResourceThresholdsResource) -> &ResourceThresholdsMonitor {
@@ -296,6 +323,18 @@ impl ResourceThresholdsRule {
 }
 
 impl ResourceThresholdsSettings {
+    pub(crate) fn same_monitoring_policy(&self, other: &Self) -> bool {
+        self.enabled == other.enabled
+            && self.sustained_seconds == other.sustained_seconds
+            && self.notify == other.notify
+            && self.rules.len() == other.rules.len()
+            && self
+                .rules
+                .iter()
+                .zip(&other.rules)
+                .all(|(rule, other)| rule.same_monitoring_policy(other))
+    }
+
     pub fn validate(&self) -> Result<(), String> {
         if !RESOURCE_THRESHOLDS_DURATION_RANGE.contains(&self.sustained_seconds) {
             return Err(
@@ -313,6 +352,7 @@ impl ResourceThresholdsSettings {
             && self.notify
             && self.rules.iter().any(|rule| {
                 rule.enabled
+                    && rule.notify
                     && ResourceThresholdsResource::ALL.into_iter().any(|resource| {
                         let monitor = rule.monitor(resource);
                         monitor.enabled
@@ -363,6 +403,9 @@ mod tests {
             ..Default::default()
         };
         assert!(settings.notifications_required());
+        settings.rules[0].notify = false;
+        assert!(!settings.notifications_required());
+        settings.rules[0].notify = true;
         settings.notify = false;
         assert!(!settings.notifications_required());
         let raw = toml::to_string(&settings).unwrap();
@@ -372,6 +415,24 @@ mod tests {
         );
         settings.sustained_seconds = 0;
         assert!(settings.validate().is_err());
+    }
+
+    #[test]
+    fn omitted_rule_notify_preserves_alerts_and_muted_rules_round_trip() {
+        let mut rule = ResourceThresholdsRule::new(r"C:\Apps\test.exe".into());
+        let raw = toml::to_string(&rule).unwrap();
+        let saved_without_notify = raw.replace("notify = true\n", "");
+        assert_ne!(raw, saved_without_notify);
+        assert!(
+            toml::from_str::<ResourceThresholdsRule>(&saved_without_notify)
+                .unwrap()
+                .notify
+        );
+        rule.notify = false;
+        assert_eq!(
+            toml::from_str::<ResourceThresholdsRule>(&toml::to_string(&rule).unwrap()).unwrap(),
+            rule
+        );
     }
 
     #[test]

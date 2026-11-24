@@ -38,6 +38,7 @@ struct BatchActivity {
 }
 
 pub(crate) struct ResourceThresholdsEvent {
+    pub(crate) rule_index: usize,
     pub name: String,
     pub process_count: usize,
     pub process_id: Option<u32>,
@@ -331,7 +332,7 @@ impl ResourceThresholdsManager {
     }
 
     fn note_settings(&mut self, settings: &ResourceThresholdsSettings) {
-        if self.settings != *settings {
+        if !self.settings.same_monitoring_policy(settings) {
             self.states.clear();
             self.settings.clone_from(settings);
         }
@@ -538,6 +539,7 @@ impl ResourceThresholdsManager {
                             &monitor.warning
                         };
                         events.push(ResourceThresholdsEvent {
+                            rule_index: key.0,
                             name: if allows_actions {
                                 first.name.clone()
                             } else {
@@ -551,7 +553,7 @@ impl ResourceThresholdsManager {
                             metric,
                             comparison,
                             value,
-                            notify: settings.notify,
+                            notify: settings.notify && rule.notify,
                             response: ResourceThresholdsResponse {
                                 threshold: response.threshold,
                                 action: if allows_actions {
@@ -818,6 +820,35 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].targets[0].creation_time, 20);
         assert_eq!(events[0].response.action, ResourceThresholdsAction::Restart);
+    }
+
+    #[test]
+    fn rule_notification_edits_preserve_qualification_actions_and_incidents() {
+        let mut manager = ResourceThresholdsManager::default();
+        let mut settings = settings();
+        settings.rules[0].memory.critical.action = ResourceThresholdsAction::Restart;
+        let process = process();
+        let start = Instant::now();
+
+        assert!(tick(&mut manager, &settings, &process, start, 0, Some(750)).is_empty());
+        settings.rules[0].notify = false;
+        let warning = tick(&mut manager, &settings, &process, start, 2, Some(750));
+        assert!(matches!(&warning[..], [event] if !event.critical && !event.notify));
+
+        assert!(tick(&mut manager, &settings, &process, start, 3, Some(950)).is_empty());
+        let critical = tick(&mut manager, &settings, &process, start, 5, Some(950));
+        assert!(matches!(&critical[..], [event] if event.critical && !event.notify));
+        assert_eq!(
+            critical[0].response.action,
+            ResourceThresholdsAction::Restart
+        );
+
+        settings.rules[0].notify = true;
+        assert!(tick(&mut manager, &settings, &process, start, 6, Some(950)).is_empty());
+        assert!(tick(&mut manager, &settings, &process, start, 7, Some(500)).is_empty());
+        assert!(tick(&mut manager, &settings, &process, start, 8, Some(950)).is_empty());
+        let next_incident = tick(&mut manager, &settings, &process, start, 10, Some(950));
+        assert!(matches!(&next_incident[..], [event] if event.critical && event.notify));
     }
 
     #[test]

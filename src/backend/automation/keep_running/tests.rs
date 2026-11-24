@@ -675,6 +675,78 @@ fn path_resets_preserve_the_other_rules_pending_retry() {
 }
 
 #[test]
+fn notify_only_edit_preserves_retry_and_reserves_exhaustion_once() {
+    let path = r"C:\Apps\app.exe";
+    let mut settings = KeepRunningSettings {
+        enabled: true,
+        rules: vec![KeepRunningRule::new(path.into())],
+    };
+    assert!(!settings.notifications_required());
+    let mut coordinator = Coordinator::<Fake>::default();
+    coordinator.sync_settings(&settings, true);
+    let start = Instant::now();
+    let context = DesktopBindingKey::new("desktop".into());
+    let member = key(1, path);
+    coordinator.owners[0].policy.observe(
+        start,
+        Observation::Complete {
+            observed_at: start,
+            context: &context,
+            members: std::slice::from_ref(&member),
+        },
+    );
+    coordinator.owners[0].policy.exited(start, &member);
+
+    let mut log = ActionLog::default();
+    for seconds in [1, 6, 36] {
+        let now = start + Duration::from_secs(seconds);
+        let owner = &mut coordinator.owners[0];
+        let PrepareDisposition::Prepare(ticket) = owner.policy.try_prepare(
+            now,
+            Observation::Complete {
+                observed_at: now,
+                context: &context,
+                members: &[],
+            },
+        ) else {
+            panic!("expected a launch attempt");
+        };
+        owner.policy.failed(now, &ticket, FailureKind::Retryable);
+        owner
+            .policy
+            .cleanup_ack(&ticket, CleanupOutcome::NoChildCreated);
+        if seconds == 1 {
+            let retry = owner.policy.state();
+            settings.rules[0].notify = true;
+            assert!(settings.notifications_required());
+            coordinator.sync_settings(&settings, true);
+            assert!(coordinator.owners[0].rule.notify);
+            assert_eq!(coordinator.owners[0].policy.state(), retry);
+            assert_eq!(coordinator.owners[0].policy.attempts(), 1);
+        }
+        if seconds < 36 {
+            coordinator.notify_retry_exhaustion(
+                |_| panic!("ordinary retries cannot request notifications"),
+                &mut log,
+            );
+        }
+    }
+    let mut reservations = 0;
+    for _ in 0..2 {
+        coordinator.notify_retry_exhaustion(
+            |rule| {
+                assert_eq!(rule, &settings.rules[0]);
+                reservations += 1;
+                false
+            },
+            &mut log,
+        );
+    }
+    assert_eq!(reservations, 1);
+    assert!(log.entries().is_empty());
+}
+
+#[test]
 fn resource_thresholds_actions_pause_armed_keep_running_until_resume() {
     let path = r"C:\Apps\app.exe";
     let settings = KeepRunningSettings {

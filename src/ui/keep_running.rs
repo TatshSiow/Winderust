@@ -26,6 +26,7 @@ pub(super) enum Message {
     Edit(usize),
     Remove(usize),
     RuleEnabled(usize, bool),
+    RuleNotify(usize, bool),
     Arguments(String),
     WorkingDirectory(String),
     SaveRule,
@@ -81,6 +82,11 @@ impl Editor {
                     rule.enabled = enabled;
                 }
             }
+            Message::RuleNotify(index, notify) => {
+                if let Some(rule) = settings.rules.get_mut(index) {
+                    rule.notify = notify;
+                }
+            }
             Message::Arguments(value) => {
                 if let Some((_, rule)) = &mut self.draft {
                     rule.arguments = value;
@@ -130,12 +136,15 @@ impl Editor {
                     runtime.map(|entry| entry.state)
                 };
                 let state_label = state.map_or("common.unknown", KeepRunningState::label_key);
-                let header = widgets::process_rule_header(
+                let header = widgets::process_rule_header_with_notify(
                     &rule.executable_path,
                     candidates,
                     widgets::checkbox(rule.enabled)
                         .on_toggle(move |value| Message::RuleEnabled(index, value))
                         .into(),
+                    widgets::rule_notify_checkbox(rule.notify, move |value| {
+                        Message::RuleNotify(index, value)
+                    }),
                     Some(
                         text(t!(state_label).to_string())
                             .size(design::typography::SECONDARY)
@@ -209,7 +218,7 @@ impl Editor {
                     .then_some(Message::Add),
                 |path| Self::addable_rule(settings, path).is_some().then_some(true)
             )),
-            widgets::process_rules_table([], rules, true),
+            widgets::process_rules_table_with_notify([], rules, true),
         ]
         .spacing(widgets::CARD_GAP);
         if settings.enabled && !status.observation_known {

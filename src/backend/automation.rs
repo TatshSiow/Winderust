@@ -1233,6 +1233,16 @@ fn run_background_automation(
         {
             runner.instance_limits.requalify_notifications();
         }
+        if configured_settings.instance_limits.notify
+            && !snapshot
+                .instance_limits_resets
+                .notification_paths
+                .is_empty()
+        {
+            runner
+                .instance_limits
+                .requalify_rule_notifications(&snapshot.instance_limits_resets.notification_paths);
+        }
         runner.instance_limits.sync(
             &configured_settings.instance_limits,
             configured_settings.general.enabled,
@@ -2071,6 +2081,13 @@ fn run_background_automation(
                 },
                 &mut runner.action_log,
             );
+            runner.keep_running.notify_retry_exhaustion(
+                |rule| {
+                    let state = lock_unpoisoned(&shared.state);
+                    keep_running_notification_is_current(&state, rule, windows_event_watcher_active)
+                },
+                &mut runner.action_log,
+            );
             update_keep_running_status(&shared, status);
             scheduler.schedule_after(
                 RefreshDomain::KeepRunning,
@@ -2425,15 +2442,27 @@ fn resource_thresholds_action_is_current(
     shared: &SharedAutomationState,
     expected: &Settings,
 ) -> bool {
+    resource_thresholds_policy_is_current(shared, expected, None)
+}
+
+fn resource_thresholds_policy_is_current(
+    shared: &SharedAutomationState,
+    expected: &Settings,
+    notification_rule: Option<usize>,
+) -> bool {
     let state = lock_unpoisoned(&shared.state);
+    let current = &state.settings.resource_thresholds;
     !state.stop_requested
         && !state.pending_events.suspend_resume
         && !state.pending_events.session_changed
         && state.settings.general.enabled
-        && state.settings.resource_thresholds.enabled
-        && state.settings.resource_thresholds == expected.resource_thresholds
+        && current.enabled
+        && current.same_monitoring_policy(&expected.resource_thresholds)
         && state.settings.general.allow_cross_session_process_control
             == expected.general.allow_cross_session_process_control
+        && notification_rule.is_none_or(|index| {
+            current.notify && current.rules.get(index).is_some_and(|rule| rule.notify)
+        })
 }
 
 fn reserve_keep_running_commit(
@@ -2446,24 +2475,55 @@ fn reserve_keep_running_commit(
     observation: Observation<'_>,
 ) -> CommitDisposition {
     let state = lock_unpoisoned(&shared.state);
-    let current_intents_clear = expected_watcher_active
+    let current_intents_clear = keep_running_context_is_current(&state, expected_watcher_active)
+        && state.settings.general.enabled == expected_settings.general.enabled
+        && state.settings.keep_running == expected_settings.keep_running
+        && !state.pending_events.settings_changed
+        && state.pending_keep_running_resets.is_empty();
+    // This reservation orders accepted intents; native launch calls run after the guard is released.
+    manager.try_reserve_commit(now, ticket, observation, current_intents_clear)
+}
+
+fn keep_running_notification_is_current(
+    state: &AutomationWorkerState,
+    rule: &crate::config::KeepRunningRule,
+    expected_watcher_active: bool,
+) -> bool {
+    keep_running_context_is_current(state, expected_watcher_active)
+        && !state
+            .pending_keep_running_resets
+            .affects(&rule.executable_path)
+        && state.settings.keep_running.rules.contains(rule)
+        && !state
+            .process_control_commands
+            .iter()
+            .any(|command| match command {
+                ProcessControlCommand::KeepRunningResume { executable_path } => {
+                    same_executable_path(
+                        Path::new(executable_path),
+                        Path::new(&rule.executable_path),
+                    )
+                }
+                _ => false,
+            })
+}
+
+fn keep_running_context_is_current(
+    state: &AutomationWorkerState,
+    expected_watcher_active: bool,
+) -> bool {
+    expected_watcher_active
         && state.windows_event_watcher_active
         && state.pending_events.windows_event_watcher_change.is_none()
         && !state.stop_requested
         && state.settings.general.enabled
         && state.settings.keep_running.enabled
-        && state.settings.general.enabled == expected_settings.general.enabled
-        && state.settings.keep_running == expected_settings.keep_running
-        && !state.pending_events.settings_changed
-        && state.pending_keep_running_resets.is_empty()
         && !state.pending_events.suspend_resume
         && !state.pending_events.session_changed
         && !state
             .process_control_commands
             .iter()
-            .any(ProcessControlCommand::is_process_stop);
-    // This reservation orders accepted intents; native launch calls run after the guard is released.
-    manager.try_reserve_commit(now, ticket, observation, current_intents_clear)
+            .any(ProcessControlCommand::is_process_stop)
 }
 
 fn active_power_source(plugged_in: Option<bool>) -> PowerSourceProfile {
@@ -2587,6 +2647,31 @@ mod keep_running_intake_tests {
             pending_auto_exclusions_generation: AtomicU64::new(0),
             auto_exclusion_wake: Mutex::new(None),
         }
+    }
+
+    #[test]
+    fn keep_running_alert_reservation_uses_the_saved_rule_and_pending_resume() {
+        let mut settings = settings();
+        settings.keep_running.rules[0].notify = true;
+        let rule = &settings.keep_running.rules[0];
+        let shared = shared(&settings);
+        let mut state = lock_unpoisoned(&shared.state);
+        assert!(keep_running_notification_is_current(&state, rule, true));
+
+        state.pending_events.settings_changed = true;
+        Arc::make_mut(&mut state.settings).memory_trim.enabled = true;
+        assert!(keep_running_notification_is_current(&state, rule, true));
+
+        state
+            .process_control_commands
+            .push_back(ProcessControlCommand::KeepRunningResume {
+                executable_path: rule.executable_path.clone(),
+            });
+        assert!(!keep_running_notification_is_current(&state, rule, true));
+        state.process_control_commands.clear();
+
+        Arc::make_mut(&mut state.settings).keep_running.rules[0].notify = false;
+        assert!(!keep_running_notification_is_current(&state, rule, true));
     }
 
     fn ready(now: Instant, context: &DesktopBindingKey) -> (KeepRunningManager, LaunchTicket) {

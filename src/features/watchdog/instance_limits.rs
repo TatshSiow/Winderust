@@ -42,6 +42,7 @@ struct RuleState {
     count: CountObservation,
     sampled_at: Option<Instant>,
     excess_since: Option<Instant>,
+    notification_since: Option<Instant>,
     recovery_since: Option<Instant>,
     incident: bool,
     notification: NotificationStatus,
@@ -56,6 +57,7 @@ impl Default for RuleState {
             },
             sampled_at: None,
             excess_since: None,
+            notification_since: None,
             recovery_since: None,
             incident: false,
             notification: NotificationStatus::NotAttempted,
@@ -93,9 +95,13 @@ impl InstanceLimitsManager {
                 if enabled && self.enabled {
                     if let Some(index) = previous
                         .iter()
-                        .position(|(previous_rule, _)| *previous_rule == rule)
+                        .position(|(previous_rule, _)| previous_rule.same_monitor(rule))
                     {
-                        return previous.swap_remove(index).1;
+                        let (previous_rule, mut state) = previous.swap_remove(index);
+                        if rule.notify && !previous_rule.notify {
+                            state.notification_since = None;
+                        }
+                        return state;
                     }
                 }
                 RuleState::default()
@@ -109,6 +115,15 @@ impl InstanceLimitsManager {
         for state in &mut self.rules {
             if state.notification == NotificationStatus::NotAttempted {
                 state.excess_since = None;
+                state.notification_since = None;
+            }
+        }
+    }
+
+    pub(crate) fn requalify_rule_notifications(&mut self, paths: &[String]) {
+        for (rule, state) in self.settings.rules.iter().zip(&mut self.rules) {
+            if paths.contains(&rule.executable_path) {
+                state.notification_since = None;
             }
         }
     }
@@ -120,6 +135,7 @@ impl InstanceLimitsManager {
             };
             state.sampled_at = None;
             state.excess_since = None;
+            state.notification_since = None;
             state.recovery_since = None;
         }
     }
@@ -151,6 +167,7 @@ impl InstanceLimitsManager {
                 .is_some_and(|previous| now.saturating_duration_since(previous) > MAX_SAMPLE_AGE)
             {
                 state.excess_since = None;
+                state.notification_since = None;
                 state.recovery_since = None;
             }
             let fresh = state.sampled_at.is_none_or(|previous| now > previous);
@@ -198,20 +215,22 @@ impl InstanceLimitsManager {
             }
             if excess {
                 state.recovery_since = None;
-                if qualifying_sample(&mut state.excess_since, now) {
-                    if !state.incident {
-                        state.incident = true;
-                        events.push(InstanceLimitsEvent::Excess(index));
-                    }
-                    if self.settings.notify
-                        && state.notification == NotificationStatus::NotAttempted
-                    {
-                        state.notification = NotificationStatus::Pending;
-                        events.push(InstanceLimitsEvent::Notify(index));
-                    }
+                if !state.incident && qualifying_sample(&mut state.excess_since, now) {
+                    state.incident = true;
+                    events.push(InstanceLimitsEvent::Excess(index));
+                }
+                if self.settings.notify
+                    && rule.notify
+                    && state.notification == NotificationStatus::NotAttempted
+                    && qualifying_sample(&mut state.notification_since, now)
+                    && state.incident
+                {
+                    state.notification = NotificationStatus::Pending;
+                    events.push(InstanceLimitsEvent::Notify(index));
                 }
             } else {
                 state.excess_since = None;
+                state.notification_since = None;
                 if complete_within_limit && state.incident {
                     if qualifying_sample(&mut state.recovery_since, now) {
                         state.incident = false;

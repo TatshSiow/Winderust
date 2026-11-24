@@ -758,7 +758,10 @@ fn instance_limits_status<'a>(
         observed &= super::instance_limits::sample_fresh(report.sampled_at)
             && matches!(report.count, CountObservation::Complete(_));
         incidents += usize::from(report.incident);
-        if let NotificationStatus::Failed(error) = &report.notification {
+        let NotificationStatus::Failed(error) = &report.notification else {
+            continue;
+        };
+        if settings.instance_limits.notify && rule.notify {
             last_error.get_or_insert(error.as_str());
         }
     }
@@ -1485,6 +1488,12 @@ mod tests {
         assert_eq!(status.state, FeatureRunState::Running);
         assert_eq!(status.incidents, 1);
         assert_eq!(status.last_error, Some("notification failed"));
+
+        settings.instance_limits.rules[0].notify = false;
+        let status = instance_limits_status(&settings, &snapshot);
+        assert_eq!(status.state, FeatureRunState::Running);
+        assert_eq!(status.incidents, 1);
+        assert_eq!(status.last_error, None);
 
         settings.instance_limits.rules[0].max_instances = 2;
         let status = instance_limits_status(&settings, &snapshot);

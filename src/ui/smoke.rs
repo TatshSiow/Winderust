@@ -150,6 +150,14 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             )));
             assert_eq!(app.appearance.palette().background, iced::Color::BLACK);
         }
+        if extra.is_none() && page == Page::ResourceThresholds {
+            let mut expected = app.settings.global().resource_thresholds.clone();
+            expected.rules[1].notify = false;
+            let _ = app.update(Message::ResourceThresholds(
+                resource_thresholds::Message::RuleNotify(1, false),
+            ));
+            assert_eq!(app.settings.global().resource_thresholds, expected);
+        }
         // Exercise disclosure messages and long/compact navigation without enabling automation.
         if matches!(extra, Some(62..=65)) {
             use crate::{
@@ -201,6 +209,12 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                     },
                 })
                 .collect();
+            let mut expected = app.settings.global().instance_limits.clone();
+            expected.rules[1].notify = false;
+            let _ = app.update(Message::InstanceLimits(
+                instance_limits::Message::RuleNotify(1, false),
+            ));
+            assert_eq!(app.settings.global().instance_limits, expected);
             if matches!(extra, Some(64..=65)) {
                 let _ = app.update(Message::InstanceLimits(instance_limits::Message::Edit(0)));
             }
@@ -250,6 +264,14 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                     last_error: None,
                 })
                 .collect();
+            let mut expected = app.settings.global().keep_running.clone();
+            expected.rules[1].notify = true;
+            let _ = app.update(Message::KeepRunning(keep_running::Message::RuleNotify(
+                1, true,
+            )));
+            assert_eq!(app.settings.global().keep_running, expected);
+            let status = &app.status.feature_status.keep_running;
+            assert!(status.rule_status(&expected.rules[1]).is_some());
             if extra == Some(61) {
                 let _ = app.update(Message::KeepRunning(keep_running::Message::Edit(0)));
             }

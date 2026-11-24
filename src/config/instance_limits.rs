@@ -25,6 +25,8 @@ impl Default for InstanceLimitsSettings {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InstanceLimitsRule {
     pub enabled: bool,
+    #[serde(default = "default_notify")]
+    pub notify: bool,
     pub executable_path: String,
     pub max_instances: u32,
 }
@@ -33,9 +35,16 @@ impl InstanceLimitsRule {
     pub fn new(executable_path: String) -> Self {
         Self {
             enabled: true,
+            notify: default_notify(),
             executable_path,
             max_instances: 1,
         }
+    }
+
+    pub(crate) fn same_monitor(&self, other: &Self) -> bool {
+        self.enabled == other.enabled
+            && self.executable_path == other.executable_path
+            && self.max_instances == other.max_instances
     }
 
     pub fn validate(&self) -> Result<(), String> {
@@ -85,7 +94,7 @@ impl InstanceLimitsSettings {
     }
 
     pub fn notifications_required(&self) -> bool {
-        self.enabled && self.notify && self.rules.iter().any(|rule| rule.enabled)
+        self.enabled && self.notify && self.rules.iter().any(|rule| rule.enabled && rule.notify)
     }
 }
 
@@ -130,6 +139,33 @@ mod tests {
         let overflow =
             "enabled = true\nexecutable_path = 'C:\\Apps\\app.exe'\nmax_instances = 4294967296";
         assert!(toml::from_str::<InstanceLimitsRule>(overflow).is_err());
+    }
+
+    #[test]
+    fn rule_notifications_default_on_and_require_an_enabled_opted_in_rule() {
+        let rule = toml::from_str::<InstanceLimitsRule>(
+            "enabled = true\nexecutable_path = 'C:\\Apps\\app.exe'\nmax_instances = 1",
+        )
+        .unwrap();
+        assert!(rule.notify);
+        let mut settings = InstanceLimitsSettings {
+            enabled: true,
+            rules: vec![rule],
+            ..Default::default()
+        };
+        assert!(settings.notifications_required());
+        settings.rules[0].notify = false;
+        assert!(!settings.notifications_required());
+        assert_eq!(
+            toml::from_str::<InstanceLimitsSettings>(&toml::to_string(&settings).unwrap()).unwrap(),
+            settings
+        );
+        settings.rules[0].notify = true;
+        settings.rules[0].enabled = false;
+        assert!(!settings.notifications_required());
+        settings.rules[0].enabled = true;
+        settings.notify = false;
+        assert!(!settings.notifications_required());
     }
 
     #[test]

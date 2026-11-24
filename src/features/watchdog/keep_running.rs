@@ -91,7 +91,7 @@ pub(crate) struct KeepRunningSnapshot {
 
 impl KeepRunningSnapshot {
     pub(crate) fn rule_status(&self, rule: &KeepRunningRule) -> Option<&KeepRunningRuleSnapshot> {
-        self.rules.iter().find(|entry| entry.rule.as_ref() == rule)
+        self.rules.iter().find(|entry| entry.rule.same_policy(rule))
     }
 }
 
@@ -196,6 +196,7 @@ pub(crate) struct KeepRunningManager {
     binding: Option<DesktopBindingKey>,
     members: BTreeSet<ProcessTargetKey>,
     attempts: usize,
+    retry_exhaustion_pending: bool,
     stable_credit: Duration,
     stable_cohort: BTreeSet<ProcessTargetKey>,
     last_verified: Option<Instant>,
@@ -209,6 +210,7 @@ impl Default for KeepRunningManager {
             binding: None,
             members: BTreeSet::new(),
             attempts: 0,
+            retry_exhaustion_pending: false,
             stable_credit: Duration::ZERO,
             stable_cohort: BTreeSet::new(),
             last_verified: None,
@@ -224,6 +226,11 @@ impl KeepRunningManager {
 
     pub(crate) fn attempts(&self) -> usize {
         self.attempts
+    }
+
+    pub(crate) fn take_retry_exhaustion(&mut self) -> bool {
+        std::mem::take(&mut self.retry_exhaustion_pending)
+            && self.state == KeepRunningState::Paused(PauseReason::RetryBudgetExhausted)
     }
 
     pub(crate) fn disposal_required(&self, ticket: &LaunchTicket) -> bool {
@@ -263,6 +270,7 @@ impl KeepRunningManager {
 
     pub(crate) fn pause(&mut self, reason: PauseReason) -> CleanupAction {
         let action = self.invalidate();
+        self.retry_exhaustion_pending = false;
         self.last_verified = None;
         if reason == PauseReason::SessionChanged {
             self.drop_binding();
@@ -602,6 +610,8 @@ impl KeepRunningManager {
             },
             None => KeepRunningState::Paused(PauseReason::RetryBudgetExhausted),
         };
+        self.retry_exhaustion_pending =
+            self.state == KeepRunningState::Paused(PauseReason::RetryBudgetExhausted);
     }
 
     fn reset_stability(&mut self) {
@@ -615,6 +625,7 @@ impl KeepRunningManager {
         self.binding = None;
         self.members.clear();
         self.attempts = 0;
+        self.retry_exhaustion_pending = false;
         self.reset_stability();
     }
 }

@@ -335,6 +335,11 @@ hover/press; background shading supplies feedback.
   and the App Suspension background delay in their feature's expandable toggle
   card. Let users configure these while the feature is off. Keep rule tables
   and independent App Suspension controls accessible outside that card.
+- Place Notify beside Enable in the Resource Thresholds, Instance Limits, and
+  Keep Running rule tables. Enable controls whether the rule runs. Notify
+  controls Windows alert delivery. Resource Thresholds and Instance Limits
+  also retain their feature-wide notification switches. For Keep Running,
+  Notify opts the rule into a single alert when retries run out and Resume is needed.
 - Keep Instance Balancing under CPU Control. Advanced Controls contains Timer
   Resolution and Win32 Priority Separation.
 
@@ -348,8 +353,8 @@ hover/press; background shading supplies feedback.
   only on OK. Cancel, Close, and Escape discard, including when a numeric field
   has focus. If a picker is open, Escape closes the picker first.
 - Choose Executable path to use the app picker or Executable name to enter an
-  exact filename such as `worker.exe`. Executable name rules send notifications
-  and evaluate each resolved path separately. Choose Combined by path or Per
+  exact filename such as `worker.exe`. Executable name rules monitor each
+  resolved path separately and can send notifications. Choose Combined by path or Per
   instance in the rule dialog. Terminate and Restart require an At or above
   monitor in a Combined by path rule with an executable path.
 - Match Preview reads a fresh process snapshot when opened or refreshed. It
@@ -360,10 +365,10 @@ hover/press; background shading supplies feedback.
 - Each resource tab starts with a collapsed Enable CPU monitoring or Enable memory
   monitoring card. Its switch controls monitoring. The header reveals the
   comparison, memory metric where applicable, thresholds, and eligible actions
-  independently of the switch. At or below clears the draft actions for that
-  resource and uses notifications. Where action controls are available, default
-  to notification only and explain the restart rate limit and risk of losing
-  unsaved work inline.
+  independently of the switch. At or below clears the draft automatic actions
+  for that resource. Where action controls are available, default to monitoring
+  with optional notification and explain the restart rate limit and risk of
+  losing unsaved work inline.
   The main page owns the default sustained duration and one notification switch.
 - Explain that the chosen scope evaluates eligible instances at each matching path
   together or individually. Working Set measures resident memory and may double-count

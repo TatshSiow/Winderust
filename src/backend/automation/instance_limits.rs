@@ -10,6 +10,7 @@ use rust_i18n::t;
 pub(super) struct PendingResets {
     pub(super) all: bool,
     pub(super) notification_opt_in: bool,
+    pub(super) notification_paths: Vec<String>,
     pub(super) paths: Vec<String>,
 }
 
@@ -33,9 +34,32 @@ pub(super) fn record_settings_changes(
             &previous.instance_limits.rules,
         ),
     ] {
-        for rule in rules.iter().filter(|rule| !other.contains(rule)) {
+        for rule in rules
+            .iter()
+            .filter(|rule| !other.iter().any(|other| rule.same_monitor(other)))
+        {
             if !pending.paths.contains(&rule.executable_path) {
                 pending.paths.push(rule.executable_path.clone());
+            }
+        }
+    }
+    if settings.instance_limits.notify {
+        for rule in settings
+            .instance_limits
+            .rules
+            .iter()
+            .filter(|rule| rule.enabled && rule.notify)
+        {
+            if previous
+                .instance_limits
+                .rules
+                .iter()
+                .any(|old| !old.notify && rule.same_monitor(old))
+                && !pending.notification_paths.contains(&rule.executable_path)
+            {
+                pending
+                    .notification_paths
+                    .push(rule.executable_path.clone());
             }
         }
     }
@@ -379,6 +403,48 @@ mod tests {
                 InstanceLimitsEvent::Excess(0),
                 InstanceLimitsEvent::Notify(0)
             ]
+        );
+    }
+
+    #[test]
+    fn rapid_rule_notify_toggle_restarts_only_that_rules_notification_qualification() {
+        let runtime = runtime();
+        let mut state = lock_unpoisoned(&runtime.shared.state);
+        let mut settings = (*state.settings).clone();
+        settings.instance_limits.enabled = true;
+        settings.instance_limits.rules = [r"C:\Apps\app.exe", r"C:\Apps\other.exe"]
+            .into_iter()
+            .map(|path| crate::config::InstanceLimitsRule::new(path.into()))
+            .collect();
+        state.settings = Arc::new(settings.clone());
+
+        let mut manager = InstanceLimitsManager::default();
+        manager.sync(&settings.instance_limits, true);
+        let start = Instant::now();
+        let counts = [CountObservation::Complete(2), CountObservation::Complete(2)];
+        assert!(manager.observe(&counts, start).is_empty());
+
+        for notify in [false, true] {
+            settings.instance_limits.rules[0].notify = notify;
+            record_settings_changes(&mut state, &settings);
+            state.settings = Arc::new(settings.clone());
+        }
+        let pending = std::mem::take(&mut state.pending_instance_limits_resets);
+        assert!(pending.paths.is_empty());
+        assert_eq!(pending.notification_paths, [r"C:\Apps\app.exe"]);
+        manager.requalify_rule_notifications(&pending.notification_paths);
+        manager.sync(&settings.instance_limits, true);
+        assert_eq!(
+            manager.observe(&counts, start + Duration::from_secs(1)),
+            [
+                InstanceLimitsEvent::Excess(0),
+                InstanceLimitsEvent::Excess(1),
+                InstanceLimitsEvent::Notify(1),
+            ],
+        );
+        assert_eq!(
+            manager.observe(&counts, start + Duration::from_secs(2)),
+            [InstanceLimitsEvent::Notify(0)],
         );
     }
 

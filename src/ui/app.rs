@@ -2661,9 +2661,16 @@ impl WinderustApp {
     }
 
     fn publish_settings_with_tray_warning(&mut self) -> Option<String> {
-        self.runtime
-            .replace_settings(&self.settings.runtime_settings_snapshot());
-        self.sync_tray_warning()
+        let snapshot = self.settings.runtime_settings_snapshot();
+        if notifications_required(self.settings.persisted()) {
+            // Register the tray before the worker can reserve the first alert.
+            let warning = self.sync_tray_warning();
+            self.runtime.replace_settings(&snapshot);
+            warning
+        } else {
+            self.runtime.replace_settings(&snapshot);
+            self.sync_tray_warning()
+        }
     }
 
     fn load_catalog(&mut self) -> Task<Message> {
@@ -4071,7 +4078,8 @@ fn picked_executable_message(page: Page, path: String) -> Message {
 fn notifications_required(settings: &crate::config::Settings) -> bool {
     settings.general.enabled
         && (settings.resource_thresholds.notifications_required()
-            || settings.instance_limits.notifications_required())
+            || settings.instance_limits.notifications_required()
+            || settings.keep_running.notifications_required())
 }
 
 fn tray_retry_due(

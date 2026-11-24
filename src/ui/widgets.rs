@@ -150,10 +150,57 @@ pub(super) fn process_rule_header_with_target<'a, M: 'a>(
     controls: Vec<Element<'a, M>>,
     action: Element<'a, M>,
 ) -> Element<'a, M> {
+    process_rule_header_with_target_and_notify(app, target, active, None, status, controls, action)
+}
+
+pub(super) fn process_rule_header_with_notify<'a, M: 'a>(
+    path: &str,
+    candidates: &[super::app_picker::Candidate],
+    active: Element<'a, M>,
+    notify: Element<'a, M>,
+    status: Option<Element<'a, M>>,
+    controls: Vec<Element<'a, M>>,
+    action: Element<'a, M>,
+) -> Element<'a, M> {
+    process_rule_header_with_target_and_notify(
+        super::app_picker::app_name(path, candidates),
+        rule_path_text(path.to_owned()).into(),
+        active,
+        Some(notify),
+        status,
+        controls,
+        action,
+    )
+}
+
+pub(super) fn rule_notify_checkbox<'a, M: 'a>(
+    value: bool,
+    on_toggle: impl Fn(bool) -> M + 'a,
+) -> Element<'a, M> {
+    tooltip(
+        checkbox(value).on_toggle(on_toggle),
+        text(rust_i18n::t!("common.notify_rule").to_string()),
+        iced::widget::tooltip::Position::Top,
+    )
+    .into()
+}
+
+pub(super) fn process_rule_header_with_target_and_notify<'a, M: 'a>(
+    app: Element<'a, M>,
+    target: Element<'a, M>,
+    active: Element<'a, M>,
+    notify: Option<Element<'a, M>>,
+    status: Option<Element<'a, M>>,
+    controls: Vec<Element<'a, M>>,
+    action: Element<'a, M>,
+) -> Element<'a, M> {
     use iced::widget::container;
     let mut cells = row![container(active).width(RULE_ENABLE_WIDTH)]
         .spacing(design::space::MEDIUM)
         .align_y(iced::Center);
+    if let Some(notify) = notify {
+        cells = cells.push(container(notify).width(RULE_ENABLE_WIDTH));
+    }
     if let Some(status) = status {
         cells = cells.push(container(status).width(RULE_STATUS_WIDTH));
     }
@@ -224,9 +271,31 @@ pub(super) fn process_rules_table<'a, M: 'a>(
     rows: Vec<(u64, Element<'a, M>)>,
     show_status: bool,
 ) -> Element<'a, M> {
+    process_rules_table_with_columns(tiers, rows, show_status, false)
+}
+
+pub(super) fn process_rules_table_with_notify<'a, M: 'a>(
+    tiers: impl IntoIterator<Item = String>,
+    rows: Vec<(u64, Element<'a, M>)>,
+    show_status: bool,
+) -> Element<'a, M> {
+    process_rules_table_with_columns(tiers, rows, show_status, true)
+}
+
+fn process_rules_table_with_columns<'a, M: 'a>(
+    tiers: impl IntoIterator<Item = String>,
+    rows: Vec<(u64, Element<'a, M>)>,
+    show_status: bool,
+    show_notify: bool,
+) -> Element<'a, M> {
     let tiers: Vec<_> = tiers.into_iter().collect();
     let min_width = 720.0
         + 100.0 * tiers.len() as f32
+        + if show_notify {
+            (RULE_ENABLE_WIDTH + design::space::MEDIUM) as f32
+        } else {
+            0.0
+        }
         + if show_status {
             RULE_STATUS_WIDTH as f32
         } else {
@@ -236,6 +305,10 @@ pub(super) fn process_rules_table<'a, M: 'a>(
         row![text(rust_i18n::t!("common.enable").to_string()).width(RULE_ENABLE_WIDTH)]
             .spacing(design::space::MEDIUM)
             .align_y(iced::Center);
+    if show_notify {
+        header =
+            header.push(text(rust_i18n::t!("common.notify").to_string()).width(RULE_ENABLE_WIDTH));
+    }
     if show_status {
         header =
             header.push(text(rust_i18n::t!("common.status").to_string()).width(RULE_STATUS_WIDTH));

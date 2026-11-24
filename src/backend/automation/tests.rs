@@ -3281,6 +3281,42 @@ fn resource_thresholds_actions_require_current_policy_and_no_shutdown_or_session
 }
 
 #[test]
+fn resource_thresholds_notification_rechecks_the_saved_rule_without_blocking_actions() {
+    use crate::config::ResourceThresholdsRule;
+
+    let mut settings = Settings::default();
+    settings.general.enabled = true;
+    settings.resource_thresholds.enabled = true;
+    settings.resource_thresholds.notify = true;
+    settings.resource_thresholds.rules = [r"C:\Apps\worker.exe", r"C:\Apps\editor.exe"]
+        .into_iter()
+        .map(|path| ResourceThresholdsRule::new(path.into()))
+        .collect();
+    let shared = shared_automation_state(settings.clone());
+    assert!(resource_thresholds_policy_is_current(
+        &shared,
+        &settings,
+        Some(0)
+    ));
+
+    Arc::make_mut(&mut lock_unpoisoned(&shared.state).settings)
+        .resource_thresholds
+        .rules[0]
+        .notify = false;
+    assert!(!resource_thresholds_policy_is_current(
+        &shared,
+        &settings,
+        Some(0)
+    ));
+    assert!(resource_thresholds_policy_is_current(
+        &shared,
+        &settings,
+        Some(1)
+    ));
+    assert!(resource_thresholds_action_is_current(&shared, &settings));
+}
+
+#[test]
 fn foreground_changes_skip_power_plan_rules_that_do_not_use_focus() {
     let defaults = Settings::default();
     let mut activity = defaults.clone();

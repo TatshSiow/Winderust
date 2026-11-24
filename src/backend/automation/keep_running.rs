@@ -9,6 +9,7 @@ use std::{
 
 use crate::{
     action_log::{ActionLog, ActionLogFeature, ActionLogResult},
+    backend::tray,
     config::{KeepRunningRule, KeepRunningSettings},
     control::process::ProcessTargetKey,
     features::watchdog::keep_running::{
@@ -18,6 +19,7 @@ use crate::{
     },
     foreground::{same_executable_path, ProcessActionTarget},
 };
+use rust_i18n::t;
 
 use super::{AutomationWorkerState, Settings};
 
@@ -30,6 +32,10 @@ pub(super) struct PendingResets {
 impl PendingResets {
     pub(super) fn is_empty(&self) -> bool {
         !self.all && self.paths.is_empty()
+    }
+
+    pub(super) fn affects(&self, path: &str) -> bool {
+        self.all || self.paths.contains(path)
     }
 }
 
@@ -45,7 +51,13 @@ pub(super) fn record_settings_changes(state: &mut AutomationWorkerState, setting
                 .keep_running
                 .rules
                 .iter()
-                .filter(|rule| !settings.keep_running.rules.contains(rule))
+                .filter(|rule| {
+                    !settings
+                        .keep_running
+                        .rules
+                        .iter()
+                        .any(|current| current.same_policy(rule))
+                })
                 .map(|rule| rule.executable_path.clone()),
         );
     }
@@ -306,10 +318,8 @@ impl<P: Platform> Coordinator<P> {
                 owner
             };
             owner.active = true;
-            if owner.rule.as_ref() != rule {
-                let only_enabled_changed = owner.rule.executable_path == rule.executable_path
-                    && owner.rule.arguments == rule.arguments
-                    && owner.rule.working_directory == rule.working_directory;
+            if !owner.rule.same_policy(rule) {
+                let only_enabled_changed = owner.rule.same_launch_command(rule);
                 let owns_flight = flight_owner.is_some_and(|id| Arc::ptr_eq(id, &owner.id));
                 owner.last_error = if only_enabled_changed && owns_flight {
                     // This diagnostic was already recorded when the previous snapshot published.
@@ -323,11 +333,13 @@ impl<P: Platform> Coordinator<P> {
                     None
                 };
                 owner.policy.launch_settings_changed();
-                owner.rule = Arc::new(rule.clone());
                 owner.members.clear();
                 owner.identity = None;
                 owner.replacement_identity = None;
                 owner.retry_error = None;
+            }
+            if owner.rule.as_ref() != rule {
+                owner.rule = Arc::new(rule.clone());
             }
             if enabled && rule.enabled {
                 owner.policy.enable();
@@ -357,7 +369,7 @@ impl<P: Platform> Coordinator<P> {
         }
         let flight_owner = self.flight.as_ref().map(|flight| &flight.owner);
         for owner in &mut self.owners {
-            if !resets.all && !resets.paths.contains(&owner.rule.executable_path) {
+            if !resets.affects(&owner.rule.executable_path) {
                 continue;
             }
             owner.policy.launch_settings_changed();
@@ -642,6 +654,47 @@ impl<P: Platform> Coordinator<P> {
             log,
             Instant::now,
         )
+    }
+
+    pub(super) fn notify_retry_exhaustion(
+        &mut self,
+        mut reserve: impl FnMut(&KeepRunningRule) -> bool,
+        log: &mut ActionLog,
+    ) {
+        for owner in &mut self.owners {
+            if !owner.policy.take_retry_exhaustion()
+                || !owner.active
+                || !owner.rule.enabled
+                || !owner.rule.notify
+                || !reserve(&owner.rule)
+            {
+                continue;
+            }
+            let path = &owner.rule.executable_path;
+            let app = std::path::Path::new(path)
+                .file_name()
+                .and_then(std::ffi::OsStr::to_str)
+                .unwrap_or(path);
+            let (result, reason) = match tray::show_notification(
+                &t!("keep_running.notification_title"),
+                &t!("keep_running.notification_body", app = app),
+                false,
+            ) {
+                Ok(()) => (
+                    ActionLogResult::Applied,
+                    t!("keep_running.notification_accepted").to_string(),
+                ),
+                Err(error) => (
+                    ActionLogResult::Failed,
+                    t!(
+                        "keep_running.notification_failed",
+                        error = error.localized()
+                    )
+                    .to_string(),
+                ),
+            };
+            log.record(ActionLogFeature::KeepRunning, None, path, result, reason);
+        }
     }
 
     fn tick(
