@@ -847,7 +847,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             assert!(app.side_panel_open);
             app.settings = SettingsEditor::with_settings((*app.settings).clone());
         }
-        if matches!(extra, Some(47..=50)) {
+        if matches!(extra, Some(16 | 47..=50)) {
             let _ = app.update(Message::ToggleSidePanel);
             assert!(app.side_panel_open);
             app.settings = SettingsEditor::with_settings((*app.settings).clone());

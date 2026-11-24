@@ -207,38 +207,36 @@ impl Editor {
         }
         let filters = scrollable(
             column![
-                super::widgets::heading(
-                    t!("settings.action_log_mode").to_string(),
-                    design::typography::SECONDARY
-                ),
                 super::widgets::settings_card(
-                    pick_list(
-                        ActionLogMode::ALL.map(|v| Choice(v, log_label(v))).to_vec(),
-                        Some(Choice(log_mode, log_label(log_mode))),
-                        |v| Message::LogMode(v.0),
-                    )
-                    .width(Fill)
+                    column![
+                        super::widgets::setting_title("settings.action_log_mode"),
+                        pick_list(
+                            ActionLogMode::ALL.map(|v| Choice(v, log_label(v))).to_vec(),
+                            Some(Choice(log_mode, log_label(log_mode))),
+                            |v| Message::LogMode(v.0),
+                        )
+                        .width(Fill),
+                    ]
+                    .spacing(design::space::SMALL)
                 ),
                 super::widgets::heading(
                     t!("process_list.filter").to_string(),
                     design::typography::SECONDARY
                 ),
-                column![
-                    super::widgets::heading(
-                        t!("action_log.level_filter").to_string(),
-                        design::typography::SECONDARY
-                    ),
-                    super::widgets::settings_card(levels),
-                ]
-                .spacing(design::space::SMALL),
-                column![
-                    super::widgets::heading(
-                        t!("action_log.feature_filter").to_string(),
-                        design::typography::SECONDARY
-                    ),
-                    super::widgets::settings_card(features),
-                ]
-                .spacing(design::space::SMALL),
+                super::widgets::settings_card(
+                    column![
+                        super::widgets::setting_title("action_log.level_filter"),
+                        levels
+                    ]
+                    .spacing(design::space::SMALL)
+                ),
+                super::widgets::settings_card(
+                    column![
+                        super::widgets::setting_title("action_log.feature_filter"),
+                        features
+                    ]
+                    .spacing(design::space::SMALL)
+                ),
             ]
             .spacing(design::space::MEDIUM)
             .padding([0, design::space::MEDIUM as u16]),

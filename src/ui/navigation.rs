@@ -653,12 +653,14 @@ pub(super) fn dashboard_page_search_text(page: Page) -> String {
             "{label} {section} priority control process thread dynamic boost io gpu memory launch registry ifeo scheduler base priority",
         ),
         Page::ActionLog => format!(
-            "{label} {section} {} {} log action history details csv export skipped failed applied restored reason",
+            "{label} {section} {} {} {} {} log action history details csv export skipped failed applied restored reason log level",
             t!("action_log.intro_1"),
             t!("action_log.intro_2"),
+            t!("settings.action_log_mode"),
+            t!("action_log.level_filter"),
         ),
         Page::SettingsHome => format!(
-            "{label} {section} settings winderust behaviour startup tray toggles action log detail fail suppression appearance language theme accent color palette",
+            "{label} {section} settings winderust behaviour startup tray toggles fail suppression appearance language theme accent color palette",
         ),
         Page::AdvancedControls => format!(
             "{label} {section} advanced windows scheduler win32 priority separation quantum foreground boost registry",
@@ -825,10 +827,9 @@ pub(super) fn dashboard_page_search_text(page: Page) -> String {
             t!("cpu_allocation.rules_help"),
         ),
         Page::WinderustBehaviour => format!(
-            "{label} {section} {} {} {} {} winderust behaviour startup tray automation toggle action log detail fail failure suppression export import",
+            "{label} {section} {} {} {} winderust behaviour startup tray automation toggle fail failure suppression export import",
             t!("settings.intro_1"),
             t!("settings.intro_2"),
-            t!("settings.action_log_mode_full_help"),
             t!("settings.failure_suppression_threshold_help"),
         ),
         Page::LanguageAndAppearance => format!(
