@@ -573,21 +573,25 @@ impl Editor {
                 Some(i) != self.editing_preset
                     && p.name.trim().eq_ignore_ascii_case(self.preset_name.trim())
             });
-        let mut name = column![
-            text(t!("cpu_allocation.preset_name").to_string()),
-            text_input(
-                &t!("cpu_allocation.preset_name_placeholder"),
-                &self.preset_name
-            )
-            .on_input_maybe((!self.preset_read_only).then_some(Message::PresetName)),
-            text(t!("cpu_allocation.preset_name_help").to_string()).style(text::secondary)
-        ]
-        .spacing(design::space::SMALL);
-        if !self.preset_read_only && !self.preset_name.trim().is_empty() && !valid_name {
-            name = name.push(
-                text(t!("cpu_allocation.duplicate_preset_name").to_string()).style(text::danger),
-            );
-        }
+        let name = (!self.preset_read_only).then(|| {
+            let mut field = column![
+                text(t!("cpu_allocation.preset_name").to_string()),
+                text_input(
+                    &t!("cpu_allocation.preset_name_placeholder"),
+                    &self.preset_name
+                )
+                .on_input(Message::PresetName),
+                text(t!("cpu_allocation.preset_name_help").to_string()).style(text::secondary)
+            ]
+            .spacing(design::space::SMALL);
+            if !self.preset_name.trim().is_empty() && !valid_name {
+                field = field.push(
+                    text(t!("cpu_allocation.duplicate_preset_name").to_string())
+                        .style(text::danger),
+                );
+            }
+            field.into()
+        });
 
         let mut selection = column![text(t!("cpu_allocation.selected_logical_cpus").to_string())]
             .spacing(design::space::SMALL);
@@ -645,10 +649,9 @@ impl Editor {
                 t!("common.preset_details").to_string(),
                 design::typography::BODY
             ),
-            super::widgets::settings_card(super::widgets::settings_rows([
-                name.into(),
-                selection.into(),
-            ]))
+            super::widgets::settings_card(super::widgets::settings_rows(
+                name.into_iter().chain([selection.into()]),
+            ))
         ]
         .spacing(design::space::MEDIUM);
         let mut footer = row![

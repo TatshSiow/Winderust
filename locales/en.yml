@@ -1047,7 +1047,7 @@ processor_affinity_hard:
   warning: "Hard affinity can reduce performance or responsiveness. Winderust applies it only to processes confirmed to use processor group 0 alone."
 
 cpu_allocation:
-  selected_logical_cpus: "Selected logical CPUs"
+  selected_logical_cpus: "Selected logical processors"
   e_cores_no_smt: "E-cores no SMT"
   focus: "Focus"
   p_core: "P-core"
@@ -1074,10 +1074,10 @@ cpu_allocation:
   selection_unavailable: "This selection includes CPUs unavailable in the current CPU layout. Choose a valid preset or review the selected CPUs."
   unavailable_selection: "Unavailable selection"
   topology_changed: "CPU topology changed while this preset was open. Review the current CPU layout before saving."
-  topology_summary: "%{processors} logical CPUs; %{cores} physical cores; %{groups} processor groups; %{numa_nodes} NUMA nodes reported."
+  topology_summary: "Logical processors %{processors} · Physical cores %{cores} · Processor groups %{groups} · NUMA nodes %{numa_nodes}"
   preset_topology_unavailable: "Cannot verify CPU topology: %{error}. Close and reopen this preset before saving."
   topology_unavailable: "Cannot verify CPU topology: %{error}."
-  no_logical_cpus: "No logical CPUs selected"
+  no_logical_cpus: "No logical processors selected"
   preset_name: "Preset name"
   preset_name_placeholder: "Enter a preset name..."
   preset_name_help: "Preset names must be unique."
