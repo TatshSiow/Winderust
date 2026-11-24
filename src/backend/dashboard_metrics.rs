@@ -1,6 +1,6 @@
 use std::{collections::BTreeMap, time::Instant};
 
-use crate::{foreground::for_each_process_id, win_util::WinHandle};
+use crate::{foreground::list_process_ids, win_util::WinHandle};
 use windows_sys::Win32::{
     NetworkManagement::{
         IpHelper::{FreeMibTable, GetIfTable2, IF_TYPE_SOFTWARE_LOOPBACK, MIB_IF_TABLE2},
@@ -264,15 +264,14 @@ fn system_memory_status() -> Option<MEMORYSTATUSEX> {
 
 fn read_system_io_counters() -> Option<IoCounterSample> {
     let mut processes = BTreeMap::new();
-    for_each_process_id(|process_id| {
+    for process_id in list_process_ids().ok()? {
         if let Some((creation_time, counters)) = process_io_counters(process_id) {
             processes.insert(
                 (process_id, creation_time),
                 (counters.ReadTransferCount, counters.WriteTransferCount),
             );
         }
-    })
-    .ok()?;
+    }
     (!processes.is_empty()).then_some(IoCounterSample {
         processes,
         sampled_at: Instant::now(),

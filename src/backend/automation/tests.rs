@@ -167,24 +167,18 @@ fn assert_source_call_order(source: &str, start: &str, end: &str, calls: &[&str]
 
 #[test]
 fn process_appearance_detector_ignores_initial_snapshot() {
-    let mut known = BTreeSet::new();
+    let mut known = Vec::new();
 
-    assert!(!process_ids_have_new_entries(
-        &mut known,
-        BTreeSet::from([1, 2])
-    ));
-    assert_eq!(known, BTreeSet::from([1, 2]));
+    assert!(!process_ids_have_new_entries(&mut known, vec![1, 2]));
+    assert_eq!(known, [1, 2]);
 }
 
 #[test]
 fn process_appearance_detector_reports_new_process_ids() {
-    let mut known = BTreeSet::from([1, 2]);
+    let mut known = vec![1, 2];
 
-    assert!(process_ids_have_new_entries(
-        &mut known,
-        BTreeSet::from([1, 2, 3])
-    ));
-    assert_eq!(known, BTreeSet::from([1, 2, 3]));
+    assert!(process_ids_have_new_entries(&mut known, vec![1, 2, 3]));
+    assert_eq!(known, [1, 2, 3]);
 }
 
 #[test]
@@ -1012,13 +1006,10 @@ fn runtime_handle_shutdown_surfaces_thread_panic() {
 
 #[test]
 fn process_appearance_detector_does_not_report_only_exits() {
-    let mut known = BTreeSet::from([1, 2, 3]);
+    let mut known = vec![1, 2, 3];
 
-    assert!(!process_ids_have_new_entries(
-        &mut known,
-        BTreeSet::from([1, 2])
-    ));
-    assert_eq!(known, BTreeSet::from([1, 2]));
+    assert!(!process_ids_have_new_entries(&mut known, vec![2, 0, 2, 1]));
+    assert_eq!(known, [1, 2]);
 }
 
 #[test]

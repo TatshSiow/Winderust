@@ -8,7 +8,7 @@ use crate::{
         memory_priority::MemoryPriorityReleaseOwner,
         power_plan::{AdaptiveProcessorPowerError, PowerPlanOwner},
     },
-    foreground::{for_each_process_id, process_session_id, ProcessInfo},
+    foreground::{list_process_ids, process_session_id, ProcessInfo},
     platform::windows::process::current_process_id,
     rules::decision_engine::{matching_by_focus_rules, ordinary_power_plan_stop},
 };
@@ -182,7 +182,7 @@ pub(super) struct RuntimeCore {
     sleep_prevention_controller: SleepPreventionController,
     pub(super) keep_running: keep_running::KeepRunningCoordinator,
     pub(super) instance_limits: InstanceLimitsManager,
-    pub(super) known_process_ids: BTreeSet<u32>,
+    pub(super) known_process_ids: Vec<u32>,
     published_action_log_revision: u64,
 }
 
@@ -730,18 +730,8 @@ impl RuntimeCore {
     }
 
     pub(super) fn detect_process_appearance(&mut self) -> bool {
-        let mut current_ids = BTreeSet::new();
-        if for_each_process_id(|id| {
-            if id != 0 {
-                current_ids.insert(id);
-            }
-        })
-        .is_err()
-        {
-            return false;
-        }
-
-        process_ids_have_new_entries(&mut self.known_process_ids, current_ids)
+        list_process_ids()
+            .is_ok_and(|ids| process_ids_have_new_entries(&mut self.known_process_ids, ids))
     }
 
     pub(super) fn poll_controller_activity(&mut self, now: Instant) -> bool {

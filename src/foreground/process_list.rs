@@ -772,17 +772,15 @@ pub(crate) fn enrich_process_paths(processes: &mut [ProcessInfo]) {
     }
 }
 
-pub fn for_each_process_id(visit: impl FnMut(u32)) -> Result<(), String> {
-    let ids = read_process_ids(|ids, bytes| {
+pub fn list_process_ids() -> Result<Vec<u32>, String> {
+    read_process_ids(|ids, bytes| {
         let mut returned = 0;
         // SAFETY: ids is writable for bytes and returned receives the initialized byte count.
         if unsafe { K32EnumProcesses(ids.as_mut_ptr(), bytes, &mut returned) } == 0 {
             return Err(std::io::Error::last_os_error().to_string());
         }
         Ok(returned)
-    })?;
-    ids.into_iter().for_each(visit);
-    Ok(())
+    })
 }
 
 fn read_process_ids(
