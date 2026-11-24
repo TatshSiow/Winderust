@@ -4,7 +4,11 @@ use crate::backend::power_source::is_plugged_in;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 static REQUESTED: AtomicBool = AtomicBool::new(false);
-const EXTRA_STATES: usize = 94;
+const PROCESS_LIST_COMMIT_WIDE: usize = 94;
+const PROCESS_LIST_COMMIT_COMPACT: usize = 95;
+const HOME_POWER_COMPACT: usize = 96;
+const HOME_WITHOUT_BATTERY: usize = 97;
+const EXTRA_STATES: usize = 98;
 pub(super) struct Run {
     pages: Vec<Page>,
     index: usize,
@@ -78,6 +82,8 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                     | 90
                     | 91
                     | 93
+                    | PROCESS_LIST_COMMIT_COMPACT
+                    | HOME_POWER_COMPACT
             )
         });
         let page = match extra {
@@ -103,6 +109,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             Some(25 | 87..=88) => Page::ProcessPriority,
             Some(26..=37) => Page::Home,
             Some(38 | 42 | 43) => Page::Home,
+            Some(HOME_POWER_COMPACT | HOME_WITHOUT_BATTERY) => Page::Home,
             Some(39) => Page::ProcessList,
             Some(40) => Page::LanguageAndAppearance,
             Some(41) => Page::AdaptiveEngine,
@@ -111,6 +118,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             Some(46) => Page::AdvancedPowerPlanTuning,
             Some(47) => Page::AdaptiveEngine,
             Some(48 | 79..=80) => Page::ProcessList,
+            Some(PROCESS_LIST_COMMIT_WIDE | PROCESS_LIST_COMMIT_COMPACT) => Page::ProcessList,
             Some(49 | 86) => Page::ActionLog,
             Some(50 | 77..=78) => Page::WinderustBehaviour,
             Some(51..=53) => Page::ResourceThresholds,
@@ -748,7 +756,10 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
         if extra == Some(17) {
             app.adaptive = adaptive_engine::Editor::default();
         }
-        if matches!(extra, Some(13 | 29..=34 | 38 | 42 | 43)) {
+        if matches!(
+            extra,
+            Some(13 | 29..=34 | 38 | 42 | 43 | HOME_POWER_COMPACT | HOME_WITHOUT_BATTERY)
+        ) {
             app.home.populate_smoke_history();
             app.settings.general.enabled = true;
             app.settings.cpu_limiter.enabled = true;
@@ -756,6 +767,16 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             app.settings.memory_trim.enabled = true;
             app.settings.io_priority.enabled = true;
             app.settings = SettingsEditor::with_settings((*app.settings).clone());
+        }
+        if extra == Some(HOME_WITHOUT_BATTERY) {
+            use crate::backend::power_source::{BatteryStatus, PowerStatus};
+
+            app.home
+                .set_power_source(home::PowerSourceReading::Available(PowerStatus {
+                    plugged_in: Some(true),
+                    battery: BatteryStatus::Absent,
+                    energy_saver_active: true,
+                }));
         }
         if matches!(extra, Some(13 | 16 | 29..=34 | 38 | 42 | 43 | 49 | 86)) {
             use crate::action_log::{ActionLogEntry, ActionLogFeature, ActionLogResult};
@@ -955,6 +976,22 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             app.processes.show_copy_path_fixture(context);
             assert_eq!(app.processes.context_open(), context);
         }
+        if matches!(
+            extra,
+            Some(PROCESS_LIST_COMMIT_WIDE | PROCESS_LIST_COMMIT_COMPACT)
+        ) {
+            app.side_panel_open = extra == Some(PROCESS_LIST_COMMIT_COMPACT);
+            let _ = app.update(Message::Processes(process_list::Message::Column(
+                process_list::Sort::PrivateCommit,
+                true,
+            )));
+            let _ = app.update(Message::Processes(process_list::Message::Sort(
+                process_list::Sort::PrivateCommit,
+            )));
+            let _ = app.update(Message::Processes(process_list::Message::MemoryPercentage(
+                true,
+            )));
+        }
         if matches!(extra, Some(81..=83)) {
             use crate::control::power_plan::{PowerPlanOwner, PowerPlanStatus};
             use crate::rules::DecisionState;
@@ -1113,6 +1150,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                 });
         }
         let size = match extra {
+            Some(PROCESS_LIST_COMMIT_COMPACT | HOME_POWER_COMPACT) => iced::Size::new(900.0, 620.0),
             Some(35..=37 | 40 | 42 | 44..=50 | 52..=69 | 71..=93) => iced::Size::new(900.0, 620.0),
             Some(30) => iced::Size::new(1280.0, 720.0),
             Some(31) => iced::Size::new(1440.0, 900.0),
@@ -1145,6 +1183,12 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
         ]));
     }
     run.ticks += 1;
+    if extra == Some(HOME_POWER_COMPACT) && run.ticks == 3 {
+        return Some(iced::widget::operation::snap_to(
+            "home-content",
+            iced::widget::scrollable::RelativeOffset::END,
+        ));
+    }
     if extra == Some(53) && run.ticks == 3 {
         return Some(iced::widget::operation::snap_to(
             "resource-thresholds-rule-details",
