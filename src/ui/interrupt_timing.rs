@@ -65,7 +65,23 @@ struct CompletedReport {
     export: ExportStatus,
 }
 
+impl CompletedReport {
+    fn new(report: InterruptTimingReport) -> Self {
+        Self {
+            report,
+            timeline_expanded: false,
+            per_cpu_expanded: false,
+            export: ExportStatus::Ready,
+        }
+    }
+}
+
 impl State {
+    #[cfg(feature = "render-smoke")]
+    pub(super) fn set_smoke_report(&mut self, report: InterruptTimingReport) {
+        self.completed = Some(CompletedReport::new(report));
+    }
+
     pub(super) fn update(&mut self, message: Message, hwnd: Option<HWND>) -> Task<Message> {
         match message {
             Message::Run if self.can_run() => {
@@ -210,12 +226,7 @@ impl State {
                             Self::failed(InterruptTimingError::Cancelled)
                         }
                         (Ok(report), CapturePhase::Recording) => {
-                            self.completed = Some(CompletedReport {
-                                report,
-                                timeline_expanded: false,
-                                per_cpu_expanded: false,
-                                export: ExportStatus::Ready,
-                            });
+                            self.completed = Some(CompletedReport::new(report));
                             CaptureStatus::Idle
                         }
                         (Err(error), _) => Self::failed(error),
@@ -330,22 +341,63 @@ fn report_view<'a>(
     per_cpu_expanded: bool,
     export: &ExportStatus,
 ) -> Column<'a, Message> {
+    let summary = |counts: &[(&str, usize)]| {
+        counts
+            .iter()
+            .filter(|(_, count)| *count != 0)
+            .map(|(key, count)| t!(*key, count = count).into_owned())
+            .collect::<Vec<_>>()
+            .join(" · ")
+    };
+    let quality = summary(&[
+        ("interrupt_timing.lost_events", report.events_lost as usize),
+        (
+            "interrupt_timing.lost_buffers",
+            report.buffers_lost as usize,
+        ),
+        (
+            "interrupt_timing.invalid_intervals",
+            report.invalid_intervals,
+        ),
+    ]);
     let label = if report.modules.is_empty() {
-        text(t!("interrupt_timing.no_samples")).style(text::secondary)
+        text(t!(if quality.is_empty() {
+            "interrupt_timing.no_samples"
+        } else {
+            "interrupt_timing.no_retained_samples"
+        }))
+        .style(text::secondary)
     } else {
         widgets::heading(
             t!("interrupt_timing.top_routine_modules").into_owned(),
             design::typography::BODY,
         )
     };
-    let mut body = column![row![
-        label.width(Fill).wrapping(text::Wrapping::WordOrGlyph),
-        widgets::action_button(t!("interrupt_timing.export_report"))
-            .on_press_maybe((!export.pending()).then_some(Message::Export)),
-    ]
-    .spacing(design::space::SMALL)
-    .align_y(iced::Center)]
-    .spacing(design::space::TIGHT);
+    let mut body = Column::new().spacing(design::space::TIGHT);
+    if !quality.is_empty() {
+        body = body
+            .push(
+                text(t!("interrupt_timing.capture_quality"))
+                    .width(Fill)
+                    .wrapping(text::Wrapping::WordOrGlyph)
+                    .style(text::danger),
+            )
+            .push(
+                text(quality)
+                    .width(Fill)
+                    .wrapping(text::Wrapping::WordOrGlyph)
+                    .style(text::secondary),
+            );
+    }
+    body = body.push(
+        row![
+            label.width(Fill).wrapping(text::Wrapping::WordOrGlyph),
+            widgets::action_button(t!("interrupt_timing.export_report"))
+                .on_press_maybe((!export.pending()).then_some(Message::Export)),
+        ]
+        .spacing(design::space::SMALL)
+        .align_y(iced::Center),
+    );
     if !report.modules.is_empty() {
         body = body.push(result_row(
             [
@@ -378,16 +430,7 @@ fn report_view<'a>(
             ));
         }
     }
-    let issues: Vec<_> = [
-        ("interrupt_timing.lost_events", report.events_lost as usize),
-        (
-            "interrupt_timing.lost_buffers",
-            report.buffers_lost as usize,
-        ),
-        (
-            "interrupt_timing.invalid_intervals",
-            report.invalid_intervals,
-        ),
+    let issues = summary(&[
         (
             "interrupt_timing.incomplete_intervals",
             report.incomplete_intervals,
@@ -400,13 +443,14 @@ fn report_view<'a>(
             "interrupt_timing.unresolved_modules",
             report.unresolved_attribution,
         ),
-    ]
-    .into_iter()
-    .filter(|(_, count)| *count != 0)
-    .map(|(key, count)| t!(key, count = count.to_string()).into_owned())
-    .collect();
+    ]);
     if !issues.is_empty() {
-        body = body.push(text(issues.join(" · ")).style(text::secondary));
+        body = body.push(
+            text(issues)
+                .width(Fill)
+                .wrapping(text::Wrapping::WordOrGlyph)
+                .style(text::secondary),
+        );
     }
     if !report.modules.is_empty() {
         body = body.push(widgets::settings_divider()).push(detail_button(
@@ -571,6 +615,94 @@ mod tests {
             modules: Vec::new(),
             per_cpu: None,
             timeline: Default::default(),
+        }
+    }
+
+    fn report_text(report: &InterruptTimingReport) -> Vec<String> {
+        use iced::advanced::{
+            layout,
+            widget::{Id, Operation, Tree},
+            Layout,
+        };
+
+        #[derive(Default)]
+        struct Labels(Vec<String>);
+
+        impl Operation for Labels {
+            fn traverse(&mut self, visit: &mut dyn FnMut(&mut dyn Operation)) {
+                visit(self);
+            }
+
+            fn text(&mut self, _: Option<&Id>, _: iced::Rectangle, content: &str) {
+                self.0.push(content.to_owned());
+            }
+        }
+
+        let mut view: Element<'_, Message> =
+            report_view(report, false, false, &ExportStatus::Ready).into();
+        let mut tree = Tree::new(&view);
+        let renderer = iced::Renderer::new(design::typography::FONT, iced::Pixels(14.0));
+        let node = view.as_widget_mut().layout(
+            &mut tree,
+            &renderer,
+            &layout::Limits::new(iced::Size::ZERO, iced::Size::new(360.0, 600.0)),
+        );
+        let mut labels = Labels::default();
+        view.as_widget_mut()
+            .operate(&mut tree, Layout::new(&node), &renderer, &mut labels);
+        labels.0
+    }
+
+    #[test]
+    fn report_distinguishes_empty_captures_and_puts_quality_before_results() {
+        let mut clean = report(0);
+        clean.incomplete_intervals = 1;
+        let text = report_text(&clean);
+        assert_eq!(text[0], t!("interrupt_timing.no_samples"));
+        assert!(!text
+            .iter()
+            .any(|label| label == t!("interrupt_timing.capture_quality").as_ref()));
+
+        for (mut capture, key) in [
+            (report(3), "interrupt_timing.lost_events"),
+            (
+                InterruptTimingReport {
+                    buffers_lost: 3,
+                    ..report(0)
+                },
+                "interrupt_timing.lost_buffers",
+            ),
+            (
+                InterruptTimingReport {
+                    invalid_intervals: 3,
+                    ..report(0)
+                },
+                "interrupt_timing.invalid_intervals",
+            ),
+        ] {
+            let text = report_text(&capture);
+            assert_eq!(text[0], t!("interrupt_timing.capture_quality"));
+            assert_eq!(text[1], t!(key, count = 3));
+            assert_eq!(text[2], t!("interrupt_timing.no_retained_samples"));
+
+            capture.modules.push(
+                serde_json::from_value(serde_json::json!({
+                    "kind": "DPC",
+                    "module": "fixture.sys",
+                    "count": 1,
+                    "total_inclusive_ms": 0.6,
+                    "max_inclusive_ms": 0.6,
+                }))
+                .unwrap(),
+            );
+            let text = report_text(&capture);
+            assert_eq!(text[0], t!("interrupt_timing.capture_quality"));
+            assert_eq!(text[1], t!(key, count = 3));
+            assert_eq!(text[2], t!("interrupt_timing.top_routine_modules"));
+            assert!(text.iter().any(|label| label == "fixture.sys"));
+            assert!(text
+                .iter()
+                .any(|label| label == t!("interrupt_timing.export_report").as_ref()));
         }
     }
 

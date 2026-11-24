@@ -683,6 +683,8 @@ interrupt_timing:
   cleanup_failed: "Interrupt Timing could not confirm capture cleanup."
   previous_report_status: "%{status} Showing the previous report."
   no_samples: "No completed interrupt samples were captured."
+  no_retained_samples: "No usable interrupt samples were retained."
+  capture_quality: "Capture results are incomplete. Counts and timings cover the samples retained."
   top_routine_modules: "Top routine modules by total time"
   routine_module: "Routine module"
   kind: "Type"

@@ -4,7 +4,7 @@ use crate::backend::power_source::is_plugged_in;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 static REQUESTED: AtomicBool = AtomicBool::new(false);
-const EXTRA_STATES: usize = 92;
+const EXTRA_STATES: usize = 94;
 pub(super) struct Run {
     pages: Vec<Page>,
     index: usize,
@@ -77,6 +77,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                     | 88
                     | 90
                     | 91
+                    | 93
             )
         });
         let page = match extra {
@@ -92,7 +93,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             Some(14) => Page::ProcessList,
             Some(15) => Page::PowerPlanControl,
             Some(16) => Page::ActionLog,
-            Some(17 | 24 | 84..=85) => Page::AdaptiveEngine,
+            Some(17 | 24 | 84..=85 | 92..=93) => Page::AdaptiveEngine,
             Some(18) => Page::EfficiencyMode,
             Some(19) => Page::ByActivity,
             Some(20) => Page::AdvancedPowerPlanTuning,
@@ -1029,8 +1030,39 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             let _ = app.update(Message::CpuLimiter(cpu_limiter::Message::Edit(0)));
             assert!(app.cpu_limiter.has_pending_editor());
         }
+        if matches!(extra, Some(92..=93)) {
+            use crate::backend::interrupt_timing::InterruptTimingReport;
+
+            let _ = app.update(Message::CpuLimiter(cpu_limiter::Message::CancelRule));
+            app.adaptive.reset_drafts();
+            let modules = if extra == Some(92) {
+                vec![serde_json::from_value(serde_json::json!({
+                    "kind": "DPC",
+                    "module": "example.sys",
+                    "count": 2,
+                    "total_inclusive_ms": 0.6,
+                    "max_inclusive_ms": 0.4,
+                }))
+                .expect("render-smoke module fixture")]
+            } else {
+                Vec::new()
+            };
+            app.interrupt_timing
+                .set_smoke_report(InterruptTimingReport {
+                    capture_start: None,
+                    events_lost: 1,
+                    buffers_lost: 2,
+                    invalid_intervals: 3,
+                    incomplete_intervals: 4,
+                    invalid_image_records: 0,
+                    unresolved_attribution: 0,
+                    modules,
+                    per_cpu: None,
+                    timeline: Default::default(),
+                });
+        }
         let size = match extra {
-            Some(35..=37 | 40 | 42 | 44..=50 | 52..=69 | 71..=91) => iced::Size::new(900.0, 620.0),
+            Some(35..=37 | 40 | 42 | 44..=50 | 52..=69 | 71..=93) => iced::Size::new(900.0, 620.0),
             Some(30) => iced::Size::new(1280.0, 720.0),
             Some(31) => iced::Size::new(1440.0, 900.0),
             Some(32) => iced::Size::new(1920.0, 720.0),
@@ -1086,7 +1118,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             iced::widget::scrollable::RelativeOffset { x: 0.0, y: 1.0 },
         ));
     }
-    if extra == Some(84) && run.ticks == 3 {
+    if matches!(extra, Some(84 | 92..=93)) && run.ticks == 3 {
         return Some(iced::widget::operation::snap_to(
             "adaptive-engine-content",
             iced::widget::scrollable::RelativeOffset { x: 0.0, y: 1.0 },

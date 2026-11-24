@@ -834,7 +834,10 @@ Read the relevant section before changing feature policy, ownership, restoration
 - Run diagnostic in Adaptive Engine's CPU Behaviour tab starts a five-second,
   in-memory trace even when Adaptive Engine is off. It changes no settings or
   scheduling rules. The result shows up to five rows by routine module and
-  interrupt type, ranked by inclusive time, plus any loss or attribution warnings.
+  interrupt type, ranked by inclusive time. Event loss, buffer loss, and invalid
+  timings are shown above the results with an incomplete capture warning. An
+  affected capture without reportable rows shows that no usable samples were
+  retained. Attribution and incomplete-interval counts remain visible separately.
   The module contains the routine address recorded by ETW, which can point to a
   driver framework. The report includes intervals fully contained in the five
   seconds after ETW startup.
