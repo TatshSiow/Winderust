@@ -1237,7 +1237,7 @@ resource_thresholds:
   at_or_above: "At or above"
   at_or_below: "At or below"
   memory_metric: "Memory metric"
-  memory_metric_help: "Working Set measures memory in RAM. Private Commit tracks private memory Windows has committed. Changing this resets the memory thresholds."
+  memory_metric_help: "Memory Trim can lower Working Set (resident RAM). Private Commit stays allocated. Changing the metric resets both thresholds."
   add_rule: "Add Resource Thresholds rule"
   edit_rule: "Edit Resource Thresholds rule"
   enable: "Enable Resource Thresholds"

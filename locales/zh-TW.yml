@@ -1240,7 +1240,7 @@ resource_thresholds:
   at_or_above: "達到或高於門檻"
   at_or_below: "達到或低於門檻"
   memory_metric: "記憶體指標"
-  memory_metric_help: "工作集是目前常駐於 RAM 的記憶體。私人認可是 Windows 已認可的私人記憶體。變更指標會重設記憶體門檻。"
+  memory_metric_help: "工作集反映目前常駐於 RAM 的記憶體，可能在記憶體修剪後下降。私人認可反映已認可的私人記憶體，修剪後仍維持認可狀態。變更指標會重設兩個記憶體門檻。"
   add_rule: "新增資源門檻規則"
   edit_rule: "編輯資源門檻規則"
   enable: "啟用資源門檻"
