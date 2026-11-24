@@ -475,8 +475,6 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             let _ = app.update(Message::EfficiencyMode(efficiency_mode::Message::Collapse(
                 priority_control::Tier::Focus,
             )));
-        } else if extra == Some(1) {
-            let _ = app.update(Message::CpuLimiter(cpu_limiter::Message::Collapse));
         }
         if let Some(index @ 4..=12) = extra {
             if index <= 10 {
@@ -562,7 +560,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                         enabled: false,
                         ..Default::default()
                     });
-                let _ = app.update(Message::Trim(memory_trim::Message::Collapse(0)));
+                let _ = app.update(Message::Trim(memory_trim::Message::ToggleSafety));
             } else {
                 app.settings
                     .by_focus

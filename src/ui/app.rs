@@ -3309,9 +3309,11 @@ impl WinderustApp {
             settings_are_pending || self.power_plan_control.selected_guid.is_some();
         let save_notice_in_editor = matches!(
             self.page,
-            Page::AdaptiveProcessorPower
+            Page::PowerPlanControl
+                | Page::AdaptiveProcessorPower
                 | Page::AppSuspension
                 | Page::CpuLimiter
+                | Page::EfficiencyMode
                 | Page::TimerResolution
                 | Page::SleepPrevention
                 | Page::MemoryTrim
@@ -3320,6 +3322,8 @@ impl WinderustApp {
                 | Page::InstanceBalancing
                 | Page::ByFocus
                 | Page::ByActivity
+                | Page::ByCpuLoad
+                | Page::ByTime
                 | Page::AdvancedPowerPlanTuning
                 | Page::ByRunningApp
                 | Page::CpuSetsSoft
@@ -3626,9 +3630,6 @@ impl WinderustApp {
         read_power_source: impl FnOnce() -> Option<bool>,
     ) -> Element<'_, Message> {
         let general = &self.settings.global().general;
-        let toggle = |label: &'static str, value, action: fn(bool) -> Message| {
-            widgets::toggle_card(label, value, Some(action))
-        };
         let runtime_power_rules = || {
             let context = self.status.power_plan_rule_context.as_ref()?;
             (context.source == self.power_source).then(|| match context.source {
@@ -3863,28 +3864,43 @@ impl WinderustApp {
                     self.can_replace_settings(),
                 )
                 .map(Message::Preferences),
-            Page::PowerPlanControl => column![
-                power_plan_control::view(
-                    &self.status.power_plan_status,
-                    &self.power_plans,
-                    self.power_plans_loaded,
-                    self.power_plans_loading,
-                    &self.power_plan_control,
-                )
-                .map(Message::PowerPlanControl),
-                toggle(
-                    "power_plan_control.pause_plugged",
-                    general.pause_power_plan_switching_while_plugged_in,
-                    Message::PausePowerPlans
-                ),
-                toggle(
-                    "power_plan_control.restore_previous_plan",
-                    general.restore_previous_power_plan,
-                    Message::RestorePreviousPowerPlan
-                ),
-                self.child_pages(),
-            ]
-            .spacing(widgets::CARD_GAP)
+            Page::PowerPlanControl => scrollable(
+                column![
+                    power_plan_control::view(
+                        &self.status.power_plan_status,
+                        &self.power_plans,
+                        self.power_plans_loaded,
+                        self.power_plans_loading,
+                        &self.power_plan_control,
+                    )
+                    .map(Message::PowerPlanControl),
+                    widgets::heading(
+                        t!("power_plan_control.switching_settings").to_string(),
+                        design::typography::BODY,
+                    ),
+                    widgets::settings_card(widgets::settings_rows([
+                        widgets::setting_row(
+                            "power_plan_control.pause_plugged",
+                            widgets::switch(
+                                general.pause_power_plan_switching_while_plugged_in,
+                                Some(Message::PausePowerPlans),
+                            ),
+                        )
+                        .into(),
+                        widgets::setting_row(
+                            "power_plan_control.restore_previous_plan",
+                            widgets::switch(
+                                general.restore_previous_power_plan,
+                                Some(Message::RestorePreviousPowerPlan),
+                            ),
+                        )
+                        .into(),
+                    ])),
+                    self.child_pages(),
+                ]
+                .spacing(widgets::CARD_GAP),
+            )
+            .height(Fill)
             .into(),
             Page::ActionLog => self
                 .action_log
@@ -3894,11 +3910,11 @@ impl WinderustApp {
             | Page::CpuControl
             | Page::PriorityControl
             | Page::SettingsHome
-            | Page::AdvancedControls => self.child_pages(),
+            | Page::AdvancedControls => scrollable(self.child_pages()).height(Fill).into(),
         }
     }
 
-    fn child_pages(&self) -> Element<'_, Message> {
+    fn child_pages(&self) -> iced::widget::Column<'_, Message> {
         let mut pages = column![].spacing(widgets::CARD_GAP);
         if self.page == Page::PowerPlanControl {
             pages = pages.push(widgets::heading(
@@ -3918,7 +3934,6 @@ impl WinderustApp {
                     navigation::icon(*page, self.page == *page),
                     widgets::heading(page.label(), design::typography::BODY).width(Fill)
                 ]
-                .spacing(design::space::COMPACT)
                 .align_y(iced::Center);
                 if self.settings.global().general.show_feature_status_on_cards {
                     if let Some(enabled) = navigation::feature_page_enabled(&self.settings, *page) {
@@ -3944,7 +3959,7 @@ impl WinderustApp {
                 pages = pages.push(widgets::card_button(heading).on_press(Message::Page(*page)));
             }
         }
-        scrollable(pages).height(Fill).into()
+        pages
     }
 }
 

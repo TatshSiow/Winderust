@@ -293,18 +293,12 @@ impl Editor {
         let s = &settings.app_suspension;
         let live = live_suspension_settings(settings, observed_plugged_in);
         let mut body = column![
+            super::widgets::toggle_card("app_suspension.enable", s.enabled, Some(Message::Enabled)),
             super::widgets::heading(
                 t!("app_suspension.behavior").to_string(),
                 design::typography::BODY
             ),
-            super::widgets::settings_card(super::widgets::settings_rows([
-                super::widgets::setting_row(
-                    "app_suspension.enable",
-                    super::widgets::switch(s.enabled, Some(Message::Enabled))
-                )
-                .into(),
-                self.delay_row(Delay::Background, s),
-            ])),
+            super::widgets::settings_card(self.delay_row(Delay::Background, s)),
         ]
         .spacing(super::widgets::CARD_GAP);
         for (i, key, enabled, toggle, rows) in [
@@ -344,7 +338,7 @@ impl Editor {
             t!("common.rules").to_string(),
             design::typography::BODY,
         ));
-        body = body.push(super::app_picker::view_with_path_selection(
+        let picker = super::app_picker::view_with_path_selection(
             &self.path,
             candidates,
             true,
@@ -352,7 +346,8 @@ impl Editor {
             Message::Browse,
             Self::can_add(s, exact_path_input(&self.path), unavailable).then_some(Message::Add),
             |path| Some(!app_suspension::contains_process(unavailable, path)),
-        ));
+        );
+        body = body.push(super::widgets::settings_card(picker));
         let mut cards = Vec::new();
         for (i, r) in s.suspendable_apps.iter().enumerate() {
             let path = r.executable_path.trim_start();

@@ -36,7 +36,6 @@ pub(super) fn limit_slider<'a, M: Clone + 'a>(
 #[derive(Default)]
 pub(super) struct CpuLimiter {
     path: String,
-    expanded: bool,
     draft: Option<(usize, CpuLimiterSettings)>,
     numbers: HashMap<(String, Tier), String>,
 }
@@ -124,7 +123,6 @@ pub(super) enum Message {
     Path(String),
     Browse,
     Number(Option<usize>, Tier, String),
-    Collapse,
     Edit(usize),
     SaveRule,
     CancelRule,
@@ -207,7 +205,6 @@ impl CpuLimiter {
             }
             Message::Path(path) => self.path = path,
             Message::Browse => {}
-            Message::Collapse => self.expanded = !self.expanded,
             Message::Edit(_) | Message::SaveRule | Message::CancelRule => {}
             Message::Number(index, tier, raw) => {
                 let path = match index {
@@ -349,7 +346,12 @@ impl CpuLimiter {
         master_enabled: bool,
         status: Option<&CpuLimiterSnapshot>,
     ) -> Element<'a, Message> {
-        let mut body = column![].spacing(super::widgets::CARD_GAP);
+        let mut body = column![super::widgets::toggle_card(
+            "cpu_limiter.enable",
+            settings.enabled,
+            Some(Message::Enabled),
+        )]
+        .spacing(super::widgets::CARD_GAP);
         if self.has_invalid_inputs() {
             body = body.push(
                 text(t!("cpu_limiter.invalid_limit").to_string())
@@ -357,28 +359,28 @@ impl CpuLimiter {
                     .style(text::danger),
             );
         }
-        let mut defaults = Vec::new();
-        for tier in Tier::ALL {
-            defaults.push(self.limit_row(None, tier, "", tier.default_limit(settings)));
-        }
-        body = body.push(super::widgets::setting_group(
-            "cpu_limiter.enable".to_string(),
-            self.expanded,
-            Message::Collapse,
-            super::widgets::switch(settings.enabled, Some(Message::Enabled)),
-            super::widgets::settings_rows(defaults),
-        ));
+        let defaults =
+            Tier::ALL.map(|tier| self.limit_row(None, tier, "", tier.default_limit(settings)));
         body = body
+            .push(super::widgets::heading(
+                t!("cpu_limiter.limits").to_string(),
+                design::typography::BODY,
+            ))
+            .push(super::widgets::settings_card(
+                super::widgets::settings_rows(defaults),
+            ))
             .push(super::widgets::setting_title("cpu_limiter.rules"))
-            .push(super::app_picker::view_with_path_selection(
-                &self.path,
-                candidates,
-                true,
-                (Message::Path, |path| Message::Path(picked_path_input(path))),
-                Message::Browse,
-                (can_add_cpu_limiter_process(settings, exact_path_input(&self.path)))
-                    .then_some(Message::Add),
-                |path| can_add_cpu_limiter_process(settings, path).then_some(true),
+            .push(super::widgets::settings_card(
+                super::app_picker::view_with_path_selection(
+                    &self.path,
+                    candidates,
+                    true,
+                    (Message::Path, |path| Message::Path(picked_path_input(path))),
+                    Message::Browse,
+                    (can_add_cpu_limiter_process(settings, exact_path_input(&self.path)))
+                        .then_some(Message::Add),
+                    |path| can_add_cpu_limiter_process(settings, path).then_some(true),
+                ),
             ));
         let mut cards = Vec::new();
         for (index, rule) in settings.rules.iter().enumerate() {

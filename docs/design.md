@@ -90,6 +90,13 @@ Prefer visible state, compact controls, and predictable rows. Use restrained acc
   the shared `setting_group` for collapsible groups. Use Iced buttons,
   checkboxes, pick lists, text inputs, and sliders for their natural control types.
 - Main feature switches use toggle cards. Checkboxes are for rule activation and multi-selection.
+- Keep primary settings visible and put related controls in one card. Use
+  disclosure for optional detail and settings subordinate to a visible toggle.
+  Destination cards share a height and use a right chevron to open a page.
+  Expandable groups use a down chevron when closed and an up chevron when open.
+  Settings cards grow to fit their rows and localized help.
+- Place the rule picker and its validation feedback in a shared settings card
+  below the rules heading. Keep dense rule lists in their own table surface.
 - Action and toggle cards use their full surface, including padding and blank space, as the hit target. Expandable cards toggle only from the full header, including its padding; expanded content never toggles the group. Keep one 16px inset for headers and bodies. Nested controls retain their own actions, cursor, and input handling, and disabled controls stay inactive.
 - Collapse expandable cards by default. Keep configuration editable when its main switch is off; read-only presets and invalid operations remain disabled.
 - Sliders always reflect their input values, including when disabled. Put units in labels and use plus/minus icons.
@@ -198,8 +205,12 @@ hover/press; background shading supplies feedback.
   When Adaptive Processor Power owns the active plan, show Winderust Adaptive
   in the disabled selector next to its settings shortcut. Enable manual selection
   after Windows confirms the plan release. Keep restoration status in the Status rail.
-- Power Plan Control exposes one Restore previous plan when no rule selects a
-  plan switch beside the global A/C pause. It defaults off and applies to both
+- Keep the Power Plan Control landing page in one scroll area. Align the active
+  plan card, Switching settings group, and Automation and Advanced destination
+  cards to the same width. Reserve space below the scroll area for the Save and
+  Discard notice.
+- Group the global A/C pause and Restore previous plan when no rule selects a
+  plan under Switching settings. Restoration defaults off and applies to both
   power profiles. Help explains that every selected rule, including explicit
   Else and Active plans, takes precedence and external plan changes are kept.
   Overlapping rules share the plan captured before automatic switching began.
@@ -258,10 +269,12 @@ hover/press; background shading supplies feedback.
 
 - Priority Control custom rules use the same three policy columns and independently select the
   priority for Focus, Visible Window, and Background.
-- CPU Limiter uses the same three policy columns with Follow Default, Custom, and Unlimited. Focus,
-  Visible Window, and Background have editable 1% to 100% page defaults. A rule's expandable
-  details show a 1% to 100% Allowed CPU Time slider only for Custom tiers, and an inactive rule
-  retains its configured values while those sliders are disabled. A 100% target is Unlimited.
+- CPU Limiter uses the same three policy columns with Follow Default, Custom,
+  and Unlimited. The CPU time limits card keeps the 1% to 100% defaults for
+  Focus, Visible Window, and Background visible below the master switch. The
+  rule editor shows a 1% to 100% Allowed CPU Time slider only for Custom tiers,
+  and an inactive rule retains its configured values while those sliders are
+  disabled. A 100% target is Unlimited.
   CPU Limiter rule status follows the published observation for the selected live power source.
   With the other profile selected or the source unconfirmed, enabled rules show Unknown.
 

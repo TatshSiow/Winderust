@@ -852,15 +852,17 @@ impl Editor {
                 .push(super::widgets::setting_title(
                     "adaptive_engine_process.custom_rules",
                 ))
-                .push(super::app_picker::view_with_path_selection(
-                    &self.path,
-                    candidates,
-                    true,
-                    (Message::Path, |path| Message::Path(picked_path_input(path))),
-                    Message::Browse,
-                    can_add_exclusion(&s.adaptive_engine_process, exact_path_input(&self.path))
-                        .then_some(Message::AddExclusion),
-                    |path| can_add_exclusion(&s.adaptive_engine_process, path).then_some(true),
+                .push(super::widgets::settings_card(
+                    super::app_picker::view_with_path_selection(
+                        &self.path,
+                        candidates,
+                        true,
+                        (Message::Path, |path| Message::Path(picked_path_input(path))),
+                        Message::Browse,
+                        can_add_exclusion(&s.adaptive_engine_process, exact_path_input(&self.path))
+                            .then_some(Message::AddExclusion),
+                        |path| can_add_exclusion(&s.adaptive_engine_process, path).then_some(true),
+                    ),
                 ));
             let rules = s
                 .adaptive_engine_process

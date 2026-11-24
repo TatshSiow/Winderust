@@ -33,6 +33,7 @@ pub(super) enum Effect {
         interactive: bool,
     },
     Chevron,
+    DisclosureChevron,
     Visible,
     // Keep independent widget state when changing pages or tabs.
     Content(u64),
@@ -112,6 +113,7 @@ impl<M> Motion<'_, M> {
                 | Effect::Checkbox { .. }
                 | Effect::Switch { .. }
                 | Effect::Chevron
+                | Effect::DisclosureChevron
         )
     }
     fn hidden(&self) -> bool {
@@ -196,10 +198,15 @@ impl<M> Widget<M, Theme, Renderer> for Motion<'_, M> {
         let progress = state.value();
         let bounds = layout.bounds();
         let child = layout.children().next().unwrap();
-        if matches!(self.effect, Effect::Chevron) {
+        let quarter_turns = match self.effect {
+            Effect::Chevron => Some(progress),
+            Effect::DisclosureChevron => Some(1.0 + 2.0 * progress),
+            _ => None,
+        };
+        if let Some(quarter_turns) = quarter_turns {
             use iced::advanced::svg::Renderer as _;
             renderer.draw_svg(
-                iced::advanced::svg::Svg::new(super::assets::chevron_frame(progress))
+                iced::advanced::svg::Svg::new(super::assets::chevron_frame(quarter_turns))
                     .color(super::widgets::muted_color(theme)),
                 bounds,
                 *viewport,
@@ -458,11 +465,11 @@ mod tests {
     fn chevron_frames_render_with_upstream_renderer() {
         use iced::advanced::{renderer::Headless as _, svg::Renderer as _};
         let mut shots = Vec::new();
-        for progress in [0.0, 0.5, 1.0] {
+        for quarter_turns in [0.0, 0.5, 1.0, 2.0, 3.0] {
             let mut renderer = Renderer::new(iced::Font::DEFAULT, iced::Pixels(14.0));
             let bounds = Rectangle::with_size(Size::new(24.0, 24.0));
             renderer.draw_svg(
-                iced::advanced::svg::Svg::new(super::super::assets::chevron_frame(progress))
+                iced::advanced::svg::Svg::new(super::super::assets::chevron_frame(quarter_turns))
                     .color(iced::Color::WHITE),
                 bounds,
                 bounds,
@@ -478,8 +485,7 @@ mod tests {
             );
             shots.push(shot);
         }
-        assert_ne!(shots[0], shots[1]);
-        assert_ne!(shots[1], shots[2]);
+        assert!(shots.windows(2).all(|pair| pair[0] != pair[1]));
     }
     #[test]
     fn layout_changes_are_immediate_and_do_not_schedule_animation() {

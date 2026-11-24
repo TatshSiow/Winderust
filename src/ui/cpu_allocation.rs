@@ -344,7 +344,7 @@ impl Editor {
                 "",
                 "cpu_allocation.rules_help"
             ),
-            super::app_picker::view_with_path_selection(
+            super::widgets::settings_card(super::app_picker::view_with_path_selection(
                 &self.path,
                 candidates,
                 true,
@@ -352,7 +352,7 @@ impl Editor {
                 Message::Browse,
                 (can_add(s, exact_path_input(&self.path))).then_some(Message::Add),
                 |path| can_add(s, path).then_some(true)
-            )
+            ))
         ]
         .spacing(super::widgets::CARD_GAP);
         let mut rules = Vec::new();

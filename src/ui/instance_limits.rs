@@ -262,13 +262,16 @@ impl Editor {
                     settings.enabled,
                     Some(Message::Enabled)
                 ),
-                widgets::toggle_card(
-                    "instance_limits.notify",
-                    settings.notify,
-                    Some(Message::Notify)
+                widgets::heading(
+                    t!("instance_limits.notifications").to_string(),
+                    design::typography::BODY
                 ),
+                widgets::settings_card(widgets::setting_row(
+                    "instance_limits.notify",
+                    widgets::switch(settings.notify, Some(Message::Notify)),
+                )),
                 widgets::setting_title("common.rules"),
-                picker,
+                widgets::settings_card(picker),
                 widgets::process_rules_table_with_actions(
                     [],
                     rules,

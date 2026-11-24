@@ -42,7 +42,7 @@ pub(super) fn manual_result(result: MemoryTrimSnapshot) -> Result<(), String> {
 #[derive(Default)]
 pub(super) struct Editor {
     pub(super) path: String,
-    expanded: [bool; 3],
+    safety_expanded: bool,
     thresholds: [Option<String>; 3],
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -89,7 +89,7 @@ impl Threshold {
 #[derive(Debug, Clone)]
 pub(super) enum Message {
     Enabled(bool),
-    Collapse(usize),
+    ToggleSafety,
     Path(String),
     Add,
     Threshold(Threshold, String),
@@ -110,11 +110,7 @@ impl Editor {
 
     pub(super) fn update(&mut self, settings: &mut SettingsEditor, message: Message) {
         match message {
-            Message::Collapse(i) => {
-                if let Some(value) = self.expanded.get_mut(i) {
-                    *value = !*value;
-                }
-            }
+            Message::ToggleSafety => self.safety_expanded = !self.safety_expanded,
             Message::Enabled(v) if settings.memory_trim.enabled != v => {
                 settings.memory_trim.enabled = v;
             }
@@ -189,29 +185,18 @@ impl Editor {
                     .width(design::STANDALONE_NUMERIC_WIDTH),
             )
         };
-        for (index, label, content) in [
-            (
-                0,
-                "memory_trim.category_thresholds",
+        body = body
+            .push(super::widgets::heading(
+                t!("memory_trim.category_when_to_trim").to_string(),
+                design::typography::BODY,
+            ))
+            .push(super::widgets::settings_card(
                 super::widgets::settings_rows([
                     field(Threshold::Load, "%").into(),
                     field(Threshold::WorkingSet, "MB").into(),
+                    field(Threshold::Idle, "s").into(),
                 ]),
-            ),
-            (
-                1,
-                "memory_trim.category_when_to_trim",
-                column![field(Threshold::Idle, "s")],
-            ),
-        ] {
-            body = body.push(super::widgets::setting_group(
-                label.to_string(),
-                self.expanded[index],
-                Message::Collapse(index),
-                iced::widget::Space::new(),
-                content,
             ));
-        }
         let mut safety = column![super::app_picker::view_with_path_selection(
             &self.path,
             candidates,
@@ -252,8 +237,8 @@ impl Editor {
 
         body = body.push(super::widgets::setting_group(
             "memory_trim.category_safety".to_string(),
-            self.expanded[2],
-            Message::Collapse(2),
+            self.safety_expanded,
+            Message::ToggleSafety,
             iced::widget::Space::new(),
             safety,
         ));
@@ -291,16 +276,15 @@ mod tests {
     }
 
     #[test]
-    fn groups_start_collapsed_and_toggle_without_changing_settings() {
+    fn safety_starts_collapsed_and_toggles_without_changing_settings() {
         let mut editor = Editor::default();
         let mut settings = SettingsEditor::with_settings(Settings::default());
         settings.select_power_source(PowerSourceProfile::OnBattery);
-        assert_eq!(editor.expanded, [false; 3]);
-        editor.update(&mut settings, Message::Collapse(0));
-        editor.update(&mut settings, Message::Collapse(2));
-        assert_eq!(editor.expanded, [true, false, true]);
-        editor.update(&mut settings, Message::Collapse(0));
-        assert_eq!(editor.expanded, [false, false, true]);
+        assert!(!editor.safety_expanded);
+        editor.update(&mut settings, Message::ToggleSafety);
+        assert!(editor.safety_expanded);
+        editor.update(&mut settings, Message::ToggleSafety);
+        assert!(!editor.safety_expanded);
         assert!(!settings.has_unsaved_changes());
     }
     #[test]

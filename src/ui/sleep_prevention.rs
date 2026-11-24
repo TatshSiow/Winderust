@@ -148,7 +148,7 @@ impl Editor {
                     Some(Message::Enabled)
                 ),
                 widgets::setting_title("common.rules"),
-                picker,
+                widgets::settings_card(picker),
                 widgets::process_rules_table_with_actions(
                     [t!("sleep_prevention.keep_display_on").to_string()],
                     rules,

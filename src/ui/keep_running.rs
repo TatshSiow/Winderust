@@ -210,7 +210,7 @@ impl Editor {
                 Some(Message::Enabled)
             ),
             widgets::setting_title("common.rules"),
-            app_picker::view_with_path_selection(
+            widgets::settings_card(app_picker::view_with_path_selection(
                 &self.path,
                 candidates,
                 true,
@@ -220,7 +220,7 @@ impl Editor {
                     .is_some()
                     .then_some(Message::Add),
                 |path| Self::addable_rule(settings, path).is_some().then_some(true)
-            ),
+            )),
             widgets::process_rules_table_with_actions(
                 [],
                 rules,

@@ -728,7 +728,7 @@ pub(super) fn card_button<'a, M: Clone + 'a>(
             .spacing(design::space::LARGE),
     )
     .height(CARD_HEIGHT)
-    .padding([CARD_PADDING as u16, design::space::WIDE as u16])
+    .padding(CARD_PADDING as u16)
     .width(Fill)
     .style(card)
 }
@@ -833,9 +833,9 @@ pub(super) fn setting_group<'a, M: Clone + 'a>(
                                 iced::widget::container(setting_title(&label)).width(Fill),
                                 action.into(),
                                 super::motion::wrap(
-                                    super::navigation::glyph("icons/chevron-right.svg"),
+                                    super::navigation::glyph("icons/chevron-down.svg"),
                                     expanded,
-                                    super::motion::Effect::Chevron
+                                    super::motion::Effect::DisclosureChevron
                                 )
                             ]
                             .spacing(design::space::SMALL)

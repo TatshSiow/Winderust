@@ -119,7 +119,7 @@ impl Editor {
                 Some(Message::Enabled)
             ),
             super::widgets::setting_title_with_help("common.rules", "", "timer_resolution.intro_2"),
-            super::app_picker::view_with_path_selection(
+            super::widgets::settings_card(super::app_picker::view_with_path_selection(
                 &self.path,
                 candidates,
                 true,
@@ -128,7 +128,7 @@ impl Editor {
                 can_add_timer_resolution_process(s, exact_path_input(&self.path))
                     .then_some(Message::Add),
                 |path| can_add_timer_resolution_process(s, path).then_some(true)
-            )
+            ))
         ]
         .spacing(super::widgets::CARD_GAP);
         let mut cards = Vec::new();

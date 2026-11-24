@@ -134,8 +134,8 @@ pub(crate) fn iced_icon(path: &str) -> Option<iced::widget::svg::Handle> {
 }
 
 // SVG-local rotation works with the unmodified software renderer.
-pub(super) fn chevron_frame(progress: f32) -> iced::widget::svg::Handle {
-    static FRAMES: LazyLock<[iced::widget::svg::Handle; 19]> = LazyLock::new(|| {
+pub(super) fn chevron_frame(quarter_turns: f32) -> iced::widget::svg::Handle {
+    static FRAMES: LazyLock<[iced::widget::svg::Handle; 55]> = LazyLock::new(|| {
         std::array::from_fn(|index| {
             let icon = icondata_lu::LuChevronRight;
             let svg = lucide_svg(icon).replace(
@@ -149,7 +149,7 @@ pub(super) fn chevron_frame(progress: f32) -> iced::widget::svg::Handle {
             iced::widget::svg::Handle::from_memory(svg.into_bytes())
         })
     });
-    FRAMES[(progress.clamp(0.0, 1.0) * 18.0).round() as usize].clone()
+    FRAMES[(quarter_turns.clamp(0.0, 3.0) * 18.0).round() as usize].clone()
 }
 
 #[cfg(test)]

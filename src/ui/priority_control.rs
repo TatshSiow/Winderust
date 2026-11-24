@@ -587,14 +587,16 @@ impl Editor {
             ));
         }
         body = body.push(super::widgets::setting_title(&format!("{key}.exclusions")));
-        body = body.push(super::app_picker::view_with_path_selection(
-            &self.path,
-            candidates,
-            true,
-            (Message::Path, |path| Message::Path(picked_path_input(path))),
-            Message::Browse,
-            (kind.can_add(settings, exact_path_input(&self.path))).then_some(Message::Add),
-            |path| kind.can_add(settings, path).then_some(true),
+        body = body.push(super::widgets::settings_card(
+            super::app_picker::view_with_path_selection(
+                &self.path,
+                candidates,
+                true,
+                (Message::Path, |path| Message::Path(picked_path_input(path))),
+                Message::Browse,
+                (kind.can_add(settings, exact_path_input(&self.path))).then_some(Message::Add),
+                |path| kind.can_add(settings, path).then_some(true),
+            ),
         ));
         let mut rule_cards = Vec::new();
         for (index, rule) in kind.rules(settings).iter().enumerate() {
