@@ -18,7 +18,14 @@ pub(super) fn move_focus<M: Send + 'static>(forward: bool, wrap: bool) -> iced::
     } else {
         iced::widget::operation::focus_previous()
     };
-    focus.chain(iced::advanced::widget::operate(Reveal::default()))
+    focus.chain(reveal(None))
+}
+
+pub(super) fn reveal<M: Send + 'static>(target: Option<Id>) -> iced::Task<M> {
+    iced::advanced::widget::operate(Reveal {
+        target,
+        ..Reveal::default()
+    })
 }
 
 struct FocusAt {
@@ -66,6 +73,7 @@ struct Scroll {
 
 #[derive(Default)]
 struct Reveal {
+    target: Option<Id>,
     ordinal: usize,
     pending: Option<Scroll>,
     ancestors: Vec<Scroll>,
@@ -117,8 +125,13 @@ impl<T: Send + 'static> Operation<T> for Reveal {
         }
     }
 
-    fn focusable(&mut self, _: Option<&Id>, mut target: Rectangle, state: &mut dyn Focusable) {
-        if self.apply || !state.is_focused() {
+    fn focusable(&mut self, id: Option<&Id>, mut target: Rectangle, state: &mut dyn Focusable) {
+        if self.apply
+            || !self
+                .target
+                .as_ref()
+                .map_or_else(|| state.is_focused(), |target| id == Some(target))
+        {
             return;
         }
         for scroll in self.ancestors.iter().rev() {
@@ -284,20 +297,26 @@ mod tests {
     }
 
     #[test]
-    fn tab_focus_reveals_nested_controls_without_scrolling_siblings() {
+    fn reveals_nested_controls_by_focus_or_id_without_scrolling_siblings() {
+        use crate::ui::{navigation, navigation_flyout, Page};
+
         #[derive(Default)]
         struct Snapshot {
             count: usize,
             focused: Option<(usize, Rectangle)>,
+            marked: Option<Rectangle>,
             scrolls: Vec<(Rectangle, Vector)>,
         }
         impl Operation for Snapshot {
             fn traverse(&mut self, visit: &mut dyn FnMut(&mut dyn Operation)) {
                 visit(self);
             }
-            fn focusable(&mut self, _: Option<&Id>, bounds: Rectangle, state: &mut dyn Focusable) {
+            fn focusable(&mut self, id: Option<&Id>, bounds: Rectangle, state: &mut dyn Focusable) {
                 if state.is_focused() {
                     self.focused = Some((self.count, bounds));
+                }
+                if id == Some(&navigation::rail_id(Some(Page::About))) {
+                    self.marked = Some(bounds);
                 }
                 self.count += 1;
             }
@@ -347,7 +366,17 @@ mod tests {
             let inner = iced::widget::column![
                 widgets::action_button("First action").on_press(()),
                 iced::widget::Space::new().height(400),
-                widgets::action_button("Last action").on_press(()),
+                navigation_flyout::view(
+                    Page::About,
+                    navigation::rail_item(
+                        Page::About,
+                        true,
+                        navigation::Event::Select(Page::About)
+                    ),
+                    None,
+                    false,
+                )
+                .map(|_| ()),
             ]
             .spacing(8);
             let inner = if pane {
@@ -424,6 +453,28 @@ mod tests {
                     after.scrolls
                 );
             }
+            let before = snapshot(&mut view, &mut tree, &node, &renderer);
+            run(
+                &mut view,
+                &mut tree,
+                &node,
+                &renderer,
+                Box::new(Reveal {
+                    target: Some(navigation::rail_id(Some(Page::About))),
+                    ..Reveal::default()
+                }),
+            );
+            let after = snapshot(&mut view, &mut tree, &node, &renderer);
+            assert_eq!(after.focused, before.focused);
+            assert_eq!(after.scrolls[0], before.scrolls[0]);
+            let (outer, offset) = after.scrolls[1];
+            let (mut inner, inner_offset) = after.scrolls[2];
+            let mut target = after.marked.unwrap();
+            target.y -= offset.y + inner_offset.y;
+            inner.y -= offset.y;
+            let visible = outer.intersection(&inner).unwrap();
+            assert!(target.y >= visible.y);
+            assert!(target.y + target.height <= visible.y + visible.height);
         }
     }
 

@@ -267,9 +267,7 @@ pub(super) fn rail<'a, Message: 'a>(
     container(
         column![
             container(search).padding([0, inset]),
-            super::scrolling::navigation_scrollable(primary)
-                .id("primary-navigation")
-                .height(iced::Fill),
+            super::scrolling::navigation_scrollable(primary).height(iced::Fill),
             container(rule::horizontal(1)).padding([0, inset]),
             container(utilities).padding([0, inset]),
         ]

@@ -955,27 +955,8 @@ impl WinderustApp {
     }
 
     fn focus_navigation(&self, page: Option<Page>) -> Task<Message> {
-        let focus = iced::widget::operation::focus(navigation::rail_id(page));
-        if let Some(page) = page.filter(|page| !navigation::is_utility(*page)) {
-            let primary: Vec<_> =
-                navigation::rail_pages(self.settings.global().advanced.show_advanced_controls)
-                    .into_iter()
-                    .filter(|page| !navigation::is_utility(*page))
-                    .collect();
-            if let Some(index) = primary.iter().position(|p| *p == page) {
-                return Task::batch([
-                    focus,
-                    iced::widget::operation::snap_to(
-                        "primary-navigation",
-                        iced::widget::scrollable::RelativeOffset {
-                            x: 0.0,
-                            y: index as f32 / primary.len().saturating_sub(1).max(1) as f32,
-                        },
-                    ),
-                ]);
-            }
-        }
-        focus
+        let id = navigation::rail_id(page);
+        iced::widget::operation::focus(id.clone()).chain(super::keyboard_focus::reveal(Some(id)))
     }
 
     fn update_navigation(&mut self, event: navigation::Event) -> Task<Message> {
@@ -1951,6 +1932,12 @@ impl WinderustApp {
                     self.power_tuning.ensure_plan(&self.power_plans);
                 }
                 let mut tasks = Vec::new();
+                let section = page.section_landing_page();
+                if !navigation::is_utility(section) {
+                    tasks.push(super::keyboard_focus::reveal(Some(navigation::rail_id(
+                        Some(section),
+                    ))));
+                }
                 if page_needs_power_plans(page, self.processes.rulesets_open()) {
                     tasks.push(self.load_power_plans());
                 }
