@@ -490,6 +490,19 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
         if !navigation::page_feature_info(page).is_empty() {
             assert!(app.side_panel(is_plugged_in).is_some());
         }
+        if extra.is_none()
+            && matches!(
+                page,
+                Page::IoPriority
+                    | Page::ThreadPriority
+                    | Page::GpuPriority
+                    | Page::MemoryPriority
+                    | Page::TimerResolution
+            )
+        {
+            let _ = app.update(Message::ToggleSidePanel);
+            assert_eq!(app.side_panel_tab, SidePanelTab::Info);
+        }
         if matches!(extra, Some(5 | 70 | 71)) {
             assert!(SidePanelTab::for_page(page).contains(&SidePanelTab::Presets));
             let _ = app.update(Message::ToggleSidePanel);

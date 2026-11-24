@@ -882,7 +882,7 @@ io_priority:
   intro_1: "I/O Priority applies Windows process I/O priority defaults to eligible foreground and background processes."
   intro_2: "This uses Windows native process I/O priority hints and restores the previous value when a custom rule skips a process or the feature stops."
   enable: "Enable I/O Priority"
-  enable_help: "Set how Windows prioritizes I/O requests from eligible processes."
+  enable_help: "Set the Windows I/O priority hint for eligible processes."
   foreground_detection: "Foreground Detection"
   foreground_detection_help: "Adds a second layer that can apply a separate I/O priority to the detected foreground app."
   exclusions_help: "Per-app I/O priority rules. Set Focus, Visible Window, and Background to Default to skip the app."
@@ -910,7 +910,7 @@ process_priority:
   priority_idle: "Idle"
 
 thread_priority:
-  intro_1: "Thread Priority applies Windows thread priority offsets to threads inside eligible foreground and background processes."
+  intro_1: "Windows determines a thread's base priority from its thread priority setting and its process priority class."
   intro_2: "This changes running threads with SetThreadPriority and restores touched threads when a custom rule skips a process or the feature stops. New threads are picked up on the next refresh."
   enable: "Enable Thread Priority"
   enable_help: "Adjust the scheduling priority of threads in eligible processes."
@@ -941,7 +941,7 @@ dynamic_priority_boost:
 gpu_priority:
   intro_1: "GPU Priority applies Windows graphics scheduler priority defaults to eligible foreground and background processes."
   intro_2: "This uses WDDM D3DKMT process scheduling priority and restores the previous value when a custom rule skips a process or the feature stops."
-  intro_3: "High and Realtime GPU priority are exposed only from Experimental Features."
+  intro_3: "In Experimental Features, turn on Expose all priority values to show High and Realtime."
   enable: "Enable GPU Priority"
   enable_help: "Set the Windows graphics scheduling priority for eligible processes."
   foreground_detection: "Foreground Detection"
@@ -956,10 +956,10 @@ gpu_priority:
   priority_idle: "Idle"
 
 memory_priority:
-  intro_1: "Memory Priority controls how strongly Windows keeps a process's RAM pages resident under memory pressure."
-  intro_2: "Lower values make Windows trim those pages sooner; higher values protect them longer. Winderust restores the previous value when a custom rule skips a process or the feature stops."
+  intro_1: "Under memory pressure, Windows uses Memory Priority as a hint when deciding which pages to remove from a process's working set."
+  intro_2: "Windows prefers to remove lower-priority pages first. Winderust restores the previous priority when a custom rule skips a process or the feature stops."
   enable: "Enable Memory Priority"
-  enable_help: "Set how strongly Windows retains a process's memory pages under pressure."
+  enable_help: "Set how strongly Windows prefers to retain a process's memory pages under pressure."
   foreground_detection: "Foreground Detection"
   foreground_detection_help: "Adds a second layer that can apply a separate memory priority to the detected foreground app."
   exclusions_help: "Per-app memory priority rules. Set Focus, Visible Window, and Background to Default to skip the app."
@@ -1000,11 +1000,11 @@ sleep_prevention:
 
 timer_resolution:
   intro_1: "Winderust requests timer resolution for its own process while a matching app is in the foreground. This does not guarantee a change to that app's timer resolution."
-  intro_2: "Enter a positive number in milliseconds for each foreground rule."
+  intro_2: "Enter a positive period in milliseconds. Winderust rounds up to whole milliseconds and limits the value to the range Windows supports."
   intro_3: "Winderust releases its request when no foreground rule matches, this control is disabled, or the app exits."
   enable: "Enable Timer Resolution Control"
   enable_help: "Request a Windows timer resolution for Winderust while a matching app has focus."
-  warning: "Lower timer values can increase CPU wakeups and battery drain. Leave this off unless a workload needs it."
+  warning: "Shorter timer periods can increase CPU wakeups and battery use. Enable this only when a workload needs it."
   requested: "Winderust request"
   invalid_request: "Winderust request must be a positive number in milliseconds."
   log_requested: "Requested timer resolution %{resolution} while %{app} is foreground."
