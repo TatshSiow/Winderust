@@ -1125,6 +1125,7 @@ fn switch_control<'a, M: Clone + 'a>(
             value,
             super::motion::Effect::Switch { interactive },
             action,
+            None,
         )
     ]
     .spacing(design::space::SMALL)

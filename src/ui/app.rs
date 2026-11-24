@@ -112,6 +112,40 @@ fn page_canvas<'a>(
     .into()
 }
 
+const SIDE_PANEL_TOGGLE: &str = "side-panel-toggle";
+const SIDE_PANEL_CLOSE: &str = "side-panel-close";
+
+fn side_panel_button(open: bool) -> Element<'static, Message> {
+    button(
+        row![
+            navigation::glyph("icons/panel-right-open.svg"),
+            text(t!("nav.side_panel").to_string()),
+        ]
+        .spacing(design::space::CONTROL)
+        .height(Fill)
+        .align_y(iced::Center),
+    )
+    .height(design::BUTTON_HEIGHT)
+    .padding([0, design::space::MEDIUM as u16])
+    .style(move |theme, status| {
+        let mut style = if open {
+            widgets::selected(theme, status)
+        } else {
+            widgets::secondary_button(theme, status)
+        };
+        style.text_color = widgets::quiet(theme, status).text_color;
+        style
+    })
+    .focus_id(SIDE_PANEL_TOGGLE)
+    .on_press(Message::ToggleSidePanel)
+    .into()
+}
+
+fn close_side_panel(open: &mut bool) -> impl iced::advanced::widget::Operation {
+    *open = false;
+    iced::advanced::widget::operation::focusable::focus(SIDE_PANEL_TOGGLE.into())
+}
+
 fn side_panel_dock<'a>(
     workspace: Element<'a, Message>,
     panel: Option<Element<'a, Message>>,
@@ -119,7 +153,9 @@ fn side_panel_dock<'a>(
 ) -> Element<'a, Message> {
     let dock: Element<'a, Message> = if let Some(panel) = panel {
         let close = super::widgets::tooltip(
-            widgets::icon_button("icons/x.svg").on_press(Message::CloseSidePanel),
+            widgets::icon_button("icons/x.svg")
+                .focus_id(SIDE_PANEL_CLOSE)
+                .on_press(Message::CloseSidePanel),
             text(t!("common.close").to_string()),
             iced::widget::tooltip::Position::Left,
         );
@@ -1223,7 +1259,12 @@ impl WinderustApp {
                 self.side_panel_open = !self.side_panel_open;
                 self.navigation.dismiss();
             }
-            Message::CloseSidePanel => self.side_panel_open = false,
+            Message::CloseSidePanel => {
+                return iced::advanced::widget::operate(close_side_panel(
+                    &mut self.side_panel_open,
+                ))
+                .discard();
+            }
             Message::Status(status_rail::Message::RelaunchAdmin) => {
                 if crate::privilege::relaunch_as_admin() {
                     return self.update(Message::Close);
@@ -3430,30 +3471,7 @@ impl WinderustApp {
             }
             profile_controls = Some(container(tabs).style(widgets::tab_bar));
         }
-        let panel_button = side_panel_available.then(|| {
-            button(
-                row![
-                    navigation::glyph("icons/panel-right-open.svg"),
-                    text(t!("nav.side_panel").to_string()),
-                ]
-                .spacing(design::space::CONTROL)
-                .height(Fill)
-                .align_y(iced::Center),
-            )
-            .height(design::BUTTON_HEIGHT)
-            .padding([0, design::space::MEDIUM as u16])
-            .style(move |theme, status| {
-                let mut style = if self.side_panel_open {
-                    widgets::selected(theme, status)
-                } else {
-                    widgets::secondary_button(theme, status)
-                };
-                style.text_color = widgets::quiet(theme, status).text_color;
-                style
-            })
-            .on_press(Message::ToggleSidePanel)
-            .into()
-        });
+        let panel_button = side_panel_available.then(|| side_panel_button(self.side_panel_open));
         let heading = page_header(
             breadcrumb.into(),
             profile_controls.map(Into::into),
@@ -4559,6 +4577,99 @@ mod tests {
             assert_eq!(messages.len(), 1);
             assert!(matches!(messages[0], Message::Save) == outside);
             assert!(matches!(messages[0], Message::Cancel) != outside);
+        }
+    }
+
+    #[test]
+    fn closing_dock_with_keyboard_returns_focus_to_its_toolbar_button() {
+        use iced::advanced::{
+            layout,
+            widget::{operation::focusable, Operation, Tree},
+            Layout, Shell,
+        };
+        use iced::keyboard::{key::Named, Key, Location, Modifiers};
+
+        let renderer = iced::Renderer::new(iced::Font::DEFAULT, iced::Pixels(14.0));
+        let viewport = iced::Rectangle::with_size(iced::Size::new(900.0, 620.0));
+        let limits = layout::Limits::new(iced::Size::ZERO, viewport.size());
+        let dock = |open: bool| {
+            let workspace = iced::widget::column![
+                page_header(text("Editor").into(), None, Some(side_panel_button(open))),
+                button(text("Editor action")).on_press(Message::Save),
+            ];
+            let panel = open.then(|| iced::widget::Space::new().height(Fill).into());
+            side_panel_dock(workspace.into(), panel, design::SIDE_PANEL_WIDTH)
+        };
+        let activate =
+            |view: &mut Element<'_, Message>, tree: &mut Tree, layout: Layout<'_>, key| {
+                let mut messages = Vec::new();
+                let mut shell = Shell::new(&mut messages);
+                view.as_widget_mut().update(
+                    tree,
+                    &iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+                        key: Key::Named(key),
+                        modified_key: Key::Named(key),
+                        physical_key: iced::keyboard::key::Physical::Unidentified(
+                            iced::keyboard::key::NativeCode::Unidentified,
+                        ),
+                        location: Location::Standard,
+                        modifiers: Modifiers::empty(),
+                        text: None,
+                        repeat: false,
+                    }),
+                    layout,
+                    iced::mouse::Cursor::Unavailable,
+                    &renderer,
+                    &mut iced::advanced::clipboard::Null,
+                    &mut shell,
+                    &viewport,
+                );
+                assert!(shell.is_event_captured());
+                messages
+            };
+
+        for key in [Named::Enter, Named::Space] {
+            let mut open = true;
+            let mut view = dock(open);
+            let mut tree = Tree::new(&view);
+            let node = view.as_widget_mut().layout(&mut tree, &renderer, &limits);
+            let layout = Layout::new(&node);
+            view.as_widget_mut().operate(
+                &mut tree,
+                layout,
+                &renderer,
+                &mut focusable::focus(SIDE_PANEL_CLOSE.into()),
+            );
+            assert!(matches!(
+                activate(&mut view, &mut tree, layout, key).as_slice(),
+                [Message::CloseSidePanel]
+            ));
+
+            let mut restore = close_side_panel(&mut open);
+            assert!(!open);
+            let mut view = dock(open);
+            tree.diff(&view);
+            let node = view.as_widget_mut().layout(&mut tree, &renderer, &limits);
+            let layout = Layout::new(&node);
+            view.as_widget_mut()
+                .operate(&mut tree, layout, &renderer, &mut restore);
+            assert!(matches!(
+                activate(&mut view, &mut tree, layout, key).as_slice(),
+                [Message::ToggleSidePanel]
+            ));
+
+            let mut next = focusable::focus_next::<()>();
+            view.as_widget_mut()
+                .operate(&mut tree, layout, &renderer, &mut next);
+            let iced::advanced::widget::operation::Outcome::Chain(mut next) = next.finish() else {
+                panic!("focus traversal must produce its second step");
+            };
+            view.as_widget_mut()
+                .operate(&mut tree, layout, &renderer, next.as_mut());
+            assert!(matches!(
+                activate(&mut view, &mut tree, layout, key).as_slice(),
+                [Message::Save]
+            ));
         }
     }
 

@@ -62,8 +62,14 @@ pub(super) type Action<'a, M> = Box<dyn Fn() -> M + 'a>;
 type KeyHandler<'a, M> = Box<dyn Fn(Named, Modifiers, Rectangle) -> Option<(M, bool)> + 'a>;
 
 enum KeyboardAction<'a, M> {
-    Activate(Action<'a, M>),
-    Keys { id: Id, handle: KeyHandler<'a, M> },
+    Activate {
+        id: Option<Id>,
+        handle: Action<'a, M>,
+    },
+    Keys {
+        id: Id,
+        handle: KeyHandler<'a, M>,
+    },
 }
 
 pub(super) fn wrap<'a, M: 'a>(
@@ -71,7 +77,7 @@ pub(super) fn wrap<'a, M: 'a>(
     target: bool,
     effect: Effect,
 ) -> Element<'a, M> {
-    wrap_action(content, target, effect, None)
+    wrap_action(content, target, effect, None, None)
 }
 
 pub(super) fn wrap_action<'a, M: 'a>(
@@ -79,12 +85,16 @@ pub(super) fn wrap_action<'a, M: 'a>(
     target: bool,
     effect: Effect,
     action: Option<Action<'a, M>>,
+    focus_id: Option<&'static str>,
 ) -> Element<'a, M> {
     Element::new(Motion {
         content: content.into(),
         target,
         effect,
-        action: action.map(KeyboardAction::Activate),
+        action: action.map(|handle| KeyboardAction::Activate {
+            id: focus_id.map(Id::new),
+            handle,
+        }),
     })
 }
 
@@ -372,9 +382,9 @@ impl<M> Widget<M, Theme, Renderer> for Motion<'_, M> {
             viewport,
         );
         match &self.action {
-            Some(KeyboardAction::Activate(action)) => {
+            Some(KeyboardAction::Activate { handle, .. }) => {
                 if state.focus.activate(event, shell) {
-                    shell.publish(action());
+                    shell.publish(handle());
                 }
             }
             Some(KeyboardAction::Keys { handle, .. }) => {
@@ -403,7 +413,7 @@ impl<M> Widget<M, Theme, Renderer> for Motion<'_, M> {
             if let Some(action) = &self.action {
                 operation.focusable(
                     match action {
-                        KeyboardAction::Activate(_) => None,
+                        KeyboardAction::Activate { id, .. } => id.as_ref(),
                         KeyboardAction::Keys { id, .. } => Some(id),
                     },
                     layout.bounds(),

@@ -63,6 +63,7 @@ Prefer visible state, compact controls, and predictable rows. Use restrained acc
 - The rail stays 88px wide plus its divider. Keep content geometry independent of flyout state and the right status rail independent.
 - Center the shared header and content canvas within the work area beside the primary rail and any open side panel, with shared padding and a 1440px width cap. Every page reserves the same 48px breadcrumb area and 32px toolbar, including pages without power-source selectors, so page content starts at a stable position.
 - The right side panel is a 320px dock beside the editor, reserving its own width without covering content. Both areas remain interactive. Start closed and retain its open state throughout navigation, search, focus changes, and settings edits. Close only through panel controls. Pages without panel content use the full canvas and preserve the session's open preference for the next supported page. Keep existing tabs, scrolling, and actions. The unsaved-settings notice stays within the editing area, and dialogs cover both areas. There is no collapsed strip or persisted mode setting.
+- The side panel Close button returns focus to the toolbar's Side panel button so keyboard navigation can continue in the editor.
 - Navigation labels and page sections live in `src/ui.rs`; page rendering
   dispatch stays in `WinderustApp::page_view` in `src/ui/app.rs`.
 

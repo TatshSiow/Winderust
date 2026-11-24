@@ -16,7 +16,9 @@ const RESOURCE_PREVIEW_COMBINED: usize = 102;
 const RESOURCE_PREVIEW_INSTANCE: usize = 103;
 const SHOW_SHORTCUT_INVALID: usize = 104;
 const SHOW_SHORTCUT_READY: usize = 105;
-const EXTRA_STATES: usize = 106;
+const DOCK_FOCUS_WIDE: usize = 106;
+const DOCK_FOCUS_COMPACT: usize = 107;
+const EXTRA_STATES: usize = 108;
 pub(super) struct Run {
     pages: Vec<Page>,
     index: usize,
@@ -96,6 +98,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                     | HOME_HISTORY_COMPACT
                     | RESOURCE_PREVIEW_INSTANCE
                     | SHOW_SHORTCUT_READY
+                    | DOCK_FOCUS_COMPACT
             )
         });
         let page = match extra {
@@ -143,7 +146,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             Some(51..=53 | RESOURCE_PREVIEW_COMBINED | RESOURCE_PREVIEW_INSTANCE) => {
                 Page::ResourceThresholds
             }
-            Some(54..=57 | 81) => Page::ByCpuLoad,
+            Some(54..=57 | 81 | DOCK_FOCUS_WIDE | DOCK_FOCUS_COMPACT) => Page::ByCpuLoad,
             Some(58..=59) => Page::SleepPrevention,
             Some(60..=61) => Page::KeepRunning,
             Some(62..=65) => Page::InstanceLimits,
@@ -1286,16 +1289,22 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                 extra == Some(SHOW_SHORTCUT_INVALID),
             );
         }
+        if matches!(extra, Some(DOCK_FOCUS_WIDE | DOCK_FOCUS_COMPACT)) {
+            app.settings.cancel();
+            app.reset_editors();
+            app.side_panel_open = true;
+        }
         let size = match extra {
             Some(
                 PROCESS_LIST_COMMIT_COMPACT
                 | HOME_POWER_COMPACT
                 | CONTRAST_LIGHT_PROCESS_LIST
                 | HOME_HISTORY_COMPACT
-                | SHOW_SHORTCUT_READY,
+                | SHOW_SHORTCUT_READY
+                | DOCK_FOCUS_COMPACT,
             ) => iced::Size::new(900.0, 620.0),
             Some(RESOURCE_PREVIEW_INSTANCE) => iced::Size::new(900.0, 620.0),
-            Some(RESOURCE_PREVIEW_COMBINED | SHOW_SHORTCUT_INVALID) => {
+            Some(RESOURCE_PREVIEW_COMBINED | SHOW_SHORTCUT_INVALID | DOCK_FOCUS_WIDE) => {
                 iced::Size::new(1120.0, 760.0)
             }
             Some(CONTRAST_DARK_APPEARANCE | HOME_HISTORY_WIDE) => iced::Size::new(1120.0, 760.0),
@@ -1331,6 +1340,14 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
         ]));
     }
     run.ticks += 1;
+    if matches!(extra, Some(DOCK_FOCUS_WIDE | DOCK_FOCUS_COMPACT)) {
+        match run.ticks {
+            3 => return Some(iced::widget::operation::focus(SIDE_PANEL_CLOSE)),
+            5 => return Some(app.update(Message::CloseSidePanel)),
+            12 => assert!(!app.side_panel_open),
+            _ => {}
+        }
+    }
     if run.ticks == 3 {
         match extra {
             Some(CONTRAST_DARK_APPEARANCE) => {

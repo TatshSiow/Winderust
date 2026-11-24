@@ -28,6 +28,7 @@ pub(super) struct Button<'a, M> {
     inner: iced::widget::Button<'a, M>,
     on_press: Option<M>,
     keyboard: bool,
+    focus_id: Option<&'static str>,
     progress: Rc<Cell<f32>>,
     selection: Option<(bool, Rc<Cell<f32>>)>,
 }
@@ -37,6 +38,7 @@ impl<'a, M: 'a> Button<'a, M> {
             inner: iced::widget::button(content),
             on_press: None,
             keyboard: true,
+            focus_id: None,
             progress: Rc::new(Cell::new(0.0)),
             selection: None,
         }
@@ -96,6 +98,10 @@ impl<'a, M: 'a> Button<'a, M> {
         self.keyboard = false;
         self
     }
+    pub(super) fn focus_id(mut self, id: &'static str) -> Self {
+        self.focus_id = Some(id);
+        self
+    }
     pub(super) fn style(
         mut self,
         style: impl Fn(&Theme, iced::widget::button::Status) -> iced::widget::button::Style + 'a,
@@ -147,6 +153,7 @@ impl<'a, M: Clone + 'a> From<Button<'a, M>> for Element<'a, M> {
             false,
             motion::Effect::Hover(value.progress),
             action,
+            value.focus_id,
         );
         if let Some((selected, blend)) = value.selection {
             motion::wrap(button, selected, motion::Effect::Control(blend))
@@ -231,6 +238,7 @@ impl<'a, M: 'a> From<Checkbox<'a, M>> for Element<'a, M> {
                 interactive,
             },
             action,
+            None,
         )
     }
 }
