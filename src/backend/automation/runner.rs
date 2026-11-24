@@ -181,7 +181,7 @@ pub(super) struct RuntimeCore {
     process_termination_controller: ProcessTerminationController,
     timer_resolution_manager: TimerResolutionManager,
     timer_resolution_controller: TimerResolutionController,
-    sleep_prevention_manager: SleepPreventionManager,
+    pub(super) sleep_prevention_manager: SleepPreventionManager,
     sleep_prevention_controller: SleepPreventionController,
     pub(super) keep_running: keep_running::KeepRunningCoordinator,
     pub(super) instance_limits: InstanceLimitsManager,
@@ -193,6 +193,7 @@ pub(super) struct RuntimeCore {
 pub(super) struct ProcessControlCommandStatuses {
     pub(super) memory_trim: Option<MemoryTrimSnapshot>,
     pub(super) app_suspension: Option<AppSuspensionSnapshot>,
+    pub(super) keep_awake: Vec<KeepAwakeCommand>,
 }
 
 const RESOURCE_THRESHOLDS_RESTART_COOLDOWN: Duration = Duration::from_secs(60);
@@ -724,7 +725,7 @@ impl RuntimeCore {
         // A watcher transition invalidates the coverage behind accepted requests.
         if events.suspend_resume
             || (events.windows_event_watcher_change.is_some()
-                && self.sleep_prevention_controller.requests().system)
+                && self.sleep_prevention_manager.rule_system_requested())
         {
             self.sleep_prevention_manager.suppress_and_release(
                 &mut self.sleep_prevention_controller,
@@ -1749,6 +1750,7 @@ impl RuntimeCore {
                     let _ = result.try_send(reply);
                     statuses.memory_trim = Some(status);
                 }
+                ProcessControlCommand::KeepAwake(command) => statuses.keep_awake.push(command),
                 ProcessControlCommand::StopProcesses { targets, result } => {
                     self.keep_running
                         .pause_targets(&targets, PauseReason::IntentionalStop);

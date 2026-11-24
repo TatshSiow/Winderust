@@ -80,6 +80,97 @@ fn sleep_prevention_keeps_battery_only_automation_and_sleep_events_alive() {
 }
 
 #[test]
+fn keep_awake_without_rules_requires_event_coverage_but_no_idle_worker() {
+    let mut settings = Settings::default();
+    settings.general.enabled = true;
+    settings.general.theme_mode = AppThemeMode::Amoled;
+    settings.general.accent.source = AccentColorSource::Custom;
+    settings.sleep_prevention.enabled = true;
+    assert_eq!(
+        windows_event_watcher_mode(&settings),
+        Some(WindowsEventWatcherMode::Full)
+    );
+    assert!(!automation_worker_required(&settings));
+    let shared = shared_automation_state(settings);
+    notify_windows_event(&shared, WindowsAutomationEvent::SessionChanged);
+    assert_eq!(
+        automation_snapshot(&shared).unwrap().wake_events,
+        AutomationWakeEvents::default()
+    );
+    lock_unpoisoned(&shared.state).worker_accepting_work = true;
+    notify_windows_event(&shared, WindowsAutomationEvent::SessionChanged);
+    let events = automation_snapshot(&shared).unwrap().wake_events;
+    assert!(events.session_changed && events.keep_awake_interrupted_at.is_some());
+}
+
+#[test]
+fn keep_awake_stops_after_a_power_change_when_only_one_profile_permits_it() {
+    let mut settings = Settings::default();
+    settings.general.enabled = true;
+    settings.sleep_prevention.enabled = true;
+    settings.battery_profile_mut().sleep_prevention.enabled = false;
+
+    assert!(keep_awake_power_allowed(&settings, None, Some(true), false));
+    assert!(!keep_awake_power_allowed(&settings, None, Some(true), true));
+    assert!(!keep_awake_power_allowed(
+        &settings,
+        Some(false),
+        Some(true),
+        true
+    ));
+    settings.battery_profile_mut().sleep_prevention.enabled = true;
+    assert!(keep_awake_power_allowed(&settings, None, Some(true), true));
+}
+
+#[test]
+fn restored_watcher_retains_a_coalesced_keep_awake_interruption() {
+    let shared = shared_automation_state(Settings::default());
+    set_windows_event_watcher_active(&shared, true);
+    let before_loss = Instant::now();
+    set_windows_event_watcher_active(&shared, false);
+    set_windows_event_watcher_active(&shared, true);
+
+    let snapshot = automation_snapshot(&shared).unwrap();
+    assert!(snapshot.windows_event_watcher_active);
+    assert_eq!(
+        snapshot.wake_events.windows_event_watcher_change,
+        Some(WindowsEventWatcherChange::Lost)
+    );
+    assert!(snapshot
+        .wake_events
+        .keep_awake_interrupted_at
+        .is_some_and(|loss| loss >= before_loss));
+}
+
+#[test]
+#[ignore = "briefly holds a real Windows system sleep request"]
+fn native_keep_awake_accepts_and_releases_the_windows_request() {
+    let mut settings = Settings::default();
+    settings.general.enabled = true;
+    settings.sleep_prevention.enabled = true;
+    let runtime = RuntimeHandle::start(&runtime_settings(settings));
+    let request = |duration| {
+        let (reply, result) = sync_channel(1);
+        runtime.request_keep_awake(duration, reply).unwrap();
+        result
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap()
+            .unwrap();
+    };
+    let status = || runtime.status_snapshot_since(0).unwrap().feature_status;
+
+    request(Some(KeepAwakeDuration::FifteenMinutes));
+    let active = &status().sleep_prevention;
+    assert!(active.system_requested && active.keep_awake_until.is_some());
+    assert!(!active.display_requested);
+    request(None);
+    let stopped = &status().sleep_prevention;
+    assert!(!stopped.system_requested && stopped.keep_awake_until.is_none());
+    assert_eq!(stopped.last_error, None);
+    runtime.shutdown().unwrap();
+}
+
+#[test]
 fn instance_balancing_owns_a_worker_and_context_events_without_process_scans() {
     let mut settings = Settings::default();
     settings.general.theme_mode = AppThemeMode::Amoled;
@@ -3400,12 +3491,21 @@ fn callbacks_deliver_events_for_either_profile_without_polling() {
             WindowsAutomationEvent::ClockChanged,
         ] {
             let before = lock_unpoisoned(&shared.state).change_generation;
+            let notified_at = Instant::now();
             notify_windows_event(&shared, event);
             assert_eq!(lock_unpoisoned(&shared.state).change_generation, before + 1);
             assert!(!wait_for_wake(&shared, None, before));
             let snapshot = automation_snapshot(&shared).unwrap();
             let mut expected = AutomationWakeEvents::default();
             expected.insert_windows_event(event);
+            if expected.keep_awake_interrupted_at.is_some() {
+                let interrupted_at = snapshot
+                    .wake_events
+                    .keep_awake_interrupted_at
+                    .expect("a session or suspend event records its receipt time");
+                assert!((notified_at..=Instant::now()).contains(&interrupted_at));
+                expected.keep_awake_interrupted_at = Some(interrupted_at);
+            }
             assert_eq!(snapshot.wake_events, expected);
             assert_eq!(snapshot.change_generation, before + 1);
         }

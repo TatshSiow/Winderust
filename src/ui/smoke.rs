@@ -22,7 +22,9 @@ const MEMORY_TRIM_PARTIAL: usize = 108;
 const MEMORY_TRIM_UNKNOWN: usize = 109;
 const RAIL_RESIZE_TALL: usize = 110;
 const RAIL_RESIZE_COMPACT: usize = 111;
-const EXTRA_STATES: usize = 112;
+const KEEP_AWAKE_READY: usize = 112;
+const KEEP_AWAKE_ACTIVE: usize = 113;
+const EXTRA_STATES: usize = 114;
 pub(super) struct Run {
     pages: Vec<Page>,
     index: usize,
@@ -109,6 +111,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                     | SHOW_SHORTCUT_READY
                     | DOCK_FOCUS_COMPACT
                     | MEMORY_TRIM_UNKNOWN
+                    | KEEP_AWAKE_ACTIVE
             )
         });
         let page = match extra {
@@ -120,6 +123,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             Some(5 | 70 | 71) => Page::AdaptiveProcessorPower,
             Some(11 | MEMORY_TRIM_PARTIAL | MEMORY_TRIM_UNKNOWN) => Page::MemoryTrim,
             Some(RAIL_RESIZE_TALL) => Page::AdvancedControls,
+            Some(KEEP_AWAKE_READY | KEEP_AWAKE_ACTIVE) => Page::SleepPrevention,
             Some(12 | 82) => Page::ByFocus,
             Some(13) => Page::Home,
             Some(14) => Page::ProcessList,
@@ -190,6 +194,16 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
         if extra == Some(RAIL_RESIZE_TALL) {
             app.settings
                 .edit_global(|settings| settings.advanced.show_advanced_controls = true);
+        }
+        if matches!(extra, Some(KEEP_AWAKE_READY | KEEP_AWAKE_ACTIVE)) {
+            let mut settings = app.settings.global().clone();
+            settings.general.enabled = true;
+            settings.sleep_prevention.enabled = true;
+            settings.on_battery = None;
+            app.settings = SettingsEditor::with_settings(settings);
+            let status = &mut Arc::make_mut(&mut app.status.feature_status).sleep_prevention;
+            status.keep_awake_until = (extra == Some(KEEP_AWAKE_ACTIVE))
+                .then(|| std::time::Instant::now() + Duration::from_secs(15 * 60));
         }
         if matches!(
             extra,
@@ -1337,12 +1351,16 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                 | SHOW_SHORTCUT_READY
                 | DOCK_FOCUS_COMPACT
                 | MEMORY_TRIM_PARTIAL
-                | MEMORY_TRIM_UNKNOWN,
+                | MEMORY_TRIM_UNKNOWN
+                | KEEP_AWAKE_ACTIVE,
             ) => iced::Size::new(900.0, 620.0),
             Some(RESOURCE_PREVIEW_INSTANCE) => iced::Size::new(900.0, 620.0),
-            Some(RESOURCE_PREVIEW_COMBINED | SHOW_SHORTCUT_INVALID | DOCK_FOCUS_WIDE) => {
-                iced::Size::new(1120.0, 760.0)
-            }
+            Some(
+                RESOURCE_PREVIEW_COMBINED
+                | SHOW_SHORTCUT_INVALID
+                | DOCK_FOCUS_WIDE
+                | KEEP_AWAKE_READY,
+            ) => iced::Size::new(1120.0, 760.0),
             Some(CONTRAST_DARK_APPEARANCE | HOME_HISTORY_WIDE) => iced::Size::new(1120.0, 760.0),
             Some(35..=37 | 40 | 42 | 44..=50 | 52..=69 | 71..=93) => iced::Size::new(900.0, 620.0),
             Some(30) => iced::Size::new(1280.0, 720.0),

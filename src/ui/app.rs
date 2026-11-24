@@ -699,6 +699,7 @@ enum Message {
     ExportLog(Option<PathBuf>),
     Suspension(app_suspension::Message),
     SleepPrevention(sleep_prevention::Message),
+    KeepAwakeFinished(Result<(), String>),
     Trim(memory_trim::Message),
     TrimFinished(Result<crate::memory_trim::MemoryTrimSnapshot, String>),
     ResourceThresholds(resource_thresholds::Message),
@@ -1620,6 +1621,41 @@ impl WinderustApp {
             }
             Message::SleepPrevention(sleep_prevention::Message::Browse) => {
                 return self.browse(Page::SleepPrevention);
+            }
+            Message::SleepPrevention(sleep_prevention::Message::KeepAwake(duration)) => {
+                if self.sleep_prevention.keep_awake_pending {
+                    return Task::none();
+                }
+                let (reply, receiver) = std::sync::mpsc::sync_channel(1);
+                let task = match tasks::try_run(move || {
+                    receiver
+                        .recv()
+                        .unwrap_or(Err(RuntimeCommandError::WorkerExited))
+                }) {
+                    Ok(task) => task,
+                    Err(error) => {
+                        self.error_message = error.to_string();
+                        return Task::none();
+                    }
+                };
+                if let Err(error) = self.runtime.request_keep_awake(duration, reply) {
+                    self.error_message = error.to_string();
+                } else {
+                    self.sleep_prevention.keep_awake_pending = true;
+                    return task.map(|result| {
+                        Message::KeepAwakeFinished(
+                            result.and_then(|reply| reply.map_err(|error| error.to_string())),
+                        )
+                    });
+                }
+            }
+            Message::KeepAwakeFinished(result) => {
+                self.sleep_prevention.keep_awake_pending = false;
+                if let Err(error) = result {
+                    self.error_message = error;
+                } else {
+                    return self.update(Message::Tick);
+                }
             }
             Message::SleepPrevention(message) => {
                 self.sleep_prevention.update(&mut self.settings, message)
@@ -2753,7 +2789,7 @@ impl WinderustApp {
         self.time_rules = Default::default();
         self.cpu_rules = Default::default();
         self.suspension = Default::default();
-        self.sleep_prevention = Default::default();
+        self.sleep_prevention.reset_drafts();
         self.trim.reset_drafts();
         self.resource_thresholds = Default::default();
         self.keep_running = Default::default();
@@ -3834,12 +3870,22 @@ impl WinderustApp {
             Page::SleepPrevention => {
                 let status = &self.status.feature_status.sleep_prevention;
                 let selected_is_plugged_in = self.power_source == PowerSourceProfile::PluggedIn;
+                let plugged_in = read_power_source();
+                let keep_awake = sleep_prevention::KeepAwakeView::new(
+                    self.settings.persisted(),
+                    plugged_in,
+                    status,
+                );
                 let status = (status.source == Some(self.power_source)
-                    && read_power_source()
-                        .is_none_or(|plugged_in| plugged_in == selected_is_plugged_in))
+                    && plugged_in.is_none_or(|plugged_in| plugged_in == selected_is_plugged_in))
                 .then_some(status);
                 self.sleep_prevention
-                    .view(&self.settings.sleep_prevention, status, &self.candidates)
+                    .view(
+                        &self.settings.sleep_prevention,
+                        status,
+                        &self.candidates,
+                        keep_awake,
+                    )
                     .map(Message::SleepPrevention)
             }
             Page::AppSuspension => self

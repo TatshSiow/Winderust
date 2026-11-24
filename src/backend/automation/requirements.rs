@@ -485,6 +485,9 @@ pub(super) fn instance_balancing_required(settings: &Settings) -> bool {
 
 pub(super) fn windows_event_watcher_mode(settings: &Settings) -> Option<WindowsEventWatcherMode> {
     if windows_event_watcher_required(settings)
+        || [settings, settings.battery_profile()]
+            .into_iter()
+            .any(keep_awake_enabled)
         || adaptive_enablement_varies_by_source(settings)
         || cpu_limiter_policy_varies_by_source(settings)
         || timer_resolution_enablement_varies_by_source(settings)

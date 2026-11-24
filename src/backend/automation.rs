@@ -72,7 +72,9 @@ use crate::{
             PauseReason,
         },
         resource_thresholds::{ResourceThresholdsManager, ResourceThresholdsSnapshot},
-        sleep_prevention::{SleepPreventionManager, SleepPreventionSnapshot},
+        sleep_prevention::{
+            keep_awake_enabled, KeepAwakeDuration, SleepPreventionManager, SleepPreventionSnapshot,
+        },
     },
     foreground::{
         cursor_is_shell_window, cursor_process, cursor_process_id, same_executable_path,
@@ -218,6 +220,12 @@ impl ProcessControlBatchResult {
     }
 }
 
+struct KeepAwakeCommand {
+    duration: Option<KeepAwakeDuration>,
+    requested_at: Instant,
+    result: SyncSender<Result<(), RuntimeCommandError>>,
+}
+
 enum ProcessControlCommand {
     ProcessPriority {
         targets: Vec<Result<ProcessActionTarget, ProcessActionTargetError>>,
@@ -267,6 +275,7 @@ enum ProcessControlCommand {
     MemoryTrim {
         result: SyncSender<Result<MemoryTrimSnapshot, RuntimeCommandError>>,
     },
+    KeepAwake(KeepAwakeCommand),
     StopProcesses {
         targets: Vec<ProcessActionTarget>,
         result: SyncSender<Result<ProcessTerminationBatchResult, RuntimeCommandError>>,
@@ -306,7 +315,8 @@ impl ProcessControlCommand {
                 let _ = result.try_send(Err(error));
             }
             Self::StopTreeIntent { .. } | Self::KeepRunningResume { .. } => {}
-            Self::SwitchPowerPlan { result, .. } => {
+            Self::SwitchPowerPlan { result, .. }
+            | Self::KeepAwake(KeepAwakeCommand { result, .. }) => {
                 let _ = result.try_send(Err(error));
             }
         }
@@ -482,6 +492,7 @@ enum WindowsEventWatcherChange {
 struct AutomationWakeEvents {
     settings_changed: bool,
     restore_previous_plan_disabled: bool,
+    keep_awake_disabled: [bool; 2],
     tray_visibility_changed: bool,
     windows_event_watcher_change: Option<WindowsEventWatcherChange>,
     foreground_changed: bool,
@@ -489,6 +500,7 @@ struct AutomationWakeEvents {
     power_changed: bool,
     suspend_resume: bool,
     session_changed: bool,
+    keep_awake_interrupted_at: Option<Instant>,
     clock_changed: bool,
     appearance_changed: bool,
     input_activity: bool,
@@ -505,8 +517,12 @@ impl AutomationWakeEvents {
             WindowsAutomationEvent::SuspendResume => {
                 self.power_changed = true;
                 self.suspend_resume = true;
+                self.keep_awake_interrupted_at = Some(Instant::now());
             }
-            WindowsAutomationEvent::SessionChanged => self.session_changed = true,
+            WindowsAutomationEvent::SessionChanged => {
+                self.session_changed = true;
+                self.keep_awake_interrupted_at = Some(Instant::now());
+            }
             WindowsAutomationEvent::ClockChanged => self.clock_changed = true,
             WindowsAutomationEvent::AppearanceChanged => self.appearance_changed = true,
         }
@@ -615,6 +631,12 @@ impl RuntimeHandle {
                     && !settings.value.general.restore_previous_power_plan
                 {
                     state.pending_events.restore_previous_plan_disabled = true;
+                }
+                for (index, profile) in [&*settings.value, settings.value.battery_profile()]
+                    .into_iter()
+                    .enumerate()
+                {
+                    state.pending_events.keep_awake_disabled[index] |= !keep_awake_enabled(profile);
                 }
                 if state.pending_events.settings_changed {
                     let state = &mut *state;
@@ -968,6 +990,18 @@ impl RuntimeHandle {
         self.enqueue_process_control_command(ProcessControlCommand::MemoryTrim { result })
     }
 
+    pub(crate) fn request_keep_awake(
+        &self,
+        duration: Option<KeepAwakeDuration>,
+        result: SyncSender<Result<(), RuntimeCommandError>>,
+    ) -> Result<(), RuntimeCommandError> {
+        self.enqueue_process_control_command(ProcessControlCommand::KeepAwake(KeepAwakeCommand {
+            duration,
+            requested_at: Instant::now(),
+            result,
+        }))
+    }
+
     pub(crate) fn request_process_termination(
         &self,
         targets: Vec<ProcessActionTarget>,
@@ -1165,7 +1199,20 @@ impl Drop for AutomationWorkerExitGuard<'_> {
         state.worker_accepting_work = false;
         let activity_cleared = state.status.by_activity.take().is_some();
         let balancing_cleared = instance_balancing::clear_rule_status(&mut state);
-        if activity_cleared || balancing_cleared {
+        let keep_awake_cleared = state
+            .status
+            .feature_status
+            .sleep_prevention
+            .keep_awake_until
+            .is_some();
+        if keep_awake_cleared {
+            let status = &mut Arc::make_mut(&mut state.status.feature_status).sleep_prevention;
+            status.keep_awake_until = None;
+            status.system_requested = false;
+            status.display_requested = false;
+            status.requesting_apps.clear();
+        }
+        if activity_cleared || balancing_cleared || keep_awake_cleared {
             bump_status_generation(self.shared, &mut state);
         }
         if exited_while_accepting_work {
@@ -1401,6 +1448,26 @@ fn run_background_automation(
             APP_SUSPENSION_FOREGROUND_RELEASE_INTERVAL,
         );
         let event_now = Instant::now();
+        let previous_sleep_source = runner.sleep_prevention_power_source();
+        let sleep_power_source = plugged_in.or(previous_sleep_source);
+        let sleep_settings = active_power_source_settings(&configured_settings, sleep_power_source);
+        let keep_awake_interrupted = wake_events.suspend_resume
+            || wake_events.session_changed
+            || wake_events.windows_event_watcher_change == Some(WindowsEventWatcherChange::Lost);
+        let keep_awake_ended = runner.sleep_prevention_manager.end_keep_awake_if_due(
+            event_now,
+            windows_event_watcher_active
+                && !keep_awake_interrupted
+                && keep_awake_power_allowed(
+                    &configured_settings,
+                    plugged_in,
+                    previous_sleep_source,
+                    wake_events.power_changed,
+                )
+                && !previous_sleep_source.is_some_and(|plugged_in| {
+                    wake_events.keep_awake_disabled[usize::from(!plugged_in)]
+                }),
+        );
         let settings_changed = runner.note_settings(&configured_settings, wake_events, plugged_in);
         if settings_changed {
             scheduler.invalidate(SchedulerEvent::SettingsChanged, event_now);
@@ -1638,8 +1705,6 @@ fn run_background_automation(
             && feature_refresh_required(settings, timer_resolution_required(settings)))
             || runner.timer_resolution_request_active();
         let timer_resolution_refresh_required = settings_changed || timer_resolution_active;
-        let sleep_power_source = plugged_in.or(runner.sleep_prevention_power_source());
-        let sleep_settings = active_power_source_settings(&configured_settings, sleep_power_source);
         let sleep_prevention_refresh_required = settings_changed
             || feature_refresh_required(sleep_settings, sleep_prevention_required(sleep_settings))
             || (plugged_in.is_none()
@@ -2130,8 +2195,12 @@ fn run_background_automation(
             );
         }
 
-        if sleep_prevention_refresh_required
-            && scheduler.is_due(RefreshDomain::SleepPrevention, now)
+        if keep_awake_ended
+            || runner
+                .sleep_prevention_manager
+                .end_keep_awake_if_due(now, true)
+            || (sleep_prevention_refresh_required
+                && scheduler.is_due(RefreshDomain::SleepPrevention, now))
         {
             let status = runner.run_sleep_prevention_update(
                 configured_settings.as_ref(),
@@ -2145,6 +2214,53 @@ fn run_background_automation(
                 now,
                 SLEEP_PREVENTION_REFRESH_INTERVAL,
             );
+        }
+        for command in command_statuses.keep_awake {
+            let rejected = if command.duration.is_none() {
+                None
+            } else if !windows_event_watcher_active {
+                Some(t!("sleep_prevention.watcher_unavailable"))
+            } else if wake_events
+                .keep_awake_interrupted_at
+                .is_some_and(|event| event >= command.requested_at)
+            {
+                Some(t!("sleep_prevention.keep_awake_interrupted"))
+            } else if plugged_in.is_none() {
+                Some(t!("sleep_prevention.power_source_unavailable"))
+            } else if !keep_awake_enabled(sleep_settings) {
+                Some(t!("sleep_prevention.keep_awake_enable_hint"))
+            } else {
+                None
+            };
+            if let Some(message) = rejected {
+                let _ = command
+                    .result
+                    .try_send(Err(RuntimeCommandError::CommandFailed(
+                        message.into_owned(),
+                    )));
+                continue;
+            }
+            runner
+                .sleep_prevention_manager
+                .set_keep_awake(command.duration, Instant::now());
+            let status = runner.run_sleep_prevention_update(
+                &configured_settings,
+                &mut observations,
+                windows_event_watcher_active,
+                plugged_in,
+            );
+            let result = if command.duration.is_some() && status.keep_awake_until.is_none() {
+                Err(RuntimeCommandError::CommandFailed(
+                    status
+                        .last_error
+                        .clone()
+                        .unwrap_or_else(|| t!("sleep_prevention.keep_awake_failed").into_owned()),
+                ))
+            } else {
+                Ok(())
+            };
+            update_sleep_prevention_status(&shared, status);
+            let _ = command.result.try_send(result);
         }
 
         // Reuse the catalogue if a process policy has already requested it this pass.
@@ -2364,6 +2480,9 @@ fn run_background_automation(
         if runner.cpu_allocation_immediate_reconciliation_pending() {
             wait_for = Some(min_worker_wait(wait_for, Duration::ZERO));
         }
+        if let Some(delay) = runner.sleep_prevention_manager.keep_awake_wait(wait_now) {
+            wait_for = Some(min_worker_wait(wait_for, delay));
+        }
         if automation_worker_can_exit(
             wait_for,
             automation_worker_required(configured_settings.as_ref()),
@@ -2537,6 +2656,20 @@ fn active_power_source_settings(settings: &Settings, plugged_in: Option<bool>) -
         PowerSourceProfile::OnBattery => settings.battery_profile(),
         PowerSourceProfile::PluggedIn => settings,
     }
+}
+
+fn keep_awake_power_allowed(
+    settings: &Settings,
+    plugged_in: Option<bool>,
+    previous: Option<bool>,
+    power_changed: bool,
+) -> bool {
+    if plugged_in.is_none() && power_changed {
+        return keep_awake_enabled(settings) && keep_awake_enabled(settings.battery_profile());
+    }
+    plugged_in.or(previous).is_some_and(|source| {
+        keep_awake_enabled(active_power_source_settings(settings, Some(source)))
+    })
 }
 
 fn next_cpu_allocation_reconciliation_retry_interval(current: Duration) -> Duration {

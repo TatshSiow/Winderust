@@ -1,21 +1,26 @@
 use super::{app_picker, design, widgets};
 use crate::application::SettingsEditor;
-use crate::config::{same_rule_executable_path, SleepPreventionRule, SleepPreventionSettings};
+use crate::config::{
+    same_rule_executable_path, Settings, SleepPreventionRule, SleepPreventionSettings,
+};
 use crate::control::instance_limits::validate_path;
 use crate::foreground::process_list::normalize_path_slashes;
-use crate::sleep_prevention::SleepPreventionSnapshot;
+use crate::sleep_prevention::{keep_awake_enabled, KeepAwakeDuration, SleepPreventionSnapshot};
 use crate::ui::process_rules::{
     can_add_exact_process_candidate, exact_path_input, picked_path_input,
 };
 use iced::{
-    widget::{column, text},
+    widget::{column, row, text},
     Element, Fill,
 };
 use rust_i18n::t;
+use std::time::{Instant, SystemTime};
 
 #[derive(Default)]
 pub(super) struct Editor {
     pub(super) path: String,
+    keep_awake_duration: KeepAwakeDuration,
+    pub(super) keep_awake_pending: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -27,9 +32,48 @@ pub(super) enum Message {
     RuleEnabled(usize, bool),
     KeepDisplayOn(usize, bool),
     Remove(usize),
+    KeepAwakeDuration(KeepAwakeDuration),
+    KeepAwake(Option<KeepAwakeDuration>),
+}
+
+pub(super) struct KeepAwakeView {
+    until: Option<Instant>,
+    availability: Result<(), String>,
+}
+
+impl KeepAwakeView {
+    pub(super) fn new(
+        persisted: &Settings,
+        plugged_in: Option<bool>,
+        status: &SleepPreventionSnapshot,
+    ) -> Self {
+        let availability = match plugged_in {
+            None => Err(t!("sleep_prevention.power_source_unavailable").into_owned()),
+            Some(plugged_in) => {
+                let (profile, source) = if plugged_in {
+                    (persisted, t!("power_source.plugged_in"))
+                } else {
+                    (persisted.battery_profile(), t!("power_source.on_battery"))
+                };
+                if keep_awake_enabled(profile) {
+                    Ok(())
+                } else {
+                    Err(t!("sleep_prevention.keep_awake_disabled", source = source).into_owned())
+                }
+            }
+        };
+        Self {
+            until: status.keep_awake_until,
+            availability,
+        }
+    }
 }
 
 impl Editor {
+    pub(super) fn reset_drafts(&mut self) {
+        self.path.clear();
+    }
+
     fn can_add(settings: &SleepPreventionSettings, path: &str) -> bool {
         validate_path(path).is_ok()
             && can_add_exact_process_candidate(
@@ -46,6 +90,7 @@ impl Editor {
                 settings.sleep_prevention.enabled = value;
             }
             Message::Path(value) => self.path = value,
+            Message::KeepAwakeDuration(duration) => self.keep_awake_duration = duration,
             Message::Add => {
                 let path = exact_path_input(&self.path);
                 if Self::can_add(current, path) {
@@ -78,6 +123,7 @@ impl Editor {
             }
             Message::Enabled(_)
             | Message::Browse
+            | Message::KeepAwake(_)
             | Message::RuleEnabled(..)
             | Message::KeepDisplayOn(..)
             | Message::Remove(_) => {}
@@ -89,6 +135,7 @@ impl Editor {
         settings: &'a SleepPreventionSettings,
         status: Option<&SleepPreventionSnapshot>,
         candidates: &'a [app_picker::Candidate],
+        keep_awake: KeepAwakeView,
     ) -> Element<'a, Message> {
         let rules = settings
             .rules
@@ -143,6 +190,7 @@ impl Editor {
                     settings.enabled,
                     Some(Message::Enabled)
                 ),
+                self.keep_awake_card(keep_awake),
                 widgets::setting_title("common.rules"),
                 widgets::settings_card(picker),
                 widgets::process_rules_table(
@@ -154,6 +202,59 @@ impl Editor {
             .spacing(widgets::CARD_GAP),
         )
         .height(Fill)
+        .into()
+    }
+
+    fn keep_awake_card(&self, view: KeepAwakeView) -> Element<'_, Message> {
+        let (status, action): (_, Element<'_, _>) = if let Some(until) = view.until {
+            let end = SystemTime::now() + until.saturating_duration_since(Instant::now());
+            let local = chrono::DateTime::<chrono::Local>::from(end);
+            (
+                t!(
+                    "sleep_prevention.keep_awake_active",
+                    time = local.format("%H:%M")
+                )
+                .into_owned(),
+                widgets::action_button(t!("sleep_prevention.keep_awake_stop"))
+                    .on_press_maybe((!self.keep_awake_pending).then_some(Message::KeepAwake(None)))
+                    .into(),
+            )
+        } else {
+            let can_start = view.availability.is_ok() && !self.keep_awake_pending;
+            let start = widgets::action_button(t!("sleep_prevention.keep_awake_start"))
+                .on_press_maybe(
+                    can_start.then_some(Message::KeepAwake(Some(self.keep_awake_duration))),
+                );
+            let status = view
+                .availability
+                .err()
+                .unwrap_or_else(|| t!("common.off").into_owned());
+            (
+                status,
+                row![
+                    widgets::pick_list(
+                        KeepAwakeDuration::OPTIONS,
+                        Some(self.keep_awake_duration),
+                        Message::KeepAwakeDuration,
+                    )
+                    .width(iced::Shrink),
+                    start
+                ]
+                .spacing(design::space::SMALL)
+                .align_y(iced::Center)
+                .into(),
+            )
+        };
+        widgets::settings_card(
+            column![
+                widgets::setting_row("sleep_prevention.keep_awake", action),
+                text(status)
+                    .size(design::typography::SECONDARY)
+                    .style(text::secondary)
+                    .width(Fill),
+            ]
+            .spacing(design::space::SMALL),
+        )
         .into()
     }
 }

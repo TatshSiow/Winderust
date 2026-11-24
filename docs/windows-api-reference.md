@@ -1364,13 +1364,19 @@ simple string, checks the create call's `INVALID_HANDLE_VALUE` failure, and
 retains native error codes. The owned request handle uses the existing
 `WinHandle` cleanup; it is never inherited or duplicated.
 
-`src/control/sleep_prevention.rs` keeps one accepted System request while any
-eligible rule claims it, plus one Display request when requested. Display always
+`src/control/sleep_prevention.rs` keeps one accepted System request while an
+eligible rule or timed Keep awake session claims it. Only app rules can add a
+Display request. Display always
 holds System too. Unchanged reconciliation and display-mode changes do not
 renew the System count. Shutdown clears accepted counts and closes the object
 even when a clear fails; process termination also closes Winderust's handles.
 These self-owned requests do not mutate another process or a persistent power
 plan, and need no crash-recovery journal.
+
+The Keep awake deadline uses Rust's monotonic `Instant` and the existing runtime
+worker wait. Session and suspend events discard the temporary claim. It shares
+the controller with app rules, so Stop and expiry preserve an eligible app's
+request without creating or renewing a second native request.
 
 Accepted calls do not prove effective sleep inhibition. Windows policy and user
 actions still govern sleep. User-initiated sleep terminates these requests; on

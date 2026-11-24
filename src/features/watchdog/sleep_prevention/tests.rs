@@ -1,5 +1,156 @@
 use super::*;
 use crate::config::SleepPreventionRule;
+use crate::platform::windows::sleep_prevention::{
+    RequestKind, SleepPreventionError, SleepPreventionPlatform,
+};
+use std::cell::Cell;
+
+#[derive(Default)]
+struct KeepAwakePlatform {
+    system_set_count: Cell<usize>,
+    reject_set: bool,
+    reject_clear_display: bool,
+}
+
+impl SleepPreventionPlatform for &KeepAwakePlatform {
+    type Handle = ();
+
+    fn create(&self, _reason: &str) -> Result<(), SleepPreventionError> {
+        Ok(())
+    }
+
+    fn set(&self, _handle: &(), kind: RequestKind) -> Result<(), SleepPreventionError> {
+        if self.reject_set {
+            return Err(SleepPreventionError {
+                operation: "set",
+                code: 5,
+            });
+        }
+        if kind == RequestKind::System {
+            self.system_set_count.set(self.system_set_count.get() + 1);
+        }
+        Ok(())
+    }
+
+    fn clear(&self, _handle: &(), kind: RequestKind) -> Result<(), SleepPreventionError> {
+        if self.reject_clear_display && kind == RequestKind::Display {
+            return Err(SleepPreventionError {
+                operation: "clear",
+                code: 5,
+            });
+        }
+        Ok(())
+    }
+}
+
+#[test]
+fn keep_awake_expiry_and_rule_overlap_share_the_accepted_request() {
+    let platform = KeepAwakePlatform::default();
+    let mut controller = SleepPreventionController::new(&platform);
+    let mut manager = SleepPreventionManager::default();
+    let mut log = ActionLog::default();
+    let now = Instant::now();
+    let duration = Duration::from_secs(15 * 60);
+    assert_eq!(manager.keep_awake_wait(now), None);
+    manager.set_keep_awake(Some(KeepAwakeDuration::FifteenMinutes), now);
+    let apply = |manager: &mut SleepPreventionManager, controller: &mut _, log: &mut _, mode| {
+        manager.apply(controller, mode, SleepPreventionSnapshot::default(), log)
+    };
+    let manual = apply(
+        &mut manager,
+        &mut controller,
+        &mut log,
+        SleepPreventionMode::Off,
+    );
+    assert!(manual.system_requested && manual.keep_awake_until.is_some());
+    assert!(!manual.display_requested && !manager.rule_system_requested());
+    let overlapping = apply(
+        &mut manager,
+        &mut controller,
+        &mut log,
+        SleepPreventionMode::SystemAndDisplay,
+    );
+    assert!(overlapping.system_requested && overlapping.display_requested);
+    assert_eq!(manager.keep_awake_wait(now), Some(duration));
+    let before = now + duration - Duration::from_millis(1);
+    assert!(!manager.end_keep_awake_if_due(before, true));
+    assert_eq!(
+        manager.keep_awake_wait(before),
+        Some(Duration::from_millis(1))
+    );
+    assert!(manager.end_keep_awake_if_due(now + duration, true));
+    assert_eq!(manager.keep_awake_wait(now + duration), None);
+    let rules_only = apply(
+        &mut manager,
+        &mut controller,
+        &mut log,
+        SleepPreventionMode::SystemAndDisplay,
+    );
+    assert!(rules_only.system_requested && rules_only.display_requested);
+    assert_eq!(rules_only.keep_awake_until, None);
+    assert_eq!(platform.system_set_count.get(), 1);
+    let stopped = apply(
+        &mut manager,
+        &mut controller,
+        &mut log,
+        SleepPreventionMode::Off,
+    );
+    assert!(!stopped.system_requested && !stopped.display_requested);
+}
+
+#[test]
+fn keep_awake_ends_if_the_last_rule_display_count_cannot_be_cleared() {
+    let platform = KeepAwakePlatform {
+        reject_clear_display: true,
+        ..Default::default()
+    };
+    let mut controller = SleepPreventionController::new(&platform);
+    let mut manager = SleepPreventionManager::default();
+    let mut log = ActionLog::default();
+    manager.set_keep_awake(Some(KeepAwakeDuration::FifteenMinutes), Instant::now());
+    let active = manager.apply(
+        &mut controller,
+        SleepPreventionMode::SystemAndDisplay,
+        SleepPreventionSnapshot::default(),
+        &mut log,
+    );
+    assert!(active.system_requested && active.display_requested);
+    let stopped = manager.apply(
+        &mut controller,
+        SleepPreventionMode::Off,
+        SleepPreventionSnapshot::default(),
+        &mut log,
+    );
+    assert_eq!(stopped.keep_awake_until, None);
+    assert!(!stopped.system_requested && !stopped.display_requested);
+    assert!(stopped.last_error.is_some());
+    assert_eq!(platform.system_set_count.get(), 1);
+}
+
+#[test]
+fn keep_awake_failure_and_interruption_clear_the_deadline() {
+    let mut manager = SleepPreventionManager::default();
+    let now = Instant::now();
+    manager.set_keep_awake(Some(KeepAwakeDuration::OneHour), now);
+    assert!(manager.end_keep_awake_if_due(now, false));
+    assert_eq!(manager.keep_awake_wait(now), None);
+
+    let platform = KeepAwakePlatform {
+        reject_set: true,
+        ..Default::default()
+    };
+    let mut controller = SleepPreventionController::new(&platform);
+    manager.set_keep_awake(Some(KeepAwakeDuration::TwoHours), now);
+    let status = manager.apply(
+        &mut controller,
+        SleepPreventionMode::Off,
+        SleepPreventionSnapshot::default(),
+        &mut ActionLog::default(),
+    );
+    assert_eq!(status.keep_awake_until, None);
+    assert!(!status.system_requested && status.last_error.is_some());
+    assert_eq!(manager.keep_awake_wait(now), None);
+}
 
 fn process(id: u32, path: &str) -> ProcessInfo {
     ProcessInfo {

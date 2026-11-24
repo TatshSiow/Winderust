@@ -45,6 +45,7 @@ pub(super) fn set_windows_event_watcher_active(shared: &SharedAutomationState, a
         change.get_or_insert(WindowsEventWatcherChange::Started);
     } else {
         *change = Some(WindowsEventWatcherChange::Lost);
+        state.pending_events.keep_awake_interrupted_at = Some(Instant::now());
     }
     if instance_balancing::clear_rule_status(&mut state) {
         bump_status_generation(shared, &mut state);
@@ -65,7 +66,19 @@ pub(super) fn notify_tray_visibility_changed(shared: &SharedAutomationState) {
 
 pub(super) fn notify_windows_event(shared: &SharedAutomationState, event: WindowsAutomationEvent) {
     let mut state = lock_unpoisoned(&shared.state);
-    if state.stop_requested || !windows_event_wake_required(&state.settings, event) {
+    if state.stop_requested
+        || !(windows_event_wake_required(&state.settings, event)
+            || (state.worker_accepting_work
+                && matches!(
+                    event,
+                    WindowsAutomationEvent::SuspendResume
+                        | WindowsAutomationEvent::SessionChanged
+                        | WindowsAutomationEvent::PowerChanged
+                )
+                && [state.settings.as_ref(), state.settings.battery_profile()]
+                    .into_iter()
+                    .any(keep_awake_enabled)))
+    {
         return;
     }
 

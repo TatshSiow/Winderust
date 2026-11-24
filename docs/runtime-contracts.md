@@ -1023,6 +1023,16 @@ Read the relevant section before changing feature policy, ownership, restoration
   required request types. Removing one app cannot release another app's request.
   Disable, confirmed last-app exit, profile handoff, and Exit release owned
   requests. Process teardown closes the request object without a crash journal.
+- The Keep awake action takes a 15-minute, 30-minute, one-hour, or two-hour
+  system sleep request. It is off at startup and requires automation and Sleep
+  Prevention to be enabled in the saved active power profile. The runtime keeps
+  one monotonic expiry deadline while the request is active. Expiry, Stop, a
+  suspend or session event, a switch to a disabled or unconfirmed power profile,
+  disabling the feature, losing Windows event coverage, or Exit ends the action.
+  Stop and expiry preserve requests still needed by running apps, including
+  display requests. If Windows rejects release of the last app's display request
+  during a timed session, Winderust closes the shared request and ends the
+  session. Windows applies its ordinary power policy to accepted requests.
 - A confirmed App Suspension freeze withdraws that exact instance's request.
   Other runnable instances still contribute their system and display requests.
   The next complete observation after thaw can restore an eligible request.
