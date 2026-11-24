@@ -6,7 +6,7 @@ use crate::{
     foreground::process_list::normalize_path_slashes,
 };
 use iced::{
-    widget::{column, row, text},
+    widget::{column, text},
     Element, Fill,
 };
 use rust_i18n::t;
@@ -142,23 +142,15 @@ impl Editor {
                             .into(),
                     ),
                     Vec::new(),
-                    row![
-                        widgets::tooltip(
-                            widgets::icon_button("icons/pencil.svg").on_press(Message::Edit(index)),
-                            text(t!("common.edit").to_string()),
-                            iced::widget::tooltip::Position::Top
-                        ),
-                        widgets::rule_delete_button(Some(Message::Remove(index)))
-                    ]
-                    .spacing(design::space::SMALL)
-                    .into(),
+                    widgets::rule_actions(Some(Message::Edit(index)), Some(Message::Remove(index))),
                 );
-                let mut details = column![].spacing(design::space::SMALL);
+                let mut row = column![header];
                 if let Some(runtime) = runtime {
-                    details = details.push(
-                        text(t!("keep_running.attempts", count = runtime.attempts).to_string())
-                            .size(design::typography::SECONDARY),
-                    );
+                    let mut details = column![text(
+                        t!("keep_running.attempts", count = runtime.attempts).to_string()
+                    )
+                    .size(design::typography::SECONDARY)]
+                    .spacing(design::space::SMALL);
                     if let Some(seconds) = runtime.next_retry_seconds {
                         details = details.push(
                             text(t!("keep_running.next_retry", seconds = seconds).to_string())
@@ -168,38 +160,34 @@ impl Editor {
                     if let Some(error) = &runtime.last_error {
                         details = details.push(text(error).style(text::danger));
                     }
-                }
-                if matches!(state, Some(KeepRunningState::Paused(_))) {
-                    let resume = widgets::action_button(t!("keep_running.resume").to_string())
-                        .on_press_maybe(
-                            (!settings_are_pending)
-                                .then(|| Message::Resume(rule.executable_path.clone())),
-                        );
-                    details = if settings_are_pending {
-                        details.push(widgets::tooltip(
-                            resume,
-                            text(t!("keep_running.save_before_resume").to_string())
-                                .width(240)
-                                .wrapping(text::Wrapping::WordOrGlyph),
-                            iced::widget::tooltip::Position::Top,
-                        ))
-                    } else {
-                        details.push(resume)
-                    };
+                    if matches!(state, Some(KeepRunningState::Paused(_))) {
+                        let resume = widgets::action_button(t!("keep_running.resume").to_string())
+                            .on_press_maybe(
+                                (!settings_are_pending)
+                                    .then(|| Message::Resume(rule.executable_path.clone())),
+                            );
+                        details = if settings_are_pending {
+                            details.push(widgets::tooltip(
+                                resume,
+                                text(t!("keep_running.save_before_resume").to_string())
+                                    .width(240)
+                                    .wrapping(text::Wrapping::WordOrGlyph),
+                                iced::widget::tooltip::Position::Top,
+                            ))
+                        } else {
+                            details.push(resume)
+                        };
+                    }
+                    row = row.push(iced::widget::container(details).padding(iced::Padding {
+                        top: 0.0,
+                        right: widgets::CARD_PADDING as f32,
+                        bottom: widgets::CARD_PADDING as f32,
+                        left: widgets::CARD_PADDING as f32,
+                    }));
                 }
                 (
                     widgets::stable_key(&rule.executable_path),
-                    column![
-                        header,
-                        iced::widget::container(details).padding(iced::Padding {
-                            top: 0.0,
-                            right: widgets::CARD_PADDING as f32,
-                            bottom: widgets::CARD_PADDING as f32,
-                            left: widgets::CARD_PADDING as f32,
-                        }),
-                        widgets::settings_divider(),
-                    ]
-                    .into(),
+                    row.push(widgets::settings_divider()).into(),
                 )
             })
             .collect();
@@ -221,13 +209,7 @@ impl Editor {
                     .then_some(Message::Add),
                 |path| Self::addable_rule(settings, path).is_some().then_some(true)
             )),
-            widgets::process_rules_table_with_actions(
-                [],
-                rules,
-                t!("keep_running.empty").to_string(),
-                80,
-                true
-            ),
+            widgets::process_rules_table([], rules, true),
         ]
         .spacing(widgets::CARD_GAP);
         if settings.enabled && !status.observation_known {
@@ -247,57 +229,50 @@ impl Editor {
     ) -> Option<Element<'a, Message>> {
         let (index, rule) = self.draft.as_ref()?;
         let valid = rule.validate().is_ok();
-        let mut body = column![
+        let mut fields = widgets::settings_rows([
+            column![
+                widgets::setting_title("keep_running.arguments"),
+                widgets::text_input("", &rule.arguments).on_input(Message::Arguments),
+            ]
+            .spacing(design::space::SMALL)
+            .into(),
+            column![
+                widgets::setting_title("keep_running.working_directory"),
+                widgets::text_input("", &rule.working_directory)
+                    .on_input(Message::WorkingDirectory),
+            ]
+            .spacing(design::space::SMALL)
+            .into(),
+        ])
+        .push(
+            text(t!("keep_running.launch_help").to_string())
+                .size(design::typography::SECONDARY)
+                .style(text::secondary),
+        );
+        if !valid {
+            fields = fields.push(text(t!("keep_running.invalid").to_string()).style(text::danger));
+        }
+        let body = column![
             app_picker::app_name(&rule.executable_path, candidates),
             text(rule.executable_path.clone()).style(text::secondary),
             widgets::heading(
                 t!("keep_running.launch_settings").to_string(),
                 design::typography::BODY
             ),
-            widgets::settings_card(
-                column![
-                    widgets::setting_title("keep_running.arguments"),
-                    widgets::text_input("", &rule.arguments).on_input(Message::Arguments),
-                    widgets::settings_divider(),
-                    widgets::setting_title("keep_running.working_directory"),
-                    widgets::text_input("", &rule.working_directory)
-                        .on_input(Message::WorkingDirectory),
-                ]
-                .spacing(design::space::SMALL)
-            ),
-            text(t!("keep_running.launch_help").to_string()).size(design::typography::SECONDARY),
+            widgets::settings_card(fields),
         ]
         .spacing(widgets::CARD_GAP);
-        if !valid {
-            body = body.push(text(t!("keep_running.invalid").to_string()).style(text::danger));
-        }
-        Some(widgets::modal_frame(
-            row![
-                widgets::heading(
-                    t!(if index.is_some() {
-                        "keep_running.edit_rule"
-                    } else {
-                        "keep_running.add_rule"
-                    })
-                    .to_string(),
-                    design::typography::SECTION
-                )
-                .width(Fill),
-                widgets::icon_button("icons/x.svg").on_press(Message::CancelRule)
-            ]
-            .align_y(iced::Center),
+        Some(widgets::rule_dialog(
+            t!(if index.is_some() {
+                "keep_running.edit_rule"
+            } else {
+                "keep_running.add_rule"
+            })
+            .to_string(),
             super::scrolling::scrollable_pane(body).height(Fill),
-            row![
-                iced::widget::Space::new().width(Fill),
-                widgets::action_button(t!("common.cancel").to_string())
-                    .style(widgets::tertiary_button)
-                    .on_press(Message::CancelRule),
-                widgets::action_button(t!("common.ok").to_string())
-                    .style(widgets::primary_button)
-                    .on_press_maybe(valid.then_some(Message::SaveRule)),
-            ]
-            .spacing(design::space::SMALL),
-            (760, 620),
+            Message::CancelRule,
+            valid.then_some(Message::SaveRule),
+            (760, 460),
         ))
     }
 }

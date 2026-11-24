@@ -148,16 +148,18 @@ fn by_time_dialog_stays_centered_with_picker_open_or_closed() {
 fn rule_tables_align_columns_and_keep_controls_working_at_both_widths() {
     use iced::advanced::{layout, widget::Tree, Layout, Shell};
     use iced::{mouse, Event, Rectangle, Size};
-    fn find_table(layout: Layout<'_>, count: usize) -> Option<Layout<'_>> {
+    fn find_rows<'a>(layout: Layout<'a>, rows: &mut Vec<Layout<'a>>) {
         let cells: Vec<_> = layout.children().collect();
-        if cells.len() == count
-            && cells[0].bounds().width == 48.0
-            && cells[1].bounds().width == 140.0
-            && cells[3].bounds().width == 80.0
+        if cells.len() == 4
+            && cells[0].bounds().width == widgets::RULE_ENABLE_WIDTH as f32
+            && cells[1].bounds().width == widgets::RULE_STATUS_WIDTH as f32
+            && cells[3].bounds().width == widgets::RULE_ACTIONS_WIDTH as f32
         {
-            Some(layout)
+            rows.push(layout);
         } else {
-            layout.children().find_map(|child| find_table(child, count))
+            for child in cells {
+                find_rows(child, rows);
+            }
         }
     }
     let editor = Editor::default();
@@ -206,20 +208,18 @@ fn rule_tables_align_columns_and_keep_controls_working_at_both_widths() {
                     &layout::Limits::new(Size::ZERO, bounds.size()),
                 );
                 assert_eq!(node.bounds().width, width as f32);
-                let table =
-                    find_table(Layout::new(&node), 4 * (count + 1)).expect("header and rule rows");
-                let cells: Vec<_> = table.children().collect();
-                assert_eq!(
-                    table.bounds().width,
-                    (width as f32 - 14.0).max(600.0) - 20.0
-                );
-                for row in (4..cells.len()).step_by(4) {
-                    for column in 0..3 {
-                        assert_eq!(cells[column].bounds().x, cells[row + column].bounds().x);
+                let mut rows = Vec::new();
+                find_rows(Layout::new(&node), &mut rows);
+                assert_eq!(rows.len(), count + 1, "header and rule rows");
+                let expected_width = (width as f32 - crate::ui::scrolling::SCROLLBAR_GUTTER)
+                    .max(600.0)
+                    - 2.0 * widgets::CARD_PADDING as f32;
+                for row in &rows {
+                    assert_eq!(row.bounds().width, expected_width);
+                    for (header, cell) in rows[0].children().zip(row.children()) {
+                        assert_eq!(header.bounds().x, cell.bounds().x);
+                        assert_eq!(header.bounds().width, cell.bounds().width);
                     }
-                    assert_eq!(cells[row].bounds().width, 48.0);
-                    assert_eq!(cells[row + 1].bounds().width, 140.0);
-                    assert_eq!(cells[row + 3].bounds().width, 80.0);
                 }
                 view.as_widget_mut().update(
                     &mut tree,
@@ -236,8 +236,10 @@ fn rule_tables_align_columns_and_keep_controls_working_at_both_widths() {
                 if count == 0 {
                     continue;
                 }
-                let toggle = cells[4].children().next().unwrap().bounds().center();
-                let edit = cells[11]
+                let first_row: Vec<_> = rows[1].children().collect();
+                let second_row: Vec<_> = rows[2].children().collect();
+                let toggle = first_row[0].children().next().unwrap().bounds().center();
+                let edit = second_row[3]
                     .children()
                     .next()
                     .unwrap()
@@ -246,7 +248,7 @@ fn rule_tables_align_columns_and_keep_controls_working_at_both_widths() {
                     .unwrap()
                     .bounds()
                     .center();
-                let remove = cells[7]
+                let remove = first_row[3]
                     .children()
                     .next()
                     .unwrap()

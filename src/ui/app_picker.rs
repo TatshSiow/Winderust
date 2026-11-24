@@ -126,9 +126,7 @@ pub(super) fn view_with_path_selection<'a, M: Clone + 'static>(
             }),
             (enabled && !query.is_empty()).then(|| edit(String::new())),
         ),
-        widgets::action_button(t!("common.add").to_string())
-            .style(crate::ui::widgets::primary_button)
-            .on_press_maybe(add),
+        widgets::rule_add_button(add),
     ]
     .spacing(design::space::SMALL)
     .align_y(iced::Center)

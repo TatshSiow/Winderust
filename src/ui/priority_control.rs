@@ -586,7 +586,11 @@ impl Editor {
                 group,
             ));
         }
-        body = body.push(super::widgets::setting_title(&format!("{key}.exclusions")));
+        body = body.push(super::widgets::setting_title_with_help(
+            "common.rules",
+            "",
+            &format!("{key}.exclusions_help"),
+        ));
         body = body.push(super::widgets::settings_card(
             super::app_picker::view_with_path_selection(
                 &self.path,
@@ -630,7 +634,7 @@ impl Editor {
         body = body.push(super::widgets::process_rules_table(
             Tier::ALL.map(|tier| tier.label()),
             rule_cards,
-            localized(key, "no_exclusions"),
+            false,
         ));
 
         scrollable(body).height(Fill).into()
@@ -784,11 +788,6 @@ impl std::fmt::Display for Value {
         })
     }
 }
-fn localized(section: &str, field: &str) -> String {
-    let key = format!("{section}.{field}");
-    t!(&key).to_string()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

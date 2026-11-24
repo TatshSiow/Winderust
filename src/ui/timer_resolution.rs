@@ -173,7 +173,7 @@ impl Editor {
                 "ms",
             )],
             cards,
-            t!("timer_resolution.no_rules").to_string(),
+            false,
         ));
 
         if let Some(error) = &status.last_error {

@@ -439,23 +439,21 @@ impl Editor {
             .enumerate()
             .map(|(index, rule)| {
                 let value = rule.selector.value();
-                let target = match &rule.selector {
-                    WatchdogSelector::ExactPath { executable_path } => executable_path.clone(),
-                    WatchdogSelector::ExactName { .. } => t!("common.any_path").to_string(),
-                };
-                let target = match rule.scope {
-                    WatchdogScope::Combined => target,
-                    WatchdogScope::PerInstance => format!("{} · {target}", rule.scope),
+                let (app, target) = widgets::process_rule_target(&rule.selector, candidates);
+                let label = t!("common.rule", number = index + 1);
+                let label = match rule.scope {
+                    WatchdogScope::Combined => label.into_owned(),
+                    WatchdogScope::PerInstance => format!("{label} · {}", rule.scope),
                 };
                 (
                     widgets::stable_key(&format!("{index}:{value}")),
                     column![
                         widgets::process_rule_header_with_target(
                             column![
-                                text(t!("common.rule", number = index + 1).to_string())
+                                text(label)
                                     .size(design::typography::CAPTION)
                                     .style(text::secondary),
-                                app_picker::app_name(value, candidates),
+                                app,
                             ]
                             .spacing(design::space::TINY)
                             .into(),
@@ -486,17 +484,10 @@ impl Editor {
                                     .into()
                                 })
                                 .collect(),
-                            row![
-                                super::widgets::tooltip(
-                                    widgets::icon_button("icons/pencil.svg")
-                                        .on_press(Message::Edit(index)),
-                                    text(t!("common.edit").to_string()),
-                                    iced::widget::tooltip::Position::Top,
-                                ),
-                                widgets::rule_delete_button(Some(Message::Remove(index)))
-                            ]
-                            .spacing(design::space::SMALL)
-                            .into(),
+                            widgets::rule_actions(
+                                Some(Message::Edit(index)),
+                                Some(Message::Remove(index)),
+                            ),
                         ),
                         widgets::settings_divider(),
                     ]
@@ -533,13 +524,11 @@ impl Editor {
                     )
                     .into(),
                 ])),
-                widgets::setting_title("watchdog.rules"),
+                widgets::setting_title("common.rules"),
                 self.add_rule_card(settings, candidates),
-                widgets::process_rules_table_with_actions(
+                widgets::process_rules_table(
                     ["watchdog.cpu_tab", "watchdog.memory_tab"].map(|key| t!(key).to_string()),
                     rules,
-                    t!("watchdog.empty").to_string(),
-                    80,
                     false,
                 ),
             ]
@@ -569,13 +558,11 @@ impl Editor {
                 column![
                     widgets::setting_title("common.executable_name"),
                     row![
-                        widgets::text_input("worker.exe", &self.name)
+                        widgets::text_input("app.exe", &self.name)
                             .on_input(Message::Name)
                             .on_submit_maybe(add.clone())
                             .width(Fill),
-                        widgets::action_button(t!("common.add").to_string())
-                            .style(widgets::primary_button)
-                            .on_press_maybe(add),
+                        widgets::rule_add_button(add),
                     ]
                     .spacing(design::space::SMALL)
                     .align_y(iced::Center),
@@ -592,7 +579,7 @@ impl Editor {
                     Some(self.match_by),
                     Message::MatchBy,
                 )
-                .width(180),
+                .width(design::SELECT_WIDTH),
             )
             .into(),
             target,
@@ -842,21 +829,13 @@ impl Editor {
             ),
             _ => None,
         };
-        let frame = widgets::modal_frame(
-            row![
-                widgets::heading(
-                    t!(if draft.index.is_some() {
-                        "watchdog.edit_rule"
-                    } else {
-                        "watchdog.add_rule"
-                    })
-                    .to_string(),
-                    design::typography::SECTION,
-                )
-                .width(Fill),
-                widgets::icon_button("icons/x.svg").on_press(Message::CancelRule),
-            ]
-            .align_y(iced::Center),
+        let frame = widgets::rule_dialog(
+            t!(if draft.index.is_some() {
+                "watchdog.edit_rule"
+            } else {
+                "watchdog.add_rule"
+            })
+            .to_string(),
             column![
                 row![
                     column![
@@ -915,16 +894,8 @@ impl Editor {
             ))
             .spacing(widgets::CARD_GAP)
             .height(Fill),
-            row![
-                iced::widget::Space::new().width(Fill),
-                widgets::action_button(t!("common.cancel").to_string())
-                    .style(widgets::tertiary_button)
-                    .on_press(Message::CancelRule),
-                widgets::action_button(t!("common.ok").to_string())
-                    .style(widgets::primary_button)
-                    .on_press_maybe(valid.then_some(Message::SaveRule)),
-            ]
-            .spacing(design::space::SMALL),
+            Message::CancelRule,
+            valid.then_some(Message::SaveRule),
             (760, 840),
         );
         Some(super::modal::dismiss_on_escape(frame, Message::CancelRule))

@@ -34,7 +34,7 @@ impl TuningTab {
     fn key(self) -> &'static str {
         match self {
             Self::CpuBehaviour => "adaptive_engine.cpu_behaviour",
-            Self::CustomRules => "adaptive_engine_process.custom_rules",
+            Self::CustomRules => "common.rules",
         }
     }
 }
@@ -848,11 +848,11 @@ impl Editor {
             TuningTab::CustomRules => {}
         }
         if !preset && tab == TuningTab::CustomRules {
-            body = body
-                .push(super::widgets::setting_title(
-                    "adaptive_engine_process.custom_rules",
-                ))
-                .push(super::widgets::settings_card(
+            body = body.push(super::widgets::settings_card(
+                column![
+                    text(t!("adaptive_engine_process.custom_rules_help").to_string())
+                        .size(design::typography::SECONDARY)
+                        .style(text::secondary),
                     super::app_picker::view_with_path_selection(
                         &self.path,
                         candidates,
@@ -863,7 +863,9 @@ impl Editor {
                             .then_some(Message::AddExclusion),
                         |path| can_add_exclusion(&s.adaptive_engine_process, path).then_some(true),
                     ),
-                ));
+                ]
+                .spacing(design::space::SMALL),
+            ));
             let rules = s
                 .adaptive_engine_process
                 .custom_rules
@@ -884,11 +886,7 @@ impl Editor {
                     )
                 })
                 .collect();
-            body = body.push(super::widgets::process_rules_table(
-                [],
-                rules,
-                t!("common.no_custom_rules").to_string(),
-            ));
+            body = body.push(super::widgets::process_rules_table([], rules, false));
         }
 
         if let Some(error) = numbers.validation_error() {

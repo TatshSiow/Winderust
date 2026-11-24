@@ -124,19 +124,10 @@ impl Editor {
                                 .into(),
                             None,
                             Vec::new(),
-                            row![
-                                widgets::tooltip(
-                                    widgets::icon_button("icons/pencil.svg")
-                                        .on_press(Message::Edit(index)),
-                                    text(t!("common.edit").to_string()),
-                                    iced::widget::tooltip::Position::Top,
-                                ),
-                                widgets::rule_delete_button(Some(Message::Remove(index))),
-                            ]
-                            .spacing(design::space::SMALL)
-                            .width(80)
-                            .align_y(iced::Center)
-                            .into(),
+                            widgets::rule_actions(
+                                Some(Message::Edit(index)),
+                                Some(Message::Remove(index)),
+                            ),
                         ),
                         widgets::settings_divider(),
                     ]
@@ -170,13 +161,7 @@ impl Editor {
                 ),
                 widgets::setting_title("common.rules"),
                 widgets::settings_card(picker),
-                widgets::process_rules_table_with_actions(
-                    [],
-                    rules,
-                    t!("instance_balancing.empty").to_string(),
-                    80,
-                    false,
-                ),
+                widgets::process_rules_table([], rules, false),
             ]
             .spacing(widgets::CARD_GAP),
         )
@@ -192,41 +177,35 @@ impl Editor {
         let (index, path) = self.draft.as_ref()?;
         let error = path_error(settings, path, Some(*index));
         let valid = error.is_none();
-        let mut body = column![
-            app_picker::app_name(path, candidates),
+        let mut fields = column![
             widgets::setting_title("process_list.executable_path"),
-            widgets::text_input("", path)
-                .on_input(Message::Path)
-                .on_submit(Message::SaveRule),
-            widgets::action_button(t!("common.browse_local_executable").to_string())
-                .style(widgets::tertiary_button)
-                .on_press(Message::Browse),
+            row![
+                widgets::text_input("", path)
+                    .on_input(Message::Path)
+                    .on_submit(Message::SaveRule)
+                    .width(Fill),
+                widgets::action_button(t!("common.browse_local_executable").to_string())
+                    .style(widgets::tertiary_button)
+                    .on_press(Message::Browse),
+            ]
+            .spacing(design::space::SMALL)
+            .align_y(iced::Center),
+        ]
+        .spacing(design::space::SMALL);
+        if let Some(error) = error {
+            fields = fields.push(text(error).style(text::danger));
+        }
+        let body = column![
+            app_picker::app_name(path, candidates),
+            widgets::setting_title("common.rule_details"),
+            widgets::settings_card(fields),
         ]
         .spacing(widgets::CARD_GAP);
-        if let Some(error) = error {
-            body = body.push(text(error).style(text::danger));
-        }
-        Some(widgets::modal_frame(
-            row![
-                widgets::heading(
-                    t!("instance_balancing.edit_rule").to_string(),
-                    design::typography::SECTION,
-                )
-                .width(Fill),
-                widgets::icon_button("icons/x.svg").on_press(Message::CancelRule),
-            ]
-            .align_y(iced::Center),
+        Some(widgets::rule_dialog(
+            t!("instance_balancing.edit_rule").to_string(),
             super::scrolling::scrollable_pane(body).height(Fill),
-            row![
-                iced::widget::Space::new().width(Fill),
-                widgets::action_button(t!("common.cancel").to_string())
-                    .style(widgets::tertiary_button)
-                    .on_press(Message::CancelRule),
-                widgets::action_button(t!("common.ok").to_string())
-                    .style(widgets::primary_button)
-                    .on_press_maybe(valid.then_some(Message::SaveRule)),
-            ]
-            .spacing(design::space::SMALL),
+            Message::CancelRule,
+            valid.then_some(Message::SaveRule),
             (760, 460),
         ))
     }

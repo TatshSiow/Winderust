@@ -247,15 +247,14 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             ];
         }
         if matches!(extra, Some(51..=53)) {
-            let mut rule =
-                crate::config::WatchdogRule::new(r"C:\Apps\Resource Monitor\sample.exe".into());
-            rule.memory.enabled = true;
-            rule.memory_unit = crate::config::WatchdogMemoryUnit::Megabytes;
-            rule.memory.warning.threshold = 1000;
-            rule.memory.critical.threshold = 2000;
-            rule.memory.critical.action = crate::config::WatchdogAction::Terminate;
-            app.settings
-                .edit_global(|settings| settings.watchdog.rules = vec![rule]);
+            app.settings.edit_global(|settings| {
+                let rule = &mut settings.watchdog.rules[0];
+                rule.memory.enabled = true;
+                rule.memory_unit = crate::config::WatchdogMemoryUnit::Megabytes;
+                rule.memory.warning.threshold = 1000;
+                rule.memory.critical.threshold = 2000;
+                rule.memory.critical.action = crate::config::WatchdogAction::Terminate;
+            });
             app.watchdog = watchdog::Editor::default();
             let _ = app.update(Message::Watchdog(watchdog::Message::Edit(0)));
         }
@@ -476,7 +475,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                 priority_control::Tier::Focus,
             )));
         }
-        if let Some(index @ 4..=12) = extra {
+        if let Some(index @ 4..=11) = extra {
             if index <= 10 {
                 use adaptive_engine::{Message as AdaptiveMessage, TuningTab};
                 if index == 4 {
@@ -551,7 +550,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                     assert!(!app.adaptive.preset_open());
                     let _ = app.update(open());
                 }
-            } else if index == 11 {
+            } else {
                 app.settings
                     .memory_trim
                     .exclusions
@@ -560,15 +559,6 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                         enabled: false,
                         ..Default::default()
                     });
-                let _ = app.update(Message::Trim(memory_trim::Message::ToggleSafety));
-            } else {
-                app.settings
-                    .by_focus
-                    .rules
-                    .push(crate::ui::process_rules::new_by_focus_rule(
-                        r"C:\Apps\Example\example.exe",
-                        None,
-                    ));
             }
         }
         if extra == Some(9) {
@@ -954,6 +944,10 @@ pub(super) fn captured(app: &mut WinderustApp, shot: iced::window::Screenshot) -
 }
 
 pub(crate) fn render_all_pages() {
+    use crate::config::{
+        ByFocusRule, ByRunningAppRule, ExecutableSelector, WatchdogRule, WatchdogScope,
+    };
+
     std::fs::create_dir_all("target/iced-smoke").expect("create smoke output");
     let mut settings = crate::config::Settings::default();
     settings.general.enabled = false;
@@ -962,6 +956,43 @@ pub(crate) fn render_all_pages() {
     settings.general.start_minimized = false;
     settings.general.startup_with_windows = false;
     settings.advanced.show_advanced_controls = true;
+    let name = "sample.exe";
+    let selectors = [
+        ExecutableSelector::ExactPath {
+            executable_path: r"C:\Apps\Resource Monitor\sample.exe".into(),
+        },
+        ExecutableSelector::ExactName {
+            executable_name: name.into(),
+        },
+    ];
+    settings.by_focus.rules = selectors
+        .iter()
+        .cloned()
+        .map(|selector| ByFocusRule {
+            enabled: true,
+            name: name.into(),
+            selector,
+            power_plan_guid: None,
+        })
+        .collect();
+    settings.by_running_app.rules = selectors
+        .iter()
+        .cloned()
+        .map(|selector| ByRunningAppRule {
+            enabled: true,
+            name: name.into(),
+            selector,
+            power_plan_guid: None,
+        })
+        .collect();
+    let [path_selector, name_selector] = selectors;
+    settings.watchdog.rules = vec![
+        WatchdogRule::with_selector(path_selector),
+        WatchdogRule {
+            scope: WatchdogScope::PerInstance,
+            ..WatchdogRule::with_selector(name_selector)
+        },
+    ];
     let mut editor = SettingsEditor::with_settings(settings);
     let recovery = Arc::new(Mutex::new(crate::crash_recovery::RecoveryClient::start()));
     let runtime = RuntimeHandle::start(&editor.runtime_settings_snapshot());

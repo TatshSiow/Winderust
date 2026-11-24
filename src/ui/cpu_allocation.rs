@@ -340,7 +340,7 @@ impl Editor {
                 Some(Message::Enabled),
             ),
             super::widgets::setting_title_with_help(
-                "cpu_allocation.custom_rules",
+                "common.rules",
                 "",
                 "cpu_allocation.rules_help"
             ),
@@ -436,7 +436,7 @@ impl Editor {
         body = body.push(super::widgets::process_rules_table(
             [Tier::Focus, Tier::Visible, Tier::Background].map(|tier| tier.label()),
             rules,
-            t!("common.no_custom_rules").to_string(),
+            false,
         ));
         if !self.error.is_empty() {
             body = body.push(text(self.error.clone()).style(text::danger));

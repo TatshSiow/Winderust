@@ -1,4 +1,5 @@
 use super::design;
+use crate::config::ExecutableSelector;
 use crate::power::{PowerPlan, ProcessorBoostMode};
 use iced::widget::{row, text};
 use iced::{Element, Fill};
@@ -35,12 +36,24 @@ pub(super) const CARD_GAP: u32 = design::space::MEDIUM;
 pub(super) const CARD_PADDING: u32 = design::space::LARGE;
 pub(super) const SETTING_ROW_HEIGHT: u32 = 34;
 pub(super) const CARD_HEIGHT: u32 = SETTING_ROW_HEIGHT + 2 * CARD_PADDING;
+pub(super) const RULE_ENABLE_WIDTH: u32 = 48;
+pub(super) const RULE_STATUS_WIDTH: u32 = 140;
+pub(super) const RULE_ACTIONS_WIDTH: u32 = 80;
 
 pub(super) fn rules_table<'a, M: 'a>(
     header: iced::widget::Row<'a, M>,
-    rows: Element<'a, M>,
+    rows: Vec<(u64, Element<'a, M>)>,
+    min_width: f32,
 ) -> Element<'a, M> {
-    (iced::widget::container(iced::widget::column![
+    use iced::widget::{column, container, keyed_column};
+    let rows: Element<'_, M> = if rows.is_empty() {
+        container(text(rust_i18n::t!("common.no_custom_rules").to_string()).style(text::secondary))
+            .padding(CARD_PADDING as u16)
+            .into()
+    } else {
+        keyed_column(rows).into()
+    };
+    let content = column![
         iced::widget::container(header)
             .padding(CARD_PADDING as u16)
             .style(|theme: &iced::Theme| iced::widget::container::Style {
@@ -49,11 +62,12 @@ pub(super) fn rules_table<'a, M: 'a>(
             }),
         settings_divider(),
         rows,
-    ])
-    .width(Fill)
-    .clip(true)
-    .style(surface))
-    .into()
+    ];
+    container(super::scrolling::horizontal_table(content, min_width))
+        .width(Fill)
+        .clip(true)
+        .style(surface)
+        .into()
 }
 
 pub(super) fn table_frame<'a, M: 'a>(content: impl Into<Element<'a, M>>) -> Element<'a, M> {
@@ -74,9 +88,7 @@ pub(super) fn process_rule_row<'a, M: Clone + 'a>(
             active,
             None,
             controls,
-            iced::widget::container(rule_delete_button(remove))
-                .center_x(80)
-                .into()
+            rule_actions(None, remove)
         ),
         settings_divider()
     ]
@@ -93,7 +105,7 @@ pub(super) fn process_rule_header<'a, M: 'a>(
 ) -> Element<'a, M> {
     process_rule_header_with_target(
         super::app_picker::app_name(path, candidates),
-        path.to_owned(),
+        rule_path_text(path.to_owned()).into(),
         active,
         status,
         controls,
@@ -101,20 +113,49 @@ pub(super) fn process_rule_header<'a, M: 'a>(
     )
 }
 
+pub(super) fn process_rule_target<'a, M: 'a>(
+    selector: &ExecutableSelector,
+    candidates: &[super::app_picker::Candidate],
+) -> (Element<'a, M>, Element<'a, M>) {
+    match selector {
+        ExecutableSelector::ExactPath { executable_path } => (
+            super::app_picker::app_name(executable_path, candidates),
+            rule_path_text(executable_path.clone()).into(),
+        ),
+        ExecutableSelector::ExactName { executable_name } => (
+            super::app_picker::app_name(executable_name, &[]),
+            iced::widget::column![
+                rule_path_text(rust_i18n::t!("common.any_path").to_string()),
+                text(rust_i18n::t!("common.executable_name").to_string())
+                    .size(design::typography::CAPTION)
+                    .style(text::secondary),
+            ]
+            .spacing(design::space::TINY)
+            .into(),
+        ),
+    }
+}
+
+fn rule_path_text(path: String) -> iced::widget::Text<'static> {
+    text(path)
+        .style(text::secondary)
+        .wrapping(text::Wrapping::None)
+}
+
 pub(super) fn process_rule_header_with_target<'a, M: 'a>(
     app: Element<'a, M>,
-    target: String,
+    target: Element<'a, M>,
     active: Element<'a, M>,
     status: Option<Element<'a, M>>,
     controls: Vec<Element<'a, M>>,
     action: Element<'a, M>,
 ) -> Element<'a, M> {
     use iced::widget::container;
-    let mut cells = row![container(active).width(48)]
+    let mut cells = row![container(active).width(RULE_ENABLE_WIDTH)]
         .spacing(design::space::MEDIUM)
         .align_y(iced::Center);
     if let Some(status) = status {
-        cells = cells.push(container(status).width(140));
+        cells = cells.push(container(status).width(RULE_STATUS_WIDTH));
     }
     let mut cells = cells
         .push(
@@ -123,13 +164,9 @@ pub(super) fn process_rule_header_with_target<'a, M: 'a>(
                 .clip(true),
         )
         .push(
-            container(
-                text(target)
-                    .style(text::secondary)
-                    .wrapping(text::Wrapping::None),
-            )
-            .width(iced::Length::FillPortion(3))
-            .clip(true),
+            container(target)
+                .width(iced::Length::FillPortion(3))
+                .clip(true),
         );
     for control in controls {
         cells = cells.push(container(control).width(iced::Length::FillPortion(2)));
@@ -185,25 +222,23 @@ pub(super) fn rule_delete_button<'a, M: Clone + 'a>(remove: Option<M>) -> Elemen
 pub(super) fn process_rules_table<'a, M: 'a>(
     tiers: impl IntoIterator<Item = String>,
     rows: Vec<(u64, Element<'a, M>)>,
-    empty: String,
-) -> Element<'a, M> {
-    process_rules_table_with_actions(tiers, rows, empty, 80, false)
-}
-
-pub(super) fn process_rules_table_with_actions<'a, M: 'a>(
-    tiers: impl IntoIterator<Item = String>,
-    rows: Vec<(u64, Element<'a, M>)>,
-    empty: String,
-    actions_width: u32,
     show_status: bool,
 ) -> Element<'a, M> {
-    use iced::widget::container;
     let tiers: Vec<_> = tiers.into_iter().collect();
-    let min_width = 720.0 + 100.0 * tiers.len() as f32 + if show_status { 140.0 } else { 0.0 };
-    let mut header = row![text(rust_i18n::t!("common.enable").to_string()).width(48)]
-        .spacing(design::space::MEDIUM);
+    let min_width = 720.0
+        + 100.0 * tiers.len() as f32
+        + if show_status {
+            RULE_STATUS_WIDTH as f32
+        } else {
+            0.0
+        };
+    let mut header =
+        row![text(rust_i18n::t!("common.enable").to_string()).width(RULE_ENABLE_WIDTH)]
+            .spacing(design::space::MEDIUM)
+            .align_y(iced::Center);
     if show_status {
-        header = header.push(text(rust_i18n::t!("common.status").to_string()).width(140));
+        header =
+            header.push(text(rust_i18n::t!("common.status").to_string()).width(RULE_STATUS_WIDTH));
     }
     let mut header = header
         .push(
@@ -219,17 +254,38 @@ pub(super) fn process_rules_table_with_actions<'a, M: 'a>(
     }
     header = header.push(
         text(rust_i18n::t!("common.actions").to_string())
-            .width(actions_width)
+            .width(RULE_ACTIONS_WIDTH)
             .align_x(iced::Center),
     );
-    let rows = if rows.is_empty() {
-        container(text(empty).style(text::secondary))
-            .padding(design::space::LARGE as u16)
-            .into()
-    } else {
-        iced::widget::keyed_column(rows).into()
+    rules_table(header, rows, min_width)
+}
+
+pub(super) fn rule_actions<'a, M: Clone + 'a>(
+    edit: Option<M>,
+    remove: Option<M>,
+) -> Element<'a, M> {
+    let edit: Element<'_, M> = match edit {
+        Some(edit) => tooltip(
+            icon_button("icons/pencil.svg").on_press(edit),
+            text(rust_i18n::t!("common.edit").to_string()),
+            iced::widget::tooltip::Position::Top,
+        )
+        .into(),
+        None => iced::widget::Space::new()
+            .width(design::BUTTON_HEIGHT)
+            .into(),
     };
-    super::scrolling::horizontal_table(rules_table(header, rows), min_width)
+    iced::widget::container(row![edit, rule_delete_button(remove)].align_y(iced::Center))
+        .center_x(RULE_ACTIONS_WIDTH)
+        .into()
+}
+
+pub(super) fn rule_add_button<'a, M: Clone + 'a>(
+    add: Option<M>,
+) -> super::animated_controls::Button<'a, M> {
+    action_button(rust_i18n::t!("common.add_rule").to_string())
+        .style(primary_button)
+        .on_press_maybe(add)
 }
 
 pub(super) fn active_indicator<'a, M: 'a>(active: bool) -> Element<'a, M> {
@@ -2159,6 +2215,33 @@ pub(super) fn modal_frame<'a, M: 'a>(
     .max_height(size.1)
     .style(surface)
     .into()
+}
+
+pub(super) fn rule_dialog<'a, M: Clone + 'a>(
+    title: String,
+    body: impl Into<Element<'a, M>>,
+    cancel: M,
+    confirm: Option<M>,
+    size: (u32, u32),
+) -> Element<'a, M> {
+    modal_frame(
+        row![
+            heading(title, design::typography::SECTION).width(Fill),
+            icon_button("icons/x.svg").on_press(cancel.clone()),
+        ]
+        .align_y(iced::Center),
+        body,
+        row![
+            action_button(rust_i18n::t!("common.cancel").to_string())
+                .style(secondary_button)
+                .on_press(cancel),
+            action_button(rust_i18n::t!("common.ok").to_string())
+                .style(primary_button)
+                .on_press_maybe(confirm),
+        ]
+        .spacing(design::space::SMALL),
+        size,
+    )
 }
 
 pub(super) fn label_with_unit(label: &str, unit: &str) -> String {

@@ -149,16 +149,7 @@ impl Editor {
                             .into(),
                     ),
                     Vec::new(),
-                    row![
-                        widgets::tooltip(
-                            widgets::icon_button("icons/pencil.svg").on_press(Message::Edit(index)),
-                            text(t!("common.edit").to_string()),
-                            iced::widget::tooltip::Position::Top
-                        ),
-                        widgets::rule_delete_button(Some(Message::Remove(index))),
-                    ]
-                    .spacing(design::space::SMALL)
-                    .into(),
+                    widgets::rule_actions(Some(Message::Edit(index)), Some(Message::Remove(index))),
                 );
                 let mut details = column![text(
                     t!(
@@ -272,13 +263,7 @@ impl Editor {
                 )),
                 widgets::setting_title("common.rules"),
                 widgets::settings_card(picker),
-                widgets::process_rules_table_with_actions(
-                    [],
-                    rules,
-                    t!("instance_limits.empty").to_string(),
-                    80,
-                    true
-                ),
+                widgets::process_rules_table([], rules, true),
             ]
             .spacing(widgets::CARD_GAP),
         )
@@ -292,52 +277,41 @@ impl Editor {
     ) -> Option<Element<'a, Message>> {
         let (index, rule, maximum) = self.draft.as_ref()?;
         let valid = self.validated_draft().is_some();
-        let mut body = column![
+        let mut fields = column![row![
+            widgets::setting_title_with_help(
+                "instance_limits.maximum",
+                "",
+                "instance_limits.intro_2"
+            ),
+            widgets::stepper(maximum, 1..=u64::from(u32::MAX), 1, Some(Message::Maximum)),
+        ]
+        .spacing(design::space::MEDIUM)
+        .align_y(iced::Center)]
+        .spacing(design::space::SMALL);
+        if !valid {
+            fields =
+                fields.push(text(t!("instance_limits.invalid").to_string()).style(text::danger));
+        }
+        let body = column![
             app_picker::app_name(&rule.executable_path, candidates),
             text(rule.executable_path.clone()).style(text::secondary),
             widgets::heading(
                 t!("common.rule_details").to_string(),
                 design::typography::BODY
             ),
-            widgets::settings_card(
-                column![
-                    widgets::setting_title("instance_limits.maximum"),
-                    widgets::stepper(maximum, 1..=u64::from(u32::MAX), 1, Some(Message::Maximum)),
-                ]
-                .spacing(design::space::SMALL)
-            ),
-            text(t!("instance_limits.intro_2").to_string()).size(design::typography::SECONDARY),
+            widgets::settings_card(fields),
         ]
         .spacing(widgets::CARD_GAP);
-        if !valid {
-            body = body.push(text(t!("instance_limits.invalid").to_string()).style(text::danger));
-        }
-        Some(widgets::modal_frame(
-            row![
-                widgets::heading(
-                    t!(if index.is_some() {
-                        "instance_limits.edit_rule"
-                    } else {
-                        "instance_limits.add_rule"
-                    })
-                    .to_string(),
-                    design::typography::SECTION
-                )
-                .width(Fill),
-                widgets::icon_button("icons/x.svg").on_press(Message::CancelRule)
-            ]
-            .align_y(iced::Center),
+        Some(widgets::rule_dialog(
+            t!(if index.is_some() {
+                "instance_limits.edit_rule"
+            } else {
+                "instance_limits.add_rule"
+            })
+            .to_string(),
             super::scrolling::scrollable_pane(body).height(Fill),
-            row![
-                iced::widget::Space::new().width(Fill),
-                widgets::action_button(t!("common.cancel").to_string())
-                    .style(widgets::tertiary_button)
-                    .on_press(Message::CancelRule),
-                widgets::action_button(t!("common.ok").to_string())
-                    .style(widgets::primary_button)
-                    .on_press_maybe(valid.then_some(Message::SaveRule))
-            ]
-            .spacing(design::space::SMALL),
+            Message::CancelRule,
+            valid.then_some(Message::SaveRule),
             (760, 460),
         ))
     }

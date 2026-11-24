@@ -1,5 +1,5 @@
 use super::design;
-use super::widgets::{action_button, checkbox, icon_button, pick_list, slider, text_input};
+use super::widgets::{checkbox, icon_button, pick_list, slider, text_input};
 use crate::ui::scrolling::scrollable;
 use iced::widget::{column, row, text, Row};
 use iced::{Element, Fill};
@@ -369,7 +369,11 @@ impl CpuLimiter {
             .push(super::widgets::settings_card(
                 super::widgets::settings_rows(defaults),
             ))
-            .push(super::widgets::setting_title("cpu_limiter.rules"))
+            .push(super::widgets::setting_title_with_help(
+                "common.rules",
+                "",
+                "cpu_limiter.rules_help",
+            ))
             .push(super::widgets::settings_card(
                 super::app_picker::view_with_path_selection(
                     &self.path,
@@ -413,32 +417,23 @@ impl CpuLimiter {
                     .into(),
                 Some(chip.into()),
                 cells,
-                row![
-                    super::widgets::tooltip(
-                        icon_button("icons/pencil.svg").on_press(Message::Edit(index)),
-                        text(t!("common.edit").to_string()),
-                        iced::widget::tooltip::Position::Top
-                    ),
-                    super::widgets::rule_delete_button(Some(Message::Remove(index)))
-                ]
-                .width(80)
-                .align_y(iced::Center)
-                .into(),
+                super::widgets::rule_actions(
+                    Some(Message::Edit(index)),
+                    Some(Message::Remove(index)),
+                ),
             );
             cards.push((
                 super::widgets::stable_key(&rule.executable_path),
                 column![header, super::widgets::settings_divider()].into(),
             ));
         }
-        body = body.push(super::widgets::process_rules_table_with_actions(
+        body = body.push(super::widgets::process_rules_table(
             [
                 t!("cpu_allocation.focus").to_string(),
                 t!("common.visible_window").to_string(),
                 t!("common.background_process").to_string(),
             ],
             cards,
-            t!("cpu_limiter.no_rules").to_string(),
-            80,
             true,
         ));
         scrollable(body).height(Fill).into()
@@ -453,26 +448,18 @@ impl CpuLimiter {
         let index = *index;
         let rule = settings.rules.get(index)?;
         let key = rule_status(rule, master_enabled && settings.enabled, status);
-        let mut details = column![row![
-            text(t!("common.status").to_string()).width(Fill),
-            iced::widget::container(text(t!(key).to_string()))
-                .padding([4, 8])
-                .style(move |theme| super::widgets::rule_status_chip(theme, key))
+        let chip = iced::widget::container(text(t!(key).to_string()))
+            .padding([4, 8])
+            .style(move |theme| super::widgets::rule_status_chip(theme, key));
+        let mut details = column![
+            super::app_picker::app_name(&rule.executable_path, candidates),
+            text(rule.executable_path.as_str())
+                .style(text::secondary)
+                .wrapping(text::Wrapping::WordOrGlyph),
+            super::widgets::setting_title("common.rule_details"),
+            super::widgets::settings_card(super::widgets::setting_row("common.status", chip)),
         ]
-        .align_y(iced::Center)]
         .spacing(super::widgets::CARD_GAP);
-
-        details = details.push(super::widgets::heading(
-            t!("common.rule_details").to_string(),
-            design::typography::BODY,
-        ));
-        details = details.push(super::widgets::settings_card(
-            column![
-                super::app_picker::app_name(&rule.executable_path, candidates),
-                text(rule.executable_path.clone()).style(text::secondary),
-            ]
-            .spacing(design::space::SMALL),
-        ));
         let mut limits = Vec::new();
         for tier in Tier::ALL {
             let (mode, value) = tier.rule_values(rule);
@@ -508,28 +495,12 @@ impl CpuLimiter {
             .push(super::widgets::settings_card(
                 super::widgets::settings_rows(limits),
             ));
-        let header = row![
-            text(t!("common.edit").to_string()).width(Fill),
-            icon_button("icons/x.svg").on_press(Message::CancelRule)
-        ]
-        .align_y(iced::Center);
-        let footer = row![
-            iced::widget::Space::new().width(Fill),
-            action_button(t!("common.cancel").to_string())
-                .style(super::widgets::tertiary_button)
-                .on_press(Message::CancelRule),
-            action_button(t!("common.save").to_string())
-                .style(super::widgets::primary_button)
-                .on_press_maybe(
-                    (!self.has_invalid_inputs_for(Some(&rule.executable_path)))
-                        .then_some(Message::SaveRule)
-                )
-        ]
-        .spacing(design::space::SMALL);
-        Some(super::widgets::modal_frame(
-            header,
+        Some(super::widgets::rule_dialog(
+            t!("common.edit_rule").to_string(),
             scrollable(details).height(Fill),
-            footer,
+            Message::CancelRule,
+            (!self.has_invalid_inputs_for(Some(&rule.executable_path)))
+                .then_some(Message::SaveRule),
             (900, 680),
         ))
     }

@@ -3104,26 +3104,6 @@ impl WinderustApp {
                     ]
                     .height(Fill)
                     .into()
-                } else if matches!(page, Page::ByTime | Page::ByCpuLoad) {
-                    let kind = if page == Page::ByTime {
-                        power_rules::Kind::Time
-                    } else {
-                        power_rules::Kind::CpuLoad
-                    };
-                    column![
-                        panel,
-                        iced::widget::rule::horizontal(1),
-                        container(
-                            button(container(text(t!("common.create").to_string())).center_x(Fill))
-                                .width(Fill)
-                                .height(32)
-                                .style(widgets::primary_button)
-                                .on_press(Message::PowerRules(kind, power_rules::Message::Add))
-                        )
-                        .padding([design::space::MEDIUM as u16, 0])
-                    ]
-                    .height(Fill)
-                    .into()
                 } else {
                     panel
                 }

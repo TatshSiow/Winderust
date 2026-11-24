@@ -389,7 +389,7 @@ hover/press; background shading supplies feedback.
 
 ## Panels, rules, and dialogs
 
-- Use `src/ui/app_picker.rs` for custom-rule selection: compact input beside Add,
+- Use `src/ui/app_picker.rs` for executable rules: compact input beside Add rule,
   two-line name/path entries with cached icons/placeholders, and Browse local
   executable inside the menu. Keep the overlay inside the viewport with keyboard
   selection and outside-click dismissal. Each feature owns eligibility and duplicate
@@ -405,7 +405,16 @@ hover/press; background shading supplies feedback.
 - Side panels follow tabs (when present), main title, subtitle, then content. Subtitles stay outside cards. Put primary panel actions in the bottom footer.
 - Presets tabs share a scrollable list and pinned Add preset footer. Names wrap in neutral rows with hover feedback. Selecting a name opens a read-only preview; custom rows have separate edit and delete icons and the custom section has an empty state. Use the shared dialog frame, with each editor grouping its own fields. Page and group preset dropdowns stage settings for the current editor. Save or the feature's Apply review confirms the change.
 - Feature info belongs in a full-height scrollable Info tab in the right sidebar. Order shared tabs left to right as Info / Status / Presets, omitting unavailable tabs. Adaptive Engine, Adaptive Processor Power, CPU Sets (Soft), and Processor Affinity (Hard) use all three. Advanced Power Plan Tuning uses Info / Presets. Reset to Info on navigation. Pages with only feature information show it directly without a lone tab. Remove the header info action and inline page disclosure; retain essential setting consequences and live warnings beside their controls.
-- Use shared rule tables and icon edit/delete actions. Reuse existing modal layouts: name first, related settings together, actions at the bottom.
+- Keep rule creation above the rule table under Custom Rules. By Time and By CPU
+  Load put Add rule on the main page. Other editors put it beside the target input.
+- Use the shared rule table surface, row spacing, empty state, and action column.
+  Keep Enable first, Status next when available, and Edit and Remove in fixed
+  slots at the end. Between them, use the target and columns that describe the
+  rule. Single-value edits use inline controls. Rule dialogs share a header and
+  Cancel and OK footer, with target or name first and related controls grouped.
+  OK stages a draft for the page's Save action.
+- Executable rule tables show App name and Executable path. Name-based rules
+  show their exact filename and Any path with an Executable name label.
 - Keep breadcrumbs anchored at the top left. Power-source selectors stay beneath the breadcrumb; page-level reference stays in the right sidebar.
 - Quit confirmation is centered over a dimmed window. With unsaved changes show Cancel, Save and quit, and Quit without saving; otherwise show Cancel and Quit. Shutdown errors stay visible.
 - Avoid duplicated help text between inline descriptions, info popovers, and sidebar Feature info.

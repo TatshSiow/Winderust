@@ -6,7 +6,6 @@ instance_balancing:
   intro_1: "Balance two or more running processes from the same executable path across separate whole-core scheduling preferences."
   intro_2: "Only the current Windows user session is eligible. Winderust waits for stable membership and yields to explicit CPU selection rules. Disabling a rule restores its managed preferences."
   intro_3: "Requires one active processor group and enough eligible whole cores for every instance. These preferences do not reserve cores or guarantee better performance."
-  empty: "No Instance Balancing rules configured."
   edit_rule: "Edit Instance Balancing rule"
   invalid: "Choose a supported absolute executable path. Each path can have only one rule. Winderust and protected system apps cannot be selected."
   conflict: "Equivalent executable paths cannot have separate Instance Balancing rules."
@@ -47,7 +46,6 @@ instance_limits:
   intro_3: "An alert needs two fresh samples above the maximum. Recovery needs two complete samples at or below it. An incomplete count is only a verified lower bound; unknown counts never clear an alert. Windows controls notification visibility."
   maximum: "Maximum processes"
   maximum_value: "Maximum processes: %{maximum}"
-  empty: "No Instance Limits rules configured."
   add_rule: "Add Instance Limits rule"
   edit_rule: "Edit Instance Limits rule"
   invalid: "Choose a supported absolute executable path and a maximum from 1 to 4294967295. Each path can have only one rule. Winderust and protected system apps cannot be selected."
@@ -77,7 +75,6 @@ keep_running:
   intro_1: "Start the app yourself once to arm its rule. Winderust then relaunches one instance after every verified instance exits."
   intro_2: "Stop actions in Winderust, Watchdog actions, sleep and session changes pause relaunching. Closing the app normally still counts as an exit. Use Resume after reviewing the pause reason. Retries are limited."
   intro_3: "Relaunching starts a fresh ordinary desktop app. Packaged apps, launchers, protected apps and some existing job restrictions may be unsupported."
-  empty: "No Keep Running rules configured."
   add_rule: "Add Keep Running rule"
   edit_rule: "Edit Keep Running rule"
   launch_settings: "Launch settings"
@@ -171,14 +168,14 @@ common:
   visible_window_detection_help: "Applies a separate value to apps with visible, non-minimized windows. The focused app takes precedence."
   preserve_visible_window_priority: "Ignore visible window apps if same or higher"
   loading: "Loading…"
-  add: "Add"
-  create: "Create"
+  add_rule: "Add rule"
   clear: "Clear"
   cancel: "Cancel"
   ok: "OK"
   discard: "Discard"
   done: "Done"
   edit: "Edit"
+  edit_rule: "Edit rule"
   "on": "On"
   "off": "Off"
   enable: "Enable"
@@ -651,9 +648,7 @@ efficiency_mode:
   intro_2: "Automation uses the first matching tier in order from Focus to Visible Window to Background."
   intro_3: "Apps keep running while Efficiency Mode is enabled."
   enable: "Enable automatic Efficiency Mode"
-  custom_rules: "Custom Rules"
   custom_rules_help: "Choose Default to inherit the matching tier's setting, or set Enabled or Disabled for that app."
-  no_custom_rules: "No custom rules are configured."
 
 interrupt_timing:
   title: "Interrupt Timing"
@@ -782,7 +777,6 @@ app_suspension:
   network_suspension_delay: "Network suspension delay"
   invalid_network_threshold: "Enter an App Suspension network threshold from 0 to 9,223,372,036,854,775,807 bytes."
   suspendable_help: "Only apps in this list can be suspended after the background delay."
-  no_suspendable: "No custom rules are configured."
   suspend: "Suspend"
   resume_temporarily: "Temporarily resume"
   status:
@@ -857,7 +851,6 @@ adaptive_engine_process:
   cpu_recovery_time: "CPU recovery time"
   cpu_recovery_time_help: "How long CPU usage must stay at or below the recovery threshold before priority is restored."
   cpu_allocation_method: "CPU allocation method"
-  custom_rules: "Custom Rules"
   custom_rules_help: "Keeps matching processes out of Adaptive Engine priority restraint and CPU placement."
 
 io_priority:
@@ -866,7 +859,6 @@ io_priority:
   enable: "Enable I/O Priority"
   foreground_detection: "Foreground Detection"
   foreground_detection_help: "Adds a second layer that can apply a separate I/O priority to the detected foreground app."
-  exclusions: "Custom Rules"
   exclusions_help: "Per-app I/O priority rules. Set Focus, Visible Window, and Background to Default to skip the app."
   priority_default: "Default"
   priority_critical: "Critical"
@@ -874,7 +866,6 @@ io_priority:
   priority_normal: "Normal"
   priority_low: "Low"
   priority_very_low: "Very Low"
-  no_exclusions: "No custom rules are configured."
 
 process_priority:
   intro_1: "Process Priority applies Windows process base priority class defaults to eligible foreground and background processes."
@@ -882,9 +873,7 @@ process_priority:
   enable: "Enable Process Priority"
   foreground_detection: "Foreground Detection"
   foreground_detection_help: "Adds a second layer that can apply a separate process priority class to the detected foreground app."
-  exclusions: "Custom Rules"
   exclusions_help: "Per-app process priority rules. Set Focus, Visible Window, and Background to Default to skip the app."
-  no_exclusions: "No custom rules are configured."
   priority_default: "Default"
   priority_realtime: "Realtime"
   priority_high: "High"
@@ -899,9 +888,7 @@ thread_priority:
   enable: "Enable Thread Priority"
   foreground_detection: "Foreground Detection"
   foreground_detection_help: "Adds a second layer that can apply a separate thread priority to the detected foreground app."
-  exclusions: "Custom Rules"
   exclusions_help: "Per-app thread priority rules. Set Focus, Visible Window, and Background to Default to skip the app."
-  no_exclusions: "No custom rules are configured."
   priority_default: "Default"
   priority_time_critical: "Time Critical"
   priority_highest: "Highest"
@@ -917,12 +904,10 @@ dynamic_priority_boost:
   enable: "Enable Dynamic Priority Boost"
   foreground_detection: "Foreground Detection"
   foreground_detection_help: "Adds a second layer that can use a separate boost setting for the detected foreground app."
-  exclusions: "Custom Rules"
   exclusions_help: "Per-app dynamic priority boost rules. Set Focus, Visible Window, and Background to Default to skip the app."
   boost_default: "Default"
   boost_enabled: "Enabled"
   boost_disabled: "Disabled"
-  no_exclusions: "No custom rules are configured."
 
 gpu_priority:
   intro_1: "GPU Priority applies Windows graphics scheduler priority defaults to eligible foreground and background processes."
@@ -931,7 +916,6 @@ gpu_priority:
   enable: "Enable GPU Priority"
   foreground_detection: "Foreground Detection"
   foreground_detection_help: "Adds a second layer that can apply a separate GPU priority to the detected foreground app."
-  exclusions: "Custom Rules"
   exclusions_help: "Per-app GPU priority rules. Set Focus, Visible Window, and Background to Default to skip the app."
   priority_default: "Default"
   priority_realtime: "Realtime"
@@ -940,7 +924,6 @@ gpu_priority:
   priority_normal: "Normal"
   priority_below_normal: "Below Normal"
   priority_idle: "Idle"
-  no_exclusions: "No custom rules are configured."
 
 memory_priority:
   intro_1: "Memory Priority controls how strongly Windows keeps a process's RAM pages resident under memory pressure."
@@ -948,7 +931,6 @@ memory_priority:
   enable: "Enable Memory Priority"
   foreground_detection: "Foreground Detection"
   foreground_detection_help: "Adds a second layer that can apply a separate memory priority to the detected foreground app."
-  exclusions: "Custom Rules"
   exclusions_help: "Per-app memory priority rules. Set Focus, Visible Window, and Background to Default to skip the app."
   priority_default: "Default"
   priority_very_low: "Very Low"
@@ -956,7 +938,6 @@ memory_priority:
   priority_medium: "Medium"
   priority_below_normal: "Below Normal"
   priority_normal: "Normal"
-  no_exclusions: "No custom rules are configured."
 
 sleep_prevention:
   power_source_unavailable: "Sleep Prevention is waiting for power-source information."
@@ -968,7 +949,6 @@ sleep_prevention:
   enable: "Enable Sleep Prevention"
   enable_help: "Prevent idle system sleep for selected running apps. Configure Plugged In and On Battery separately."
   keep_display_on: "Keep display on"
-  no_rules: "No custom rules are configured."
   not_running: "Not running"
   requests_paused: "Requests paused"
   request_accepted: "Request accepted"
@@ -995,7 +975,6 @@ timer_resolution:
   warning: "Lower timer values can increase CPU wakeups and battery drain. Leave this off unless a workload needs it."
   requested: "Winderust request"
   invalid_request: "Winderust request must be a positive number in milliseconds."
-  no_rules: "No custom rules are configured."
   log_requested: "Requested timer resolution %{resolution} while %{app} is foreground."
   log_released_previous: "Released previous timer resolution request %{resolution}."
   log_released: "Released timer resolution request %{resolution}: %{reason}."
@@ -1017,8 +996,7 @@ memory_trim:
   intro_3: "Foreground apps, protected Windows processes, and configured custom rules are skipped."
   enable: "Enable Memory Trim"
   category_when_to_trim: "When to trim"
-  category_safety: "Safety"
-  category_safety_help: "Foreground apps and protected Windows processes are always skipped. Add custom rules for other apps."
+  rules_help: "Foreground apps and protected Windows processes are always skipped. Add apps here to exclude them from trimming."
   memory_threshold: "System Memory Load Threshold"
   memory_threshold_help: "Minimum system memory load for automatic trimming."
   working_set_threshold: "Process Working Set Threshold"
@@ -1033,7 +1011,6 @@ memory_trim:
   manual_failed: "Memory Trim completed with %{trimmed} successful and %{failed} failed attempts."
   manual_result_unavailable: "Memory Trim did not return a manual result."
   waiting_for_memory_load: "Memory load is %{load}%, below the %{threshold}% threshold."
-  no_exclusions: "No custom rules are configured."
 
 cpu_sets_soft:
   intro_1: "CPU Sets (Soft) tell Windows which logical CPUs an app should prefer."
@@ -1048,7 +1025,6 @@ processor_affinity_hard:
   warning: "Hard affinity can reduce performance or responsiveness. Winderust applies it only to processes confirmed to use processor group 0 alone."
 
 cpu_allocation:
-  custom_rules: "Custom Rules"
   selected_logical_cpus: "Selected logical CPUs"
   e_cores_no_smt: "E-cores no SMT"
   focus: "Focus"
@@ -1140,7 +1116,6 @@ cpu_limiter:
   intro_3: "This is a freeze/thaw duty-cycle limit, not processor affinity or a Windows CPU-rate hard cap. Child processes launched after the limit starts join the same app group."
   intro_4: "Very low targets are approximate because Windows freeze/thaw transitions take time. Low percentages can also make audio, video, networking, and interactive apps stutter."
   intro_5: "Existing child processes outside the managed group are not captured; only the matched process and children launched after limiting starts are included."
-  rules: "Custom Rules"
   rules_help: "Each tier can follow the page default, use a custom 1% to 100% target, or remain Unlimited. A 100% target is equivalent to Unlimited."
   follow_default: "Follow Default"
   custom: "Custom"
@@ -1148,7 +1123,6 @@ cpu_limiter:
   focus_allowed_cpu_time: "Focused Allowed CPU Time"
   visible_window_allowed_cpu_time: "Visible Window Allowed CPU Time"
   background_allowed_cpu_time: "Background Allowed CPU Time"
-  no_rules: "No custom rules are configured."
   restore_pending: "Restore pending"
 
 about:
@@ -1268,7 +1242,6 @@ watchdog:
   edit_rule: "Edit Watchdog rule"
   enable: "Enable Watchdog"
   enable_help: "Monitor configured apps in the background. Warning and critical responses require sustained usage."
-  rules: "App rules"
   rules_help: "Table values show warning / critical thresholds."
   measurement: "Measurement"
   cpu: "CPU (%)"
@@ -1295,7 +1268,6 @@ watchdog:
   termination_already_handled: "Skipped termination. An earlier Watchdog action already requested termination or confirmed exit for these process instances."
   restart_cooldown: "Restart skipped during the %{seconds}-second cooldown."
   restart_failed: "Restart failed: %{error}"
-  empty: "No Watchdog rules configured."
   invalid: "Enable at least one monitor. For At or above, use 0 < warning < critical ≤ maximum. For At or below, use 0 ≤ critical < warning < maximum."
   monitored: "Monitored processes"
   alerting: "Alerting processes"

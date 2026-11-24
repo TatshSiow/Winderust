@@ -334,10 +334,7 @@ impl Editor {
                 controls,
             ));
         }
-        body = body.push(super::widgets::heading(
-            t!("common.rules").to_string(),
-            design::typography::BODY,
-        ));
+        body = body.push(super::widgets::setting_title("common.rules"));
         let picker = super::app_picker::view_with_path_selection(
             &self.path,
             candidates,
@@ -426,18 +423,14 @@ impl Editor {
                             .into(),
                         Some(state.into()),
                         controls,
-                        iced::widget::container(super::widgets::rule_delete_button(Some(
-                            Message::Remove(i)
-                        )))
-                        .center_x(80)
-                        .into(),
+                        super::widgets::rule_actions(None, Some(Message::Remove(i))),
                     ),
                     super::widgets::settings_divider()
                 ]
                 .into(),
             ));
         }
-        body = body.push(super::widgets::process_rules_table_with_actions(
+        body = body.push(super::widgets::process_rules_table(
             [
                 "app_suspension.audio",
                 "app_suspension.network",
@@ -446,8 +439,6 @@ impl Editor {
             ]
             .map(|key| t!(key).to_string()),
             cards,
-            t!("app_suspension.no_suspendable").to_string(),
-            80,
             true,
         ));
 

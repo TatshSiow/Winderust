@@ -6,7 +6,6 @@ instance_balancing:
   intro_1: "將同一執行檔路徑中兩個以上執行中的處理程序，分配至不同的完整核心排程偏好。"
   intro_2: "僅適用於目前的 Windows 使用者工作階段。Winderust 會等待成員穩定，並優先讓出控制權給明確指定的 CPU 選擇規則。停用規則時會還原其管理的偏好。"
   intro_3: "需要單一使用中的處理器群組，且必須有足夠的合格完整核心可分配給每個執行個體。排程偏好不會保留核心，也不保證提升效能。"
-  empty: "尚未設定執行個體平衡規則。"
   edit_rule: "編輯執行個體平衡規則"
   invalid: "請選擇支援的執行檔絕對路徑。每個路徑只能有一條規則，不可選擇 Winderust 與受保護的系統應用程式。"
   conflict: "等同的執行檔路徑不能分別設定執行個體平衡規則。"
@@ -47,7 +46,6 @@ instance_limits:
   intro_3: "連續兩次新取樣超過上限才會發出警示，連續兩次完整取樣未超過上限才會解除警示。不完整的計數僅代表已確認的最低數量；未知計數不會解除警示。通知是否顯示由 Windows 決定。"
   maximum: "處理程序數量上限"
   maximum_value: "處理程序數量上限：%{maximum}"
-  empty: "尚未設定執行個體限制規則。"
   add_rule: "新增執行個體限制規則"
   edit_rule: "編輯執行個體限制規則"
   invalid: "請選擇支援的執行檔絕對路徑，並輸入 1 至 4294967295 的上限。每個路徑只能有一條規則，不可選擇 Winderust 與受保護的系統應用程式。"
@@ -77,7 +75,6 @@ keep_running:
   intro_1: "請先自行啟動應用程式一次，讓規則進入監控狀態。所有已確認的執行個體結束後，Winderust 會重新啟動一個執行個體。"
   intro_2: "在 Winderust 中執行停止動作、Watchdog 動作、睡眠與工作階段變更都會暫停重新啟動。正常關閉應用程式仍會觸發重新啟動。請確認暫停原因後再按「繼續」。重試次數有限。"
   intro_3: "重新啟動會開啟全新的普通桌面應用程式。封裝式應用程式、啟動器、受保護的應用程式及某些現有工作物件限制可能不受支援。"
-  empty: "尚未設定持續執行規則。"
   add_rule: "新增持續執行規則"
   edit_rule: "編輯持續執行規則"
   launch_settings: "啟動設定"
@@ -171,14 +168,14 @@ common:
   visible_window_detection_help: "對具有可見且未最小化視窗的應用程式套用獨立值；焦點應用程式仍優先。"
   preserve_visible_window_priority: "相同或更高時忽略可見視窗應用程式"
   loading: "載入中…"
-  add: "新增"
-  create: "建立"
+  add_rule: "新增規則"
   clear: "清除"
   cancel: "取消"
   ok: "確定"
   discard: "放棄"
   done: "完成"
   edit: "編輯"
+  edit_rule: "編輯規則"
   "on": "開啟"
   "off": "關閉"
   enable: "啟用"
@@ -653,9 +650,7 @@ efficiency_mode:
   intro_2: "自動套用時依序比對焦點、可見視窗、背景，採用第一個符合的層級。"
   intro_3: "啟用效率模式時，應用程式會繼續執行。"
   enable: "啟用自動效率模式"
-  custom_rules: "自訂規則"
   custom_rules_help: "選擇預設以繼承符合層級的設定，或為該應用程式選擇啟用或停用。"
-  no_custom_rules: "尚未設定自訂規則。"
 
 interrupt_timing:
   title: "中斷計時"
@@ -784,7 +779,6 @@ app_suspension:
   network_suspension_delay: "網路暫停延遲"
   invalid_network_threshold: "應用程式暫停的網路門檻必須介於 0 到 9,223,372,036,854,775,807 位元組。"
   suspendable_help: "只有此清單中的應用程式會在背景延遲後被暫停。"
-  no_suspendable: "尚未設定自訂規則。"
   suspend: "暫停"
   resume_temporarily: "暫時繼續"
   status:
@@ -859,7 +853,6 @@ adaptive_engine_process:
   cpu_recovery_time: "CPU 還原時間"
   cpu_recovery_time_help: "CPU 使用率需持續維持在還原門檻或以下達這段時間，才會還原優先順序。"
   cpu_allocation_method: "CPU 配置方法"
-  custom_rules: "自訂規則"
   custom_rules_help: "排除符合規則的程序，讓自適應引擎略過其優先順序限制與 CPU 配置。"
 
 
@@ -869,9 +862,7 @@ process_priority:
   enable: "啟用程序優先順序"
   foreground_detection: "前景偵測"
   foreground_detection_help: "加入第二層，可對偵測到的前景應用程式套用不同的程序優先順序類別。"
-  exclusions: "自訂規則"
   exclusions_help: "每個應用程式的程序優先順序規則。將焦點、可見視窗與背景皆設為預設，即可略過該應用程式。"
-  no_exclusions: "尚未設定自訂規則。"
   priority_default: "預設"
   priority_realtime: "即時"
   priority_high: "高"
@@ -886,9 +877,7 @@ thread_priority:
   enable: "啟用執行緒優先順序"
   foreground_detection: "前景偵測"
   foreground_detection_help: "加入第二層，可對偵測到的前景應用程式套用不同的執行緒優先順序。"
-  exclusions: "自訂規則"
   exclusions_help: "每個應用程式的執行緒優先順序規則。將焦點、可見視窗與背景皆設為預設，即可略過該應用程式。"
-  no_exclusions: "尚未設定自訂規則。"
   priority_default: "預設"
   priority_time_critical: "時間關鍵"
   priority_highest: "最高"
@@ -904,12 +893,10 @@ dynamic_priority_boost:
   enable: "啟用動態優先順序提升"
   foreground_detection: "前景偵測"
   foreground_detection_help: "加入第二層，可對偵測到的前景應用程式使用不同的提升設定。"
-  exclusions: "自訂規則"
   exclusions_help: "每個應用程式的動態優先順序提升規則。將焦點、可見視窗與背景皆設為預設，即可略過該應用程式。"
   boost_default: "預設"
   boost_enabled: "啟用"
   boost_disabled: "停用"
-  no_exclusions: "尚未設定自訂規則。"
 
 io_priority:
   intro_1: "I/O 優先順序會將 Windows 程序 I/O 優先順序預設值套用到符合條件的前景與背景程序。"
@@ -917,7 +904,6 @@ io_priority:
   enable: "啟用 I/O 優先順序"
   foreground_detection: "前景偵測"
   foreground_detection_help: "加入第二層，可將不同的 I/O 優先順序套用到偵測到的前景 App。"
-  exclusions: "自訂規則"
   exclusions_help: "每個應用程式的 I/O 優先順序規則。將焦點、可見視窗與背景皆設為預設，即可略過該應用程式。"
   priority_default: "預設"
   priority_critical: "關鍵"
@@ -925,7 +911,6 @@ io_priority:
   priority_normal: "標準"
   priority_low: "低"
   priority_very_low: "非常低"
-  no_exclusions: "尚未設定自訂規則。"
 
 gpu_priority:
   intro_1: "GPU 優先順序會將 Windows 圖形排程器優先順序預設值套用到符合條件的前景與背景程序。"
@@ -934,7 +919,6 @@ gpu_priority:
   enable: "啟用 GPU 優先順序"
   foreground_detection: "前景偵測"
   foreground_detection_help: "加入第二層，可將不同的 GPU 優先順序套用到偵測到的前景 App。"
-  exclusions: "自訂規則"
   exclusions_help: "每個應用程式的 GPU 優先順序規則。將焦點、可見視窗與背景皆設為預設，即可略過該應用程式。"
   priority_default: "預設"
   priority_realtime: "即時"
@@ -943,7 +927,6 @@ gpu_priority:
   priority_normal: "標準"
   priority_below_normal: "低於標準"
   priority_idle: "閒置"
-  no_exclusions: "尚未設定自訂規則。"
 
 memory_priority:
   intro_1: "記憶體優先順序控制 Windows 在記憶體壓力下保留程序 RAM 頁面的程度。"
@@ -951,7 +934,6 @@ memory_priority:
   enable: "啟用記憶體優先順序"
   foreground_detection: "前景偵測"
   foreground_detection_help: "加入第二層，可將不同的記憶體優先順序套用到偵測到的前景 App。"
-  exclusions: "自訂規則"
   exclusions_help: "每個應用程式的記憶體優先順序規則。將焦點、可見視窗與背景皆設為預設，即可略過該應用程式。"
   priority_default: "預設"
   priority_very_low: "非常低"
@@ -959,7 +941,6 @@ memory_priority:
   priority_medium: "中"
   priority_below_normal: "低於標準"
   priority_normal: "標準"
-  no_exclusions: "尚未設定自訂規則。"
 
 sleep_prevention:
   power_source_unavailable: "防止睡眠正在等待電源來源資訊。"
@@ -971,7 +952,6 @@ sleep_prevention:
   enable: "啟用防止睡眠"
   enable_help: "為選定的執行中應用程式防止系統因閒置而睡眠。插電與使用電池時可分別設定。"
   keep_display_on: "保持螢幕開啟"
-  no_rules: "尚未設定自訂規則。"
   not_running: "未執行"
   requests_paused: "要求已暫停"
   request_accepted: "已接受要求"
@@ -998,7 +978,6 @@ timer_resolution:
   warning: "較低的計時器值可能增加 CPU 喚醒與電池耗電。除非工作負載需要，否則建議保持關閉。"
   requested: "Winderust 要求"
   invalid_request: "Winderust 要求必須是以毫秒為單位的正數。"
-  no_rules: "尚未設定計時器解析度前景規則。"
   log_requested: "當 %{app} 位於前景時，已要求 %{resolution} 的計時器解析度。"
   log_released_previous: "已釋放先前 %{resolution} 的計時器解析度要求。"
   log_released: "已釋放 %{resolution} 的計時器解析度要求：%{reason}。"
@@ -1020,8 +999,7 @@ memory_trim:
   intro_3: "前景應用程式、受保護的 Windows 程序與符合自訂規則的程序會被略過。"
   enable: "啟用記憶體修剪"
   category_when_to_trim: "何時修剪"
-  category_safety: "安全保護"
-  category_safety_help: "前景 App 與受保護的 Windows 程序一律略過；可為其他 App 新增自訂規則。"
+  rules_help: "前景 App 與受保護的 Windows 程序一律略過。可在此新增要排除的 App。"
   memory_threshold: "系統記憶體負載門檻"
   memory_threshold_help: "啟動自動修剪所需的最低系統記憶體負載。"
   working_set_threshold: "程序工作集門檻"
@@ -1036,7 +1014,6 @@ memory_trim:
   manual_failed: "記憶體修剪已完成，成功 %{trimmed} 次，失敗 %{failed} 次。"
   manual_result_unavailable: "記憶體修剪未回報手動執行結果。"
   waiting_for_memory_load: "系統記憶體使用率為 %{load}%，低於 %{threshold}% 的門檻。"
-  no_exclusions: "尚未設定自訂規則。"
 
 cpu_sets_soft:
   intro_1: "CPU 集合（軟性）會告訴 Windows 應優先在哪些邏輯處理器上執行應用程式。"
@@ -1051,7 +1028,6 @@ processor_affinity_hard:
   warning: "硬性親和性可能降低效能或回應速度。Winderust 僅會將其套用至確認只使用處理器群組 0 的程序。"
 
 cpu_allocation:
-  custom_rules: "自訂規則"
   selected_logical_cpus: "已選取的邏輯 CPU"
   e_cores_no_smt: "E 核心（每核心單執行緒）"
   focus: "焦點"
@@ -1143,7 +1119,6 @@ cpu_limiter:
   intro_3: "這是以凍結／解凍實作的工作週期限制，不是處理器親和性或 Windows CPU 速率硬上限。限制開始後啟動的子程序會加入相同群組。"
   intro_4: "Windows 的凍結／解凍轉換需要時間，因此極低的目標值僅為近似值；低百分比也可能使音訊、視訊、網路與互動式應用程式發生卡頓。"
   intro_5: "受管理群組外的既有子程序不會被納入；只有相符程序與限制開始後啟動的子程序會加入群組。"
-  rules: "自訂規則"
   rules_help: "每個層級都可跟隨頁面預設值、使用 1% 到 100% 的自訂目標，或設為不限制；100% 等同不限制。"
   follow_default: "跟隨預設值"
   custom: "自訂"
@@ -1151,7 +1126,6 @@ cpu_limiter:
   focus_allowed_cpu_time: "焦點應用程式允許的 CPU 時間"
   visible_window_allowed_cpu_time: "可見視窗允許的 CPU 時間"
   background_allowed_cpu_time: "背景程序允許的 CPU 時間"
-  no_rules: "尚未設定自訂規則。"
   restore_pending: "等待還原"
 
 about:
@@ -1271,7 +1245,6 @@ watchdog:
   edit_rule: "編輯 Watchdog 規則"
   enable: "啟用 Watchdog"
   enable_help: "在背景監控指定程式，持續符合門檻條件後才執行回應。"
-  rules: "程式規則"
   rules_help: "表格數值依序為警告 / 嚴重門檻。"
   measurement: "監控項目"
   cpu: "CPU (%)"
@@ -1298,7 +1271,6 @@ watchdog:
   termination_already_handled: "已略過終止。先前的 Watchdog 動作已要求終止這些處理程序實例，或已確認它們結束。"
   restart_cooldown: "仍在 %{seconds} 秒的冷卻期間，已略過重新啟動。"
   restart_failed: "重新啟動失敗：%{error}"
-  empty: "尚未設定 Watchdog 規則。"
   invalid: "請至少啟用一個監控項目。達到或高於門檻須符合 0 < 警告 < 嚴重 ≤ 上限。達到或低於門檻須符合 0 ≤ 嚴重 < 警告 < 上限。"
   monitored: "監控中的處理程序"
   alerting: "警示中的處理程序"

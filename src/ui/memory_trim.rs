@@ -42,7 +42,6 @@ pub(super) fn manual_result(result: MemoryTrimSnapshot) -> Result<(), String> {
 #[derive(Default)]
 pub(super) struct Editor {
     pub(super) path: String,
-    safety_expanded: bool,
     thresholds: [Option<String>; 3],
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -89,7 +88,6 @@ impl Threshold {
 #[derive(Debug, Clone)]
 pub(super) enum Message {
     Enabled(bool),
-    ToggleSafety,
     Path(String),
     Add,
     Threshold(Threshold, String),
@@ -110,7 +108,6 @@ impl Editor {
 
     pub(super) fn update(&mut self, settings: &mut SettingsEditor, message: Message) {
         match message {
-            Message::ToggleSafety => self.safety_expanded = !self.safety_expanded,
             Message::Enabled(v) if settings.memory_trim.enabled != v => {
                 settings.memory_trim.enabled = v;
             }
@@ -197,7 +194,7 @@ impl Editor {
                     field(Threshold::Idle, "s").into(),
                 ]),
             ));
-        let mut safety = column![super::app_picker::view_with_path_selection(
+        let picker = super::app_picker::view_with_path_selection(
             &self.path,
             candidates,
             true,
@@ -205,9 +202,8 @@ impl Editor {
             Message::Browse,
             can_add_memory_trim_exclusion(settings, exact_path_input(&self.path))
                 .then_some(Message::Add),
-            |path| can_add_memory_trim_exclusion(settings, path).then_some(true)
-        )]
-        .spacing(design::space::MEDIUM);
+            |path| can_add_memory_trim_exclusion(settings, path).then_some(true),
+        );
         let cards = settings
             .exclusions
             .iter()
@@ -227,21 +223,14 @@ impl Editor {
                 )
             })
             .collect();
-        safety = safety.push(super::widgets::settings_divider()).push(
-            super::widgets::process_rules_table(
-                [],
-                cards,
-                t!("memory_trim.no_exclusions").to_string(),
-            ),
-        );
-
-        body = body.push(super::widgets::setting_group(
-            "memory_trim.category_safety".to_string(),
-            self.safety_expanded,
-            Message::ToggleSafety,
-            iced::widget::Space::new(),
-            safety,
-        ));
+        body = body
+            .push(super::widgets::setting_title_with_help(
+                "common.rules",
+                "",
+                "memory_trim.rules_help",
+            ))
+            .push(super::widgets::settings_card(picker))
+            .push(super::widgets::process_rules_table([], cards, false));
         scrollable(body).height(Fill).into()
     }
 }
@@ -275,18 +264,6 @@ mod tests {
         assert_eq!(rules[1].executable_path, literal);
     }
 
-    #[test]
-    fn safety_starts_collapsed_and_toggles_without_changing_settings() {
-        let mut editor = Editor::default();
-        let mut settings = SettingsEditor::with_settings(Settings::default());
-        settings.select_power_source(PowerSourceProfile::OnBattery);
-        assert!(!editor.safety_expanded);
-        editor.update(&mut settings, Message::ToggleSafety);
-        assert!(editor.safety_expanded);
-        editor.update(&mut settings, Message::ToggleSafety);
-        assert!(!editor.safety_expanded);
-        assert!(!settings.has_unsaved_changes());
-    }
     #[test]
     fn invalid_thresholds_and_missing_removals_do_not_mutate_settings() {
         let mut e = Editor::default();

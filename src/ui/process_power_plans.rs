@@ -166,16 +166,18 @@ impl Editor {
 
     fn name_input(&self, can_add: bool) -> Element<'static, Message> {
         let add = can_add.then_some(Message::AddName);
-        row![
-            widgets::text_input("app.exe", &self.name)
-                .on_input(Message::Name)
-                .on_submit_maybe(add.clone())
-                .width(Fill),
-            widgets::action_button(t!("common.add").to_string())
-                .style(widgets::primary_button)
-                .on_press_maybe(add),
+        column![
+            widgets::setting_title("common.executable_name"),
+            row![
+                widgets::text_input("app.exe", &self.name)
+                    .on_input(Message::Name)
+                    .on_submit_maybe(add.clone())
+                    .width(Fill),
+                widgets::rule_add_button(add),
+            ]
+            .align_y(iced::Center)
+            .spacing(design::space::SMALL),
         ]
-        .align_y(iced::Center)
         .spacing(design::space::SMALL)
         .into()
     }
@@ -263,14 +265,7 @@ impl Editor {
                     let chip = iced::widget::container(iced::widget::text(t!(key).to_string()))
                         .padding([4, 8])
                         .style(move |theme| widgets::rule_status_chip(theme, key));
-                    let (app, location) = if is_path {
-                        (app_picker::app_name(target, candidates), target.to_owned())
-                    } else {
-                        (
-                            text(target.to_owned()).into(),
-                            t!("common.any_path").to_string(),
-                        )
-                    };
+                    let (app, location) = widgets::process_rule_target(&rule.selector, candidates);
                     let mut card = column![widgets::process_rule_header_with_target(
                         column![
                             text(t!("common.rule", number = index + 1).to_string())
@@ -288,11 +283,7 @@ impl Editor {
                             .into(),
                         Some(chip.into()),
                         vec![selector],
-                        iced::widget::container(widgets::rule_delete_button(Some(
-                            Message::Remove(index)
-                        )))
-                        .center_x(80)
-                        .into(),
+                        widgets::rule_actions(None, Some(Message::Remove(index))),
                     )];
                     if is_path && validate_path(target).is_err() {
                         card = card.push(app_picker::path_readd_hint());
@@ -302,11 +293,9 @@ impl Editor {
                         card.push(widgets::settings_divider()).into(),
                     ));
                 }
-                rules_body = rules_body.push(widgets::process_rules_table_with_actions(
+                rules_body = rules_body.push(widgets::process_rules_table(
                     [t!("by_running_app.power_plan").to_string()],
                     cards,
-                    t!("common.no_custom_rules").to_string(),
-                    80,
                     true,
                 ));
                 let preview = match kind {

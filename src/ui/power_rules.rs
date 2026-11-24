@@ -1,6 +1,6 @@
 use super::design;
 use super::widgets::{self, checkbox, icon_button, Choice};
-use super::widgets::{action_button, pick_list, slider, text_input};
+use super::widgets::{pick_list, slider, text_input};
 use crate::ui::scrolling::scrollable;
 use crate::{
     application::SettingsEditor,
@@ -561,107 +561,59 @@ impl Editor {
                 .collect::<Vec<_>>(),
         };
 
-        let empty = rules.is_empty();
-        let header = |key| text(t!(key).to_string()).style(text::secondary);
-        let keyed = |id, content: Element<'a, Message>| iced::widget::keyed_column([(id, content)]);
-        let table = iced::widget::table(
-            [
-                iced::widget::table::column(
-                    header("common.enable"),
-                    move |(id, index, rule): (u64, usize, RuleRef<'a>)| {
-                        let enabled = match rule {
-                            RuleRef::Time(rule) => rule.enabled,
-                            RuleRef::Cpu(rule) => rule.enabled,
-                        };
-                        keyed(
-                            id,
-                            checkbox(enabled)
-                                .on_toggle(move |v| Message::RuleEnabled(index, v))
-                                .into(),
-                        )
-                    },
+        let header = row![
+            text(t!("common.enable").to_string()).width(widgets::RULE_ENABLE_WIDTH),
+            text(t!("common.status").to_string()).width(widgets::RULE_STATUS_WIDTH),
+            text(t!("common.rule_name").to_string()).width(Fill),
+            text(t!("common.actions").to_string())
+                .width(widgets::RULE_ACTIONS_WIDTH)
+                .align_x(iced::Center),
+        ]
+        .spacing(design::space::MEDIUM);
+        let rows = rules
+            .into_iter()
+            .map(|(id, index, rule)| {
+                let (name, rule_enabled) = match rule {
+                    RuleRef::Time(rule) => (&rule.name, rule.enabled),
+                    RuleRef::Cpu(rule) => (&rule.name, rule.enabled),
+                };
+                let key = rule_status(
+                    rule,
+                    s.general.enabled && enabled,
+                    selected_index == Some(index),
+                    status,
+                );
+                let status = container(text(t!(key).to_string()))
+                    .padding([4, 8])
+                    .style(move |theme| widgets::rule_status_chip(theme, key));
+                let row = row![
+                    container(
+                        checkbox(rule_enabled).on_toggle(move |v| Message::RuleEnabled(index, v))
+                    )
+                    .width(widgets::RULE_ENABLE_WIDTH),
+                    container(status).width(widgets::RULE_STATUS_WIDTH),
+                    text(name).width(Fill),
+                    widgets::rule_actions(Some(Message::Edit(index)), Some(Message::Remove(index))),
+                ]
+                .spacing(design::space::MEDIUM)
+                .align_y(iced::Center);
+                (
+                    id,
+                    column![
+                        container(row)
+                            .width(Fill)
+                            .padding(widgets::CARD_PADDING as u16),
+                        widgets::settings_divider(),
+                    ]
+                    .into(),
                 )
-                .width(48)
-                .align_y(iced::Center),
-                iced::widget::table::column(
-                    header("common.status"),
-                    move |(id, index, rule): (u64, usize, RuleRef<'a>)| {
-                        let key = rule_status(
-                            rule,
-                            s.general.enabled && enabled,
-                            selected_index == Some(index),
-                            status,
-                        );
-                        keyed(
-                            id,
-                            container(text(t!(key).to_string()))
-                                .padding([4, 8])
-                                .width(Fill)
-                                .style(move |theme| widgets::rule_status_chip(theme, key))
-                                .into(),
-                        )
-                    },
-                )
-                .width(140)
-                .align_y(iced::Center),
-                iced::widget::table::column(
-                    header("common.rule_name"),
-                    move |(id, _, rule): (u64, usize, RuleRef<'a>)| {
-                        let name = match rule {
-                            RuleRef::Time(rule) => &rule.name,
-                            RuleRef::Cpu(rule) => &rule.name,
-                        };
-                        keyed(id, text(name.clone()).into())
-                    },
-                )
-                .width(Fill)
-                .align_y(iced::Center),
-                iced::widget::table::column(
-                    header("common.actions").align_x(iced::Center),
-                    move |(id, index, _): (u64, usize, RuleRef<'a>)| {
-                        keyed(
-                            id,
-                            row![
-                                super::widgets::tooltip(
-                                    icon_button("icons/pencil.svg").on_press(Message::Edit(index)),
-                                    text(t!("common.edit").to_string()),
-                                    iced::widget::tooltip::Position::Top
-                                ),
-                                widgets::rule_delete_button(Some(Message::Remove(index)))
-                            ]
-                            .into(),
-                        )
-                    },
-                )
-                .width(80)
-                .align_x(iced::Center)
-                .align_y(iced::Center),
-            ],
-            rules,
-        )
-        .width(Fill)
-        .padding_x(design::space::CONTROL as f32)
-        .padding_y(widgets::CARD_PADDING as f32)
-        .separator_x(0)
-        .separator_y(1);
-        let mut contents = column![table];
-        if empty {
-            contents = contents.push(widgets::settings_divider()).push(
-                container(text(t!("common.no_custom_rules").to_string()).style(text::secondary))
-                    .padding(widgets::CARD_PADDING as u16),
-            );
-        }
-        body = body.push(widgets::setting_title("common.rules")).push(
-            container(super::scrolling::horizontal_table(
-                container(contents)
-                    .padding([0, (widgets::CARD_PADDING - design::space::CONTROL) as u16])
-                    .width(Fill),
-                600.0,
-            ))
-            .width(Fill)
-            .clip(true)
-            .style(widgets::surface),
-        );
+            })
+            .collect();
+        let add_rule = widgets::rule_add_button(Some(Message::Add));
+        body = body
+            .push(widgets::setting_title("common.rules"))
+            .push(widgets::settings_card(add_rule))
+            .push(widgets::rules_table(header, rows, 600.0));
         scrollable(body).height(Fill).into()
     }
     pub(super) fn modal<'a>(
@@ -1002,38 +954,21 @@ impl Editor {
             controls
         ]
         .spacing(design::space::MEDIUM);
-        let header = row![
-            text(
-                t!(if self.creating {
-                    "common.create"
-                } else {
-                    "common.edit"
-                })
-                .to_string()
-            )
-            .width(Fill),
-            icon_button("icons/x.svg").on_press(Message::Cancel)
-        ]
-        .align_y(iced::Center);
-        let footer = row![
-            iced::widget::Space::new().width(Fill),
-            action_button(t!("common.cancel").to_string())
-                .style(widgets::tertiary_button)
-                .on_press(Message::Cancel),
-            action_button(t!("common.save").to_string())
-                .style(widgets::primary_button)
-                .on_press_maybe((self.valid() && !name.trim().is_empty()).then_some(Message::Save))
-        ]
-        .spacing(design::space::SMALL);
-        let modal = widgets::modal_frame(
-            header,
+        let modal = widgets::rule_dialog(
+            t!(if self.creating {
+                "common.add_rule"
+            } else {
+                "common.edit_rule"
+            })
+            .to_string(),
             scrollable(content)
                 .id(match kind {
                     Kind::Time => "by-time-rule-details",
                     Kind::CpuLoad => "by-cpu-load-rule-details",
                 })
                 .height(Fill),
-            footer,
+            Message::Cancel,
+            (self.valid() && !name.trim().is_empty()).then_some(Message::Save),
             (800, 760),
         );
         Some(super::modal::dismiss_on_escape(modal, Message::Cancel))

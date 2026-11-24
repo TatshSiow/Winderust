@@ -176,8 +176,10 @@ impl Editor {
                 group,
             ));
         }
-        body = body.push(super::widgets::setting_title(
-            "efficiency_mode.custom_rules",
+        body = body.push(super::widgets::setting_title_with_help(
+            "common.rules",
+            "",
+            "efficiency_mode.custom_rules_help",
         ));
         body = body.push(super::widgets::settings_card(
             super::app_picker::view_with_path_selection(
@@ -221,7 +223,7 @@ impl Editor {
         body = body.push(super::widgets::process_rules_table(
             Tier::ALL.map(|tier| tier.label()),
             rule_cards,
-            t!("efficiency_mode.no_custom_rules").to_string(),
+            false,
         ));
         scrollable(body).height(Fill).into()
     }

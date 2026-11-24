@@ -109,11 +109,7 @@ impl Editor {
                     vec![widgets::checkbox(rule.keep_display_on)
                         .on_toggle(move |value| Message::KeepDisplayOn(index, value))
                         .into()],
-                    iced::widget::container(widgets::rule_delete_button(Some(Message::Remove(
-                        index,
-                    ))))
-                    .center_x(80)
-                    .into(),
+                    widgets::rule_actions(None, Some(Message::Remove(index))),
                 );
                 let mut row = column![header];
                 if validate_path(rule.executable_path.trim()).is_err() {
@@ -149,11 +145,9 @@ impl Editor {
                 ),
                 widgets::setting_title("common.rules"),
                 widgets::settings_card(picker),
-                widgets::process_rules_table_with_actions(
+                widgets::process_rules_table(
                     [t!("sleep_prevention.keep_display_on").to_string()],
                     rules,
-                    t!("sleep_prevention.no_rules").to_string(),
-                    80,
                     true,
                 ),
             ]

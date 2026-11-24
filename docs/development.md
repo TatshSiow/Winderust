@@ -249,7 +249,7 @@ wrapper retains context-menu dismissal on focus loss, clipped hit testing, and
 item identity resets. Action Log retains its hover popover. Numeric steppers keep
 raw draft strings so empty and invalid edits remain visible to validation;
 `iced_aw::NumberInput` only publishes valid numbers. By Time and By CPU Load use
-Iced's built-in table; Process List retains its virtualized rows.
+the shared keyed rule-table surface. Process List retains its virtualized rows.
 
 Keep the shared animated button tabs. They preserve release-to-select behavior,
 distinct selected and hovered styles, wrapping, live indicators, and weekday
