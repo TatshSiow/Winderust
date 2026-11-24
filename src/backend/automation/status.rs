@@ -97,15 +97,15 @@ pub(super) fn notify_input_event(shared: &SharedAutomationState, events: InputHo
     shared.changed.notify_one();
 }
 
-pub(super) fn update_background_efficiency_status(
+pub(super) fn update_efficiency_mode_status(
     shared: &SharedAutomationState,
-    status: BackgroundEfficiencySnapshot,
+    status: EfficiencyModeSnapshot,
 ) {
     update_feature_status(
         shared,
         status,
-        |feature_status| &feature_status.background_efficiency,
-        |feature_status| &mut feature_status.background_efficiency,
+        |feature_status| &feature_status.efficiency_mode,
+        |feature_status| &mut feature_status.efficiency_mode,
     );
 }
 

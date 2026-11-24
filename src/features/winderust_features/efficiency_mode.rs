@@ -8,7 +8,7 @@ use windows_sys::Win32::System::Threading::GetCurrentProcessId;
 use crate::{
     action_log::{ActionLog, ActionLogFeature, ActionLogResult},
     audio_activity::active_audio_process_ids,
-    config::{BackgroundEfficiencyAggressiveness, BackgroundEfficiencySettings},
+    config::EfficiencyModeSettings,
     control::{
         priority_efficiency::{
             EfficiencyModeClaim, PriorityEfficiencyController, PriorityEfficiencyReleaseSummary,
@@ -53,44 +53,8 @@ const BUILT_IN_EXCLUSIONS: &[&str] = &[
     "wudfhost.exe",
 ];
 
-const BALANCED_BUILT_IN_EXCLUSIONS: &[&str] = &[
-    "audiodg.exe",
-    "conhost.exe",
-    "csrss.exe",
-    "ctfmon.exe",
-    "dwm.exe",
-    "explorer.exe",
-    "fontdrvhost.exe",
-    "lsaiso.exe",
-    "lsass.exe",
-    "registry",
-    "securityhealthservice.exe",
-    "securityhealthsystray.exe",
-    "services.exe",
-    "sihost.exe",
-    "smss.exe",
-    "startmenuexperiencehost.exe",
-    "system",
-    "taskmgr.exe",
-    "textinputhost.exe",
-    "wininit.exe",
-    "winlogon.exe",
-];
-
-const AGGRESSIVE_BUILT_IN_EXCLUSIONS: &[&str] = &[
-    "csrss.exe",
-    "lsaiso.exe",
-    "lsass.exe",
-    "registry",
-    "services.exe",
-    "smss.exe",
-    "system",
-    "wininit.exe",
-    "winlogon.exe",
-];
-
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct BackgroundEfficiencySnapshot {
+pub struct EfficiencyModeSnapshot {
     pub enabled: bool,
     pub observation_paused: bool,
     pub waiting_for_power_source: bool,
@@ -104,13 +68,13 @@ pub struct BackgroundEfficiencySnapshot {
 }
 
 #[derive(Default)]
-pub struct BackgroundEfficiencyManager {
+pub struct EfficiencyModeManager {
     failure_suppression: ExecutionFailureTracker,
-    non_release_failures: BackgroundEfficiencyFailures,
+    non_release_failures: EfficiencyModeFailures,
     release_error_reported: bool,
 }
 
-struct BackgroundEfficiencyTarget {
+struct EfficiencyModeTarget {
     process_id: u32,
     process_name: String,
     executable_path: String,
@@ -118,7 +82,7 @@ struct BackgroundEfficiencyTarget {
     ignore_timer_resolution: bool,
 }
 
-impl BackgroundEfficiencyManager {
+impl EfficiencyModeManager {
     #[expect(
         clippy::too_many_arguments,
         reason = "the policy boundary receives shared observations and its state controller"
@@ -126,25 +90,25 @@ impl BackgroundEfficiencyManager {
     pub(crate) fn update(
         &mut self,
         controller: &mut PriorityEfficiencyController,
-        settings: &BackgroundEfficiencySettings,
+        settings: &EfficiencyModeSettings,
         automation_enabled: bool,
         allow_cross_session_process_control: bool,
         foreground_process_id: Option<u32>,
         observations: &mut CycleObservations,
         action_log: &mut ActionLog,
-    ) -> BackgroundEfficiencySnapshot {
+    ) -> EfficiencyModeSnapshot {
         if !automation_enabled {
             return self.disabled_snapshot(
                 controller,
                 action_log,
-                "background_efficiency.release_reason_automation_disabled",
+                "efficiency_mode.release_reason_automation_disabled",
             );
         }
         if !settings.enabled {
             return self.disabled_snapshot(
                 controller,
                 action_log,
-                "background_efficiency.release_reason_feature_disabled",
+                "efficiency_mode.release_reason_feature_disabled",
             );
         }
         let needs_foreground = settings.foreground_detection_enabled;
@@ -153,7 +117,7 @@ impl BackgroundEfficiencyManager {
             return self.paused_snapshot(
                 controller,
                 action_log,
-                "background_efficiency.release_reason_unknown_foreground",
+                "efficiency_mode.release_reason_unknown_foreground",
                 None,
             );
         }
@@ -163,7 +127,7 @@ impl BackgroundEfficiencyManager {
                 return self.paused_snapshot(
                     controller,
                     action_log,
-                    "background_efficiency.release_reason_unavailable_windows",
+                    "efficiency_mode.release_reason_unavailable_windows",
                     None,
                 );
             };
@@ -178,7 +142,7 @@ impl BackgroundEfficiencyManager {
             return self.paused_snapshot(
                 controller,
                 action_log,
-                "background_efficiency.release_reason_unknown_session",
+                "efficiency_mode.release_reason_unknown_session",
                 None,
             );
         };
@@ -188,7 +152,7 @@ impl BackgroundEfficiencyManager {
                 return self.paused_snapshot(
                     controller,
                     action_log,
-                    "background_efficiency.release_reason_unavailable_processes",
+                    "efficiency_mode.release_reason_unavailable_processes",
                     Some(error),
                 );
             }
@@ -202,7 +166,7 @@ impl BackgroundEfficiencyManager {
             return self.paused_snapshot(
                 controller,
                 action_log,
-                "background_efficiency.release_reason_unknown_foreground",
+                "efficiency_mode.release_reason_unknown_foreground",
                 None,
             );
         }
@@ -220,7 +184,7 @@ impl BackgroundEfficiencyManager {
                     || process.id == current_process_id
                     || process.is_critical != Some(false)
                     || !process.can_set_information
-                    || is_builtin_excluded_for(&process.name, settings.aggressiveness)
+                    || is_builtin_excluded(&process.name)
                     || (!allow_cross_session_process_control
                         && process_session_id(process.id) != Some(current_session_id))
                 {
@@ -235,12 +199,12 @@ impl BackgroundEfficiencyManager {
                     foreground_process_id,
                     foreground_executable_path.as_deref(),
                 );
-                if !background_efficiency_enabled_for(settings, path, focus, || {
+                if !efficiency_mode_enabled_for(settings, path, focus, || {
                     visible_processes.contains(process.id, &executable_path)
                 }) {
                     return None;
                 }
-                Some(BackgroundEfficiencyTarget {
+                Some(EfficiencyModeTarget {
                     process_id: process.id,
                     process_name: process.name.clone(),
                     executable_path: path.to_owned(),
@@ -255,7 +219,7 @@ impl BackgroundEfficiencyManager {
 
         let active_targets = targets
             .iter()
-            .map(background_efficiency_target_key)
+            .map(efficiency_mode_target_key)
             .collect::<BTreeSet<_>>();
         let active_target_names = targets
             .iter()
@@ -263,14 +227,12 @@ impl BackgroundEfficiencyManager {
             .collect::<BTreeSet<_>>();
         self.failure_suppression.retain_keys(&active_target_names);
 
-        let mut failures = BackgroundEfficiencyFailures::default();
+        let mut failures = EfficiencyModeFailures::default();
         self.record_policy_release(
-            controller.release_efficiency_policy_except(
-                ControlOwner::BackgroundEfficiency,
-                &active_targets,
-            ),
+            controller
+                .release_efficiency_policy_except(ControlOwner::EfficiencyMode, &active_targets),
             action_log,
-            "background_efficiency.release_reason_no_longer_matches",
+            "efficiency_mode.release_reason_no_longer_matches",
         );
 
         let mut skipped_processes = 0;
@@ -295,14 +257,14 @@ impl BackgroundEfficiencyManager {
                     PathBuf::from(&target.executable_path),
                     target.creation_time,
                 ),
-                owner: ControlOwner::BackgroundEfficiency,
+                owner: ControlOwner::EfficiencyMode,
                 ignore_timer_resolution: target.ignore_timer_resolution,
             };
             match controller.apply_efficiency_claim(claim, allow_cross_session_process_control) {
                 Ok(ProcessPropertyApplyOutcome::Applied) => {
                     self.clear_process_failure(&target.executable_path);
                     action_log.record(
-                        ActionLogFeature::BackgroundEfficiency,
+                        ActionLogFeature::EfficiencyMode,
                         Some(target.process_id),
                         target.process_name,
                         ActionLogResult::Applied,
@@ -321,7 +283,7 @@ impl BackgroundEfficiencyManager {
                     self.failure_suppression
                         .suppress_process_failure(&target.executable_path);
                     action_log.record(
-                        ActionLogFeature::BackgroundEfficiency,
+                        ActionLogFeature::EfficiencyMode,
                         Some(target.process_id),
                         target.process_name,
                         ActionLogResult::Skipped,
@@ -334,7 +296,7 @@ impl BackgroundEfficiencyManager {
                     self.failure_suppression
                         .suppress_process_failure(&target.executable_path);
                     action_log.record(
-                        ActionLogFeature::BackgroundEfficiency,
+                        ActionLogFeature::EfficiencyMode,
                         Some(target.process_id),
                         target.process_name,
                         ActionLogResult::Skipped,
@@ -355,7 +317,7 @@ impl BackgroundEfficiencyManager {
         }
 
         self.non_release_failures = failures;
-        let status = BackgroundEfficiencySnapshot {
+        let status = EfficiencyModeSnapshot {
             enabled: true,
             scanned_processes,
             skipped_processes,
@@ -369,13 +331,13 @@ impl BackgroundEfficiencyManager {
         &mut self,
         controller: &mut PriorityEfficiencyController,
         action_log: &mut ActionLog,
-    ) -> BackgroundEfficiencySnapshot {
-        BackgroundEfficiencySnapshot {
+    ) -> EfficiencyModeSnapshot {
+        EfficiencyModeSnapshot {
             waiting_for_power_source: true,
             ..self.paused_snapshot(
                 controller,
                 action_log,
-                "background_efficiency.release_reason_unknown_power_source",
+                "efficiency_mode.release_reason_unknown_power_source",
                 None,
             )
         }
@@ -386,15 +348,15 @@ impl BackgroundEfficiencyManager {
         controller: &mut PriorityEfficiencyController,
         action_log: &mut ActionLog,
         reason_key: &str,
-    ) -> BackgroundEfficiencySnapshot {
-        self.non_release_failures = BackgroundEfficiencyFailures::default();
+    ) -> EfficiencyModeSnapshot {
+        self.non_release_failures = EfficiencyModeFailures::default();
         self.record_policy_release(
-            controller.release_all_efficiency_policy(ControlOwner::BackgroundEfficiency),
+            controller.release_all_efficiency_policy(ControlOwner::EfficiencyMode),
             action_log,
             reason_key,
         );
         self.failure_suppression.clear();
-        self.with_release_status(controller, BackgroundEfficiencySnapshot::default())
+        self.with_release_status(controller, EfficiencyModeSnapshot::default())
     }
 
     fn paused_snapshot(
@@ -403,17 +365,17 @@ impl BackgroundEfficiencyManager {
         action_log: &mut ActionLog,
         reason_key: &str,
         observation_error: Option<String>,
-    ) -> BackgroundEfficiencySnapshot {
-        self.non_release_failures = BackgroundEfficiencyFailures {
+    ) -> EfficiencyModeSnapshot {
+        self.non_release_failures = EfficiencyModeFailures {
             last_error: observation_error,
             ..Default::default()
         };
         self.record_policy_release(
-            controller.release_all_efficiency_policy(ControlOwner::BackgroundEfficiency),
+            controller.release_all_efficiency_policy(ControlOwner::EfficiencyMode),
             action_log,
             reason_key,
         );
-        let status = BackgroundEfficiencySnapshot {
+        let status = EfficiencyModeSnapshot {
             enabled: true,
             observation_paused: true,
             ..Default::default()
@@ -427,7 +389,7 @@ impl BackgroundEfficiencyManager {
     ) -> bool {
         self.release_error_reported
             && controller
-                .background_efficiency_release_failures()
+                .efficiency_mode_release_failures()
                 .next()
                 .is_none()
     }
@@ -435,15 +397,13 @@ impl BackgroundEfficiencyManager {
     pub(crate) fn with_release_status(
         &mut self,
         controller: &PriorityEfficiencyController,
-        mut status: BackgroundEfficiencySnapshot,
-    ) -> BackgroundEfficiencySnapshot {
+        mut status: EfficiencyModeSnapshot,
+    ) -> EfficiencyModeSnapshot {
         status.throttled_processes =
-            controller.policy_managed_process_count(ControlOwner::BackgroundEfficiency);
+            controller.policy_managed_process_count(ControlOwner::EfficiencyMode);
         status.failed_processes = self.non_release_failures.count;
         status.unsupported = self.non_release_failures.unsupported;
-        let mut pending = controller
-            .background_efficiency_release_failures()
-            .peekable();
+        let mut pending = controller.efficiency_mode_release_failures().peekable();
         self.release_error_reported = pending.peek().is_some();
         status.last_error = pending
             .peek()
@@ -483,12 +443,12 @@ impl BackgroundEfficiencyManager {
         if summary.restored_processes > 0 {
             let locale = rust_i18n::locale();
             action_log.record(
-                ActionLogFeature::BackgroundEfficiency,
+                ActionLogFeature::EfficiencyMode,
                 None,
                 "",
                 ActionLogResult::Restored,
                 rust_i18n::t!(
-                    "background_efficiency.log_restored",
+                    "efficiency_mode.log_restored",
                     locale = &*locale,
                     count = summary.restored_processes,
                     reason = rust_i18n::t!(reason_key, locale = &*locale)
@@ -497,7 +457,7 @@ impl BackgroundEfficiencyManager {
         }
         for failure in summary.failures {
             action_log.record(
-                ActionLogFeature::BackgroundEfficiency,
+                ActionLogFeature::EfficiencyMode,
                 Some(failure.process_id),
                 failure.process_name,
                 ActionLogResult::Failed,
@@ -518,12 +478,12 @@ impl BackgroundEfficiencyManager {
             .process_suppression(executable_path);
         if suppression.newly_suppressed {
             action_log.record(
-                ActionLogFeature::BackgroundEfficiency,
+                ActionLogFeature::EfficiencyMode,
                 Some(process_id),
                 process_name.to_owned(),
                 ActionLogResult::Skipped,
                 format!(
-                    "Stopped retrying Background Efficiency after {} failed attempts.",
+                    "Stopped retrying Efficiency Mode after {} failed attempts.",
                     execution_failure_suppression_threshold(),
                 ),
             );
@@ -553,13 +513,13 @@ impl BackgroundEfficiencyManager {
 }
 
 #[derive(Default)]
-struct BackgroundEfficiencyFailures {
+struct EfficiencyModeFailures {
     unsupported: bool,
     count: usize,
     last_error: Option<String>,
 }
 
-impl BackgroundEfficiencyFailures {
+impl EfficiencyModeFailures {
     fn record(
         &mut self,
         action: &str,
@@ -579,7 +539,7 @@ impl BackgroundEfficiencyFailures {
         }
         self.count += 1;
         action_log.record(
-            ActionLogFeature::BackgroundEfficiency,
+            ActionLogFeature::EfficiencyMode,
             Some(process_id),
             process_name.to_owned(),
             ActionLogResult::Failed,
@@ -588,7 +548,7 @@ impl BackgroundEfficiencyFailures {
     }
 }
 
-fn background_efficiency_target_key(target: &BackgroundEfficiencyTarget) -> ProcessTargetKey {
+fn efficiency_mode_target_key(target: &EfficiencyModeTarget) -> ProcessTargetKey {
     ProcessTargetKey::new(
         target.process_id,
         target.creation_time,
@@ -606,39 +566,7 @@ fn process_failure_message(
 }
 
 pub fn is_builtin_excluded(process_name: &str) -> bool {
-    is_builtin_excluded_for(process_name, BackgroundEfficiencyAggressiveness::Safe)
-}
-
-#[cfg(test)]
-fn is_process_excluded(
-    process: &str,
-    settings: &BackgroundEfficiencySettings,
-    focus: bool,
-    visible_window: bool,
-) -> bool {
-    let process_name = Path::new(process)
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or(process);
-    is_builtin_excluded_for(process_name, settings.aggressiveness)
-        || !background_efficiency_enabled_for(settings, process, focus, || visible_window)
-}
-
-fn is_builtin_excluded_for(
-    process_name: &str,
-    aggressiveness: BackgroundEfficiencyAggressiveness,
-) -> bool {
-    contains_process_name(built_in_exclusions_for(aggressiveness), process_name)
-}
-
-fn built_in_exclusions_for(
-    aggressiveness: BackgroundEfficiencyAggressiveness,
-) -> &'static [&'static str] {
-    match aggressiveness {
-        BackgroundEfficiencyAggressiveness::Safe => BUILT_IN_EXCLUSIONS,
-        BackgroundEfficiencyAggressiveness::Balanced => BALANCED_BUILT_IN_EXCLUSIONS,
-        BackgroundEfficiencyAggressiveness::Aggressive => AGGRESSIVE_BUILT_IN_EXCLUSIONS,
-    }
+    contains_process_name(BUILT_IN_EXCLUSIONS, process_name)
 }
 
 fn ignore_timer_resolution_allowed(
@@ -648,8 +576,8 @@ fn ignore_timer_resolution_allowed(
     active_audio_process_ids.is_some_and(|ids| !ids.contains(&process_id))
 }
 
-fn background_efficiency_enabled_for(
-    settings: &BackgroundEfficiencySettings,
+fn efficiency_mode_enabled_for(
+    settings: &EfficiencyModeSettings,
     process_name: &str,
     focus: bool,
     visible_window: impl FnOnce() -> bool,
@@ -676,16 +604,16 @@ mod tests {
 
     #[test]
     fn unverified_focused_executable_pauses_only_with_focus_detection() {
-        let mut manager = BackgroundEfficiencyManager::default();
+        let mut manager = EfficiencyModeManager::default();
         let mut controller = PriorityEfficiencyController::default();
         let mut observations = CycleObservations::with_processes(Vec::new());
         let mut action_log = ActionLog::default();
-        let mut settings = BackgroundEfficiencySettings {
+        let mut settings = EfficiencyModeSettings {
             enabled: true,
             foreground_detection_enabled: true,
             ..Default::default()
         };
-        let mut update = |settings: &BackgroundEfficiencySettings| {
+        let mut update = |settings: &EfficiencyModeSettings| {
             manager.update(
                 &mut controller,
                 settings,
@@ -703,72 +631,17 @@ mod tests {
     }
 
     #[test]
-    fn exclusions_include_builtin_and_user_entries() {
-        let settings = BackgroundEfficiencySettings {
-            enabled: true,
-            foreground_detection_enabled: true,
-            visible_window_detection_enabled: false,
-            foreground_efficiency_mode: false,
-            visible_window_efficiency_mode: false,
-            background_efficiency_mode: true,
-            aggressiveness: BackgroundEfficiencyAggressiveness::Safe,
-            custom_rules: vec![crate::config::BackgroundEfficiencyRule {
-                enabled: true,
-                executable_path: "mouse.exe".to_owned(),
-                focus_efficiency_mode: ProcessRuleMode::Disabled,
-                visible_window_efficiency_mode: ProcessRuleMode::Disabled,
-                background_efficiency_mode: ProcessRuleMode::Disabled,
-            }],
-        };
-
-        assert!(is_process_excluded("EXPLORER.EXE", &settings, false, false));
-        assert!(is_process_excluded("csrss.exe", &settings, false, false));
-        assert!(is_process_excluded("winlogon.exe", &settings, false, false));
-        assert!(is_process_excluded("Mouse.exe", &settings, false, false));
-        assert!(!is_process_excluded("browser.exe", &settings, false, false));
-    }
-
-    #[test]
-    fn aggressiveness_profiles_control_builtin_exclusions() {
-        let mut settings = BackgroundEfficiencySettings {
-            aggressiveness: BackgroundEfficiencyAggressiveness::Safe,
-            ..Default::default()
-        };
-
-        assert!(is_process_excluded(
-            "SearchHost.exe",
-            &settings,
-            false,
-            false
-        ));
-        assert!(is_process_excluded("dwm.exe", &settings, false, false));
-        assert!(is_process_excluded("winlogon.exe", &settings, false, false));
-
-        settings.aggressiveness = BackgroundEfficiencyAggressiveness::Balanced;
-        assert!(!is_process_excluded(
-            "SearchHost.exe",
-            &settings,
-            false,
-            false
-        ));
-        assert!(is_process_excluded("dwm.exe", &settings, false, false));
-        assert!(is_process_excluded("winlogon.exe", &settings, false, false));
-
-        settings.aggressiveness = BackgroundEfficiencyAggressiveness::Aggressive;
-        assert!(!is_process_excluded(
-            "SearchHost.exe",
-            &settings,
-            false,
-            false
-        ));
-        assert!(!is_process_excluded("dwm.exe", &settings, false, false));
-        assert!(is_process_excluded("winlogon.exe", &settings, false, false));
+    fn built_in_exclusions_protect_windows_shell_and_system_processes() {
+        for name in ["EXPLORER.EXE", "SearchHost.exe", "dwm.exe", "winlogon.exe"] {
+            assert!(is_builtin_excluded(name), "{name}");
+        }
+        assert!(!is_builtin_excluded("browser.exe"));
     }
 
     #[test]
     fn disabled_user_exclusions_do_not_exclude_processes() {
-        let settings = BackgroundEfficiencySettings {
-            custom_rules: vec![crate::config::BackgroundEfficiencyRule {
+        let mut settings = EfficiencyModeSettings {
+            custom_rules: vec![crate::config::EfficiencyModeRule {
                 enabled: false,
                 executable_path: "mouse.exe".to_owned(),
                 focus_efficiency_mode: ProcessRuleMode::Disabled,
@@ -779,15 +652,27 @@ mod tests {
         };
 
         assert!(settings.contains_custom_rule("MOUSE.EXE"));
-        assert!(!is_process_excluded("mouse.exe", &settings, false, false));
+        assert!(efficiency_mode_enabled_for(
+            &settings,
+            "mouse.exe",
+            false,
+            || false
+        ));
+        settings.custom_rules[0].enabled = true;
+        assert!(!efficiency_mode_enabled_for(
+            &settings,
+            "MOUSE.EXE",
+            false,
+            || false
+        ));
     }
 
     #[test]
     fn custom_rule_prefers_focus_then_visible_window_then_background() {
-        let mut settings = BackgroundEfficiencySettings {
+        let mut settings = EfficiencyModeSettings {
             foreground_detection_enabled: true,
             visible_window_detection_enabled: true,
-            custom_rules: vec![crate::config::BackgroundEfficiencyRule {
+            custom_rules: vec![crate::config::EfficiencyModeRule {
                 enabled: true,
                 executable_path: "app.exe".to_owned(),
                 focus_efficiency_mode: ProcessRuleMode::Enabled,
@@ -797,20 +682,20 @@ mod tests {
             ..Default::default()
         };
 
-        assert!(background_efficiency_enabled_for(
+        assert!(efficiency_mode_enabled_for(
             &settings,
             "APP.EXE",
             true,
             || { panic!("Focus already decides which efficiency mode to use") }
         ));
         settings.foreground_detection_enabled = false;
-        assert!(!background_efficiency_enabled_for(
+        assert!(!efficiency_mode_enabled_for(
             &settings,
             "app.exe",
             true,
             || true
         ));
-        assert!(background_efficiency_enabled_for(
+        assert!(efficiency_mode_enabled_for(
             &settings,
             "app.exe",
             true,
@@ -820,12 +705,12 @@ mod tests {
 
     #[test]
     fn custom_rule_default_inherits_global_layer() {
-        let settings = BackgroundEfficiencySettings {
+        let settings = EfficiencyModeSettings {
             foreground_detection_enabled: true,
             visible_window_detection_enabled: true,
             foreground_efficiency_mode: false,
             visible_window_efficiency_mode: true,
-            custom_rules: vec![crate::config::BackgroundEfficiencyRule {
+            custom_rules: vec![crate::config::EfficiencyModeRule {
                 enabled: true,
                 executable_path: "app.exe".to_owned(),
                 focus_efficiency_mode: ProcessRuleMode::Default,
@@ -835,13 +720,13 @@ mod tests {
             ..Default::default()
         };
 
-        assert!(!background_efficiency_enabled_for(
+        assert!(!efficiency_mode_enabled_for(
             &settings,
             "app.exe",
             true,
             || false
         ));
-        assert!(background_efficiency_enabled_for(
+        assert!(efficiency_mode_enabled_for(
             &settings,
             "app.exe",
             false,
@@ -859,7 +744,7 @@ mod tests {
 
     #[test]
     fn repeated_failures_suppress_future_efficiency_attempts_once() {
-        let mut manager = BackgroundEfficiencyManager::default();
+        let mut manager = EfficiencyModeManager::default();
         let mut log = ActionLog::new(8);
         let executable_path = r"C:\Apps\app.exe";
 
@@ -888,7 +773,7 @@ mod tests {
 
     #[test]
     fn first_suppression_reports_once() {
-        let mut manager = BackgroundEfficiencyManager::default();
+        let mut manager = EfficiencyModeManager::default();
         let mut log = ActionLog::new(8);
 
         manager.record_process_failure("app.exe");

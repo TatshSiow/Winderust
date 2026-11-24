@@ -27,7 +27,7 @@ pub enum ActionLogFeature {
     CpuSetsSoft,
     InstanceBalancing,
     ProcessorAffinityHard,
-    BackgroundEfficiency,
+    EfficiencyMode,
     CpuLimiter,
     ByFocus,
     ByRunningApp,
@@ -380,21 +380,21 @@ mod tests {
         let mut log = ActionLog::new(8);
         log.set_mode(ActionLogMode::Warning);
         log.record(
-            ActionLogFeature::BackgroundEfficiency,
+            ActionLogFeature::EfficiencyMode,
             Some(1),
             "app.exe",
             ActionLogResult::Applied,
             "applied",
         );
         log.record(
-            ActionLogFeature::BackgroundEfficiency,
+            ActionLogFeature::EfficiencyMode,
             Some(1),
             "app.exe",
             ActionLogResult::Skipped,
             "skipped",
         );
         log.record(
-            ActionLogFeature::BackgroundEfficiency,
+            ActionLogFeature::EfficiencyMode,
             Some(1),
             "app.exe",
             ActionLogResult::Failed,
@@ -409,14 +409,14 @@ mod tests {
         let mut error_log = ActionLog::new(8);
         error_log.set_mode(ActionLogMode::Error);
         error_log.record(
-            ActionLogFeature::BackgroundEfficiency,
+            ActionLogFeature::EfficiencyMode,
             Some(1),
             "app.exe",
             ActionLogResult::Skipped,
             "skipped",
         );
         error_log.record(
-            ActionLogFeature::BackgroundEfficiency,
+            ActionLogFeature::EfficiencyMode,
             Some(1),
             "app.exe",
             ActionLogResult::Failed,
@@ -429,7 +429,7 @@ mod tests {
         let captured = log.entries_snapshot();
         log.set_mode(ActionLogMode::Off);
         log.record(
-            ActionLogFeature::BackgroundEfficiency,
+            ActionLogFeature::EfficiencyMode,
             Some(2),
             "other.exe",
             ActionLogResult::Restored,
@@ -439,7 +439,7 @@ mod tests {
         assert!(Arc::ptr_eq(&captured, &log.entries_snapshot()));
         assert_eq!(log.entries().len(), 2);
         assert_eq!(
-            log.summaries()[&ActionLogFeature::BackgroundEfficiency].successful_actions,
+            log.summaries()[&ActionLogFeature::EfficiencyMode].successful_actions,
             2
         );
     }

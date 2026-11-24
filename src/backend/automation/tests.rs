@@ -1376,21 +1376,21 @@ fn priority_source_schedule_preserves_verified_and_common_policy_cadence() {
 }
 
 #[test]
-fn background_efficiency_source_difference_needs_an_enabled_policy() {
+fn efficiency_mode_source_difference_needs_an_enabled_policy() {
     let mut settings = Settings::default();
     settings.general.theme_mode = AppThemeMode::Dark;
     settings.general.accent.source = AccentColorSource::Custom;
-    assert!(!background_efficiency_policy_varies_by_source(&settings));
-    let efficiency = &mut settings.battery_profile_mut().background_efficiency;
+    assert!(!efficiency_mode_policy_varies_by_source(&settings));
+    let efficiency = &mut settings.battery_profile_mut().efficiency_mode;
     efficiency.enabled = true;
     efficiency.background_efficiency_mode = false;
-    assert!(!background_efficiency_policy_varies_by_source(&settings));
+    assert!(!efficiency_mode_policy_varies_by_source(&settings));
 
     settings
         .battery_profile_mut()
-        .background_efficiency
+        .efficiency_mode
         .background_efficiency_mode = true;
-    assert!(background_efficiency_policy_varies_by_source(&settings));
+    assert!(efficiency_mode_policy_varies_by_source(&settings));
     assert!(automation_worker_required(&settings));
     assert_eq!(
         windows_event_watcher_mode(&settings),
@@ -1401,13 +1401,13 @@ fn background_efficiency_source_difference_needs_an_enabled_policy() {
         WindowsAutomationEvent::PowerChanged
     ));
 
-    settings.background_efficiency.enabled = true;
-    assert!(!background_efficiency_policy_varies_by_source(&settings));
+    settings.efficiency_mode.enabled = true;
+    assert!(!efficiency_mode_policy_varies_by_source(&settings));
     settings
         .battery_profile_mut()
-        .background_efficiency
+        .efficiency_mode
         .visible_window_detection_enabled = true;
-    assert!(background_efficiency_policy_varies_by_source(&settings));
+    assert!(efficiency_mode_policy_varies_by_source(&settings));
 }
 
 #[test]
@@ -2039,7 +2039,7 @@ fn manual_app_suspension_request_starts_worker_without_automatic_rules() {
 #[test]
 fn automation_worker_runs_for_enabled_process_feature() {
     let mut settings = Settings::default();
-    settings.background_efficiency.enabled = true;
+    settings.efficiency_mode.enabled = true;
 
     assert!(automation_worker_required(&settings));
 }
@@ -2552,7 +2552,7 @@ fn controller_activity_poll_requires_a_usable_plan() {
 #[test]
 fn process_appearance_scan_runs_for_enabled_process_features() {
     let mut settings = Settings::default();
-    settings.background_efficiency.enabled = true;
+    settings.efficiency_mode.enabled = true;
 
     assert!(process_appearance_scan_required(&settings));
     assert!(!power_plan_checks_required(&settings));
@@ -2562,11 +2562,11 @@ fn process_appearance_scan_runs_for_enabled_process_features() {
 fn disabled_automation_suppresses_worker_refreshes() {
     let mut settings = Settings::default();
     settings.general.enabled = false;
-    settings.background_efficiency.enabled = true;
+    settings.efficiency_mode.enabled = true;
 
     assert!(!feature_refresh_required(
         &settings,
-        settings.background_efficiency.enabled
+        settings.efficiency_mode.enabled
     ));
     assert!(!process_appearance_scan_required(&settings));
     assert!(!power_plan_checks_required(&settings));
@@ -2662,10 +2662,10 @@ fn adaptive_engine_process_requires_adaptive_engine() {
 fn automation_feature_execution_order_is_characterized() {
     assert_source_call_order(
         include_str!("../automation.rs"),
-        "if background_efficiency_refresh_required",
+        "if efficiency_mode_refresh_required",
         "runner.publish_action_log_if_changed(&shared);",
         &[
-            "runner.run_background_efficiency_update(",
+            "runner.run_efficiency_mode_update(",
             "runner.run_process_priority_update(",
             "runner.run_adaptive_engine_process_update(",
             "runner.run_io_priority_update(",
@@ -2800,7 +2800,7 @@ fn automation_shutdown_restores_reversible_features_in_reverse_order() {
             "self.io_priority_controller.shutdown(",
             "self.run_adaptive_engine_process_update(",
             "self.cpu_allocation_coordinator.shutdown(",
-            "self.run_background_efficiency_update(",
+            "self.run_efficiency_mode_update(",
             "self.priority_efficiency_controller.shutdown(",
             "self.power_plan_controller.shutdown(",
         ],

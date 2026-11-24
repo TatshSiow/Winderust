@@ -245,13 +245,14 @@ hover/press; background shading supplies feedback.
   columns. Each policy column selects a Core or custom preset; do not restore expandable per-rule
   CPU grids.
 
-### Background Efficiency
+### Efficiency Mode
 
-- The master group owns the Background Efficiency Mode default. Foreground Detection and Visible
+- The master group owns the Background tier default. Foreground Detection and Visible
   Window Detection use the same collapsible toggle-plus-value pattern as Priority Control.
-- Custom rules use the same compact Active, App Name, Executable Path, Focus, Visible Window,
-  Background, and Actions table pattern as CPU allocation. Each policy column selects Default,
-  Enabled, or Disabled; Default inherits the matching page-wide Efficiency Mode value.
+- Custom rules match an exact executable path. The compact rule table has Active, App Name,
+  Executable Path, Focus, Visible Window, Background, and Actions columns. Each policy column
+  selects Default, Enabled, or Disabled. Default inherits the matching page-wide value.
+- Save applies the tier defaults and custom rules. Discard restores the saved configuration.
 
 ### Priority Control and CPU Limiter
 

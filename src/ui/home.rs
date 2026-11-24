@@ -1493,10 +1493,10 @@ fn enabled_features(
         )
         .to_string()
     );
-    let efficiency = &status.background_efficiency;
+    let efficiency = &status.efficiency_mode;
     feature!(
-        BackgroundEfficiency,
-        background_efficiency,
+        EfficiencyMode,
+        efficiency_mode,
         if efficiency.last_error.is_some() {
             t!("common.error").into_owned()
         } else if efficiency.unsupported
@@ -1753,7 +1753,7 @@ mod tests {
             Page::CpuSetsSoft,
             Page::ProcessorAffinityHard,
             Page::InstanceBalancing,
-            Page::BackgroundEfficiency,
+            Page::EfficiencyMode,
             Page::AppSuspension,
             Page::AdaptiveEngine,
             Page::ProcessPriority,

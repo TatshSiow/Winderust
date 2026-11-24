@@ -40,7 +40,7 @@ pub struct Settings {
     #[serde(default)]
     pub by_cpu_load: ByCpuLoadSettings,
     #[serde(default)]
-    pub background_efficiency: BackgroundEfficiencySettings,
+    pub efficiency_mode: EfficiencyModeSettings,
     #[serde(default)]
     pub app_suspension: AppSuspensionSettings,
     #[serde(default)]
@@ -439,7 +439,7 @@ pub struct ByCpuLoadSettings {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct BackgroundEfficiencySettings {
+pub struct EfficiencyModeSettings {
     pub enabled: bool,
     #[serde(default = "default_true")]
     pub foreground_detection_enabled: bool,
@@ -452,9 +452,7 @@ pub struct BackgroundEfficiencySettings {
     #[serde(default = "default_true")]
     pub background_efficiency_mode: bool,
     #[serde(default)]
-    pub aggressiveness: BackgroundEfficiencyAggressiveness,
-    #[serde(default)]
-    pub custom_rules: Vec<BackgroundEfficiencyRule>,
+    pub custom_rules: Vec<EfficiencyModeRule>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -520,7 +518,7 @@ const fn default_adaptive_focus_and_launch_profile() -> AdaptivePowerBoostValues
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct BackgroundEfficiencyRule {
+pub struct EfficiencyModeRule {
     #[serde(default = "default_true")]
     pub enabled: bool,
     pub executable_path: String,
@@ -532,7 +530,7 @@ pub struct BackgroundEfficiencyRule {
     pub background_efficiency_mode: ProcessRuleMode,
 }
 
-impl BackgroundEfficiencyRule {
+impl EfficiencyModeRule {
     pub fn efficiency_mode_for(
         &self,
         focus: bool,
@@ -573,19 +571,6 @@ impl ProcessRuleMode {
 
 fn default_disabled_process_rule_mode() -> ProcessRuleMode {
     ProcessRuleMode::Disabled
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum BackgroundEfficiencyAggressiveness {
-    #[default]
-    Safe,
-    Balanced,
-    Aggressive,
-}
-
-impl BackgroundEfficiencyAggressiveness {
-    pub const ALL: [Self; 3] = [Self::Safe, Self::Balanced, Self::Aggressive];
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -1999,7 +1984,7 @@ impl Default for Settings {
                 }],
             },
             by_cpu_load: ByCpuLoadSettings::default(),
-            background_efficiency: BackgroundEfficiencySettings::default(),
+            efficiency_mode: EfficiencyModeSettings::default(),
             app_suspension: AppSuspensionSettings::default(),
             cpu_sets_soft: CpuAllocationSettings::default(),
             processor_affinity_hard: CpuAllocationSettings::default(),
@@ -2090,7 +2075,7 @@ impl Default for ByCpuLoadSettings {
     }
 }
 
-impl Default for BackgroundEfficiencySettings {
+impl Default for EfficiencyModeSettings {
     fn default() -> Self {
         Self {
             enabled: false,
@@ -2099,7 +2084,6 @@ impl Default for BackgroundEfficiencySettings {
             foreground_efficiency_mode: false,
             visible_window_efficiency_mode: false,
             background_efficiency_mode: true,
-            aggressiveness: BackgroundEfficiencyAggressiveness::Safe,
             custom_rules: Vec::new(),
         }
     }
@@ -2734,8 +2718,8 @@ impl AppSuspensionSettings {
     }
 }
 
-impl BackgroundEfficiencySettings {
-    pub fn custom_rule_applies_efficiency_mode(&self, rule: &BackgroundEfficiencyRule) -> bool {
+impl EfficiencyModeSettings {
+    pub fn custom_rule_applies_efficiency_mode(&self, rule: &EfficiencyModeRule) -> bool {
         rule.background_efficiency_mode
             .resolve(self.background_efficiency_mode)
             || self.foreground_detection_enabled
@@ -2754,7 +2738,7 @@ impl BackgroundEfficiencySettings {
             .any(|rule| same_rule_executable_path(&rule.executable_path, process_name))
     }
 
-    pub fn custom_rule_for(&self, process_name: &str) -> Option<&BackgroundEfficiencyRule> {
+    pub fn custom_rule_for(&self, process_name: &str) -> Option<&EfficiencyModeRule> {
         self.custom_rules.iter().find(|rule| {
             rule.enabled && same_rule_executable_path(&rule.executable_path, process_name)
         })

@@ -388,18 +388,17 @@ fn invalid_by_time_clock_values_fail_load_and_import_without_rewriting() {
 use crate::config::{
     AccentSettings, ActionLogMode, AdaptiveEnginePreset, AdaptiveEngineProcessSettings,
     AdaptiveEngineSettings, AdvancedPowerPlanTuningPreset, AdvancedSettings, AppLanguage,
-    AppSuspensionRule, AppSuspensionSettings, AppThemeMode, BackgroundEfficiencyAggressiveness,
-    BackgroundEfficiencyRule, BackgroundEfficiencySettings, BackgroundProcessorSelection,
+    AppSuspensionRule, AppSuspensionSettings, AppThemeMode, BackgroundProcessorSelection,
     ByActivitySettings, ByCpuLoadRule, ByCpuLoadSettings, ByFocusRule, ByFocusSettings,
     ByRunningAppRule, ByRunningAppSettings, ByTimeRule, ByTimeSettings, CpuAllocationMethod,
     CpuAllocationPreset, CpuAllocationRule, CpuAllocationSettings, CpuLimiterRule,
-    CpuLimiterSettings, CpuUsageComparison, DynamicPriorityBoostSettings, GeneralSettings,
-    GpuPrioritySettings, InputDetectionSettings, IoPrioritySettings, MemoryPrioritySettings,
-    MemoryTrimSettings, NetworkThresholdUnit, PowerPlanSettings,
-    ProcessDynamicPriorityBoostSetting, ProcessExclusionRule, ProcessGpuPrioritySetting,
-    ProcessIoPrioritySetting, ProcessMemoryPrioritySetting, ProcessPrioritySetting,
-    ProcessPrioritySettings, ProcessRuleMode, ProcessThreadPrioritySetting, ThreadPrioritySettings,
-    TimerResolutionRule, TimerResolutionSettings, WeekdaySetting,
+    CpuLimiterSettings, CpuUsageComparison, DynamicPriorityBoostSettings, EfficiencyModeRule,
+    EfficiencyModeSettings, GeneralSettings, GpuPrioritySettings, InputDetectionSettings,
+    IoPrioritySettings, MemoryPrioritySettings, MemoryTrimSettings, NetworkThresholdUnit,
+    PowerPlanSettings, ProcessDynamicPriorityBoostSetting, ProcessExclusionRule,
+    ProcessGpuPrioritySetting, ProcessIoPrioritySetting, ProcessMemoryPrioritySetting,
+    ProcessPrioritySetting, ProcessPrioritySettings, ProcessRuleMode, ProcessThreadPrioritySetting,
+    ThreadPrioritySettings, TimerResolutionRule, TimerResolutionSettings, WeekdaySetting,
 };
 
 fn set_cpu_allocation_selections(settings: &mut Settings, mask: u64) {
@@ -834,13 +833,13 @@ fn omitted_adaptive_priority_options_use_behavior_preserving_defaults() {
 }
 
 #[test]
-fn background_efficiency_rule_without_tiers_remains_an_exclusion() {
-    let rule: BackgroundEfficiencyRule = toml::from_str(
+fn efficiency_mode_rule_without_tiers_remains_an_exclusion() {
+    let rule: EfficiencyModeRule = toml::from_str(
         r#"
             executable_path = "C:\\Apps\\legacy.exe"
         "#,
     )
-    .expect("existing Background Efficiency rule should parse");
+    .expect("existing Efficiency Mode rule should parse");
 
     assert!(rule.enabled);
     assert_eq!(rule.focus_efficiency_mode, ProcessRuleMode::Disabled);
@@ -849,6 +848,42 @@ fn background_efficiency_rule_without_tiers_remains_an_exclusion() {
         ProcessRuleMode::Disabled
     );
     assert_eq!(rule.background_efficiency_mode, ProcessRuleMode::Disabled);
+}
+
+#[test]
+fn efficiency_mode_reads_only_its_current_section_on_both_profiles() {
+    let mut settings = Settings::default();
+    settings.efficiency_mode.enabled = true;
+    settings
+        .efficiency_mode
+        .custom_rules
+        .push(EfficiencyModeRule {
+            enabled: true,
+            executable_path: r"C:\Apps\worker.exe".into(),
+            focus_efficiency_mode: ProcessRuleMode::Disabled,
+            visible_window_efficiency_mode: ProcessRuleMode::Disabled,
+            background_efficiency_mode: ProcessRuleMode::Enabled,
+        });
+    settings
+        .battery_profile_mut()
+        .efficiency_mode
+        .background_efficiency_mode = false;
+    let raw = toml::to_string_pretty(&settings).unwrap();
+    assert!(raw.contains("[efficiency_mode]"));
+    assert!(raw.contains("[on_battery.efficiency_mode]"));
+    assert_eq!(toml::from_str::<Settings>(&raw).unwrap(), settings);
+
+    let legacy = raw
+        .replace("efficiency_mode]", "background_efficiency]")
+        .replace(
+            "efficiency_mode.custom_rules]]",
+            "background_efficiency.custom_rules]]",
+        );
+    let parsed: Settings = toml::from_str(&legacy).unwrap();
+    let mut defaults = settings;
+    defaults.efficiency_mode = EfficiencyModeSettings::default();
+    defaults.battery_profile_mut().efficiency_mode = EfficiencyModeSettings::default();
+    assert_eq!(parsed, defaults);
 }
 
 #[test]
@@ -1040,23 +1075,22 @@ fn toml_round_trip_preserves_settings() {
                 else_power_plan_guid: Some("normal-cpu-guid".to_owned()),
             }],
         },
-        background_efficiency: BackgroundEfficiencySettings {
+        efficiency_mode: EfficiencyModeSettings {
             enabled: true,
             foreground_detection_enabled: false,
             visible_window_detection_enabled: true,
             foreground_efficiency_mode: false,
             visible_window_efficiency_mode: false,
             background_efficiency_mode: true,
-            aggressiveness: BackgroundEfficiencyAggressiveness::Safe,
             custom_rules: vec![
-                BackgroundEfficiencyRule {
+                EfficiencyModeRule {
                     enabled: true,
                     executable_path: "mouse.exe".to_owned(),
                     focus_efficiency_mode: ProcessRuleMode::Disabled,
                     visible_window_efficiency_mode: ProcessRuleMode::Disabled,
                     background_efficiency_mode: ProcessRuleMode::Disabled,
                 },
-                BackgroundEfficiencyRule {
+                EfficiencyModeRule {
                     enabled: false,
                     executable_path: "comma,app.exe".to_owned(),
                     focus_efficiency_mode: ProcessRuleMode::Disabled,

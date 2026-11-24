@@ -296,7 +296,7 @@ fn first_run_rule_modules_are_disabled() {
         settings.by_focus.enabled,
         settings.by_time.enabled,
         settings.by_cpu_load.enabled,
-        settings.background_efficiency.enabled,
+        settings.efficiency_mode.enabled,
         settings.app_suspension.enabled,
         settings.cpu_sets_soft.enabled,
         settings.processor_affinity_hard.enabled,

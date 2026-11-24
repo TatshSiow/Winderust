@@ -35,7 +35,7 @@
 ## Features
 
 - Adaptive Engine - automatic background process restraint.
-- Background Efficiency - set power-efficiency preferences by app and window state.
+- Efficiency Mode - set power-efficiency preferences by app and window state.
 - Power Plan Control - switch plans manually or by app focus, running apps, CPU load, activity, or time. Optionally restore the previous plan when no rule selects one.
 - Adaptive Processor Power - adjust processor settings to match demand through the temporary Winderust Adaptive plan.
 - Advanced Power Plan Tuning - adjust processor performance, core parking, boost, and thread scheduling policies.
@@ -58,6 +58,8 @@
 Download and extract the release ZIP, then run `winderust.exe`. Settings are saved in `settings.toml` beside the executable.
 
 Check the [changelog](CHANGELOG.md) before upgrading; settings formats can change between alpha releases.
+
+Efficiency Mode uses `[efficiency_mode]` in `settings.toml`. When upgrading from an alpha with the older settings format, configure Efficiency Mode again and choose **Save**.
 
 ## Run/Build it yourself
 - [Prerequisites](https://rustup.rs)

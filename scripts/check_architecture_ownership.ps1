@@ -118,9 +118,9 @@ Assert-NoSourceMatch `
     -Paths @('src/features/priority_control/process_priority.rs')
 
 Assert-NoSourceMatch `
-    -Boundary 'legacy Background Efficiency mutation or restore owner' `
+    -Boundary 'legacy Efficiency Mode mutation or restore owner' `
     -Pattern 'apply_efficiency_mode_once|current_efficiency_mode|struct ThrottledProcess|struct ProcessHandle|impl Drop|GetPriorityClass|SetPriorityClass|GetProcessInformation|SetProcessInformation|record_process_change|ProcessValue' `
-    -Paths @('src/features/winderust_features/background_efficiency.rs')
+    -Paths @('src/features/winderust_features/efficiency_mode.rs')
 
 Assert-NoSourceMatch `
     -Boundary 'legacy Adaptive Engine priority or Power Throttling owner' `
@@ -132,7 +132,7 @@ Assert-NoSourceMatch `
 
 Assert-NoSourceMatch `
     -Boundary 'Process List does not own Process Priority or Efficiency Mode restoration' `
-    -Pattern 'process_priority::apply_once|background_efficiency::apply_efficiency_mode_once|process_quick_action_restore|process_efficiency_mode_overrides' `
+    -Pattern 'process_priority::apply_once|efficiency_mode::apply_efficiency_mode_once|process_quick_action_restore|process_efficiency_mode_overrides' `
     -Paths @(
         'src/ui/app.rs',
         'src/ui/process_list.rs'
@@ -831,7 +831,7 @@ Write-Host 'Architecture ownership gate passed: WinderustApp owns SettingsEditor
 
 Assert-NoSourceMatch `
     -Boundary 'WinderustApp does not mirror individual runtime feature snapshots' `
-    -Pattern '^\s*(?:background_efficiency_status|app_suspension_status|cpu_limiter_status|cpu_sets_soft_status|processor_affinity_hard_status|by_running_app_status|adaptive_engine_process_status|process_priority_status|thread_priority_status|dynamic_priority_boost_status|io_priority_status|gpu_priority_status|memory_priority_status|memory_trim_status|timer_resolution_status)\s*:' `
+    -Pattern '^\s*(?:efficiency_mode_status|app_suspension_status|cpu_limiter_status|cpu_sets_soft_status|processor_affinity_hard_status|by_running_app_status|adaptive_engine_process_status|process_priority_status|thread_priority_status|dynamic_priority_boost_status|io_priority_status|gpu_priority_status|memory_priority_status|memory_trim_status|timer_resolution_status)\s*:' `
     -Paths @('src/ui/app.rs')
 
 Assert-NoSourceMatch `

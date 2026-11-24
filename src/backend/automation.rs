@@ -25,7 +25,6 @@ use crate::{
     },
     app_suspension::{self, AppSuspensionManager, AppSuspensionSnapshot, AppSuspensionStatus},
     application::settings::{AutoExclusionPatch, RuntimeSettingsSnapshot, SettingsRevision},
-    background_efficiency::{BackgroundEfficiencyManager, BackgroundEfficiencySnapshot},
     bottleneck_classifier::{BottleneckClassifier, BottleneckSnapshot},
     config::{
         AccentColorSource, AppThemeMode, ByActivitySettings, CpuAllocationSettings,
@@ -61,6 +60,7 @@ use crate::{
     cpu_limiter::{CpuLimiterManager, CpuLimiterSnapshot},
     dashboard_metrics::{IoUsageMonitor, IoUsageSnapshot},
     dynamic_priority_boost::{DynamicPriorityBoostManager, DynamicPriorityBoostSnapshot},
+    efficiency_mode::{EfficiencyModeManager, EfficiencyModeSnapshot},
     features::advanced_controls::{
         instance_limits::{InstanceLimitsEvent, InstanceLimitsManager, InstanceLimitsSnapshot},
         keep_running::{
@@ -336,7 +336,7 @@ impl ProcessControlCommand {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RuntimeFeatureStatus {
     pub bottleneck_classifier: BottleneckSnapshot,
-    pub background_efficiency: BackgroundEfficiencySnapshot,
+    pub efficiency_mode: EfficiencyModeSnapshot,
     pub app_suspension: AppSuspensionSnapshot,
     pub cpu_sets_soft: CpuAllocationSnapshot,
     pub processor_affinity_hard: CpuAllocationSnapshot,
@@ -1294,7 +1294,7 @@ fn run_background_automation(
         let mut observations = CycleObservations::default();
         let hidden_to_tray = tray_hidden();
         let adaptive_engine_enabled = settings.adaptive_engine.enabled;
-        let background_efficiency_refresh_interval = automation_refresh_interval(
+        let efficiency_mode_refresh_interval = automation_refresh_interval(
             hidden_to_tray,
             adaptive_engine_enabled,
             ECO_QOS_REFRESH_INTERVAL,
@@ -1483,15 +1483,13 @@ fn run_background_automation(
             explicit_cpu_allocation_allowed && cpu_sets_soft_required(settings);
         let processor_affinity_hard_active =
             explicit_cpu_allocation_allowed && processor_affinity_hard_required(settings);
-        let background_efficiency_policy_varies = (plugged_in.is_none()
-            || !windows_event_watcher_active)
-            && background_efficiency_policy_varies_by_source(&configured_settings);
-        let background_efficiency_waits_for_source =
-            plugged_in.is_none() && background_efficiency_policy_varies;
-        let background_efficiency_active = !background_efficiency_waits_for_source
-            && feature_refresh_required(settings, settings.background_efficiency.enabled);
-        let background_efficiency_refresh_required =
-            settings_changed || background_efficiency_active;
+        let efficiency_mode_policy_varies = (plugged_in.is_none() || !windows_event_watcher_active)
+            && efficiency_mode_policy_varies_by_source(&configured_settings);
+        let efficiency_mode_waits_for_source =
+            plugged_in.is_none() && efficiency_mode_policy_varies;
+        let efficiency_mode_active = !efficiency_mode_waits_for_source
+            && feature_refresh_required(settings, settings.efficiency_mode.enabled);
+        let efficiency_mode_refresh_required = settings_changed || efficiency_mode_active;
         let app_suspension_refresh_required = settings_changed
             || app_suspension_waits_for_source
             || feature_refresh_required(settings, app_suspension_required(settings))
@@ -1576,7 +1574,7 @@ fn run_background_automation(
             settings_changed,
             |profile| (&profile.memory_priority, profile.memory_priority.enabled),
         );
-        let priority_or_efficiency_active = background_efficiency_active
+        let priority_or_efficiency_active = efficiency_mode_active
             || process_priority_schedule.active
             || thread_priority_schedule.active
             || dynamic_priority_boost_schedule.active
@@ -1684,19 +1682,18 @@ fn run_background_automation(
             );
         }
 
-        if background_efficiency_refresh_required
-            && scheduler.is_due(RefreshDomain::BackgroundEfficiency, now)
+        if efficiency_mode_refresh_required && scheduler.is_due(RefreshDomain::EfficiencyMode, now)
         {
-            let background_efficiency_status = runner.run_background_efficiency_update(
+            let efficiency_mode_status = runner.run_efficiency_mode_update(
                 settings,
-                background_efficiency_waits_for_source,
+                efficiency_mode_waits_for_source,
                 &mut observations,
             );
-            update_background_efficiency_status(&shared, background_efficiency_status);
+            update_efficiency_mode_status(&shared, efficiency_mode_status);
             scheduler.schedule_after(
-                RefreshDomain::BackgroundEfficiency,
+                RefreshDomain::EfficiencyMode,
                 now,
-                background_efficiency_refresh_interval,
+                efficiency_mode_refresh_interval,
             );
         }
         if process_priority_schedule.refresh_required
@@ -2229,9 +2226,9 @@ fn run_background_automation(
                     INSTANCE_BALANCING_REFRESH_INTERVAL,
                 ),
                 (
-                    background_efficiency_refresh_required,
-                    RefreshDomain::BackgroundEfficiency,
-                    background_efficiency_refresh_interval,
+                    efficiency_mode_refresh_required,
+                    RefreshDomain::EfficiencyMode,
+                    efficiency_mode_refresh_interval,
                 ),
                 (
                     app_suspension_refresh_required,
@@ -2390,13 +2387,13 @@ fn run_background_automation(
             || io_priority_schedule.source_recheck
             || gpu_priority_schedule.source_recheck
             || memory_priority_schedule.source_recheck
-            || background_efficiency_waits_for_source
+            || efficiency_mode_waits_for_source
             || timer_resolution_waits_for_source
             || (!timer_resolution_active
                 && !windows_event_watcher_active
                 && timer_resolution_enablement_varies_by_source(&configured_settings))
             || (!windows_event_watcher_active
-                && ((!background_efficiency_active && background_efficiency_policy_varies)
+                && ((!efficiency_mode_active && efficiency_mode_policy_varies)
                     || adaptive_enablement_varies_by_source(&configured_settings)
                     || memory_trim_policy_difference != MemoryTrimPolicyDifference::Common
                     || cpu_limiter_policy_varies

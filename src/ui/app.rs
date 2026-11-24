@@ -1,6 +1,6 @@
 use super::{
     action_log, adaptive_engine, adaptive_processor_power, advanced_power_plan_tuning,
-    app_suspension, background_efficiency, by_activity, cpu_allocation, cpu_limiter, design, home,
+    app_suspension, by_activity, cpu_allocation, cpu_limiter, design, efficiency_mode, home,
     instance_balancing, instance_limits, interrupt_timing, keep_running, memory_trim, navigation,
     power_plan_control, power_rules, priority_control, process_list, process_power_plans,
     settings_pages, sleep_prevention, status_rail, tasks, timer_resolution, watchdog, widgets,
@@ -277,7 +277,7 @@ pub(crate) fn run(
                 time_rules: power_rules::Editor::default(),
                 cpu_rules: power_rules::Editor::default(),
                 priority: priority_control::Editor::default(),
-                efficiency: background_efficiency::Editor::default(),
+                efficiency_mode: efficiency_mode::Editor::default(),
                 soft_allocation: cpu_allocation::Editor::default(),
                 hard_allocation: cpu_allocation::Editor::default(),
                 adaptive: adaptive_engine::Editor::default(),
@@ -590,7 +590,7 @@ struct WinderustApp {
     time_rules: power_rules::Editor,
     cpu_rules: power_rules::Editor,
     priority: priority_control::Editor,
-    efficiency: background_efficiency::Editor,
+    efficiency_mode: efficiency_mode::Editor,
     soft_allocation: cpu_allocation::Editor,
     hard_allocation: cpu_allocation::Editor,
     adaptive: adaptive_engine::Editor,
@@ -677,7 +677,7 @@ enum Message {
 
     PowerRules(power_rules::Kind, power_rules::Message),
     Priority(priority_control::Kind, priority_control::Message),
-    Efficiency(background_efficiency::Message),
+    EfficiencyMode(efficiency_mode::Message),
     Allocation(cpu_allocation::Kind, cpu_allocation::Message),
     Adaptive(adaptive_engine::Message),
     AdaptiveProcessorPower(adaptive_processor_power::Message),
@@ -1560,10 +1560,12 @@ impl WinderustApp {
             Message::Priority(kind, message) => {
                 self.priority.update(&mut self.settings, kind, message)
             }
-            Message::Efficiency(background_efficiency::Message::Browse) => {
-                return self.browse(Page::BackgroundEfficiency);
+            Message::EfficiencyMode(efficiency_mode::Message::Browse) => {
+                return self.browse(Page::EfficiencyMode);
             }
-            Message::Efficiency(message) => self.efficiency.update(&mut self.settings, message),
+            Message::EfficiencyMode(message) => {
+                self.efficiency_mode.update(&mut self.settings, message)
+            }
             Message::Allocation(kind, cpu_allocation::Message::Browse) => {
                 return self.browse(match kind {
                     cpu_allocation::Kind::Soft => Page::CpuSetsSoft,
@@ -2589,7 +2591,7 @@ impl WinderustApp {
         self.focus_plans = Default::default();
         self.running_app_plans = Default::default();
         self.priority = Default::default();
-        self.efficiency = Default::default();
+        self.efficiency_mode = Default::default();
         self.soft_allocation.reset_drafts();
         self.hard_allocation.reset_drafts();
         self.adaptive.reset_drafts();
@@ -3733,10 +3735,10 @@ impl WinderustApp {
                     &self.status.power_plan_status,
                 )
                 .map(|m| Message::PowerRules(power_rules::Kind::CpuLoad, m)),
-            Page::BackgroundEfficiency => self
-                .efficiency
+            Page::EfficiencyMode => self
+                .efficiency_mode
                 .view(&self.settings, &self.candidates)
-                .map(Message::Efficiency),
+                .map(Message::EfficiencyMode),
             Page::CpuSetsSoft => self
                 .soft_allocation
                 .view(&self.settings, cpu_allocation::Kind::Soft, &self.candidates)
@@ -4000,9 +4002,7 @@ fn picked_executable_message(page: Page, path: String) -> Message {
             cpu_allocation::Kind::Hard,
             cpu_allocation::Message::Path(path),
         ),
-        Page::BackgroundEfficiency => {
-            Message::Efficiency(background_efficiency::Message::Path(path))
-        }
+        Page::EfficiencyMode => Message::EfficiencyMode(efficiency_mode::Message::Path(path)),
         Page::AdaptiveEngine => Message::Adaptive(adaptive_engine::Message::Path(path)),
         Page::CpuLimiter => Message::CpuLimiter(cpu_limiter::Message::Path(path)),
         Page::ByFocus => Message::ProcessPowerPlans(
@@ -4044,7 +4044,7 @@ fn page_needs_app_catalog(page: Page) -> bool {
         Page::ActionLog
             | Page::AdaptiveEngine
             | Page::AppSuspension
-            | Page::BackgroundEfficiency
+            | Page::EfficiencyMode
             | Page::ByFocus
             | Page::ByRunningApp
             | Page::CpuLimiter

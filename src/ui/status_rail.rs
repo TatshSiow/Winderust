@@ -550,10 +550,10 @@ pub(super) fn view<'a>(
         }
         body = body.push(section("adaptive_engine.bottleneck_classifier", readings));
     }
-    if page == Page::BackgroundEfficiency
+    if page == Page::EfficiencyMode
         && runtime
             .feature_status
-            .background_efficiency
+            .efficiency_mode
             .access_denied_processes
             > 0
         && !crate::privilege::is_running_as_admin()
@@ -792,10 +792,10 @@ fn waiting_for_power_source(page: Page, runtime: &RuntimeStatusSnapshot) -> bool
                 .memory_priority
                 .waiting_for_power_source
         }
-        Page::BackgroundEfficiency => {
+        Page::EfficiencyMode => {
             runtime
                 .feature_status
-                .background_efficiency
+                .efficiency_mode
                 .waiting_for_power_source
         }
         Page::TimerResolution => {
@@ -993,15 +993,15 @@ fn sidebar_state(
             FeatureRunState::Waiting
         };
     }
-    if (page == Page::BackgroundEfficiency && features.background_efficiency.unsupported)
+    if (page == Page::EfficiencyMode && features.efficiency_mode.unsupported)
         || (page == Page::AppSuspension && features.app_suspension.unsupported)
     {
         return FeatureRunState::Blocked;
     }
     let process_observation = match page {
-        Page::BackgroundEfficiency => Some((
-            features.background_efficiency.enabled,
-            features.background_efficiency.observation_paused,
+        Page::EfficiencyMode => Some((
+            features.efficiency_mode.enabled,
+            features.efficiency_mode.observation_paused,
         )),
         Page::ProcessPriority => Some((
             features.process_priority.enabled,
@@ -1134,8 +1134,8 @@ fn feature_status_summary(
     runtime: &RuntimeStatusSnapshot,
 ) -> Option<FeatureStatusSummary<'_>> {
     let summary = match page {
-        Page::BackgroundEfficiency => {
-            let status = &runtime.feature_status.background_efficiency;
+        Page::EfficiencyMode => {
+            let status = &runtime.feature_status.efficiency_mode;
             let observed = status.enabled && !status.observation_paused;
             FeatureStatusSummary {
                 scanned: observed.then_some(status.scanned_processes),
@@ -1143,7 +1143,7 @@ fn feature_status_summary(
                 protected_or_denied: observed.then_some(status.access_denied_processes),
                 skipped: observed.then_some(status.skipped_processes),
                 last_error: status.last_error.as_deref(),
-                action_log_feature: ActionLogFeature::BackgroundEfficiency,
+                action_log_feature: ActionLogFeature::EfficiencyMode,
             }
         }
         Page::Watchdog => {
@@ -2094,15 +2094,15 @@ mod tests {
     }
 
     #[test]
-    fn background_efficiency_sidebar_keeps_power_source_pause_and_restore_errors_across_drafts() {
+    fn efficiency_mode_sidebar_keeps_power_source_pause_and_restore_errors_across_drafts() {
         let mut saved = Settings::default();
         saved.general.enabled = true;
-        saved.background_efficiency.enabled = false;
-        saved.battery_profile_mut().background_efficiency.enabled = true;
+        saved.efficiency_mode.enabled = false;
+        saved.battery_profile_mut().efficiency_mode.enabled = true;
         let mut editor = crate::application::SettingsEditor::with_settings(saved);
         editor.select_power_source(PowerSourceProfile::OnBattery);
-        editor.background_efficiency.enabled = false;
-        let page = Page::BackgroundEfficiency;
+        editor.efficiency_mode.enabled = false;
+        let page = Page::EfficiencyMode;
         let mut runtime = RuntimeStatusSnapshot {
             generation: 1,
             ..Default::default()
@@ -2113,8 +2113,7 @@ mod tests {
         };
         assert_eq!(render(&runtime, Some(true))[0], t!("common.inactive"));
 
-        let efficiency =
-            &mut std::sync::Arc::make_mut(&mut runtime.feature_status).background_efficiency;
+        let efficiency = &mut std::sync::Arc::make_mut(&mut runtime.feature_status).efficiency_mode;
         efficiency.enabled = true;
         efficiency.observation_paused = true;
         efficiency.waiting_for_power_source = true;
@@ -2122,15 +2121,13 @@ mod tests {
         assert_eq!(paused[0], t!("sidebar_status.paused"));
         assert_eq!(paused[1], t!("home.power_source_unavailable"));
 
-        let efficiency =
-            &mut std::sync::Arc::make_mut(&mut runtime.feature_status).background_efficiency;
+        let efficiency = &mut std::sync::Arc::make_mut(&mut runtime.feature_status).efficiency_mode;
         efficiency.last_error = Some("restore failed".into());
         let error = render(&runtime, None);
         assert_eq!(error[0], t!("common.error"));
         assert!(error.iter().any(|text| text == "restore failed"));
 
-        let efficiency =
-            &mut std::sync::Arc::make_mut(&mut runtime.feature_status).background_efficiency;
+        let efficiency = &mut std::sync::Arc::make_mut(&mut runtime.feature_status).efficiency_mode;
         efficiency.last_error = None;
         efficiency.waiting_for_power_source = false;
         efficiency.observation_paused = false;

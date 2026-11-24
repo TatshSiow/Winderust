@@ -337,7 +337,7 @@ pub(super) fn page_feature_info_intro(page: Page) -> Option<(&'static str, u8)> 
     Some(match page {
         Page::AdaptiveEngine => ("adaptive_engine", 3),
         Page::AdaptiveProcessorPower => ("adaptive_processor_power", 2),
-        Page::BackgroundEfficiency => ("background_efficiency", 3),
+        Page::EfficiencyMode => ("efficiency_mode", 3),
         Page::MemoryTrim => ("memory_trim", 3),
         Page::Watchdog => ("watchdog", 3),
         Page::AppSuspension => ("app_suspension", 3),
@@ -471,7 +471,7 @@ pub(super) fn icon_path(page: Page) -> &'static str {
         Page::CpuSetsSoft => "icons/life-buoy.svg",
         Page::ProcessList => "icons/list.svg",
         Page::AdaptiveEngine => "icons/brain-circuit.svg",
-        Page::BackgroundEfficiency => "icons/leaf.svg",
+        Page::EfficiencyMode => "icons/leaf.svg",
         Page::AppSuspension => "icons/monitor-pause.svg",
         Page::SleepPrevention => "icons/coffee.svg",
         Page::KeepRunning => "icons/rotate-ccw.svg",
@@ -499,7 +499,7 @@ pub(super) fn feature_page_enabled(settings: &Settings, page: Page) -> Option<bo
     Some(match page {
         Page::AdaptiveEngine => settings.adaptive_engine.enabled,
         Page::AdaptiveProcessorPower => settings.adaptive_engine.adaptive_processor_power_enabled,
-        Page::BackgroundEfficiency => settings.background_efficiency.enabled,
+        Page::EfficiencyMode => settings.efficiency_mode.enabled,
         Page::MemoryTrim => settings.memory_trim.enabled,
         Page::Watchdog => settings.watchdog.enabled,
         Page::KeepRunning => settings.keep_running.enabled,
@@ -532,7 +532,7 @@ pub(super) fn feature_toggle(page: Page) -> Option<fn(&mut Settings) -> &mut boo
         Page::AdaptiveProcessorPower => {
             |settings| &mut settings.adaptive_engine.adaptive_processor_power_enabled
         }
-        Page::BackgroundEfficiency => |settings| &mut settings.background_efficiency.enabled,
+        Page::EfficiencyMode => |settings| &mut settings.efficiency_mode.enabled,
         Page::MemoryTrim => |settings| &mut settings.memory_trim.enabled,
         Page::Watchdog => |settings| &mut settings.watchdog.enabled,
         Page::KeepRunning => |settings| &mut settings.keep_running.enabled,
@@ -646,7 +646,7 @@ pub(super) fn dashboard_page_search_text(page: Page) -> String {
             t!("power_plan_control.restore_previous_plan_help"),
         ),
         Page::WinderustFeatures => format!(
-            "{label} {section} winderust features background efficiency background_efficiency memory trim working set memory ram",
+            "{label} {section} winderust features efficiency mode efficiency_mode memory trim working set memory ram",
         ),
         Page::CpuControl => format!(
             "{label} {section} processor cpu controls limiter background restriction affinity steering e cores p cores",
@@ -744,14 +744,14 @@ pub(super) fn dashboard_page_search_text(page: Page) -> String {
             t!("adaptive_engine.intro_2"),
             t!("adaptive_engine.intro_3"),
         ),
-        Page::BackgroundEfficiency => format!(
-            "{label} {section} {} {} {} {} {} {} efficiency mode background_efficiency qos throttle background priority exclusion custom_rules",
-            t!("background_efficiency.intro_1"),
-            t!("background_efficiency.intro_2"),
-            t!("background_efficiency.intro_3"),
-            t!("background_efficiency.foreground_detection_help"),
+        Page::EfficiencyMode => format!(
+            "{label} {section} {} {} {} {} {} {} efficiency mode efficiency_mode qos throttle background priority exclusion custom_rules",
+            t!("efficiency_mode.intro_1"),
+            t!("efficiency_mode.intro_2"),
+            t!("efficiency_mode.intro_3"),
+            t!("efficiency_mode.foreground_detection_help"),
             t!("common.visible_window_detection_help"),
-            t!("background_efficiency.custom_rules_help"),
+            t!("efficiency_mode.custom_rules_help"),
         ),
         Page::AppSuspension => format!(
             "{label} {section} {} {} {} {} suspend freeze thaw resume background app process job object delay network audio",

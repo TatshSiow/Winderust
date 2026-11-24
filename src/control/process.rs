@@ -18,7 +18,7 @@ use crate::{
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum ControlOwner {
-    BackgroundEfficiency,
+    EfficiencyMode,
     CpuSetsSoft,
     DynamicPriorityBoost,
     GpuPriority,
@@ -634,7 +634,7 @@ mod tests {
         assert!(ControlOwner::GpuPriority.is_automatic());
         assert!(ControlOwner::IoPriority.is_automatic());
         assert!(ControlOwner::ProcessPriority.is_automatic());
-        assert!(ControlOwner::BackgroundEfficiency.is_automatic());
+        assert!(ControlOwner::EfficiencyMode.is_automatic());
         assert!(ControlOwner::CpuSetsSoft.is_automatic());
         assert!(ControlOwner::InstanceBalancing.is_automatic());
         assert!(ControlOwner::ProcessorAffinityHard.is_automatic());

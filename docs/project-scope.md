@@ -16,8 +16,8 @@ Process Lasso is a useful comparison point, not the target to clone. Prefer smal
 - Advanced Power Plan Tuning for core parking, processor performance and boost,
   and long- and short-running thread scheduling policies.
 - Adaptive Engine CPU scheduling for foreground responsiveness and background restraint.
-- Background Efficiency, implemented with Windows EcoQoS at the operating-system
-  boundary.
+- Efficiency Mode applies Windows EcoQoS and Idle process priority by app and
+  window state.
 - CPU Control through CPU Limiter, CPU Sets (Soft), Processor Affinity (Hard),
   and Cache Domain presets.
 - App Suspension for explicit opt-in apps.

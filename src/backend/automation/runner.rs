@@ -145,7 +145,7 @@ pub(super) struct RuntimeCore {
     controller_observed_since: Option<Instant>,
     pub(super) input_activity: InputActivityTracker,
     by_cpu_load_scheduler: ByCpuLoadScheduler,
-    background_efficiency_manager: BackgroundEfficiencyManager,
+    efficiency_mode_manager: EfficiencyModeManager,
     pub(super) app_suspension_manager: AppSuspensionManager,
     pub(super) app_suspension_controller: Arc<Mutex<SuspensionController>>,
     last_app_suspension_shell_user_intent: Option<Instant>,
@@ -578,7 +578,7 @@ impl RuntimeCore {
         if let Err(error) = self.cpu_allocation_coordinator.shutdown() {
             errors.push(format!("CPU allocation restoration failed: {error}"));
         }
-        self.run_background_efficiency_update(&settings, false, &mut observations);
+        self.run_efficiency_mode_update(&settings, false, &mut observations);
         if let Err(error) = self.priority_efficiency_controller.shutdown() {
             errors.push(format!(
                 "Process Priority and Efficiency restoration failed: {error}"
@@ -797,22 +797,22 @@ impl RuntimeCore {
         })
     }
 
-    pub(super) fn run_background_efficiency_update(
+    pub(super) fn run_efficiency_mode_update(
         &mut self,
         settings: &Settings,
         waiting_for_power_source: bool,
         observations: &mut CycleObservations,
-    ) -> BackgroundEfficiencySnapshot {
+    ) -> EfficiencyModeSnapshot {
         if waiting_for_power_source {
-            return self.background_efficiency_manager.pause_for_power_source(
+            return self.efficiency_mode_manager.pause_for_power_source(
                 &mut self.priority_efficiency_controller,
                 &mut self.action_log,
             );
         }
         let foreground_process_id = observations.foreground_process_id();
-        self.background_efficiency_manager.update(
+        self.efficiency_mode_manager.update(
             &mut self.priority_efficiency_controller,
-            &settings.background_efficiency,
+            &settings.efficiency_mode,
             settings.general.enabled,
             settings.general.allow_cross_session_process_control,
             foreground_process_id,
@@ -1723,22 +1723,22 @@ impl RuntimeCore {
                 ),
             );
         }
-        let refresh_background_efficiency = retries.background_efficiency.is_some()
+        let refresh_efficiency_mode = retries.efficiency_mode.is_some()
             || self
-                .background_efficiency_manager
+                .efficiency_mode_manager
                 .reported_release_is_resolved(&self.priority_efficiency_controller);
-        if let Some(summary) = retries.background_efficiency {
-            BackgroundEfficiencyManager::record_release_summary(
+        if let Some(summary) = retries.efficiency_mode {
+            EfficiencyModeManager::record_release_summary(
                 summary,
                 &mut self.action_log,
-                "background_efficiency.release_reason_retry_completed",
+                "efficiency_mode.release_reason_retry_completed",
             );
         }
-        if refresh_background_efficiency {
-            let status = current_feature_status(shared, |features| &features.background_efficiency);
-            update_background_efficiency_status(
+        if refresh_efficiency_mode {
+            let status = current_feature_status(shared, |features| &features.efficiency_mode);
+            update_efficiency_mode_status(
                 shared,
-                self.background_efficiency_manager
+                self.efficiency_mode_manager
                     .with_release_status(&self.priority_efficiency_controller, status),
             );
         }

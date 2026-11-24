@@ -303,7 +303,7 @@ fn priority_claim(
 fn power_claim(id: u32, creation_time: u64, ignore_timer_resolution: bool) -> PowerThrottlingClaim {
     PowerThrottlingClaim {
         target: target(id, creation_time),
-        owner: ControlOwner::BackgroundEfficiency,
+        owner: ControlOwner::EfficiencyMode,
         ignore_timer_resolution,
     }
 }
@@ -311,7 +311,7 @@ fn power_claim(id: u32, creation_time: u64, ignore_timer_resolution: bool) -> Po
 fn efficiency_claim(id: u32, creation_time: u64) -> EfficiencyModeClaim {
     EfficiencyModeClaim {
         target: target(id, creation_time),
-        owner: ControlOwner::BackgroundEfficiency,
+        owner: ControlOwner::EfficiencyMode,
         ignore_timer_resolution: false,
     }
 }
@@ -368,7 +368,7 @@ fn stored_priority_shadows_restraint_and_hands_back_to_it_when_released() {
 }
 
 #[test]
-fn background_efficiency_overrides_then_reveals_adaptive_claims() {
+fn efficiency_mode_overrides_then_reveals_adaptive_claims() {
     let mut controller =
         PriorityEfficiencyController::with_platform(platform_with(7, 1, NORMAL_PRIORITY_CLASS));
     controller
@@ -393,7 +393,7 @@ fn background_efficiency_overrides_then_reveals_adaptive_claims() {
     assert!(controller.platform.processes[&7]
         .power
         .execution_speed_enabled());
-    let summary = controller.release_all_efficiency_policy(ControlOwner::BackgroundEfficiency);
+    let summary = controller.release_all_efficiency_policy(ControlOwner::EfficiencyMode);
     assert!(summary.failures.is_empty());
     assert_eq!(
         controller.platform.processes[&7].priority,
@@ -401,7 +401,7 @@ fn background_efficiency_overrides_then_reveals_adaptive_claims() {
     );
     assert_eq!(controller.platform.processes[&7].power, baseline_power());
     assert_eq!(
-        controller.policy_managed_process_count(ControlOwner::BackgroundEfficiency),
+        controller.policy_managed_process_count(ControlOwner::EfficiencyMode),
         0
     );
 
@@ -595,11 +595,11 @@ fn compound_priority_failure_rolls_power_back_and_leaves_no_owner() {
     assert!(!controller.has_managed_state());
     assert!(controller
         .priority_claims
-        .get(&ControlOwner::BackgroundEfficiency)
+        .get(&ControlOwner::EfficiencyMode)
         .is_none_or(BTreeMap::is_empty));
     assert!(controller
         .power_claims
-        .get(&ControlOwner::BackgroundEfficiency)
+        .get(&ControlOwner::EfficiencyMode)
         .is_none_or(BTreeMap::is_empty));
 }
 
@@ -636,7 +636,7 @@ fn compound_commit_failure_retains_both_verified_properties_and_baselines() {
         baseline_power()
     );
     assert_eq!(controller.managed_power[&process].expected, desired_power);
-    let released = controller.release_all_efficiency_policy(ControlOwner::BackgroundEfficiency);
+    let released = controller.release_all_efficiency_policy(ControlOwner::EfficiencyMode);
     assert!(released.failures.is_empty());
     assert_eq!(released.restored_processes, 1);
     assert!(!controller.has_managed_state());
@@ -857,7 +857,7 @@ fn external_break_is_relinquished_without_overwriting_either_property() {
     process.priority = ABOVE_NORMAL_PRIORITY_CLASS;
     process.power = external_power;
 
-    controller.release_all_efficiency_policy(ControlOwner::BackgroundEfficiency);
+    controller.release_all_efficiency_policy(ControlOwner::EfficiencyMode);
     assert_eq!(
         controller.platform.processes[&7].priority,
         ABOVE_NORMAL_PRIORITY_CLASS
@@ -1103,30 +1103,27 @@ fn failed_policy_releases_retry_without_claims_or_another_policy_update() {
         .unwrap();
     controller.platform.fail_next_priority_apply = true;
     controller.platform.fail_next_power_apply = true;
-    let failed = controller.release_all_efficiency_policy(ControlOwner::BackgroundEfficiency);
+    let failed = controller.release_all_efficiency_policy(ControlOwner::EfficiencyMode);
     assert_eq!(failed.failures.len(), 2);
     assert!(controller.priority_claims.is_empty());
     assert!(controller.power_claims.is_empty());
-    let early = controller.release_all_efficiency_policy(ControlOwner::BackgroundEfficiency);
+    let early = controller.release_all_efficiency_policy(ControlOwner::EfficiencyMode);
     assert_eq!(early.restored_processes, 0);
     assert!(early.failures.is_empty());
     let due = controller.release_retry_at.unwrap();
     assert!(controller
         .retry_pending_releases(due - Duration::from_millis(1))
-        .background_efficiency
+        .efficiency_mode
         .is_none());
     // A second transient failure must preserve the queue and its bounded retry deadline.
     controller.platform.fail_next_priority_apply = true;
     let partial = controller
         .retry_pending_releases(due)
-        .background_efficiency
+        .efficiency_mode
         .unwrap();
     assert_eq!(partial.restored_processes, 0);
     assert!(partial.failures.is_empty());
-    assert_eq!(
-        controller.background_efficiency_release_failures().count(),
-        1
-    );
+    assert_eq!(controller.efficiency_mode_release_failures().count(), 1);
     assert_eq!(
         controller.release_retry_delay(due),
         Some(Duration::from_secs(1))
@@ -1135,10 +1132,10 @@ fn failed_policy_releases_retry_without_claims_or_another_policy_update() {
     for (seconds, newly_reported) in [(1, true), (2, false)] {
         controller.platform.fail_next_priority_begin = true;
         let retries = controller.retry_pending_releases(due + Duration::from_secs(seconds));
-        let background = retries.background_efficiency.unwrap();
+        let background = retries.efficiency_mode.unwrap();
         assert_eq!(background.failures.len(), usize::from(newly_reported));
         let pending = controller
-            .background_efficiency_release_failures()
+            .efficiency_mode_release_failures()
             .next()
             .unwrap();
         assert!(pending
@@ -1149,14 +1146,11 @@ fn failed_policy_releases_retry_without_claims_or_another_policy_update() {
 
     let restored = controller
         .retry_pending_releases(due + Duration::from_secs(3))
-        .background_efficiency
+        .efficiency_mode
         .unwrap();
     assert!(restored.failures.is_empty());
     assert_eq!(restored.restored_processes, 1);
-    assert_eq!(
-        controller.background_efficiency_release_failures().count(),
-        0
-    );
+    assert_eq!(controller.efficiency_mode_release_failures().count(), 0);
     assert_eq!(
         controller.platform.processes[&7].priority,
         NORMAL_PRIORITY_CLASS
@@ -1176,27 +1170,21 @@ fn verified_baseline_is_not_reported_restored_while_journal_release_is_unconfirm
     controller.platform.fail_next_power_commit = true;
     controller.platform.fail_power_relinquish = true;
 
-    let released = controller.release_all_efficiency_policy(ControlOwner::BackgroundEfficiency);
+    let released = controller.release_all_efficiency_policy(ControlOwner::EfficiencyMode);
     assert_eq!(controller.platform.processes[&7].power, baseline_power());
     assert_eq!(released.restored_processes, 0);
-    assert_eq!(
-        controller.background_efficiency_release_failures().count(),
-        1
-    );
+    assert_eq!(controller.efficiency_mode_release_failures().count(), 1);
     assert!(controller.has_managed_state());
 
     controller.platform.fail_power_relinquish = false;
     let due = controller.release_retry_at.unwrap();
     let report = controller
         .retry_pending_releases(due)
-        .background_efficiency
+        .efficiency_mode
         .unwrap();
     assert_eq!(report.restored_processes, 0);
     assert!(report.failures.is_empty());
-    assert_eq!(
-        controller.background_efficiency_release_failures().count(),
-        0
-    );
+    assert_eq!(controller.efficiency_mode_release_failures().count(), 0);
     assert!(!controller.has_managed_state());
 }
 
@@ -1227,7 +1215,7 @@ fn pending_release_reconciles_the_current_claim_instead_of_restoring_over_it() {
     let due = controller.release_retry_at.unwrap();
     let retries = controller.retry_pending_releases(due);
     assert!(retries.other.failures.is_empty());
-    assert!(retries.background_efficiency.is_none());
+    assert!(retries.efficiency_mode.is_none());
     assert_eq!(retries.process_priority_restored, Some(0));
     assert_eq!(
         controller.platform.processes[&7].priority,

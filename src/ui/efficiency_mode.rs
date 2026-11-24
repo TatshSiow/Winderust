@@ -2,10 +2,7 @@ use super::design;
 use super::priority_control::Tier;
 use super::widgets::{checkbox, pick_list};
 use crate::application::SettingsEditor;
-use crate::config::{
-    BackgroundEfficiencyAggressiveness, BackgroundEfficiencyRule, BackgroundEfficiencySettings,
-    ProcessRuleMode, Settings,
-};
+use crate::config::{EfficiencyModeRule, EfficiencyModeSettings, ProcessRuleMode, Settings};
 use crate::foreground::process_list::normalize_path_slashes;
 use crate::ui::process_rules::{
     can_add_exact_process_candidate, exact_path_input, picked_path_input,
@@ -25,7 +22,6 @@ pub(super) enum Message {
     Enabled(bool),
     Detection(Tier, bool),
     Default(Tier, bool),
-    Aggressiveness(BackgroundEfficiencyAggressiveness),
     Path(String),
     Browse,
     Add,
@@ -37,40 +33,33 @@ pub(super) enum Message {
 }
 impl Editor {
     pub(super) fn update(&mut self, settings: &mut SettingsEditor, message: Message) {
-        let current = &settings.background_efficiency;
+        let current = &settings.efficiency_mode;
         match message {
             Message::Enabled(value) if current.enabled != value => {
-                settings.background_efficiency.enabled = value;
+                settings.efficiency_mode.enabled = value;
             }
             Message::Detection(Tier::Focus, value)
                 if current.foreground_detection_enabled != value =>
             {
-                settings.background_efficiency.foreground_detection_enabled = value;
+                settings.efficiency_mode.foreground_detection_enabled = value;
             }
             Message::Detection(Tier::VisibleWindow, value)
                 if current.visible_window_detection_enabled != value =>
             {
-                settings
-                    .background_efficiency
-                    .visible_window_detection_enabled = value;
+                settings.efficiency_mode.visible_window_detection_enabled = value;
             }
             Message::Default(Tier::Focus, value) if current.foreground_efficiency_mode != value => {
-                settings.background_efficiency.foreground_efficiency_mode = value;
+                settings.efficiency_mode.foreground_efficiency_mode = value;
             }
             Message::Default(Tier::VisibleWindow, value)
                 if current.visible_window_efficiency_mode != value =>
             {
-                settings
-                    .background_efficiency
-                    .visible_window_efficiency_mode = value;
+                settings.efficiency_mode.visible_window_efficiency_mode = value;
             }
             Message::Default(Tier::Background, value)
                 if current.background_efficiency_mode != value =>
             {
-                settings.background_efficiency.background_efficiency_mode = value;
-            }
-            Message::Aggressiveness(value) if current.aggressiveness != value => {
-                settings.background_efficiency.aggressiveness = value;
+                settings.efficiency_mode.background_efficiency_mode = value;
             }
             Message::Path(value) => self.path = value,
             Message::Browse => {} // The application owns the native executable picker.
@@ -78,9 +67,9 @@ impl Editor {
                 let path = exact_path_input(&self.path);
                 if can_add(current, path) {
                     settings
-                        .background_efficiency
+                        .efficiency_mode
                         .custom_rules
-                        .push(BackgroundEfficiencyRule {
+                        .push(EfficiencyModeRule {
                             enabled: true,
                             executable_path: normalize_path_slashes(path).into_owned(),
                             focus_efficiency_mode: ProcessRuleMode::Default,
@@ -96,7 +85,7 @@ impl Editor {
                     .get(index)
                     .is_some_and(|rule| rule.enabled != value)
                 {
-                    settings.background_efficiency.custom_rules[index].enabled = value;
+                    settings.efficiency_mode.custom_rules[index].enabled = value;
                 }
             }
             Message::RuleMode(index, tier, mode) => {
@@ -105,7 +94,7 @@ impl Editor {
                     .get(index)
                     .is_some_and(|rule| rule_mode(rule, tier) != mode)
                 {
-                    let rule = &mut settings.background_efficiency.custom_rules[index];
+                    let rule = &mut settings.efficiency_mode.custom_rules[index];
                     *match tier {
                         Tier::Focus => &mut rule.focus_efficiency_mode,
                         Tier::VisibleWindow => &mut rule.visible_window_efficiency_mode,
@@ -120,7 +109,7 @@ impl Editor {
                     .any(|rule| rule.executable_path == path)
                 {
                     settings
-                        .background_efficiency
+                        .efficiency_mode
                         .custom_rules
                         .retain(|rule| rule.executable_path != path);
                 }
@@ -129,10 +118,7 @@ impl Editor {
                 let expanded = &mut self.expanded[tier as usize];
                 *expanded = !*expanded;
             }
-            Message::Enabled(_)
-            | Message::Detection(..)
-            | Message::Default(..)
-            | Message::Aggressiveness(_) => {}
+            Message::Enabled(_) | Message::Detection(..) | Message::Default(..) => {}
         }
     }
     pub(super) fn view<'a>(
@@ -140,7 +126,7 @@ impl Editor {
         settings: &'a Settings,
         candidates: &'a [super::app_picker::Candidate],
     ) -> Element<'a, Message> {
-        let settings = &settings.background_efficiency;
+        let settings = &settings.efficiency_mode;
         let enabled = settings.enabled;
         let mut body = column![].spacing(super::widgets::CARD_GAP);
         for (tier, detection, value) in [
@@ -156,10 +142,9 @@ impl Editor {
                 settings.visible_window_efficiency_mode,
             ),
         ] {
-            let mut group = column![].spacing(design::space::MEDIUM);
             let label = match tier {
-                Tier::Background => "background_efficiency.enable",
-                Tier::Focus => "background_efficiency.foreground_detection",
+                Tier::Background => "efficiency_mode.enable",
+                Tier::Focus => "efficiency_mode.foreground_detection",
                 Tier::VisibleWindow => "common.visible_window_detection",
             }
             .to_string();
@@ -176,27 +161,13 @@ impl Editor {
                 super::widgets::Choice(true, t!("common.enabled").to_string()),
             ];
             let selected = choices[usize::from(value)].clone();
-            group = group.push(super::widgets::setting_row(
-                "process_list.efficiency_mode",
+            let group = column![super::widgets::setting_row(
+                "common.default",
                 pick_list(choices, Some(selected), move |v| {
                     Message::Default(tier, v.0)
                 })
                 .width(design::SELECT_WIDTH),
-            ));
-            if tier == Tier::Background {
-                let aggressiveness = pick_list(
-                    BackgroundEfficiencyAggressiveness::ALL.map(Aggressiveness),
-                    Some(Aggressiveness(settings.aggressiveness)),
-                    move |value| Message::Aggressiveness(value.0),
-                )
-                .width(design::SELECT_WIDTH);
-                group = group.push(super::widgets::settings_divider()).push(
-                    super::widgets::setting_row(
-                        "background_efficiency.aggressiveness",
-                        aggressiveness,
-                    ),
-                );
-            }
+            )];
             body = body.push(super::widgets::setting_group(
                 label,
                 self.expanded[tier as usize],
@@ -206,7 +177,7 @@ impl Editor {
             ));
         }
         body = body.push(super::widgets::setting_title(
-            "background_efficiency.custom_rules",
+            "efficiency_mode.custom_rules",
         ));
         body = body.push(super::app_picker::view_with_path_selection(
             &self.path,
@@ -248,23 +219,23 @@ impl Editor {
         body = body.push(super::widgets::process_rules_table(
             Tier::ALL.map(|tier| tier.label()),
             rule_cards,
-            t!("background_efficiency.no_custom_rules").to_string(),
+            t!("efficiency_mode.no_custom_rules").to_string(),
         ));
         scrollable(body).height(Fill).into()
     }
 }
-fn rule_mode(rule: &BackgroundEfficiencyRule, tier: Tier) -> ProcessRuleMode {
+fn rule_mode(rule: &EfficiencyModeRule, tier: Tier) -> ProcessRuleMode {
     match tier {
         Tier::Focus => rule.focus_efficiency_mode,
         Tier::VisibleWindow => rule.visible_window_efficiency_mode,
         Tier::Background => rule.background_efficiency_mode,
     }
 }
-fn can_add(settings: &BackgroundEfficiencySettings, path: &str) -> bool {
+fn can_add(settings: &EfficiencyModeSettings, path: &str) -> bool {
     can_add_exact_process_candidate(
         path,
         |path| settings.contains_custom_rule(path),
-        crate::background_efficiency::is_builtin_excluded,
+        crate::efficiency_mode::is_builtin_excluded,
     )
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -275,23 +246,6 @@ impl std::fmt::Display for Mode {
             ProcessRuleMode::Default => t!("common.default"),
             ProcessRuleMode::Enabled => t!("common.enabled"),
             ProcessRuleMode::Disabled => t!("common.disabled"),
-        })
-    }
-}
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct Aggressiveness(BackgroundEfficiencyAggressiveness);
-impl std::fmt::Display for Aggressiveness {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&match self.0 {
-            BackgroundEfficiencyAggressiveness::Safe => {
-                t!("background_efficiency.aggressiveness_safe")
-            }
-            BackgroundEfficiencyAggressiveness::Balanced => {
-                t!("background_efficiency.aggressiveness_balanced")
-            }
-            BackgroundEfficiencyAggressiveness::Aggressive => {
-                t!("background_efficiency.aggressiveness_aggressive")
-            }
         })
     }
 }
@@ -309,14 +263,10 @@ mod tests {
         editor.update(&mut settings, Message::Path(r"C:\Apps\editor.exe".into()));
         assert!(settings.global().on_battery.is_none());
         editor.update(&mut settings, Message::Add);
-        assert_eq!(settings.background_efficiency.custom_rules.len(), 1);
-        assert!(settings
-            .global()
-            .background_efficiency
-            .custom_rules
-            .is_empty());
+        assert_eq!(settings.efficiency_mode.custom_rules.len(), 1);
+        assert!(settings.global().efficiency_mode.custom_rules.is_empty());
         assert_eq!(
-            settings.background_efficiency.custom_rules[0].background_efficiency_mode,
+            settings.efficiency_mode.custom_rules[0].background_efficiency_mode,
             ProcessRuleMode::Default
         );
         editor.update(
@@ -324,19 +274,19 @@ mod tests {
             Message::RuleMode(0, Tier::VisibleWindow, ProcessRuleMode::Disabled),
         );
         assert_eq!(
-            settings.background_efficiency.custom_rules[0].focus_efficiency_mode,
+            settings.efficiency_mode.custom_rules[0].focus_efficiency_mode,
             ProcessRuleMode::Default
         );
         assert_eq!(
-            settings.background_efficiency.custom_rules[0].visible_window_efficiency_mode,
+            settings.efficiency_mode.custom_rules[0].visible_window_efficiency_mode,
             ProcessRuleMode::Disabled
         );
         editor.update(&mut settings, Message::Path(r"C:\Apps\EDITOR.exe".into()));
         editor.update(&mut settings, Message::Add);
-        assert_eq!(settings.background_efficiency.custom_rules.len(), 1);
+        assert_eq!(settings.efficiency_mode.custom_rules.len(), 1);
         editor.update(&mut settings, Message::Path("relative.exe".into()));
         editor.update(&mut settings, Message::Add);
-        assert_eq!(settings.background_efficiency.custom_rules.len(), 1);
-        assert!(!settings.background_efficiency.enabled);
+        assert_eq!(settings.efficiency_mode.custom_rules.len(), 1);
+        assert!(!settings.efficiency_mode.enabled);
     }
 }

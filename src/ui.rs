@@ -7,11 +7,11 @@ mod advanced_power_plan_tuning;
 mod animated_controls;
 mod app_picker;
 mod app_suspension;
-mod background_efficiency;
 mod by_activity;
 mod cpu_allocation;
 mod cpu_limiter;
 mod design;
+mod efficiency_mode;
 mod home;
 mod hotkeys;
 mod instance_balancing;
@@ -68,7 +68,7 @@ pub enum Page {
     CpuSetsSoft,
     ProcessList,
     AdaptiveEngine,
-    BackgroundEfficiency,
+    EfficiencyMode,
     AppSuspension,
     SleepPrevention,
     KeepRunning,
@@ -123,8 +123,7 @@ const PRIORITY_CONTROL_PAGES: [Page; 6] = [
     Page::GpuPriority,
     Page::MemoryPriority,
 ];
-const WINDERUST_FEATURE_PAGES: [Page; 3] =
-    [Page::BackgroundEfficiency, Page::MemoryTrim, Page::Watchdog];
+const WINDERUST_FEATURE_PAGES: [Page; 3] = [Page::EfficiencyMode, Page::MemoryTrim, Page::Watchdog];
 const ACTION_LOG_PAGES: [Page; 1] = [Page::ActionLog];
 const SETTINGS_PAGES: [Page; 3] = [
     Page::WinderustBehaviour,
@@ -196,7 +195,7 @@ impl Page {
                 | Self::CpuLimiter
                 | Self::CpuSetsSoft
                 | Self::AdaptiveEngine
-                | Self::BackgroundEfficiency
+                | Self::EfficiencyMode
                 | Self::AppSuspension
                 | Self::SleepPrevention
                 | Self::ByRunningApp
@@ -231,7 +230,7 @@ impl Page {
             Self::CpuSetsSoft => t!("nav.cpu_sets_soft"),
             Self::ProcessList => t!("nav.process_list"),
             Self::AdaptiveEngine => t!("nav.adaptive_engine"),
-            Self::BackgroundEfficiency => t!("nav.background_efficiency"),
+            Self::EfficiencyMode => t!("nav.efficiency_mode"),
             Self::AppSuspension => t!("nav.app_suspension"),
             Self::SleepPrevention => t!("nav.sleep_prevention"),
             Self::KeepRunning => t!("nav.keep_running"),
@@ -265,10 +264,9 @@ impl Page {
         match self {
             Self::Home => Self::Home,
             Self::ProcessList => Self::ProcessList,
-            Self::WinderustFeatures
-            | Self::BackgroundEfficiency
-            | Self::Watchdog
-            | Self::MemoryTrim => Self::WinderustFeatures,
+            Self::WinderustFeatures | Self::EfficiencyMode | Self::Watchdog | Self::MemoryTrim => {
+                Self::WinderustFeatures
+            }
             Self::PowerPlanControl
             | Self::ByActivity
             | Self::ByTime

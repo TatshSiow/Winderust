@@ -621,7 +621,7 @@ Read the relevant section before changing feature policy, ownership, restoration
   thaws that retained job even if the recorded root exits while inherited children remain. Raw Job
   Object creation, assignment, and membership live in `src/platform/windows/job.rs`; freeze/thaw
   and the shared undocumented layout live in `src/platform/windows/suspension.rs`.
-- Background Efficiency and CPU Limiter custom rules use Focus, Visible Window, and Background
+- Efficiency Mode and CPU Limiter custom rules use Focus, Visible Window, and Background
   columns with Focus > Visible Window > Background precedence. CPU Limiter page defaults set
   1% to 100% Focus, Visible Window, and Background targets; each rule tier selects Follow Default,
   Custom, or Unlimited, with Custom owning its own 1% to 100% target. A 100% target is Unlimited.
@@ -863,16 +863,17 @@ Read the relevant section before changing feature policy, ownership, restoration
   verified value. Readback follows Allow cross-session process control.
   Eligible selections with unknown Efficiency Mode can still choose Enabled or
   Disabled.
-- Background Efficiency uses the same explicit Foreground Detection and Visible Window Detection
+- Efficiency Mode uses the same explicit Foreground Detection and Visible Window Detection
   layers as Priority Control. Foreground Detection defaults on, Visible Window Detection defaults
-  off, and each layer owns an Enabled/Disabled Efficiency Mode default.
+  off, and each layer owns an Enabled/Disabled Efficiency Mode default. Automatic targeting
+  always excludes the same 24 built-in process names. Custom rules match exact executable paths.
   Home and Status distinguish missing observations from a confirmed zero.
   Inventory and pending restoration failures surface as errors, with the
   restoration failure taking precedence until retry succeeds.
-  When Windows cannot verify the power source, differing saved Background Efficiency
+  When Windows cannot verify the power source, differing saved Efficiency Mode
   settings pause automatic claims if either profile can apply them. The comparison
   includes settings that may not affect the current processes. The worker releases
-  only its Background Efficiency claims and rechecks the source while paused, or
+  only its Efficiency Mode claims and rechecks the source while paused, or
   when a dormant profile could become active without power notifications.
 - Every Priority Control page uses three ordered default tiers: Focus App, then apps with visible windows, then background. Visible Window Detection defaults off and has its own selectable value; custom process rules independently override all three tiers. Retired Auto priority values are rejected rather than mapped to current defaults.
 - Each Priority Control pauses when Windows cannot verify the power source and
@@ -894,8 +895,8 @@ Read the relevant section before changing feature policy, ownership, restoration
   inventory and failed restoration surface as errors.
 - Process Priority, Power Throttling/Efficiency Mode, Dynamic Priority Boost,
   Thread Priority, I/O Priority, GPU Priority, and Memory Priority are complete
-  typed process-control cutovers. Static Priority Control, Background
-  Efficiency, Adaptive Engine/Adaptive Engine policies, and Process List
+  typed process-control cutovers. Static Priority Control, Efficiency Mode,
+  Adaptive Engine/Adaptive Engine policies, and Process List
   one-shot actions share their `RuntimeCore` controllers; feature code owns
   policy only, and the crash helper remains the independent recovery mirror.
   Dynamic Priority Boost's raw live query/set pair is isolated in
@@ -907,7 +908,7 @@ Read the relevant section before changing feature policy, ownership, restoration
   When a Priority or Efficiency policy yields, restoration also checks exact
   writes retained after an unsuccessful apply. A blocked recovery transport
   leaves the tracked baseline available for recovery and reports the failure.
-  Background Efficiency counts a process as restored only after its pending
+  Efficiency Mode counts a process as restored only after its pending
   priority and power changes settle. A retry updates its current failure status
   and keeps the original failure in the Action Log.
   Memory Priority's raw class constants and live query/set pair are isolated in

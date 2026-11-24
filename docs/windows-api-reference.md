@@ -27,7 +27,7 @@ window rendering and infrastructure calls are not duplicated here.
 | Crash recovery watchdog | `src/backend/crash_recovery.rs` | Private inherited stdin journal, process/thread identity validation, reversible state replay, retained App Suspension and CPU Limiter freeze jobs, and automatic power-plan recovery |
 | Adaptive Engine | `src/features/winderust_features/adaptive_engine_process.rs`, `adaptive_engine_process/policy.rs`, `adaptive_engine_process/process_control.rs`, and `src/control/priority_efficiency.rs` | CPU scheduling decisions, read-only process sampling, and temporary Process Priority claims; processor placement routes through the CPU allocation coordinator |
 | Interrupt Timing | `src/platform/windows/interrupt_timing.rs` and `src/platform/windows/interrupt_timing/` | On-demand real-time ETW session, DPC and ISR timing, and kernel image attribution |
-| Background Efficiency | `src/features/winderust_features/background_efficiency.rs` and `src/control/priority_efficiency.rs` | Policy-only target selection plus shared compound Process Priority and process Power Throttling ownership |
+| Efficiency Mode | `src/features/winderust_features/efficiency_mode.rs` and `src/control/priority_efficiency.rs` | Policy-only target selection plus shared compound Process Priority and process Power Throttling ownership |
 | Memory Trim | `src/features/winderust_features/memory_trim.rs`, `src/control/memory_trim.rs`, and `src/platform/windows/memory_trim.rs` | Memory-pressure policy, typed exact-process command, and raw working-set adapter |
 | Stop Process / Stop Process Tree | `src/foreground/process_list.rs`, `src/control/process_termination.rs`, and `src/platform/windows/process_termination.rs` | Read-side tree capture, typed batch command, and raw termination adapter |
 | Keep Running | `src/features/advanced_controls/keep_running.rs`, `src/backend/automation/keep_running/`, `src/control/keep_running.rs`, and `src/platform/windows/keep_running.rs` | Current shell context, retained process membership, provisional-launch ownership, atomic Job List creation, and one-shot native acceptance |
@@ -427,19 +427,17 @@ before recovery.
 | `GetThreadTimes` and `GetProcessIdOfThread` | Revalidate a recorded thread instance and owner before restoring thread priority. | [Times](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getthreadtimes) / [Owner](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getprocessidofthread) |
 | `OpenJobObjectW` | Reopens a named App Suspension or CPU Limiter freeze job so the watchdog can retain and thaw it. | https://learn.microsoft.com/en-us/windows/win32/api/jobapi2/nf-jobapi2-openjobobjectw |
 
-## Background Efficiency / EcoQoS
+## Efficiency Mode
 
-Winderust Background Efficiency applies Windows EcoQoS and idle process
-priority to selected background processes. Process Priority, Background
-Efficiency, Adaptive Engine, and Process List actions share one
-`PriorityEfficiencyController`, so overlapping requests use one baseline and a
-deterministic effective owner instead of competing writers.
+Efficiency Mode applies Windows EcoQoS and Idle process priority to eligible
+processes. Process Priority, Efficiency Mode, Adaptive Engine, and Process List
+actions share `PriorityEfficiencyController`. The controller captures one
+baseline and selects a single effective owner for overlapping requests.
 
 Implementation paths:
 
-- `src/features/winderust_features/background_efficiency.rs`: Background
-  Efficiency target policy, protections, exclusions, suppression, status, and
-  Action Log attribution.
+- `src/features/winderust_features/efficiency_mode.rs` owns Efficiency Mode target
+  policy, protections, exclusions, suppression, status, and Action Log attribution.
 - `src/features/winderust_features/adaptive_engine_process.rs`: temporary CPU
   Pressure Restraint priority claims for sustained background CPU use.
 - `src/features/winderust_features/adaptive_engine_process/process_control.rs`: read-only
@@ -459,7 +457,7 @@ User-facing behavior:
 - Winderust finds eligible processes under the configured cross-session policy
   and preserves all protected-process and access checks. CPU Pressure Restraint
   protects the focused process group, visible-window apps, and active audio.
-  Background Efficiency uses its own foreground and window protection policy.
+  Efficiency Mode uses its own foreground and window protection policy.
 - It skips Winderust itself, built-in Windows shell/input/system processes,
   protected processes, inaccessible processes, exclusions, and any process
   protected by the active feature's tier policy.
@@ -474,10 +472,10 @@ User-facing behavior:
 - The Process List context-menu action uses the same Task Manager-style
   invariant. Efficiency Mode reports enabled only when both EcoQoS and Idle
   process priority are observed.
-- Priority precedence is Background Efficiency > Process Priority > CPU Pressure
+- Priority precedence is Efficiency Mode > Process Priority > CPU Pressure
   Restraint. Restraint uses `GetPriorityClass` to verify `NORMAL_PRIORITY_CLASS`
   before claiming `BELOW_NORMAL_PRIORITY_CLASS` with `SetPriorityClass`.
-  Background Efficiency owns automatic Power Throttling claims.
+  Efficiency Mode owns automatic Power Throttling claims.
 - It restores only while the live value still equals Winderust's expected
   value. An external change relinquishes ownership and the matching crash
   journal entry without overwriting the external state.
@@ -631,7 +629,7 @@ Implementation entry points:
 
 | Product feature / API | Used for | Reference |
 | --- | --- | --- |
-| Process Priority: `GetPriorityClass` / `SetPriorityClass` | `src/platform/windows/priority_efficiency.rs` is the sole live query/set adapter. The typed controller owns exact-process baselines, owner arbitration, Begin/apply/verify/Commit, compensation, relinquishment, and clean release. Process Priority, Background Efficiency, CPU Pressure Restraint, and Process List commands share it. Crash recovery retains a separate replay-only setter. | [Get](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getpriorityclass) / [Set](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-setpriorityclass) |
+| Process Priority: `GetPriorityClass` / `SetPriorityClass` | `src/platform/windows/priority_efficiency.rs` is the sole live query/set adapter. The typed controller owns exact-process baselines, owner arbitration, Begin/apply/verify/Commit, compensation, relinquishment, and clean release. Process Priority, Efficiency Mode, CPU Pressure Restraint, and Process List commands share it. Crash recovery retains a separate replay-only setter. | [Get](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getpriorityclass) / [Set](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-setpriorityclass) |
 | Process Power Throttling: `GetProcessInformation` / `SetProcessInformation` | `src/platform/windows/priority_efficiency.rs` is the sole live `ProcessPowerThrottling` adapter and initializes the required current-version field before reads. The typed controller owns the full raw baseline, compound Efficiency Mode transaction, verification, compensation, and restoration chain; crash recovery retains a separate replay-only setter. | [Get](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getprocessinformation) / [Set](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-setprocessinformation) |
 | Thread Priority: `WaitForSingleObject` | `src/platform/windows/thread_priority.rs` opens threads with `THREAD_SYNCHRONIZE` and checks the retained handle with a zero timeout. `src/control/thread_priority.rs` validates liveness before identity checks, queries, journaling, and writes so exited threads follow typed cleanup instead of restoration failure. Real access and journal errors remain failures. | https://learn.microsoft.com/en-us/windows/win32/api/synchapi/nf-synchapi-waitforsingleobject |
 | Thread Priority: `CreateToolhelp32Snapshot`, `Thread32First`, and `Thread32Next` | `src/platform/windows/thread_priority.rs` enumerates the current threads of an exact process claim on each applicable reconciliation. The controller discovers new threads and relinquishes missing exact identities without targeting replacements. Grouped Process List readback passes one fresh inventory to `src/control/thread_priority.rs` for the selected processes. | [Snapshot](https://learn.microsoft.com/en-us/windows/win32/api/tlhelp32/nf-tlhelp32-createtoolhelp32snapshot) / [First](https://learn.microsoft.com/en-us/windows/win32/api/tlhelp32/nf-tlhelp32-thread32first) / [Next](https://learn.microsoft.com/en-us/windows/win32/api/tlhelp32/nf-tlhelp32-thread32next) |
@@ -719,7 +717,7 @@ outside a thread's hard-affinity groups may be ignored. Winderust does not alter
 thread affinity to work around these restrictions. See [CPU Sets](https://learn.microsoft.com/en-us/windows/win32/procthread/cpu-sets)
 and [SYSTEM_CPU_SET_INFORMATION](https://learn.microsoft.com/en-us/windows/win32/api/winnt/ns-winnt-system_cpu_set_information).
 
-Background Efficiency exposes Foreground Detection and Visible Window Detection. CPU Limiter,
+Efficiency Mode exposes Foreground Detection and Visible Window Detection. CPU Limiter,
 CPU Sets (Soft), and Processor Affinity (Hard) classify each matched process as Focus, Visible
 Window, or Background and select that tier's policy. Foreground
 resolution starts from the active window; visible-window detection keeps top-level windows that are

@@ -378,7 +378,7 @@ to typed controllers and their narrow Windows adapters.
 ## Naming
 
 - Start from the English UI label, then keep page variants, settings types/fields, feature modules, backend snapshots, tests, locale keys, scripts, and docs as close to that label as Rust naming permits.
-- Current canonical examples: `AdaptiveEngine`, `BackgroundEfficiency`, `ByRunningApp`, `CpuLimiter`, `CpuSetsSoft`, `ProcessorAffinityHard`, and `DynamicPriorityBoost`.
+- Current canonical examples: `AdaptiveEngine`, `EfficiencyMode`, `ByRunningApp`, `CpuLimiter`, `CpuSetsSoft`, `ProcessorAffinityHard`, and `DynamicPriorityBoost`.
 - CPU Behaviour policies belong inside Adaptive Engine; keep their settings and implementation aligned with the visible policy names.
 - Do not use retired product or feature identifiers. The naming scan below owns the rejected-name list. `Performance Mode` is valid only for the active state held by By Running App, not as a standalone feature or settings page.
 - Native Windows vocabulary is allowed when it describes the implementation rather than the product surface, for example EcoQoS flags, affinity masks, CPU Sets, and `SetProcessPriorityBoost`.

@@ -168,17 +168,17 @@ pub(super) fn adaptive_engine_process_waits_for_source(
                 .map(|rule| &rule.executable_path))
 }
 
-pub(super) fn background_efficiency_policy_varies_by_source(settings: &Settings) -> bool {
+pub(super) fn efficiency_mode_policy_varies_by_source(settings: &Settings) -> bool {
     let Some(battery) = settings.on_battery.as_deref() else {
         return false;
     };
     if settings.general.enabled == battery.general.enabled
-        && settings.background_efficiency == battery.background_efficiency
+        && settings.efficiency_mode == battery.efficiency_mode
     {
         return false;
     }
     let has_policy = |profile: &Settings| {
-        let efficiency = &profile.background_efficiency;
+        let efficiency = &profile.efficiency_mode;
         feature_refresh_required(profile, efficiency.enabled)
             && (efficiency.background_efficiency_mode
                 || (efficiency.foreground_detection_enabled
@@ -327,7 +327,7 @@ pub(super) fn sleep_prevention_required(settings: &Settings) -> bool {
 }
 
 pub(super) fn process_appearance_scan_required(settings: &Settings) -> bool {
-    let priority_or_efficiency_configured = settings.background_efficiency.enabled
+    let priority_or_efficiency_configured = settings.efficiency_mode.enabled
         || settings.process_priority.enabled
         || settings.thread_priority.enabled
         || settings.dynamic_priority_boost.enabled

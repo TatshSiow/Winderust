@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 #[repr(usize)]
 pub(crate) enum RefreshDomain {
     PowerPlanCheck,
-    BackgroundEfficiency,
+    EfficiencyMode,
     AppSuspension,
     AppSuspensionForegroundRelease,
     CpuSetsSoft,
@@ -34,7 +34,7 @@ pub(crate) enum RefreshDomain {
 
 pub(crate) const ALL_REFRESH_DOMAINS: [RefreshDomain; 27] = [
     RefreshDomain::PowerPlanCheck,
-    RefreshDomain::BackgroundEfficiency,
+    RefreshDomain::EfficiencyMode,
     RefreshDomain::AppSuspension,
     RefreshDomain::AppSuspensionForegroundRelease,
     RefreshDomain::CpuSetsSoft,
@@ -64,7 +64,7 @@ pub(crate) const ALL_REFRESH_DOMAINS: [RefreshDomain; 27] = [
 
 const FOREGROUND_DOMAINS: [RefreshDomain; 16] = [
     RefreshDomain::PowerPlanCheck,
-    RefreshDomain::BackgroundEfficiency,
+    RefreshDomain::EfficiencyMode,
     RefreshDomain::AppSuspensionForegroundRelease,
     RefreshDomain::CpuSetsSoft,
     RefreshDomain::ProcessorAffinityHard,
@@ -93,7 +93,7 @@ const APP_SWITCH_DOMAINS: [RefreshDomain; 2] = [
 ];
 
 const PROCESS_APPEARANCE_DOMAINS: [RefreshDomain; 14] = [
-    RefreshDomain::BackgroundEfficiency,
+    RefreshDomain::EfficiencyMode,
     RefreshDomain::CpuSetsSoft,
     RefreshDomain::ProcessorAffinityHard,
     RefreshDomain::CpuLimiter,
@@ -352,11 +352,7 @@ mod tests {
     fn minimum_wait_uses_only_required_domains_and_preserves_dormancy() {
         let now = Instant::now();
         let mut scheduler = RefreshScheduler::new(now);
-        scheduler.schedule_after(
-            RefreshDomain::BackgroundEfficiency,
-            now,
-            Duration::from_secs(9),
-        );
+        scheduler.schedule_after(RefreshDomain::EfficiencyMode, now, Duration::from_secs(9));
         scheduler.schedule_after(RefreshDomain::MemoryTrim, now, Duration::from_secs(5));
 
         assert_eq!(scheduler.minimum_wait(None, now, []), None);
@@ -365,11 +361,7 @@ mod tests {
                 None,
                 now,
                 [
-                    (
-                        true,
-                        RefreshDomain::BackgroundEfficiency,
-                        Duration::from_secs(3),
-                    ),
+                    (true, RefreshDomain::EfficiencyMode, Duration::from_secs(3),),
                     (false, RefreshDomain::MemoryTrim, Duration::from_secs(1),),
                 ],
             ),

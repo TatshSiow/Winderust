@@ -63,7 +63,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             )
         });
         let page = match extra {
-            Some(0) => Page::BackgroundEfficiency,
+            Some(0) => Page::EfficiencyMode,
             Some(1) => Page::CpuLimiter,
             Some(2) => Page::SettingsHome,
             Some(3) => Page::Home,
@@ -76,7 +76,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             Some(15) => Page::PowerPlanControl,
             Some(16) => Page::ActionLog,
             Some(17 | 24) => Page::AdaptiveEngine,
-            Some(18) => Page::BackgroundEfficiency,
+            Some(18) => Page::EfficiencyMode,
             Some(19) => Page::ByActivity,
             Some(20) => Page::AdvancedPowerPlanTuning,
             Some(21) => Page::AppSuspension,
@@ -472,9 +472,9 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             assert!(app.navigation_search.is_empty());
         }
         if extra == Some(0) {
-            let _ = app.update(Message::Efficiency(
-                background_efficiency::Message::Collapse(priority_control::Tier::Focus),
-            ));
+            let _ = app.update(Message::EfficiencyMode(efficiency_mode::Message::Collapse(
+                priority_control::Tier::Focus,
+            )));
         } else if extra == Some(1) {
             let _ = app.update(Message::CpuLimiter(cpu_limiter::Message::Collapse));
         }
@@ -589,7 +589,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             }
         }
         if extra == Some(18) {
-            app.settings.background_efficiency.enabled = true;
+            app.settings.efficiency_mode.enabled = true;
         }
         if extra == Some(19) {
             app.settings.by_activity.enabled = true;

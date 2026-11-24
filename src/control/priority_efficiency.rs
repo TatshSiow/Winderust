@@ -149,7 +149,7 @@ pub(crate) struct PriorityEfficiencyReleaseSummary {
 pub(crate) struct PriorityEfficiencyReleaseRetries {
     pub(crate) process_priority_restored: Option<usize>,
     pub(crate) other: PriorityEfficiencyReleaseSummary,
-    pub(crate) background_efficiency: Option<PriorityEfficiencyReleaseSummary>,
+    pub(crate) efficiency_mode: Option<PriorityEfficiencyReleaseSummary>,
 }
 
 #[derive(Clone)]
@@ -466,10 +466,9 @@ impl<P: PriorityEfficiencyPlatform> PriorityEfficiencyController<P> {
         claim: EfficiencyModeClaim,
         allow_cross_session_process_control: bool,
     ) -> Result<ProcessPropertyApplyOutcome, ProcessControlError> {
-        if claim.owner != ControlOwner::BackgroundEfficiency {
+        if claim.owner != ControlOwner::EfficiencyMode {
             return Err(ProcessControlError::Failed(
-                "Only Background Efficiency can submit an automatic Efficiency Mode claim."
-                    .to_owned(),
+                "Only Efficiency Mode can submit an automatic Efficiency Mode claim.".to_owned(),
             ));
         }
         let key = claim.target.key();
@@ -1538,13 +1537,13 @@ impl<P: PriorityEfficiencyPlatform> PriorityEfficiencyController<P> {
             .map(|entry| &entry.failure)
     }
 
-    pub(crate) fn background_efficiency_release_failures(
+    pub(crate) fn efficiency_mode_release_failures(
         &self,
     ) -> impl Iterator<Item = &PriorityEfficiencyReleaseFailure> {
         self.pending_priority_releases
             .values()
             .chain(self.pending_power_releases.values())
-            .filter(|entry| entry.owner == ControlOwner::BackgroundEfficiency)
+            .filter(|entry| entry.owner == ControlOwner::EfficiencyMode)
             .map(|entry| &entry.failure)
     }
 
@@ -1591,8 +1590,8 @@ impl<P: PriorityEfficiencyPlatform> PriorityEfficiencyController<P> {
                 if restores_baseline {
                     *restored += outcome.restored_processes;
                 }
-            } else if owner == ControlOwner::BackgroundEfficiency {
-                let background = retries.background_efficiency.get_or_insert_default();
+            } else if owner == ControlOwner::EfficiencyMode {
+                let background = retries.efficiency_mode.get_or_insert_default();
                 if outcome.restored_processes != 0 && !self.release_pending_for(owner, &key) {
                     background.restored_processes += 1;
                 }
@@ -1690,7 +1689,7 @@ impl<P: PriorityEfficiencyPlatform> PriorityEfficiencyController<P> {
 
     fn effective_power_claim(&self, key: &ProcessTargetKey) -> Option<&PowerThrottlingClaim> {
         self.power_claims
-            .get(&ControlOwner::BackgroundEfficiency)?
+            .get(&ControlOwner::EfficiencyMode)?
             .get(key)
     }
 }
@@ -1934,7 +1933,7 @@ fn priority_is_preserved(
 
 fn priority_owner_precedence() -> &'static [ControlOwner] {
     &[
-        ControlOwner::BackgroundEfficiency,
+        ControlOwner::EfficiencyMode,
         ControlOwner::ProcessPriority,
         ControlOwner::AdaptiveEngine,
     ]

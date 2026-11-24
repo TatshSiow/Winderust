@@ -102,7 +102,7 @@ migration or copying from the limiter is performed.
   Applying a preset leaves the enable switches and the other source's settings under their own
   controls.
 - Winderust applies EcoQoS to itself while the low-power Adaptive Engine path is active.
-- Background Efficiency and Adaptive Engine policy submit typed claims through RuntimeCore. Each
+- Efficiency Mode and Adaptive Engine policy submit typed claims through RuntimeCore. Each
   controller revalidates exact identity, access, protection, and cross-session policy before a
   mutation.
 - Adaptive Engine checks CPU pressure at the configured reaction interval whenever any CPU
@@ -114,7 +114,7 @@ migration or copying from the limiter is performed.
   interval apart for the same process instance. It submits a temporary Normal to
   Below Normal priority claim. Focused apps and their process groups, apps with
   visible windows, active audio, and exclusions are protected. Saved Process
-  Priority and Background Efficiency take precedence.
+  Priority and Efficiency Mode take precedence.
 - Each policy ranks its own eligible candidates within the configured limit.
   Priority restoration follows the app's minimum hold and recovery settings
   during continued aggregate pressure. A higher-ranked candidate can take an

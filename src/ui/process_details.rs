@@ -112,11 +112,11 @@ pub(super) fn update(s: &mut SettingsEditor, image_path: &str, m: Message) -> Op
             }
         }
         Message::Efficiency(included) => {
-            let matches_path = |rule: &BackgroundEfficiencyRule| {
+            let matches_path = |rule: &EfficiencyModeRule| {
                 same_rule_executable_path(&rule.executable_path, image_path)
             };
             let mut matching = s
-                .background_efficiency
+                .efficiency_mode
                 .custom_rules
                 .iter()
                 .filter(|rule| matches_path(rule));
@@ -133,10 +133,10 @@ pub(super) fn update(s: &mut SettingsEditor, image_path: &str, m: Message) -> Op
                 }
                 _ => {}
             }
-            let rules = &mut s.background_efficiency.custom_rules;
+            let rules = &mut s.efficiency_mode.custom_rules;
             rules.retain(|rule| !matches_path(rule));
             if !included {
-                rules.push(BackgroundEfficiencyRule {
+                rules.push(EfficiencyModeRule {
                     enabled: true,
                     executable_path: normalize_path_slashes(image_path).into_owned(),
                     focus_efficiency_mode: ProcessRuleMode::Disabled,
@@ -302,14 +302,11 @@ pub(super) fn view<'a>(
         .iter()
         .any(|r| r.enabled && same_rule_executable_path(&r.executable_path, path));
     let efficiency = s
-        .background_efficiency
+        .efficiency_mode
         .custom_rules
         .iter()
         .find(|r| r.enabled && same_rule_executable_path(&r.executable_path, path))
-        .is_none_or(|r| {
-            s.background_efficiency
-                .custom_rule_applies_efficiency_mode(r)
-        });
+        .is_none_or(|r| s.efficiency_mode.custom_rule_applies_efficiency_mode(r));
     let mut body = column![widgets::heading(
         t!("process_list.details_exclusions").to_string(),
         design::typography::BODY
@@ -318,7 +315,7 @@ pub(super) fn view<'a>(
     let mut exclusions = Vec::new();
     for (key, included, adaptive_rule) in [
         ("nav.adaptive_engine", adaptive, true),
-        ("nav.background_efficiency", efficiency, false),
+        ("nav.efficiency_mode", efficiency, false),
     ] {
         let options = [
             t!("process_list.include").to_string(),
@@ -782,7 +779,7 @@ mod tests {
             selected
         );
         assert_eq!(
-            settings.background_efficiency.custom_rules[1].executable_path,
+            settings.efficiency_mode.custom_rules[1].executable_path,
             selected
         );
 
@@ -801,9 +798,9 @@ mod tests {
             assert_eq!(rules.len(), 1);
             assert_eq!(rules[0].executable_path, ordinary);
         }
-        assert_eq!(settings.background_efficiency.custom_rules.len(), 1);
+        assert_eq!(settings.efficiency_mode.custom_rules.len(), 1);
         assert_eq!(
-            settings.background_efficiency.custom_rules[0].executable_path,
+            settings.efficiency_mode.custom_rules[0].executable_path,
             ordinary
         );
     }
