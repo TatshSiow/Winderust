@@ -1324,8 +1324,15 @@ fn run_background_automation(
             adaptive_engine_enabled,
             PERFORMANCE_MODE_REFRESH_INTERVAL,
         );
-        let adaptive_engine_process_refresh_interval =
-            adaptive_engine_process_refresh_interval(settings);
+        let adaptive_engine_process_waits_for_source =
+            adaptive_engine_process_waits_for_source(&configured_settings, plugged_in);
+        let adaptive_engine_process_active = !adaptive_engine_process_waits_for_source
+            && feature_refresh_required(settings, adaptive_engine_process_required(settings));
+        let adaptive_engine_process_refresh_interval = if adaptive_engine_process_waits_for_source {
+            POWER_SOURCE_RECHECK_INTERVAL
+        } else {
+            adaptive_engine_process_refresh_interval(settings)
+        };
         let process_priority_refresh_interval = automation_refresh_interval(
             hidden_to_tray,
             adaptive_engine_enabled,
@@ -1502,7 +1509,8 @@ fn run_background_automation(
             || feature_refresh_required(settings, by_running_app_required(settings))
             || runner.has_temporary_power_plan();
         let adaptive_engine_process_refresh_required = settings_changed
-            || feature_refresh_required(settings, adaptive_engine_process_required(settings));
+            || adaptive_engine_process_active
+            || adaptive_engine_process_waits_for_source;
         let bottleneck_classifier_refresh_required =
             !hidden_to_tray && bottleneck_classifier_required(settings);
         let adaptive_waits_for_source = runner.adaptive_power_plan_waiting_for_source();
@@ -1581,6 +1589,7 @@ fn run_background_automation(
             memory_trim_active,
             cpu_sets_soft_active || processor_affinity_hard_active,
             priority_or_efficiency_active,
+            adaptive_engine_process_active,
         );
         let watchdog_refresh_required = settings_changed
             || feature_refresh_required(
@@ -1710,6 +1719,7 @@ fn run_background_automation(
         {
             let status = runner.run_adaptive_engine_process_update(
                 settings,
+                adaptive_engine_process_waits_for_source,
                 alternate_cpu_allocation_profile,
                 &mut observations,
             );

@@ -574,7 +574,7 @@ impl RuntimeCore {
         if let Err(error) = self.io_priority_controller.shutdown() {
             errors.push(format!("I/O Priority restoration failed: {error}"));
         }
-        self.run_adaptive_engine_process_update(&settings, None, &mut observations);
+        self.run_adaptive_engine_process_update(&settings, false, None, &mut observations);
         if let Err(error) = self.cpu_allocation_coordinator.shutdown() {
             errors.push(format!("CPU allocation restoration failed: {error}"));
         }
@@ -1114,9 +1114,19 @@ impl RuntimeCore {
     pub(super) fn run_adaptive_engine_process_update(
         &mut self,
         settings: &Settings,
+        waiting_for_power_source: bool,
         alternate_cpu_allocation_profile: Option<&Settings>,
         observations: &mut CycleObservations,
     ) -> AdaptiveEngineProcessSnapshot {
+        if waiting_for_power_source {
+            return self
+                .adaptive_engine_process_manager
+                .pause_for_unknown_power_source(
+                    &mut self.cpu_allocation_coordinator,
+                    &mut self.priority_efficiency_controller,
+                    &mut self.action_log,
+                );
+        }
         if bottleneck_classifier_required(settings) {
             self.refresh_cpu_usage();
         }
@@ -1149,7 +1159,7 @@ impl RuntimeCore {
         source: PowerSourceProfile,
         mut status: AdaptiveEngineProcessSnapshot,
     ) {
-        status.source = Some(source);
+        status.source = (!status.waiting_for_power_source).then_some(source);
         if status.enabled && !status.observation_paused {
             let owner = ControlOwner::AdaptiveEngine;
             status.adjusted_processes = self

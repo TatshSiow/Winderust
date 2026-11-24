@@ -1528,7 +1528,14 @@ fn enabled_features(
     feature!(
         AdaptiveEngine,
         adaptive_engine,
-        if !settings.adaptive_engine_process.has_enabled_policies() {
+        if adaptive.waiting_for_power_source {
+            t!(if adaptive.last_error.is_some() {
+                "common.error"
+            } else {
+                "home.power_source_unavailable"
+            })
+            .into_owned()
+        } else if !settings.adaptive_engine_process.has_enabled_policies() {
             t!("common.enabled").into_owned()
         } else if adaptive.source != Some(source) {
             t!("common.unknown").into_owned()
@@ -1711,6 +1718,23 @@ mod tests {
                 ActivityState::Unknown,
             );
             assert!(cards.contains(&(Page::AdaptiveEngine, detail.into_owned())));
+        }
+
+        runtime.adaptive_engine_process.source = None;
+        runtime.adaptive_engine_process.waiting_for_power_source = true;
+        for (error, detail) in [
+            (None, "home.power_source_unavailable"),
+            (Some("restore failed".into()), "common.error"),
+        ] {
+            runtime.adaptive_engine_process.last_error = error;
+            let cards = enabled_features(
+                &settings,
+                PowerSourceProfile::PluggedIn,
+                &runtime,
+                &Sample::default(),
+                ActivityState::Unknown,
+            );
+            assert!(cards.contains(&(Page::AdaptiveEngine, t!(detail).into_owned())));
         }
     }
 

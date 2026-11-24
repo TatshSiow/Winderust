@@ -124,8 +124,12 @@ pub(super) fn view<'a>(
     let adaptive = (page == Page::AdaptiveEngine)
         .then_some(&runtime.feature_status.adaptive_engine_process)
         .filter(|snapshot| {
-            snapshot.source.is_some()
-                && current_source.is_none_or(|source| snapshot.source == Some(source))
+            if snapshot.waiting_for_power_source {
+                current_source.is_none() || snapshot.last_error.is_some()
+            } else {
+                snapshot.source.is_some()
+                    && current_source.is_none_or(|source| snapshot.source == Some(source))
+            }
         });
     let summary = if let Some(limits) = &instance_limits {
         FeatureStatusSummary {
@@ -435,7 +439,10 @@ pub(super) fn view<'a>(
                 .adaptive_engine_process
                 .dynamic_resource_zones_enabled;
         let zones = adaptive.map(|status| &status.zones);
+        let waits_for_source =
+            zones_enabled && adaptive.is_some_and(|status| status.waiting_for_power_source);
         let (key, color) = match zones.map(|zones| zones.status) {
+            _ if waits_for_source => ("sidebar_status.paused", "common.waiting"),
             None if zones_enabled => ("common.unknown", "common.unknown"),
             None | Some(ZoneStatus::Disabled) => ("common.inactive", "common.inactive"),
             Some(ZoneStatus::Waiting) => ("common.waiting", "common.waiting"),
@@ -753,6 +760,12 @@ fn sleep_prevention_state(sleep: Option<&SleepPreventionSnapshot>) -> FeatureRun
 
 fn waiting_for_power_source(page: Page, runtime: &RuntimeStatusSnapshot) -> bool {
     match page {
+        Page::AdaptiveEngine => {
+            runtime
+                .feature_status
+                .adaptive_engine_process
+                .waiting_for_power_source
+        }
         Page::ProcessPriority => {
             runtime
                 .feature_status
@@ -2010,6 +2023,7 @@ mod tests {
             ..Default::default()
         };
         let features = std::sync::Arc::make_mut(&mut runtime.feature_status);
+        features.adaptive_engine_process.waiting_for_power_source = true;
         features.process_priority.waiting_for_power_source = true;
         features.thread_priority.waiting_for_power_source = true;
         features.dynamic_priority_boost.waiting_for_power_source = true;
@@ -2019,6 +2033,7 @@ mod tests {
         features.cpu_sets_soft.waiting_for_power_source = true;
         features.processor_affinity_hard.waiting_for_power_source = true;
         for page in [
+            Page::AdaptiveEngine,
             Page::ProcessPriority,
             Page::ThreadPriority,
             Page::DynamicPriorityBoost,
@@ -2034,6 +2049,7 @@ mod tests {
         }
 
         let features = std::sync::Arc::make_mut(&mut runtime.feature_status);
+        features.adaptive_engine_process.last_error = Some("Adaptive restore failed".into());
         features.process_priority.last_error = Some("priority restore failed".into());
         features.thread_priority.last_error = Some("thread restore failed".into());
         features.dynamic_priority_boost.last_error = Some("boost restore failed".into());
@@ -2043,6 +2059,7 @@ mod tests {
         features.cpu_sets_soft.last_error = Some("CPU Sets restore failed".into());
         features.processor_affinity_hard.last_error = Some("affinity restore failed".into());
         for (page, reason) in [
+            (Page::AdaptiveEngine, "Adaptive restore failed"),
             (Page::ProcessPriority, "priority restore failed"),
             (Page::ThreadPriority, "thread restore failed"),
             (Page::DynamicPriorityBoost, "boost restore failed"),

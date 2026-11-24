@@ -110,6 +110,62 @@ pub(super) fn adaptive_engine_process_required(settings: &Settings) -> bool {
     settings.adaptive_engine.enabled && settings.adaptive_engine_process.has_enabled_policies()
 }
 
+pub(super) fn adaptive_engine_process_waits_for_source(
+    settings: &Settings,
+    plugged_in: Option<bool>,
+) -> bool {
+    if plugged_in.is_some() {
+        return false;
+    }
+    let Some(battery) = settings.on_battery.as_deref() else {
+        return false;
+    };
+    let active =
+        |profile| feature_refresh_required(profile, adaptive_engine_process_required(profile));
+    let (ac_active, battery_active) = (active(settings), active(battery));
+    if !ac_active || !battery_active {
+        return ac_active != battery_active;
+    }
+
+    let ac = &settings.adaptive_engine_process;
+    let dc = &battery.adaptive_engine_process;
+    let shared_policy = |policy: &crate::config::AdaptiveEngineProcessSettings| {
+        (
+            policy.cpu_pressure_restraint_enabled,
+            policy.limit_background_processors_enabled,
+            policy.dynamic_resource_zones_enabled,
+            policy.foreground_or_system_cpu_threshold_percent,
+            policy.background_app_cpu_threshold_percent,
+            policy.cpu_recovery_threshold_percent,
+            policy.reaction_time_ms,
+            policy.cpu_restraint_time_seconds,
+            policy.cpu_recovery_time_seconds,
+            policy.maximum_restrained_apps,
+        )
+    };
+    shared_policy(ac) != shared_policy(dc)
+        || (ac.limit_background_processors_enabled
+            && (ac.cpu_allocation_method != dc.cpu_allocation_method
+                || ac.background_processor_selection != dc.background_processor_selection
+                || (ac.background_processor_selection.uses_percentage()
+                    && ac.processor_limit_percent != dc.processor_limit_percent)
+                || (ac.background_processor_selection
+                    == crate::config::BackgroundProcessorSelection::Custom
+                    && ac.specific_processors != dc.specific_processors)))
+        || (ac.dynamic_resource_zones_enabled
+            && ac.dynamic_resource_zone_settings != dc.dynamic_resource_zone_settings)
+        || ac
+            .custom_rules
+            .iter()
+            .filter(|rule| rule.enabled)
+            .map(|rule| &rule.executable_path)
+            .ne(dc
+                .custom_rules
+                .iter()
+                .filter(|rule| rule.enabled)
+                .map(|rule| &rule.executable_path))
+}
+
 pub(super) fn background_efficiency_policy_varies_by_source(settings: &Settings) -> bool {
     let Some(battery) = settings.on_battery.as_deref() else {
         return false;
@@ -283,6 +339,7 @@ pub(super) fn process_appearance_scan_required(settings: &Settings) -> bool {
         settings.general.enabled
             && (cpu_sets_soft_required(settings) || processor_affinity_hard_required(settings)),
         priority_or_efficiency_configured,
+        adaptive_engine_process_required(settings),
     )
 }
 
@@ -292,13 +349,14 @@ pub(super) fn process_appearance_scan_required_for_runtime(
     memory_trim_active: bool,
     explicit_cpu_allocation_active: bool,
     priority_or_efficiency_active: bool,
+    adaptive_engine_process_active: bool,
 ) -> bool {
     settings.general.enabled
         && (priority_or_efficiency_active
             || explicit_cpu_allocation_active
             || cpu_limiter_active
             || by_running_app_required(settings)
-            || adaptive_engine_process_required(settings)
+            || adaptive_engine_process_active
             || memory_trim_active)
 }
 

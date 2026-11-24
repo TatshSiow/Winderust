@@ -974,3 +974,66 @@ fn foreground_capacity_is_not_held_by_stale_or_idle_background_demand() {
     assert!(!fresh_background_competition(Some(39), 4));
     assert!(fresh_background_competition(Some(40), 4));
 }
+
+#[test]
+fn adaptive_engine_source_wait_clears_qualification_and_rearms_after_update() {
+    let mut manager = AdaptiveEngineProcessManager::default();
+    let mut allocation = CpuAllocationCoordinator::default();
+    let mut priority = PriorityEfficiencyController::default();
+    let mut log = ActionLog::new(8);
+    let settings = AdaptiveEngineProcessSettings {
+        reaction_time_ms: 250,
+        ..AdaptiveEngineProcessSettings::default()
+    };
+    let now = Instant::now();
+    let mut episode = PressureRestraintEpisode::default();
+    assert!(!episode.qualifies(&settings, now, 950));
+    assert!(episode.qualifies(&settings, now + Duration::from_millis(250), 950));
+    manager.tracked_processes.insert(
+        42,
+        AdaptiveEngineProcessProcess {
+            process_name: String::new(),
+            executable_path: String::new(),
+            creation_time: 1,
+            tier: AdaptiveEngineProcessTier::Background,
+            previous_cpu_time: None,
+            last_usage_tenths: None,
+            pressure_restraint: episode,
+            below_since: None,
+            active_since: None,
+            selected: false,
+        },
+    );
+    manager.background_pressure_active = true;
+    let waiting = manager.pause_for_unknown_power_source(&mut allocation, &mut priority, &mut log);
+    assert_eq!(waiting.source, None);
+    assert!(waiting.waiting_for_power_source && waiting.observation_paused);
+    assert!(manager.tracked_processes.is_empty());
+    assert!(!manager.background_pressure_active);
+    assert_eq!(
+        manager.pause_for_unknown_power_source(&mut allocation, &mut priority, &mut log),
+        waiting
+    );
+    let confirmed = manager.update(
+        AdaptiveEngineProcessUpdate {
+            settings: &settings,
+            automation_enabled: false,
+            allow_cross_session_process_control: false,
+            foreground_process_id: None,
+            total_cpu_usage_percent: None,
+            excluded_process_ids: &BTreeSet::new(),
+            explicit_cpu_allocation_paths: &[],
+            observations: &mut CycleObservations::default(),
+        },
+        &mut allocation,
+        &mut priority,
+        &mut log,
+    );
+    assert!(!confirmed.waiting_for_power_source);
+    assert!(manager.source_release.is_none());
+    assert!(!PressureRestraintEpisode::default().qualifies(
+        &settings,
+        now + Duration::from_secs(1),
+        950,
+    ));
+}

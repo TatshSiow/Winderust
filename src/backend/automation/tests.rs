@@ -1275,7 +1275,7 @@ fn explicit_cpu_allocation_source_wait_accounts_for_configured_soft_precedence()
         settings.battery_profile()
     ));
     assert!(!process_appearance_scan_required_for_runtime(
-        &settings, false, false, false, false
+        &settings, false, false, false, false, false
     ));
     settings.cpu_sets_soft.rules.push(disabled_soft);
     assert!(cpu_allocation_source_difference(&settings).is_none());
@@ -1358,7 +1358,8 @@ fn priority_source_schedule_preserves_verified_and_common_policy_cadence() {
         false,
         false,
         false,
-        differing_enabled.active
+        differing_enabled.active,
+        false
     ));
 
     settings.process_priority = settings.battery_profile().process_priority.clone();
@@ -1369,7 +1370,8 @@ fn priority_source_schedule_preserves_verified_and_common_policy_cadence() {
         false,
         false,
         false,
-        common.active
+        common.active,
+        false
     ));
 }
 
@@ -1623,7 +1625,7 @@ fn active_cpu_limiter_keeps_process_discovery_at_one_second() {
 
     assert!(process_appearance_scan_required(&settings));
     assert!(!process_appearance_scan_required_for_runtime(
-        &settings, false, false, false, false
+        &settings, false, false, false, false, false
     ));
     assert_eq!(
         process_appearance_refresh_interval(false, true, false),
@@ -3461,4 +3463,53 @@ fn all_adaptive_allocation_gates_and_battery_only_zones_schedule_independently()
         windows_event_watcher_mode(&settings),
         Some(WindowsEventWatcherMode::SuspendResumeOnly)
     );
+}
+
+#[test]
+fn adaptive_engine_waits_only_for_unverified_source_dependent_cpu_behaviour() {
+    let mut settings = Settings::default();
+    settings.adaptive_engine.enabled = true;
+    settings
+        .adaptive_engine_process
+        .cpu_pressure_restraint_enabled = true;
+    let battery = settings.battery_profile_mut();
+    battery.adaptive_engine.adaptive_processor_power_enabled = true;
+    battery.adaptive_engine_process.processor_limit_percent = 99;
+    battery.adaptive_engine_process.process_priority_enabled = true;
+    assert!(!adaptive_engine_process_waits_for_source(&settings, None));
+    assert!(adaptive_power_plan_waits_for_source(&settings, None));
+
+    settings
+        .battery_profile_mut()
+        .adaptive_engine
+        .adaptive_processor_power_enabled = false;
+    settings
+        .battery_profile_mut()
+        .adaptive_engine_process
+        .background_app_cpu_threshold_percent = 99;
+    assert!(!adaptive_enablement_varies_by_source(&settings));
+    assert_eq!(
+        windows_event_watcher_mode(&settings),
+        Some(WindowsEventWatcherMode::SuspendResumeOnly)
+    );
+    assert!(adaptive_engine_process_waits_for_source(&settings, None));
+    assert!(!adaptive_power_plan_waits_for_source(&settings, None));
+    assert!(process_appearance_scan_required(&settings));
+    assert!(!process_appearance_scan_required_for_runtime(
+        &settings, false, false, false, false, false
+    ));
+    assert!(!adaptive_engine_process_waits_for_source(
+        &settings,
+        Some(true)
+    ));
+    assert!(!adaptive_engine_process_waits_for_source(
+        &settings,
+        Some(false)
+    ));
+
+    settings.adaptive_engine.enabled = false;
+    assert!(adaptive_engine_process_waits_for_source(&settings, None));
+    assert!(adaptive_enablement_varies_by_source(&settings));
+    settings.battery_profile_mut().adaptive_engine.enabled = false;
+    assert!(!adaptive_engine_process_waits_for_source(&settings, None));
 }

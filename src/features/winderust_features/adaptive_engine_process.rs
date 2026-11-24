@@ -59,6 +59,7 @@ const FOCUS_AND_LAUNCH_PROFILE_WINDOW: Duration = Duration::from_secs(8);
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AdaptiveEngineProcessSnapshot {
     pub(crate) source: Option<PowerSourceProfile>,
+    pub(crate) waiting_for_power_source: bool,
     pub zones: DynamicResourceZoneSnapshot,
     pub enabled: bool,
     pub observation_paused: bool,
@@ -98,6 +99,7 @@ pub struct AdaptiveEngineProcessManager {
     foreground_cpu_history: ForegroundCpuHistory,
     tracked_processes: BTreeMap<u32, AdaptiveEngineProcessProcess>,
     background_pressure_active: bool,
+    source_release: Option<PriorityFailures>,
     cpu_allocation: CpuAllocationManager,
     cpu_allocation_selection: [Option<CpuAllocationSelection>; 2],
     allocation_settings: Option<AdaptiveEngineProcessSettings>,
@@ -112,6 +114,7 @@ impl Default for AdaptiveEngineProcessManager {
             foreground_cpu_history: ForegroundCpuHistory::default(),
             tracked_processes: BTreeMap::new(),
             background_pressure_active: false,
+            source_release: None,
             cpu_allocation: CpuAllocationManager::with_action_log_feature(
                 ActionLogFeature::AdaptiveEngine,
             ),
@@ -248,6 +251,41 @@ impl AdaptiveEngineProcessManager {
         self.per_processor_usage = PerProcessorUsageMonitor::default();
     }
 
+    pub(crate) fn pause_for_unknown_power_source(
+        &mut self,
+        cpu_allocation_coordinator: &mut CpuAllocationCoordinator,
+        priority_efficiency_controller: &mut PriorityEfficiencyController,
+        action_log: &mut ActionLog,
+    ) -> AdaptiveEngineProcessSnapshot {
+        let owner = ControlOwner::AdaptiveEngine;
+        let mut failed = self.source_release.take().unwrap_or_else(|| {
+            self.invalidate_allocation_selection();
+            self.clear_all(
+                cpu_allocation_coordinator,
+                priority_efficiency_controller,
+                action_log,
+                "power source is unknown",
+            )
+        });
+        // The controllers retain and retry failed restores at their own cadence.
+        if failed.count > 0
+            && cpu_allocation_coordinator.policy_managed_process_count(owner) == 0
+            && priority_efficiency_controller.policy_managed_process_count(owner) == 0
+        {
+            failed = PriorityFailures::default();
+        }
+        let status = AdaptiveEngineProcessSnapshot {
+            waiting_for_power_source: true,
+            enabled: true,
+            observation_paused: true,
+            failed_processes: failed.count,
+            last_error: failed.last_error.clone(),
+            ..Default::default()
+        };
+        self.source_release = Some(failed);
+        status
+    }
+
     pub fn update(
         &mut self,
         input: AdaptiveEngineProcessUpdate<'_>,
@@ -255,6 +293,7 @@ impl AdaptiveEngineProcessManager {
         priority_efficiency_controller: &mut PriorityEfficiencyController,
         action_log: &mut ActionLog,
     ) -> AdaptiveEngineProcessSnapshot {
+        self.source_release = None;
         let AdaptiveEngineProcessUpdate {
             settings,
             automation_enabled,
@@ -1113,6 +1152,7 @@ impl AdaptiveEngineProcessManager {
         }
         AdaptiveEngineProcessSnapshot {
             source: None,
+            waiting_for_power_source: false,
             zones,
             enabled: true,
             observation_paused: false,
