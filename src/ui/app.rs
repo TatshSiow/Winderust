@@ -3342,6 +3342,10 @@ impl WinderustApp {
                 | Page::CpuSetsSoft
                 | Page::ProcessorAffinityHard
                 | Page::ResourceThresholds
+                | Page::WinderustBehaviour
+                | Page::LanguageAndAppearance
+                | Page::ExperimentalFeatures
+                | Page::About
         ) || priority_kind(self.page).is_some()
             || (self.page == Page::AdaptiveEngine && self.adaptive.shows_custom_rules());
         let save_card =

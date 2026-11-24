@@ -434,21 +434,28 @@ impl Editor {
             widgets::toggle_card(key, value, Some(move |value| Message::Flag(flag, value)))
         };
         let file_actions = || {
-            let mut actions = row![
-                action_button(t!("settings.export_settings").to_string()).on_press(Message::Export),
-                action_button(t!("settings.import_settings").to_string()).on_press(Message::Import),
+            let mut actions = vec![
+                widgets::setting_row(
+                    "settings.export_settings",
+                    action_button(t!("settings.export_settings_open").to_string())
+                        .on_press(Message::Export),
+                )
+                .into(),
+                widgets::setting_row(
+                    "settings.import_settings",
+                    action_button(t!("settings.import_settings_open").to_string())
+                        .on_press(Message::Import),
+                )
+                .into(),
             ];
             if can_replace_settings {
-                actions = actions.push(
+                actions.push(
                     action_button(t!("settings.replace_settings_open").to_string())
-                        .on_press(Message::ReplaceSettingsPrompt(true)),
+                        .on_press(Message::ReplaceSettingsPrompt(true))
+                        .into(),
                 );
             }
-            actions
-                .spacing(design::space::SMALL)
-                .align_y(iced::Center)
-                .wrap()
-                .vertical_spacing(design::space::SMALL)
+            widgets::settings_rows(actions)
         };
         let body = match page {
             Page::WinderustBehaviour => column![
@@ -876,7 +883,7 @@ impl Editor {
             }
             _ => column![],
         };
-        let body = scrollable(body).height(Fill).into();
+        let body = scrollable(body).id("settings-content").height(Fill).into();
         if page != Page::LanguageAndAppearance {
             return body;
         }

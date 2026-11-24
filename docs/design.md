@@ -172,6 +172,9 @@ hover/press; background shading supplies feedback.
 
 - Settings and its Winderust Behaviour, Language and Appearance, and Experimental
   Features pages have no side panel or Side panel button. Keep help inline.
+- The Settings Files card explains each file action before its picker opens. Export includes
+  unsaved settings edits. A valid import replaces the active settings immediately and requires
+  a clean settings draft.
 - Within Adaptive Engine, CPU Behaviour has no separate master switch;
   CPU Pressure Restraint, Limit Background Processors, and Dynamic Resource Zones own independent switches and retain their
   configuration while Adaptive Engine is off.

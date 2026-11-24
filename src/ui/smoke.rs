@@ -4,7 +4,7 @@ use crate::backend::power_source::is_plugged_in;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 static REQUESTED: AtomicBool = AtomicBool::new(false);
-const EXTRA_STATES: usize = 77;
+const EXTRA_STATES: usize = 79;
 pub(super) struct Run {
     pages: Vec<Page>,
     index: usize,
@@ -68,6 +68,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                     | 72
                     | 74
                     | 76
+                    | 78
             )
         });
         let page = match extra {
@@ -102,7 +103,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             Some(47) => Page::AdaptiveEngine,
             Some(48) => Page::ProcessList,
             Some(49) => Page::ActionLog,
-            Some(50) => Page::WinderustBehaviour,
+            Some(50 | 77..=78) => Page::WinderustBehaviour,
             Some(51..=53) => Page::ResourceThresholds,
             Some(54..=57) => Page::ByCpuLoad,
             Some(58..=59) => Page::SleepPrevention,
@@ -335,6 +336,14 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             let _ = app.update(Message::AdaptiveProcessorPower(
                 adaptive_processor_power::Message::CancelPreset,
             ));
+        }
+        if extra == Some(77) {
+            for kind in [cpu_allocation::Kind::Soft, cpu_allocation::Kind::Hard] {
+                let _ = app.update(Message::Allocation(
+                    kind,
+                    cpu_allocation::Message::ClosePreset,
+                ));
+            }
         }
         let was_open = app.side_panel_open;
         let navigate = app.update(Message::Page(page));
@@ -863,8 +872,11 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
         if let Some(index @ 73..=76) = extra {
             exercise_cpu_preset_dialog(app, index);
         }
+        if extra == Some(77) {
+            exercise_settings_export(app);
+        }
         let size = match extra {
-            Some(35..=37 | 40 | 42 | 44..=50 | 52..=69 | 71..=76) => iced::Size::new(900.0, 620.0),
+            Some(35..=37 | 40 | 42 | 44..=50 | 52..=69 | 71..=78) => iced::Size::new(900.0, 620.0),
             Some(30) => iced::Size::new(1280.0, 720.0),
             Some(31) => iced::Size::new(1440.0, 900.0),
             Some(32) => iced::Size::new(1920.0, 720.0),
@@ -911,6 +923,12 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
     if extra == Some(72) && run.ticks == 3 {
         return Some(iced::widget::operation::snap_to(
             "app-suspension-settings",
+            iced::widget::scrollable::RelativeOffset { x: 0.0, y: 1.0 },
+        ));
+    }
+    if matches!(extra, Some(77..=78)) && run.ticks == 3 {
+        return Some(iced::widget::operation::snap_to(
+            "settings-content",
             iced::widget::scrollable::RelativeOffset { x: 0.0, y: 1.0 },
         ));
     }
@@ -982,6 +1000,28 @@ fn exercise_cpu_preset_dialog(app: &mut WinderustApp, index: usize) {
     };
     assert!(editor.preset_open());
     assert_eq!(app.settings.global().cpu_allocation_presets, before);
+}
+
+fn exercise_settings_export(app: &mut WinderustApp) {
+    let saved = app.settings.persisted().clone();
+    let start_minimized = !saved.general.start_minimized;
+    let _ = app.update(Message::Preferences(settings_pages::Message::Flag(
+        settings_pages::Flag::Minimized,
+        start_minimized,
+    )));
+    let draft = app.settings.global().clone();
+    assert!(app.settings.has_unsaved_changes());
+    let path = std::path::PathBuf::from("target/iced-smoke/settings-draft.toml");
+    let _ = app.update(Message::SettingsFileChosen(
+        FileDialogMode::Save,
+        Some(path.clone()),
+    ));
+    let contents = std::fs::read_to_string(&path).expect("read the scratch export");
+    let exported: crate::config::Settings = toml::from_str(&contents).expect("parse the export");
+    assert_eq!(exported.general.start_minimized, start_minimized);
+    let _ = app.update(Message::SettingsFileChosen(FileDialogMode::Open, None));
+    assert_eq!(app.settings.global(), &draft);
+    assert_eq!(app.settings.persisted(), &saved);
 }
 
 fn exercise_adaptive_processor_power_presets(app: &mut WinderustApp) {
