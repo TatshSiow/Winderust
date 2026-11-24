@@ -1703,6 +1703,12 @@ impl WinderustApp {
                 self.activity_inputs.edit(&message);
                 by_activity::update(&mut self.settings, message);
             }
+            Message::PowerPlanControl(power_plan_control::Message::FallbackPollingInterval(
+                value,
+            )) => {
+                self.power_plan_control
+                    .edit_fallback_polling_interval(&mut self.settings, value);
+            }
             Message::PowerPlanControl(power_plan_control::Message::Select(guid)) => {
                 let status = &self.status.power_plan_status;
                 if self.power_plans_loaded
@@ -2190,7 +2196,11 @@ impl WinderustApp {
                 self.error_message = t!("unsaved.message").to_string();
             }
             Message::Save if !self.activity_inputs.valid() => {
-                self.error_message = t!("by_activity.invalid_timing").to_string();
+                self.error_message = t!("by_activity.invalid_idle_timeout").to_string();
+            }
+            Message::Save if !self.power_plan_control.fallback_polling_interval_valid() => {
+                self.error_message =
+                    t!("power_plan_control.invalid_fallback_polling_interval").to_string();
             }
             Message::Save if self.preferences.has_invalid_failure_threshold() => {
                 self.error_message =
@@ -2452,6 +2462,7 @@ impl WinderustApp {
             || self.preferences.has_invalid_inputs()
             || self.adaptive_validation_error().is_some()
             || !self.activity_inputs.valid()
+            || !self.power_plan_control.fallback_polling_interval_valid()
             || !self.time_rules.valid()
             || !self.cpu_rules.valid()
     }
@@ -2607,6 +2618,8 @@ impl WinderustApp {
         self.power_tuning.discard_editor();
         self.cpu_limiter = Default::default();
         self.activity_inputs = Default::default();
+        self.power_plan_control
+            .reset_fallback_polling_interval_draft();
         self.focus_plans = Default::default();
         self.running_app_plans = Default::default();
         self.priority = Default::default();
@@ -3897,6 +3910,9 @@ impl WinderustApp {
                             ),
                         )
                         .into(),
+                        self.power_plan_control
+                            .fallback_polling_interval_field(general.check_interval_ms)
+                            .map(Message::PowerPlanControl),
                     ])),
                     self.child_pages(),
                 ]

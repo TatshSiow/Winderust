@@ -557,8 +557,7 @@ processor_power:
 by_activity:
   power_plans: "Power plans"
   input_detection: "Input detection"
-  timing: "Timing"
-  invalid_timing: "Enter an idle timeout from 1 to 3600 seconds and a check interval from 250 to 60000 milliseconds."
+  invalid_idle_timeout: "Enter an idle timeout from 1 to 3600 seconds."
   intro_1: "By Activity switches power plans from keyboard, mouse, and controller activity."
   intro_2: "Choose the Idle and Active plans for each activity state. Input detection controls state changes."
   enable: "Enable By Activity"
@@ -568,8 +567,8 @@ by_activity:
   keyboard_input: "Keyboard input detection"
   mouse_input: "Mouse input detection"
   controller_input: "Controller input detection"
-  idle_timeout: "Idle Timeout"
-  check_interval: "Check Interval"
+  idle_timeout: "Idle timeout"
+  idle_timeout_help: "Time without activity from the selected inputs before Winderust considers the system idle."
 
 by_focus:
   intro_1: "Match the focused app by its exact executable path or by its executable name in any folder."
@@ -1179,6 +1178,9 @@ power_plan_control:
   preview_winner: "First matching rule is %{rule} (%{plan})."
   automation: "Automation"
   switching_settings: "Switching settings"
+  fallback_polling_interval: "Fallback polling interval"
+  fallback_polling_interval_help: "Applies to both power profiles. Windows events and scheduled changes can trigger checks sooner."
+  invalid_fallback_polling_interval: "Enter a fallback polling interval from 250 to 60000 milliseconds."
   other_matches: "Other matching modes"
   requested_plan: "Requested plan is %{plan}"
   automation_switch_failed: "Could not switch to %{plan}"

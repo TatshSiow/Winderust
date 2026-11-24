@@ -209,15 +209,18 @@ hover/press; background shading supplies feedback.
   plan card, Switching settings group, and Automation and Advanced destination
   cards to the same width. Reserve space below the scroll area for the Save and
   Discard notice.
-- Group the global A/C pause and Restore previous plan when no rule selects a
-  plan under Switching settings. Restoration defaults off and applies to both
-  power profiles. Help explains that every selected rule, including explicit
-  Else and Active plans, takes precedence and external plan changes are kept.
-  Overlapping rules share the plan captured before automatic switching began.
+- Keep the shared A/C pause, Restore previous plan when no rule selects a plan,
+  and Fallback polling interval under Switching settings. Windows events and
+  scheduled changes can trigger checks sooner than the fallback interval.
+  Restoration defaults off and applies to both power profiles. Help explains
+  that every selected rule, including explicit Else and Active plans, takes
+  precedence and external plan changes are kept. Overlapping rules share the
+  plan captured before automatic switching began.
 - By Focus, By Running App, and By Time keep their rule editors without separate
   restoration controls. By CPU Load retains Target plan and optional Else plan;
-  By Activity retains Idle plan and Active plan. These local choices remain
-  visible independently of the shared restoration switch.
+  By Activity retains Idle plan and Active plan plus its profile-specific Idle
+  timeout. These plan selections remain visible independently of the shared
+  restoration switch.
 - The Power Plan Control side panel's Status tab shows the active Windows plan,
   the current automation decision, and lower-priority modes that also selected
   a plan in the same pass. The current-plan card stays compact.

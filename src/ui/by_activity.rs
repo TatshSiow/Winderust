@@ -1,11 +1,21 @@
 use super::design;
-use super::widgets::{self, slider};
+use super::widgets;
 use crate::ui::scrolling::scrollable;
-use iced::widget::{column, row};
+use iced::widget::column;
 use iced::{Element, Fill};
 
-use crate::config::{Settings, CHECK_INTERVAL_MAX_MS, CHECK_INTERVAL_MIN_MS};
+use crate::config::Settings;
 use crate::power::PowerPlan;
+
+const IDLE_TIMEOUT_RANGE: std::ops::RangeInclusive<u32> = 1..=3600;
+
+fn parse_idle_timeout(value: &str) -> Option<u64> {
+    value
+        .parse::<u32>()
+        .ok()
+        .filter(|value| IDLE_TIMEOUT_RANGE.contains(value))
+        .map(u64::from)
+}
 
 #[derive(Debug, Clone)]
 pub(super) enum Message {
@@ -14,7 +24,6 @@ pub(super) enum Message {
     Mouse(bool),
     Controller(bool),
     IdleTimeout(String),
-    CheckInterval(String),
     IdlePlan(Option<String>),
     ActivePlan(Option<String>),
 }
@@ -43,17 +52,8 @@ pub(super) fn update(settings: &mut crate::application::SettingsEditor, message:
             }
         }
         Message::IdleTimeout(value) => {
-            if let Ok(value) = value.parse::<u64>() {
-                if (1..=3600).contains(&value) {
-                    activity.idle_timeout_seconds = value;
-                }
-            }
-        }
-        Message::CheckInterval(value) => {
-            if let Ok(value) = value.parse::<u64>() {
-                if (CHECK_INTERVAL_MIN_MS..=CHECK_INTERVAL_MAX_MS).contains(&value) {
-                    settings.edit_global(|settings| settings.general.check_interval_ms = value);
-                }
+            if let Some(timeout) = parse_idle_timeout(&value) {
+                activity.idle_timeout_seconds = timeout;
             }
         }
         Message::IdlePlan(guid) => activity.power_plans.power_save_guid = guid,
@@ -68,28 +68,19 @@ pub(super) fn update(settings: &mut crate::application::SettingsEditor, message:
 #[derive(Default)]
 pub(super) struct Inputs {
     idle: Option<String>,
-    interval: Option<String>,
 }
 
 impl Inputs {
     pub(super) fn edit(&mut self, message: &Message) {
-        match message {
-            Message::IdleTimeout(value) => self.idle = Some(value.clone()),
-            Message::CheckInterval(value) => self.interval = Some(value.clone()),
-            _ => {}
+        if let Message::IdleTimeout(value) = message {
+            self.idle = Some(value.clone());
         }
     }
 
     pub(super) fn valid(&self) -> bool {
-        self.idle.as_ref().is_none_or(|value| {
-            value
-                .parse::<u64>()
-                .is_ok_and(|value| (1..=3600).contains(&value))
-        }) && self.interval.as_ref().is_none_or(|value| {
-            value
-                .parse::<u64>()
-                .is_ok_and(|value| (CHECK_INTERVAL_MIN_MS..=CHECK_INTERVAL_MAX_MS).contains(&value))
-        })
+        self.idle
+            .as_deref()
+            .is_none_or(|value| parse_idle_timeout(value).is_some())
     }
 }
 
@@ -104,38 +95,6 @@ pub(super) fn view<'a>(
     };
     let flag = |key: &str, value, action: fn(bool) -> Message| {
         widgets::setting_row(key, widgets::switch(value, Some(action)))
-    };
-    let number = |key: &str,
-                  value: u64,
-                  draft: Option<&str>,
-                  range: std::ops::RangeInclusive<u64>,
-                  step: u64,
-                  unit: &str,
-                  action: fn(String) -> Message| {
-        let formatted;
-        let input = if let Some(draft) = draft {
-            draft
-        } else {
-            formatted = value.to_string();
-            &formatted
-        };
-        column![
-            widgets::setting_title_with_unit(key, unit),
-            row![
-                slider(
-                    *range.start() as u32..=*range.end() as u32,
-                    value as u32,
-                    move |v| action(v.to_string())
-                )
-                .step(step as u32)
-                .width(Fill),
-                widgets::stepper(input, range, step, Some(action))
-            ]
-            .spacing(design::space::SMALL)
-            .align_y(iced::Center),
-        ]
-        .spacing(design::space::SMALL)
-        .into()
     };
     let power_plans = widgets::settings_rows([
         widgets::setting_row(
@@ -193,30 +152,19 @@ pub(super) fn view<'a>(
                 )
                 .into(),
             ])),
-            widgets::heading(
-                rust_i18n::t!("by_activity.timing").to_string(),
-                design::typography::BODY
+            widgets::settings_card(
+                column![
+                    widgets::setting_title_with_unit("by_activity.idle_timeout", "s"),
+                    widgets::slider_stepper(
+                        activity.idle_timeout_seconds,
+                        inputs.idle.as_deref(),
+                        IDLE_TIMEOUT_RANGE,
+                        1,
+                        Message::IdleTimeout,
+                    ),
+                ]
+                .spacing(design::space::SMALL),
             ),
-            widgets::settings_card(widgets::settings_rows([
-                number(
-                    "by_activity.idle_timeout",
-                    activity.idle_timeout_seconds,
-                    inputs.idle.as_deref(),
-                    1..=3600,
-                    1,
-                    "s",
-                    Message::IdleTimeout
-                ),
-                number(
-                    "by_activity.check_interval",
-                    settings.general.check_interval_ms,
-                    inputs.interval.as_deref(),
-                    CHECK_INTERVAL_MIN_MS..=CHECK_INTERVAL_MAX_MS,
-                    250,
-                    "ms",
-                    Message::CheckInterval
-                ),
-            ])),
         ]
         .spacing(widgets::CARD_GAP),
     )
@@ -229,36 +177,29 @@ mod tests {
     use super::*;
 
     #[test]
-    fn battery_interval_messages_edit_shared_settings_without_flattening_policies() {
-        for existing_battery in [false, true] {
-            let mut initial = Settings::default();
-            initial.by_activity.idle_timeout_seconds = 60;
-            if existing_battery {
-                initial
-                    .battery_profile_mut()
-                    .by_activity
-                    .idle_timeout_seconds = 120;
-            }
-            let mut settings = crate::application::SettingsEditor::with_settings(initial.clone());
-            settings.select_power_source(crate::config::PowerSourceProfile::OnBattery);
-            update(&mut settings, Message::CheckInterval("1234".into()));
-            assert_eq!(settings.global().general.check_interval_ms, 1234);
-            assert_eq!(settings.general.check_interval_ms, 1234);
-            assert_eq!(settings.global().by_activity.idle_timeout_seconds, 60);
+    fn idle_timeout_draft_applies_to_the_selected_power_profile() {
+        let mut initial = Settings::default();
+        initial.by_activity.idle_timeout_seconds = 60;
+        initial
+            .battery_profile_mut()
+            .by_activity
+            .idle_timeout_seconds = 120;
+        let mut settings = crate::application::SettingsEditor::with_settings(initial.clone());
+        settings.select_power_source(crate::config::PowerSourceProfile::OnBattery);
+        let mut inputs = Inputs::default();
+        for (draft, valid) in [("0", false), ("180", true)] {
+            let message = Message::IdleTimeout(draft.into());
+            inputs.edit(&message);
+            update(&mut settings, message);
+            assert_eq!(inputs.valid(), valid);
             assert_eq!(
                 settings.by_activity.idle_timeout_seconds,
-                if existing_battery { 120 } else { 60 }
+                if valid { 180 } else { 120 }
             );
-            for invalid in ["", "0", "invalid", "18446744073709551615"] {
-                update(&mut settings, Message::CheckInterval(invalid.into()));
-                assert_eq!(settings.global().general.check_interval_ms, 1234);
-            }
-            update(&mut settings, Message::IdleTimeout("180".into()));
-            assert_eq!(settings.by_activity.idle_timeout_seconds, 180);
             assert_eq!(settings.global().by_activity.idle_timeout_seconds, 60);
-            settings.cancel();
-            assert_eq!(settings.global(), &initial);
         }
+        settings.cancel();
+        assert_eq!(settings.global(), &initial);
     }
 
     #[test]
@@ -279,13 +220,5 @@ mod tests {
             settings.by_activity.power_plans.performance_guid.as_deref(),
             Some("active")
         );
-        let interval = settings.general.check_interval_ms;
-        update(&mut settings, Message::CheckInterval("0".into()));
-        assert_eq!(settings.general.check_interval_ms, interval);
-        let mut inputs = Inputs::default();
-        inputs.edit(&Message::CheckInterval(String::new()));
-        assert!(!inputs.valid());
-        inputs.edit(&Message::CheckInterval("250".into()));
-        assert!(inputs.valid());
     }
 }

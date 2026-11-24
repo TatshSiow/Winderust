@@ -1338,6 +1338,33 @@ pub(super) fn stepper<'a, M: Clone + 'a>(
     .into()
 }
 
+pub(super) fn slider_stepper<'a, M: Clone + 'a>(
+    value: u64,
+    draft: Option<&str>,
+    range: std::ops::RangeInclusive<u32>,
+    step: u32,
+    action: fn(String) -> M,
+) -> Element<'a, M> {
+    let formatted;
+    let input = if let Some(draft) = draft {
+        draft
+    } else {
+        formatted = value.to_string();
+        &formatted
+    };
+    let stepper_range = u64::from(*range.start())..=u64::from(*range.end());
+    let slider_value = value.clamp(*stepper_range.start(), *stepper_range.end()) as u32;
+    row![
+        slider(range, slider_value, move |value| action(value.to_string()))
+            .step(step)
+            .width(Fill),
+        stepper(input, stepper_range, u64::from(step), Some(action)),
+    ]
+    .spacing(design::space::SMALL)
+    .align_y(iced::Center)
+    .into()
+}
+
 fn step_values(
     value: &str,
     range: std::ops::RangeInclusive<u64>,

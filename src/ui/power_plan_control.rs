@@ -5,6 +5,8 @@ use std::borrow::Cow;
 
 use super::{design, widgets};
 use crate::{
+    application::SettingsEditor,
+    config::{CHECK_INTERVAL_MAX_MS, CHECK_INTERVAL_MIN_MS},
     control::power_plan::{AdaptiveProcessorPowerError, PowerPlanOwner, PowerPlanStatus},
     features::power_plan_control::ByCpuLoadMatch,
     power::{PowerPlan, ADAPTIVE_PLAN_NAME},
@@ -14,6 +16,7 @@ use crate::{
 #[derive(Debug, Clone)]
 pub(super) enum Message {
     Select(String),
+    FallbackPollingInterval(String),
     AdaptiveProcessorPower,
 }
 
@@ -21,9 +24,49 @@ pub(super) enum Message {
 pub(super) struct Editor {
     pub(super) selected_guid: Option<String>,
     pub(super) pending: Option<AfterSave>,
+    fallback_polling_interval: Option<String>,
 }
 
 impl Editor {
+    pub(super) fn edit_fallback_polling_interval(
+        &mut self,
+        settings: &mut SettingsEditor,
+        value: String,
+    ) {
+        if let Some(interval) = parse_fallback_polling_interval(&value) {
+            settings.edit_global(|settings| settings.general.check_interval_ms = interval);
+        }
+        self.fallback_polling_interval = Some(value);
+    }
+
+    pub(super) fn fallback_polling_interval_valid(&self) -> bool {
+        self.fallback_polling_interval
+            .as_deref()
+            .is_none_or(|value| parse_fallback_polling_interval(value).is_some())
+    }
+
+    pub(super) fn reset_fallback_polling_interval_draft(&mut self) {
+        self.fallback_polling_interval = None;
+    }
+
+    pub(super) fn fallback_polling_interval_field(
+        &self,
+        interval: u64,
+    ) -> Element<'static, Message> {
+        column![
+            widgets::setting_title_with_unit("power_plan_control.fallback_polling_interval", "ms"),
+            widgets::slider_stepper(
+                interval,
+                self.fallback_polling_interval.as_deref(),
+                CHECK_INTERVAL_MIN_MS as u32..=CHECK_INTERVAL_MAX_MS as u32,
+                250,
+                Message::FallbackPollingInterval,
+            ),
+        ]
+        .spacing(design::space::SMALL)
+        .into()
+    }
+
     pub(super) fn discard_unavailable_plan(&mut self, plans: &[PowerPlan]) -> bool {
         if self.pending.is_some()
             || !self
@@ -36,6 +79,13 @@ impl Editor {
         self.selected_guid = None;
         true
     }
+}
+
+fn parse_fallback_polling_interval(value: &str) -> Option<u64> {
+    value
+        .parse::<u64>()
+        .ok()
+        .filter(|value| (CHECK_INTERVAL_MIN_MS..=CHECK_INTERVAL_MAX_MS).contains(value))
 }
 
 pub(super) fn is_selectable(plans: &[PowerPlan], guid: &str) -> bool {
@@ -427,6 +477,45 @@ mod tests {
     use iced::advanced::{layout, widget::Tree};
 
     #[test]
+    fn fallback_polling_interval_draft_is_shared_and_discardable() {
+        use crate::config::{PowerSourceProfile, Settings};
+
+        for existing_battery in [false, true] {
+            let mut initial = Settings::default();
+            initial.by_activity.idle_timeout_seconds = 60;
+            if existing_battery {
+                initial
+                    .battery_profile_mut()
+                    .by_activity
+                    .idle_timeout_seconds = 120;
+            }
+            let mut settings = SettingsEditor::with_settings(initial.clone());
+            settings.select_power_source(PowerSourceProfile::OnBattery);
+            let mut editor = Editor::default();
+            for interval in [CHECK_INTERVAL_MIN_MS, CHECK_INTERVAL_MAX_MS, 1234] {
+                editor.edit_fallback_polling_interval(&mut settings, interval.to_string());
+                assert!(editor.fallback_polling_interval_valid());
+                assert_eq!(settings.global().general.check_interval_ms, interval);
+                assert_eq!(settings.general.check_interval_ms, interval);
+            }
+            assert_eq!(settings.global().by_activity, initial.by_activity);
+            assert_eq!(
+                settings.by_activity.idle_timeout_seconds,
+                if existing_battery { 120 } else { 60 }
+            );
+            for invalid in ["", "249", "60001", "invalid", "18446744073709551615"] {
+                editor.edit_fallback_polling_interval(&mut settings, invalid.into());
+                assert!(!editor.fallback_polling_interval_valid());
+                assert_eq!(settings.global().general.check_interval_ms, 1234);
+            }
+            settings.cancel();
+            editor.reset_fallback_polling_interval_draft();
+            assert!(editor.fallback_polling_interval_valid());
+            assert_eq!(settings.global(), &initial);
+        }
+    }
+
+    #[test]
     fn status_explains_cpu_load_selection_beyond_the_main_card_summary() {
         let mut status = PowerPlanStatus {
             owner: Some(PowerPlanOwner::OrdinaryAutomation),
@@ -532,6 +621,7 @@ mod tests {
         let mut editor = Editor {
             selected_guid: Some("Balanced".into()),
             pending: Some(AfterSave::default()),
+            ..Default::default()
         };
         assert!(!editor.discard_unavailable_plan(&[]));
         editor.pending = None;
