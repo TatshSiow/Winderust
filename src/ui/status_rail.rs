@@ -387,6 +387,15 @@ pub(super) fn view<'a>(
     } else {
         let activity_available =
             available && (page != Page::MemoryTrim || state != FeatureRunState::Unknown);
+        let shadowed =
+            (page == Page::ProcessPriority && activity_available && summary.scanned.is_some())
+                .then_some(
+                    runtime
+                        .feature_status
+                        .process_priority
+                        .efficiency_mode_shadowed_processes,
+                )
+                .filter(|&count| count != 0);
         body = body.push(section(
             "common.process_activity",
             column![
@@ -419,6 +428,12 @@ pub(super) fn view<'a>(
                     count(activity_available.then_some(summary.skipped).flatten())
                 )
             ]
+            .extend(shadowed.map(|count| {
+                metric(
+                    "process_priority.shadowed_by_efficiency_mode",
+                    count.to_string(),
+                )
+            }))
             .spacing(design::space::CONTROL),
         ));
     }

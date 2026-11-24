@@ -368,7 +368,7 @@ fn stored_priority_shadows_restraint_and_hands_back_to_it_when_released() {
 }
 
 #[test]
-fn efficiency_mode_overrides_then_reveals_adaptive_claims() {
+fn efficiency_mode_shadows_process_priority_then_reveals_lower_claims() {
     let mut controller =
         PriorityEfficiencyController::with_platform(platform_with(7, 1, NORMAL_PRIORITY_CLASS));
     controller
@@ -387,6 +387,18 @@ fn efficiency_mode_overrides_then_reveals_adaptive_claims() {
         .unwrap();
 
     assert_eq!(
+        controller.apply_priority_claim(
+            priority_claim(
+                7,
+                1,
+                ControlOwner::ProcessPriority,
+                PriorityClassValue::AboveNormal,
+            ),
+            true,
+        ),
+        Ok(ProcessPropertyApplyOutcome::Shadowed)
+    );
+    assert_eq!(
         controller.platform.processes[&7].priority,
         IDLE_PRIORITY_CLASS
     );
@@ -397,7 +409,7 @@ fn efficiency_mode_overrides_then_reveals_adaptive_claims() {
     assert!(summary.failures.is_empty());
     assert_eq!(
         controller.platform.processes[&7].priority,
-        BELOW_NORMAL_PRIORITY_CLASS
+        ABOVE_NORMAL_PRIORITY_CLASS
     );
     assert_eq!(controller.platform.processes[&7].power, baseline_power());
     assert_eq!(
@@ -405,6 +417,11 @@ fn efficiency_mode_overrides_then_reveals_adaptive_claims() {
         0
     );
 
+    controller.release_all_priority_policy(ControlOwner::ProcessPriority);
+    assert_eq!(
+        controller.platform.processes[&7].priority,
+        BELOW_NORMAL_PRIORITY_CLASS
+    );
     controller.release_all_priority_policy(ControlOwner::AdaptiveEngine);
     assert_eq!(
         controller.platform.processes[&7].priority,

@@ -897,6 +897,7 @@ process_priority:
   intro_1: "Process Priority applies Windows process base priority class defaults to eligible foreground and background processes."
   intro_2: "This changes running processes with SetPriorityClass and restores the previous priority class when a custom rule skips a process or the feature stops."
   enable: "Enable Process Priority"
+  shadowed_by_efficiency_mode: "Yielded to Efficiency Mode"
   enable_help: "Apply a CPU scheduling priority class to eligible processes."
   foreground_detection: "Foreground Detection"
   foreground_detection_help: "Adds a second layer that can apply a separate process priority class to the detected foreground app."

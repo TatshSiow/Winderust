@@ -33,6 +33,7 @@ pub struct ProcessPrioritySnapshot {
     pub scanned_processes: usize,
     pub adjusted_processes: usize,
     pub skipped_processes: usize,
+    pub(crate) efficiency_mode_shadowed_processes: usize,
     pub failed_processes: usize,
     pub auto_excluded_processes: Vec<String>,
     pub(crate) observation_paused: bool,
@@ -203,6 +204,7 @@ impl ProcessPriorityManager {
             "process is excluded or no longer matches Process Priority defaults",
         );
         let mut skipped_processes = 0;
+        let mut efficiency_mode_shadowed_processes = 0;
         let mut applied_processes = 0;
         let mut auto_excluded_processes = BTreeSet::new();
 
@@ -235,8 +237,13 @@ impl ProcessPriorityManager {
                         .clear_process_failure(&target.executable_path);
                 }
                 Ok(
-                    ProcessPropertyApplyOutcome::Unchanged | ProcessPropertyApplyOutcome::Shadowed,
+                    outcome @ (ProcessPropertyApplyOutcome::Unchanged
+                    | ProcessPropertyApplyOutcome::Shadowed),
                 ) => {
+                    // Efficiency Mode is the only automatic priority claim above Process Priority.
+                    if outcome == ProcessPropertyApplyOutcome::Shadowed {
+                        efficiency_mode_shadowed_processes += 1;
+                    }
                     self.failure_suppression
                         .clear_process_failure(&target.executable_path);
                 }
@@ -290,6 +297,7 @@ impl ProcessPriorityManager {
                 adjusted_processes: controller
                     .policy_managed_process_count(ControlOwner::ProcessPriority),
                 skipped_processes,
+                efficiency_mode_shadowed_processes,
                 auto_excluded_processes: auto_excluded_processes.into_iter().collect(),
                 ..Default::default()
             },

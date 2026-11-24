@@ -815,8 +815,8 @@ Read the relevant section before changing feature policy, ownership, restoration
 - CPU Pressure Restraint qualifies sustained CPU use per exact background process
   while aggregate pressure is high. It skips the focused group, visible windows,
   active audio, and exclusions. The only restraint write is temporary Below
-  Normal priority for a process whose current priority is Normal. Background
-  Efficiency and saved Process Priority take precedence on the same process.
+  Normal priority for a process whose current priority is Normal. Efficiency Mode
+  and saved Process Priority take precedence on the same process.
   Thread, I/O, GPU, and Memory Priority and Dynamic Priority Boost use their
   dedicated settings.
 - Adaptive Engine pauses its process policies and releases their claims when the
@@ -877,6 +877,9 @@ Read the relevant section before changing feature policy, ownership, restoration
   verified value. Readback follows Allow cross-session process control.
   Eligible selections with unknown Efficiency Mode can still choose Enabled or
   Disabled.
+- The Process Priority Status panel counts processes whose automatic priority
+  claims yielded to Efficiency Mode in the latest observed policy pass. The
+  count describes claim precedence. Windows priority readback remains separate.
 - Efficiency Mode uses the same explicit Foreground Detection and Visible Window Detection
   layers as Priority Control. Foreground Detection defaults on, Visible Window Detection defaults
   off, and each layer owns an Enabled/Disabled Efficiency Mode default. Automatic targeting

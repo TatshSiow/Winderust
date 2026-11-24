@@ -4,7 +4,7 @@ use crate::backend::power_source::is_plugged_in;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 static REQUESTED: AtomicBool = AtomicBool::new(false);
-const EXTRA_STATES: usize = 87;
+const EXTRA_STATES: usize = 89;
 pub(super) struct Run {
     pages: Vec<Page>,
     index: usize,
@@ -74,6 +74,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                     | 83
                     | 85
                     | 86
+                    | 88
             )
         });
         let page = match extra {
@@ -96,7 +97,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             Some(21 | 72) => Page::AppSuspension,
             Some(22) => Page::LanguageAndAppearance,
             Some(23) => Page::About,
-            Some(25) => Page::ProcessPriority,
+            Some(25 | 87..=88) => Page::ProcessPriority,
             Some(26..=37) => Page::Home,
             Some(38 | 42 | 43) => Page::Home,
             Some(39) => Page::ProcessList,
@@ -971,8 +972,23 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             let _ = app.update(Message::ToggleSidePanel);
             assert!(app.pending_settings_changes());
         }
+        if matches!(extra, Some(87..=88)) {
+            let mut settings = app.settings.global().clone();
+            settings.general.enabled = true;
+            settings.process_priority.enabled = true;
+            app.settings = SettingsEditor::with_settings(settings);
+            app.status.generation = app.status.generation.max(1);
+            let status = &mut Arc::make_mut(&mut app.status.feature_status).process_priority;
+            status.enabled = true;
+            status.scanned_processes = 7;
+            status.adjusted_processes = 3;
+            status.efficiency_mode_shadowed_processes = 2;
+            let _ = app.update(Message::ToggleSidePanel);
+            let _ = app.update(Message::SidePanelTab(SidePanelTab::Status));
+            assert_eq!(app.side_panel_tab, SidePanelTab::Status);
+        }
         let size = match extra {
-            Some(35..=37 | 40 | 42 | 44..=50 | 52..=69 | 71..=86) => iced::Size::new(900.0, 620.0),
+            Some(35..=37 | 40 | 42 | 44..=50 | 52..=69 | 71..=88) => iced::Size::new(900.0, 620.0),
             Some(30) => iced::Size::new(1280.0, 720.0),
             Some(31) => iced::Size::new(1440.0, 900.0),
             Some(32) => iced::Size::new(1920.0, 720.0),

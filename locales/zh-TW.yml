@@ -885,6 +885,7 @@ process_priority:
   intro_1: "處理程序優先順序會將 Windows 處理程序的優先順序類別預設值套用到符合條件的前景與背景處理程序。"
   intro_2: "此功能使用 SetPriorityClass 變更執行中的處理程序，並在自訂規則略過處理程序或功能停止時還原先前的優先順序類別。"
   enable: "啟用處理程序優先順序"
+  shadowed_by_efficiency_mode: "效率模式優先"
   enable_help: "為符合條件的處理程序套用 CPU 排程的優先順序類別。"
   foreground_detection: "前景偵測"
   foreground_detection_help: "加入第二層，可對偵測到的前景應用程式套用不同的處理程序優先順序類別。"
