@@ -51,6 +51,7 @@ pub(super) enum Scroll {
     PageDown,
     Start,
     End,
+    Horizontal(f32),
 }
 
 impl Scroll {
@@ -60,6 +61,8 @@ impl Scroll {
             Named::PageDown => (Self::PageDown, true),
             Named::Home => (Self::Start, false),
             Named::End => (Self::End, false),
+            Named::ArrowLeft => (Self::Horizontal(-ACTION_LOG_HORIZONTAL_STEP), true),
+            Named::ArrowRight => (Self::Horizontal(ACTION_LOG_HORIZONTAL_STEP), true),
             _ => return None,
         };
         Some((Message::KeyboardScroll(direction, height), repeatable))
@@ -76,6 +79,14 @@ pub(super) fn scroll_to<M: Send + 'static>(offset: f32) -> Task<M> {
     )
 }
 
+fn scroll_horizontal<M>(delta: f32) -> impl iced::advanced::widget::Operation<M> {
+    use iced::advanced::widget::operation::scrollable::{scroll_by, AbsoluteOffset};
+    scroll_by(
+        ACTION_LOG_HORIZONTAL_SCROLL_ID.into(),
+        AbsoluteOffset { x: delta, y: 0.0 },
+    )
+}
+
 impl Editor {
     pub(super) fn keyboard_scroll<M: Send + 'static>(
         &self,
@@ -83,23 +94,27 @@ impl Editor {
         direction: Scroll,
         height: f32,
     ) -> Task<M> {
-        let count = group_entries(action_log_filtered_entries(
-            entries,
-            &self.level,
-            &self.feature,
-            &self.search,
-        ))
-        .len();
-        let max = (count as f32 * ACTION_LOG_ROW_HEIGHT - height).max(0.0);
+        let max_offset = || {
+            let count = group_entries(action_log_filtered_entries(
+                entries,
+                &self.level,
+                &self.feature,
+                &self.search,
+            ))
+            .len();
+            (count as f32 * ACTION_LOG_ROW_HEIGHT - height).max(0.0)
+        };
         let page = (height - ACTION_LOG_ROW_HEIGHT).max(ACTION_LOG_ROW_HEIGHT);
         let previous = self.offset.get();
         let offset = match direction {
-            Scroll::PageUp => previous - page,
-            Scroll::PageDown => previous + page,
+            Scroll::PageUp => (previous - page).clamp(0.0, max_offset()),
+            Scroll::PageDown => (previous + page).clamp(0.0, max_offset()),
             Scroll::Start => 0.0,
-            Scroll::End => max,
-        }
-        .clamp(0.0, max);
+            Scroll::End => max_offset(),
+            Scroll::Horizontal(delta) => {
+                return iced::advanced::widget::operate(scroll_horizontal(delta));
+            }
+        };
         // Rebuild the virtual rows before jumping the native scrollable.
         self.offset.set(offset);
         scroll_to(offset)
@@ -430,7 +445,7 @@ impl Editor {
                         _ => None,
                     }
                 ),
-                "action-log-table",
+                ACTION_LOG_TABLE_ID,
                 count != 0,
                 |key, modifiers, bounds| {
                     if modifiers.is_empty() {
@@ -445,6 +460,7 @@ impl Editor {
         let table = super::scrolling::horizontal_scrollable(super::scrolling::table_surface(
             container(table).width(size.width.max(1024.0)).height(Fill),
         ))
+        .id(ACTION_LOG_HORIZONTAL_SCROLL_ID)
         .width(Fill)
         .height(Fill);
         table.into()
@@ -709,6 +725,9 @@ const FEATURES: [ActionLogFeature; 24] = [
 ];
 
 const ACTION_LOG_SCROLL_ID: &str = "action-log";
+const ACTION_LOG_HORIZONTAL_SCROLL_ID: &str = "action-log-columns";
+const ACTION_LOG_TABLE_ID: &str = "action-log-table";
+const ACTION_LOG_HORIZONTAL_STEP: f32 = 160.0;
 const ACTION_LOG_ROW_HEIGHT: f32 = 36.0;
 const ACTION_LOG_HEADER_HEIGHT: f32 = 33.0;
 
@@ -1145,6 +1164,143 @@ mod tests {
                 .count(),
             4
         );
+    }
+
+    #[test]
+    fn focused_compact_log_scrolls_hidden_columns_without_moving_rows() {
+        use iced::advanced::{layout, widget::operation, widget::Id, widget::Tree, Layout, Shell};
+        use iced::{keyboard, mouse, Event, Pixels, Rectangle, Renderer, Size, Vector};
+
+        #[derive(Default)]
+        struct Position {
+            x: f32,
+            y: f32,
+            focused: bool,
+        }
+
+        impl operation::Operation for Position {
+            fn traverse(&mut self, visit: &mut dyn FnMut(&mut dyn operation::Operation)) {
+                visit(self);
+            }
+
+            fn focusable(
+                &mut self,
+                id: Option<&Id>,
+                _: Rectangle,
+                state: &mut dyn operation::Focusable,
+            ) {
+                if id == Some(&ACTION_LOG_TABLE_ID.into()) {
+                    self.focused = state.is_focused();
+                }
+            }
+
+            fn scrollable(
+                &mut self,
+                id: Option<&Id>,
+                _: Rectangle,
+                _: Rectangle,
+                translation: Vector,
+                _: &mut dyn operation::Scrollable,
+            ) {
+                match id {
+                    Some(id) if *id == ACTION_LOG_HORIZONTAL_SCROLL_ID.into() => {
+                        self.x = translation.x
+                    }
+                    Some(id) if *id == ACTION_LOG_SCROLL_ID.into() => self.y = translation.y,
+                    _ => {}
+                }
+            }
+        }
+
+        let mut log = crate::action_log::ActionLog::new(20);
+        for _ in 0..20 {
+            log.begin_batch();
+            log.record(
+                ActionLogFeature::MemoryTrim,
+                Some(1234),
+                "app.exe",
+                ActionLogResult::Applied,
+                "Trim completed.",
+            );
+        }
+        let entries = log.entries();
+        let editor = Editor::default();
+        let size = Size::new(465.0, 380.0);
+        let renderer = Renderer::new(super::design::typography::FONT, Pixels(14.0));
+        let mut table = editor.view_at_size(&entries, &[], size);
+        let mut tree = Tree::new(&table);
+        let node = table.as_widget_mut().layout(
+            &mut tree,
+            &renderer,
+            &layout::Limits::new(Size::ZERO, size),
+        );
+        let layout = Layout::new(&node);
+        let viewport = Rectangle::with_size(size);
+        let operate = |table: &mut Element<'_, Message>,
+                       tree: &mut Tree,
+                       operation: &mut dyn operation::Operation| {
+            table
+                .as_widget_mut()
+                .operate(tree, layout, &renderer, operation);
+        };
+        let press = |table: &mut Element<'_, Message>, tree: &mut Tree, key| {
+            let key = keyboard::Key::Named(key);
+            let event = Event::Keyboard(keyboard::Event::KeyPressed {
+                modified_key: key.clone(),
+                key,
+                physical_key: keyboard::key::Physical::Unidentified(
+                    keyboard::key::NativeCode::Unidentified,
+                ),
+                location: keyboard::Location::Standard,
+                modifiers: keyboard::Modifiers::empty(),
+                text: None,
+                repeat: false,
+            });
+            let mut messages = Vec::new();
+            table.as_widget_mut().update(
+                tree,
+                &event,
+                layout,
+                mouse::Cursor::Unavailable,
+                &renderer,
+                &mut iced::advanced::clipboard::Null,
+                &mut Shell::new(&mut messages),
+                &viewport,
+            );
+            messages
+        };
+
+        assert!(press(&mut table, &mut tree, Named::ArrowRight).is_empty());
+        operate(
+            &mut table,
+            &mut tree,
+            &mut operation::focusable::focus(ACTION_LOG_TABLE_ID.into()),
+        );
+        operate(
+            &mut table,
+            &mut tree,
+            &mut operation::scrollable::scroll_to(
+                ACTION_LOG_SCROLL_ID.into(),
+                operation::scrollable::AbsoluteOffset {
+                    x: None,
+                    y: Some(72.0),
+                },
+            ),
+        );
+
+        for (key, expected_x) in [(Named::ArrowRight, 160.0), (Named::ArrowLeft, 0.0)] {
+            let messages = press(&mut table, &mut tree, key);
+            let [Message::KeyboardScroll(Scroll::Horizontal(delta), _)] = messages.as_slice()
+            else {
+                panic!("expected a horizontal scroll, got {messages:?}");
+            };
+            operate(&mut table, &mut tree, &mut scroll_horizontal(*delta));
+            let mut position = Position::default();
+            operate(&mut table, &mut tree, &mut position);
+            assert_eq!(position.x, expected_x);
+            assert_eq!(position.y, 72.0);
+            assert!(position.focused);
+        }
     }
 
     #[test]

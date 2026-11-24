@@ -503,6 +503,8 @@ hover/press; background shading supplies feedback.
 - Windows contrast themes use a solid first series and a dashed second series, with round and square markers in the plots, legends, and tooltips. Keep the grid subdued and leave the plot background clear so the curves stay readable when Windows supplies the same color for both series.
 - While a sample is overdue, headers show Collecting and history continues to age while Home is visible.
 - Enabled Features and Recent Logs preserve card height and fixed headers in both empty and populated states. Enabled Features has no View All footer; Recent Logs retains its Details footer. Center empty messages in the remaining content area; populated lists use inset scrolling with space for the scrollbar and links to their full pages. Recent Logs shows compact INFO (Applied/Restored), WARN (Skipped), and ERROR (Failed) levels derived from actual Action Log entries, preserving the outcome in the description. The Log table keeps Level and Result separate; its level filters, capture thresholds, and CSV level field share the same mapping and short labels in both languages. Never fabricate log events. Keep unavailable telemetry and empty logs honest.
+- In the focused Log table, Left and Right reveal offscreen columns. Page Up,
+  Page Down, Home, and End move through the rows.
 - In Log, search by process name or exact PID. Search combines with level
   and feature filters before entries are grouped and returns the list to the
   first row. Group each filter with its own label. Capture Mode affects new
