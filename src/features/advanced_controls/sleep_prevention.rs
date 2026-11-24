@@ -704,9 +704,9 @@ fn match_rules(
         for process in processes {
             if process.id == 0
                 || process.id == own_pid
+                || !executable_basename_may_match(&process.name, name)
                 || crate::backend::is_helper_process(process.id)
                 || contains_process_name(EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS, &process.name)
-                || !executable_basename_may_match(&process.name, name)
                 || process.is_critical == Some(true)
                 || process.is_service_account == Some(true)
                 || process.session_id == Some(0)
