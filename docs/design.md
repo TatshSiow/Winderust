@@ -70,7 +70,8 @@ Prefer visible state, compact controls, and predictable rows. Use restrained acc
   their controls. Verify the last rule is reachable with the dock open at the
   minimum window size, including when both scrollbars are needed.
 - A floating Save notice blocks pointer actions from reaching page controls
-  behind it. The rest of the page stays interactive.
+  behind it. The rest of the page stays interactive. Process List hides the
+  notice while its context menu or dialog is open and keeps the pending edits.
 - Constrain long process names, labels, and status values so they do not resize adjacent columns.
 - Group related settings beneath each section heading in one card, with shared internal dividers between complete rows. Every grouped card needs a concise, localized category heading outside its outline. Apply this to pages, preset editors, rule dialogs, and process details; independent collapsible groups use their own headers. Keep each label, description, and control together; avoid a separate card for every setting. Preserve independent collapsible feature groups.
 - Avoid nested cards. Cards are for repeated rows, setting groups, status blocks, popovers, and tool surfaces.

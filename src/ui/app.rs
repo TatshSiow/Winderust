@@ -3171,10 +3171,10 @@ impl WinderustApp {
         let observed_power_source = std::cell::OnceCell::new();
         let read_power_source =
             || *observed_power_source.get_or_init(crate::backend::power_source::is_plugged_in);
+        let process_actions_open = self.page == Page::ProcessList
+            && (self.processes.modal_open() || self.processes.context_open());
         let shield = |content| {
-            if self.page == Page::ProcessList
-                && (self.processes.modal_open() || self.processes.context_open())
-            {
+            if process_actions_open {
                 super::modal::background(content)
             } else {
                 content
@@ -3339,8 +3339,8 @@ impl WinderustApp {
             panel_button,
         );
         let settings_are_pending = self.pending_settings_changes();
-        let save_notice_visible =
-            settings_are_pending || self.power_plan_control.selected_guid.is_some();
+        let save_notice_visible = !process_actions_open
+            && (settings_are_pending || self.power_plan_control.selected_guid.is_some());
         let save_notice_in_editor = matches!(
             self.page,
             Page::PowerPlanControl
