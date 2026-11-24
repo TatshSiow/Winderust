@@ -3321,7 +3321,8 @@ impl WinderustApp {
                 | Page::CpuSetsSoft
                 | Page::ProcessorAffinityHard
                 | Page::Watchdog
-        ) || priority_kind(self.page).is_some();
+        ) || priority_kind(self.page).is_some()
+            || (self.page == Page::AdaptiveEngine && self.adaptive.shows_custom_rules());
         let save_card =
             || widgets::settings_card(self.save_notice(settings_are_pending)).width(360);
         let content = container(super::motion::wrap(

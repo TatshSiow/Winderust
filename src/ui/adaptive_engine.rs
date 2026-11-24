@@ -373,6 +373,11 @@ impl Editor {
     pub(super) fn validation_error(&self) -> Option<String> {
         self.live_numbers.validation_error()
     }
+
+    pub(super) fn shows_custom_rules(&self) -> bool {
+        self.tuning_tabs[0] == TuningTab::CustomRules
+    }
+
     pub(super) fn preset_open(&self) -> bool {
         self.draft.is_some()
     }
