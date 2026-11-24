@@ -3313,7 +3313,7 @@ impl WinderustApp {
                 | Page::TimerResolution
                 | Page::SleepPrevention
                 | Page::MemoryTrim
-        );
+        ) || priority_kind(self.page).is_some();
         let save_card =
             || widgets::settings_card(self.save_notice(settings_are_pending)).width(360);
         let content = container(super::motion::wrap(
