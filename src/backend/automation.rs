@@ -1476,21 +1476,15 @@ fn run_background_automation(
             explicit_cpu_allocation_allowed && cpu_sets_soft_required(settings);
         let processor_affinity_hard_active =
             explicit_cpu_allocation_allowed && processor_affinity_hard_required(settings);
-        let scan_process_appearance = process_appearance_scan_required_for_runtime(
-            settings,
-            cpu_limiter_active,
-            memory_trim_active,
-            cpu_sets_soft_active || processor_affinity_hard_active,
-        );
-        let background_efficiency_active =
-            feature_refresh_required(settings, settings.background_efficiency.enabled);
         let background_efficiency_policy_varies = (plugged_in.is_none()
             || !windows_event_watcher_active)
             && background_efficiency_policy_varies_by_source(&configured_settings);
         let background_efficiency_waits_for_source =
             plugged_in.is_none() && background_efficiency_policy_varies;
-        let background_efficiency_refresh_required = settings_changed
-            || (background_efficiency_active && !background_efficiency_waits_for_source);
+        let background_efficiency_active = !background_efficiency_waits_for_source
+            && feature_refresh_required(settings, settings.background_efficiency.enabled);
+        let background_efficiency_refresh_required =
+            settings_changed || background_efficiency_active;
         let app_suspension_refresh_required = settings_changed
             || app_suspension_waits_for_source
             || feature_refresh_required(settings, app_suspension_required(settings))
@@ -1573,6 +1567,20 @@ fn run_background_automation(
             windows_event_watcher_active,
             settings_changed,
             |profile| (&profile.memory_priority, profile.memory_priority.enabled),
+        );
+        let priority_or_efficiency_active = background_efficiency_active
+            || process_priority_schedule.active
+            || thread_priority_schedule.active
+            || dynamic_priority_boost_schedule.active
+            || io_priority_schedule.active
+            || gpu_priority_schedule.active
+            || memory_priority_schedule.active;
+        let scan_process_appearance = process_appearance_scan_required_for_runtime(
+            settings,
+            cpu_limiter_active,
+            memory_trim_active,
+            cpu_sets_soft_active || processor_affinity_hard_active,
+            priority_or_efficiency_active,
         );
         let watchdog_refresh_required = settings_changed
             || feature_refresh_required(

@@ -63,6 +63,7 @@ pub(super) fn feature_refresh_required(settings: &Settings, feature_enabled: boo
 }
 
 pub(super) struct PrioritySourceSchedule {
+    pub(super) active: bool,
     pub(super) refresh_required: bool,
     pub(super) waiting_for_source: bool,
     pub(super) source_recheck: bool,
@@ -92,8 +93,10 @@ pub(super) fn priority_source_schedule<T: Eq>(
             current != active_policy(other)
         });
     let waiting_for_source = plugged_in.is_none() && source_recheck;
+    let active = current.is_some() && !waiting_for_source;
     PrioritySourceSchedule {
-        refresh_required: settings_changed || (current.is_some() && !waiting_for_source),
+        active,
+        refresh_required: settings_changed || active,
         waiting_for_source,
         source_recheck,
     }
@@ -266,12 +269,20 @@ pub(super) fn sleep_prevention_required(settings: &Settings) -> bool {
 }
 
 pub(super) fn process_appearance_scan_required(settings: &Settings) -> bool {
+    let priority_or_efficiency_configured = settings.background_efficiency.enabled
+        || settings.process_priority.enabled
+        || settings.thread_priority.enabled
+        || settings.dynamic_priority_boost.enabled
+        || settings.io_priority.enabled
+        || settings.gpu_priority.enabled
+        || settings.memory_priority.enabled;
     process_appearance_scan_required_for_runtime(
         settings,
         cpu_limiter_required(settings),
         settings.memory_trim.enabled,
         settings.general.enabled
             && (cpu_sets_soft_required(settings) || processor_affinity_hard_required(settings)),
+        priority_or_efficiency_configured,
     )
 }
 
@@ -280,19 +291,14 @@ pub(super) fn process_appearance_scan_required_for_runtime(
     cpu_limiter_active: bool,
     memory_trim_active: bool,
     explicit_cpu_allocation_active: bool,
+    priority_or_efficiency_active: bool,
 ) -> bool {
     settings.general.enabled
-        && (settings.background_efficiency.enabled
+        && (priority_or_efficiency_active
             || explicit_cpu_allocation_active
             || cpu_limiter_active
             || by_running_app_required(settings)
             || adaptive_engine_process_required(settings)
-            || settings.process_priority.enabled
-            || settings.thread_priority.enabled
-            || settings.dynamic_priority_boost.enabled
-            || settings.io_priority.enabled
-            || settings.gpu_priority.enabled
-            || settings.memory_priority.enabled
             || memory_trim_active)
 }
 

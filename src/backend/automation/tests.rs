@@ -1275,7 +1275,7 @@ fn explicit_cpu_allocation_source_wait_accounts_for_configured_soft_precedence()
         settings.battery_profile()
     ));
     assert!(!process_appearance_scan_required_for_runtime(
-        &settings, false, false, false
+        &settings, false, false, false, false
     ));
     settings.cpu_sets_soft.rules.push(disabled_soft);
     assert!(cpu_allocation_source_difference(&settings).is_none());
@@ -1342,12 +1342,35 @@ fn priority_source_schedule_preserves_verified_and_common_policy_cadence() {
 
     let entering = schedule(&settings, None, true, true);
     assert!(entering.refresh_required && entering.waiting_for_source && entering.source_recheck);
+    assert!(!entering.active);
     let stable = schedule(&settings, None, false, false);
     assert!(!stable.refresh_required && stable.waiting_for_source && stable.source_recheck);
+
+    settings.process_priority.enabled = true;
+    settings
+        .battery_profile_mut()
+        .process_priority
+        .background_priority = ProcessPrioritySetting::Idle;
+    let differing_enabled = schedule(&settings, None, true, true);
+    assert!(process_appearance_scan_required(&settings));
+    assert!(!process_appearance_scan_required_for_runtime(
+        &settings,
+        false,
+        false,
+        false,
+        differing_enabled.active
+    ));
 
     settings.process_priority = settings.battery_profile().process_priority.clone();
     let common = schedule(&settings, None, false, false);
     assert!(common.refresh_required && !common.waiting_for_source && !common.source_recheck);
+    assert!(process_appearance_scan_required_for_runtime(
+        &settings,
+        false,
+        false,
+        false,
+        common.active
+    ));
 }
 
 #[test]
@@ -1600,7 +1623,7 @@ fn active_cpu_limiter_keeps_process_discovery_at_one_second() {
 
     assert!(process_appearance_scan_required(&settings));
     assert!(!process_appearance_scan_required_for_runtime(
-        &settings, false, false, false
+        &settings, false, false, false, false
     ));
     assert_eq!(
         process_appearance_refresh_interval(false, true, false),
