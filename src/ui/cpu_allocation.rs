@@ -3,7 +3,9 @@ use super::widgets::{action_button, button, checkbox, icon_button, text_input};
 use crate::application::SettingsEditor;
 use crate::config::{CpuAllocationPreset, CpuAllocationRule, CpuAllocationSettings, Settings};
 use crate::cpu_allocation::{self, LogicalProcessorInfo, LogicalProcessorKind};
-use crate::cpu_topology::{CacheKind, CpuSelection, CpuTopology, ProcessorId, SavedSelectionError};
+use crate::cpu_topology::{
+    CacheKind, CpuSelection, CpuTopology, ProcessorId, SavedSelectionError, SelectionError,
+};
 use crate::foreground::process_list::normalize_path_slashes;
 use crate::ui::process_rules::{
     can_add_exact_process_candidate, exact_path_input, picked_path_input,
@@ -12,7 +14,7 @@ use crate::ui::scrolling::scrollable;
 use iced::widget::{column, row, text};
 use iced::{Element, Fill};
 use rust_i18n::t;
-use std::rc::Rc;
+use std::{rc::Rc, sync::Arc};
 
 #[derive(Debug, Clone, Copy)]
 pub(super) enum Kind {
@@ -20,6 +22,10 @@ pub(super) enum Kind {
     Hard,
 }
 impl Kind {
+    fn supports(self, id: ProcessorId) -> bool {
+        matches!(self, Self::Soft) || id.group == 0
+    }
+
     fn verify(
         self,
         selection: &CpuSelection,
@@ -101,6 +107,7 @@ pub(super) enum Message {
     EditPreset(usize),
     PresetName(String),
     PresetSelection(CpuSelection),
+    TogglePresetProcessor(ProcessorId, Arc<CpuTopology>),
     SavePreset,
     DeletePreset(usize),
     ClosePreset,
@@ -186,15 +193,21 @@ impl Editor {
             Message::PresetName(v) if !self.preset_read_only => self.preset_name = v,
             Message::PresetSelection(selection) if !self.preset_read_only => {
                 let topology = cpu_allocation::processor_topology();
-                if let Err(error) = verify_selection_against(&selection, &topology, k) {
-                    self.error = error;
-                } else {
-                    self.preset_selection = selection;
-                    self.preset_topology = Some(topology);
-                    self.error.clear();
-                }
+                let selection =
+                    verify_selection_against(&selection, &topology, k).map(|()| selection);
+                self.stage_preset_selection(selection, topology);
             }
-            Message::PresetName(_) | Message::PresetSelection(_) => {}
+            Message::TogglePresetProcessor(id, rendered) if self.has_pending_editor() => {
+                self.toggle_preset_processor(
+                    id,
+                    k,
+                    &rendered,
+                    cpu_allocation::processor_topology(),
+                );
+            }
+            Message::PresetName(_)
+            | Message::PresetSelection(_)
+            | Message::TogglePresetProcessor(..) => {}
             Message::SavePreset => {
                 if self.preset_read_only {
                     return;
@@ -268,6 +281,43 @@ impl Editor {
                 .insert((rule.executable_path.clone(), tier as usize), choice);
             self.error.clear();
         }
+    }
+
+    fn stage_preset_selection(
+        &mut self,
+        selection: Result<CpuSelection, String>,
+        topology: Result<CpuTopology, String>,
+    ) {
+        match selection {
+            Ok(selection) => {
+                self.preset_selection = selection;
+                self.preset_topology = Some(topology);
+                self.error.clear();
+            }
+            Err(error) => self.error = error,
+        }
+    }
+
+    fn toggle_preset_processor(
+        &mut self,
+        id: ProcessorId,
+        kind: Kind,
+        rendered: &CpuTopology,
+        current: Result<CpuTopology, String>,
+    ) {
+        let selection = current
+            .as_ref()
+            .map_err(|error| {
+                t!("cpu_allocation.preset_topology_unavailable", error = error).to_string()
+            })
+            .and_then(|topology| {
+                if topology != rendered {
+                    return Err(t!("cpu_allocation.topology_changed").to_string());
+                }
+                toggle_processor(&self.preset_selection, id, kind, topology)
+                    .map_err(saved_selection_error)
+            });
+        self.stage_preset_selection(selection, current);
     }
 
     fn validate_preset_selection(
@@ -472,9 +522,18 @@ impl Editor {
             self.validate_preset_selection(&catalog.topology, kind)
                 .err()
         };
+        let toggle_topology = catalog
+            .topology
+            .as_ref()
+            .ok()
+            .filter(|topology| {
+                !self.preset_read_only && kind.verify(&self.preset_selection, topology).is_ok()
+            })
+            .cloned()
+            .map(Arc::new);
         let mut cpus = row![].spacing(design::space::CONTROL);
         for (id, cpu) in processors {
-            let selected = self.preset_selection.processors().contains(id);
+            let selected = self.preset_selection.processors().binary_search(id).is_ok();
             let kind = t!(match cpu.kind {
                 LogicalProcessorKind::Performance => "cpu_allocation.p_core",
                 LogicalProcessorKind::Efficiency => "cpu_allocation.e_core",
@@ -503,10 +562,9 @@ impl Editor {
                     }
                 })
                 .on_press_maybe(
-                    (!self.preset_read_only)
-                        .then(|| catalog.toggled(&self.preset_selection, *id))
-                        .flatten()
-                        .map(Message::PresetSelection),
+                    toggle_topology
+                        .as_ref()
+                        .map(|topology| Message::TogglePresetProcessor(*id, Arc::clone(topology))),
                 ),
             );
         }
@@ -689,7 +747,7 @@ impl SelectionCatalog {
             .map(|topology| {
                 cpu_allocation::logical_processors_for_topology(topology)
                     .into_iter()
-                    .filter(|(id, _)| matches!(kind, Kind::Soft) || id.group == 0)
+                    .filter(|(id, _)| kind.supports(*id))
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
@@ -744,23 +802,28 @@ impl SelectionCatalog {
     }
 
     fn toggled(&self, selection: &CpuSelection, id: ProcessorId) -> Option<CpuSelection> {
-        let topology = self.topology.as_ref().ok()?;
-        self.kind.verify(selection, topology).ok()?;
-        if !self
-            .processors
-            .iter()
-            .any(|(candidate, _)| *candidate == id)
-        {
-            return None;
-        }
-        let mut processors = selection.processors().to_vec();
-        if processors.contains(&id) {
-            processors.retain(|selected| *selected != id);
-        } else {
-            processors.push(id);
-        }
-        CpuSelection::bind(topology, processors).ok()
+        toggle_processor(selection, id, self.kind, self.topology.as_ref().ok()?).ok()
     }
+}
+
+fn toggle_processor(
+    selection: &CpuSelection,
+    id: ProcessorId,
+    kind: Kind,
+    topology: &CpuTopology,
+) -> Result<CpuSelection, SavedSelectionError> {
+    kind.verify(selection, topology)?;
+    if !kind.supports(id) {
+        return Err(SelectionError::UnsupportedGroup.into());
+    }
+    let mut processors = selection.processors().to_vec();
+    match processors.binary_search(&id) {
+        Ok(index) => {
+            processors.remove(index);
+        }
+        Err(index) => processors.insert(index, id),
+    }
+    CpuSelection::bind(topology, processors).map_err(Into::into)
 }
 
 pub(super) fn verify_selection(selection: &CpuSelection, kind: Kind) -> Result<(), String> {
@@ -780,7 +843,6 @@ pub(super) fn verify_selection_against(
 }
 
 fn saved_selection_error(error: crate::cpu_topology::SavedSelectionError) -> String {
-    use crate::cpu_topology::{SavedSelectionError, SelectionError};
     let key = match error {
         SavedSelectionError::MissingTopology => "cpu_allocation.selection_missing_topology",
         SavedSelectionError::TopologyChanged => "cpu_allocation.selection_topology_changed",
@@ -1201,6 +1263,50 @@ mod tests {
     }
 
     #[test]
+    fn preset_processor_click_rejects_stale_layout_and_can_recover_an_empty_selection() {
+        let original = crate::cpu_topology::test_topology();
+        let current = changed_topology();
+        let id = original.processors()[0].id;
+        let mut editor = Editor {
+            preset_open: true,
+            preset_topology: Some(Ok(original.clone())),
+            ..Editor::default()
+        };
+
+        editor.toggle_preset_processor(id, Kind::Soft, &original, Ok(current.clone()));
+        assert_eq!(editor.preset_selection, CpuSelection::default());
+        assert_eq!(editor.preset_topology, Some(Ok(original)));
+        assert_eq!(editor.error, t!("cpu_allocation.topology_changed"));
+
+        editor.toggle_preset_processor(id, Kind::Soft, &current, Ok(current.clone()));
+        assert_eq!(editor.preset_selection.processors(), &[id]);
+        assert!(editor
+            .validate_preset_selection(&Ok(current.clone()), Kind::Soft)
+            .is_ok());
+
+        editor.toggle_preset_processor(id, Kind::Soft, &current, Ok(current.clone()));
+        assert!(editor.preset_selection.is_empty());
+        assert!(editor
+            .validate_preset_selection(&Ok(current.clone()), Kind::Soft)
+            .is_err());
+
+        let missing = ProcessorId {
+            group: 1,
+            number: 0,
+        };
+        editor.toggle_preset_processor(missing, Kind::Soft, &current, Ok(current.clone()));
+        assert_eq!(
+            editor.error,
+            saved_selection_error(SelectionError::Unknown.into())
+        );
+        assert!(editor.preset_selection.is_empty());
+
+        editor.toggle_preset_processor(id, Kind::Soft, &current, Ok(current.clone()));
+        assert_eq!(editor.preset_selection.processors(), &[id]);
+        assert!(editor.error.is_empty());
+    }
+
+    #[test]
     fn review_never_drops_missing_or_nonzero_group_members() {
         use crate::cpu_topology::{LogicalProcessor, ProcessorGroup, ProcessorId};
         let zero = ProcessorId {
@@ -1346,6 +1452,14 @@ mod tests {
             &mut settings,
             Kind::Soft,
             Message::PresetSelection(CpuSelection::default()),
+        );
+        editor.update(
+            &mut settings,
+            Kind::Soft,
+            Message::TogglePresetProcessor(
+                selection.processors()[0],
+                Arc::new(crate::cpu_topology::test_topology()),
+            ),
         );
         editor.update(
             &mut settings,

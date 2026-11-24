@@ -1125,6 +1125,30 @@ fn exercise_cpu_preset_dialog(app: &mut WinderustApp, index: usize) {
     let selection = SelectionCatalog::capture(kind)
         .all_selection()
         .expect("render-smoke requires a readable CPU topology");
+    if matches!(index, 73 | 74) {
+        let id = selection.processors()[0];
+        let topology = crate::cpu_allocation::processor_topology()
+            .expect("render-smoke requires the live CPU topology");
+        let added = app.settings.global().cpu_allocation_presets.len();
+        let persisted = app.settings.persisted().cpu_allocation_presets.clone();
+        for message in [
+            PresetMessage::NewPreset,
+            PresetMessage::PresetName("Processor toggle test".into()),
+            PresetMessage::PresetSelection(CpuSelection::default()),
+            PresetMessage::TogglePresetProcessor(id, Arc::new(topology)),
+            PresetMessage::SavePreset,
+        ] {
+            let _ = app.update(Message::Allocation(kind, message));
+        }
+        let presets = &app.settings.global().cpu_allocation_presets;
+        assert_eq!(presets.len(), added + 1);
+        assert_eq!(presets[added].selection.processors(), &[id]);
+        assert_eq!(app.settings.persisted().cpu_allocation_presets, persisted);
+        let _ = app.update(Message::Allocation(
+            kind,
+            PresetMessage::DeletePreset(added),
+        ));
+    }
     let message = if matches!(index, 75 | 76) {
         let preset = CpuAllocationPreset {
             name: "Preset to review".into(),
