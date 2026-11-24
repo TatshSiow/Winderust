@@ -847,6 +847,10 @@ app_suspension:
 
 adaptive_engine_process:
   process_policies_paused: "處理程序原則已暫停"
+  restraint_none: "目前沒有受到抑制的處理程序。"
+  restraint_verified: "已確認優先順序為低於標準"
+  restraint_restoration_pending: "等待還原優先順序"
+  restraint_confirmation_pending: "等待確認優先順序"
   zone_observations: "所需處理程序觀測資料無法取得。"
   limit_waiting_zones: "區域配置作用中，等待背景限制"
   zone_background_targets: "背景處理程序"

@@ -4,9 +4,13 @@ use super::{design, power_plan_control};
 use crate::ui::scrolling::scrollable;
 use crate::{
     action_log::{ActionLogEntry, ActionLogFeature},
+    adaptive_engine_process::AdaptiveEngineProcessSnapshot,
     automation::RuntimeStatusSnapshot,
     config::{PowerSourceProfile, Settings},
-    control::{instance_limits::CountObservation, power_plan::PowerPlanOwner},
+    control::{
+        instance_limits::CountObservation, power_plan::PowerPlanOwner,
+        priority_efficiency::AdaptiveRestraintState,
+    },
     features::watchdog::{
         app_suspension::AppSuspensionStatus,
         instance_limits::{InstanceLimitsSnapshot, NotificationStatus},
@@ -437,6 +441,21 @@ pub(super) fn view<'a>(
             .spacing(design::space::CONTROL),
         ));
     }
+    if page == Page::AdaptiveEngine {
+        let configured = settings.general.enabled
+            && settings.adaptive_engine.enabled
+            && settings
+                .adaptive_engine_process
+                .cpu_pressure_restraint_enabled;
+        let verified_available = available
+            && configured
+            && adaptive.is_some_and(|status| status.enabled && !status.observation_paused);
+        body = body.extend(adaptive_restraint_section(
+            &runtime.feature_status.adaptive_engine_process,
+            configured,
+            verified_available,
+        ));
+    }
     body = body
         .push(section(
             "common.successful_actions",
@@ -595,6 +614,52 @@ pub(super) fn view<'a>(
         );
     }
     Some(scroll_status(body))
+}
+
+fn adaptive_restraint_section(
+    snapshot: &AdaptiveEngineProcessSnapshot,
+    configured: bool,
+    verified_available: bool,
+) -> Option<Element<'static, Message>> {
+    let mut rows = snapshot
+        .restraint_processes
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .filter(|row| row.state != AdaptiveRestraintState::Verified || verified_available)
+        .peekable();
+    let mut details = column![].spacing(design::space::CONTROL);
+    if rows.peek().is_none() {
+        if !configured {
+            return None;
+        }
+        let key = if verified_available {
+            "adaptive_engine_process.restraint_none"
+        } else {
+            "common.unknown"
+        };
+        details = details.push(text(t!(key).into_owned()).size(design::typography::CAPTION));
+    }
+    for row in rows {
+        let key = match row.state {
+            AdaptiveRestraintState::Verified => "adaptive_engine_process.restraint_verified",
+            AdaptiveRestraintState::RestorationPending => {
+                "adaptive_engine_process.restraint_restoration_pending"
+            }
+            AdaptiveRestraintState::ConfirmationPending => {
+                "adaptive_engine_process.restraint_confirmation_pending"
+            }
+        };
+        details = details.push(column![
+            text(format!("{} ({})", row.process.name, row.process.id))
+                .size(design::typography::SECONDARY)
+                .wrapping(text::Wrapping::WordOrGlyph),
+            text(t!(key).into_owned())
+                .size(design::typography::CAPTION)
+                .style(text::secondary)
+        ]);
+    }
+    Some(section("adaptive_engine.cpu_pressure", details))
 }
 
 fn adaptive_processor_power_view(
@@ -1627,6 +1692,82 @@ mod tests {
             .last_error = Some("Exact job thaw failed.".to_owned());
         let rail = text(&runtime);
         assert!(rail.iter().any(|line| line == "Exact job thaw failed."));
+    }
+
+    #[test]
+    fn adaptive_engine_restraint_rail_preserves_only_pending_rows_across_sources() {
+        use crate::control::{
+            priority_efficiency::AdaptiveRestraintProcess, process::ProcessIdentity,
+        };
+        use std::sync::Arc;
+
+        let mut settings = Settings::default();
+        settings.adaptive_engine.enabled = true;
+        settings
+            .adaptive_engine_process
+            .cpu_pressure_restraint_enabled = true;
+        let row = |id, name: &str, state| AdaptiveRestraintProcess {
+            process: ProcessIdentity::new(
+                id,
+                name.into(),
+                format!("C:\\Apps\\{name}").into(),
+                1,
+                None,
+            ),
+            state,
+        };
+        let mut runtime = RuntimeStatusSnapshot {
+            generation: 1,
+            ..Default::default()
+        };
+        Arc::make_mut(&mut runtime.feature_status).adaptive_engine_process =
+            AdaptiveEngineProcessSnapshot {
+                source: Some(PowerSourceProfile::PluggedIn),
+                enabled: true,
+                restraint_processes: Some(Arc::from([
+                    row(1, "verified.exe", AdaptiveRestraintState::Verified),
+                    row(2, "restore.exe", AdaptiveRestraintState::RestorationPending),
+                    row(
+                        3,
+                        "uncertain.exe",
+                        AdaptiveRestraintState::ConfirmationPending,
+                    ),
+                ])),
+                ..Default::default()
+            };
+        let render = |settings, plugged_in| {
+            rail_text(view(Page::AdaptiveEngine, settings, &runtime, &[], plugged_in).unwrap())
+        };
+        let live = render(&settings, Some(true));
+        let mismatched = render(&settings, Some(false));
+        let mut disabled = settings.clone();
+        disabled.adaptive_engine.enabled = false;
+        let inactive = render(&disabled, Some(true));
+
+        let item_visible = |rail: &[String], name: &str, key: &str| {
+            rail.windows(2)
+                .any(|pair| pair[0] == name && pair[1] == t!(key))
+        };
+        assert!(item_visible(
+            &live,
+            "verified.exe (1)",
+            "adaptive_engine_process.restraint_verified",
+        ));
+        for rail in [&live, &mismatched, &inactive] {
+            assert!(item_visible(
+                rail,
+                "restore.exe (2)",
+                "adaptive_engine_process.restraint_restoration_pending",
+            ));
+            assert!(item_visible(
+                rail,
+                "uncertain.exe (3)",
+                "adaptive_engine_process.restraint_confirmation_pending",
+            ));
+        }
+        for rail in [mismatched, inactive] {
+            assert!(!rail.iter().any(|line| line == "verified.exe (1)"));
+        }
     }
 
     #[test]

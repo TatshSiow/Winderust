@@ -8,6 +8,7 @@ use crate::{
     control::{
         memory_priority::MemoryPriorityReleaseOwner,
         power_plan::{AdaptiveProcessorPowerError, PowerPlanOwner},
+        priority_efficiency::AdaptiveRestraintProcess,
     },
     foreground::{list_process_ids, process_session_id, ProcessInfo},
     platform::windows::process::current_process_id,
@@ -160,6 +161,7 @@ pub(super) struct RuntimeCore {
     pub(super) action_log: ActionLog,
     action_log_session: Option<Arc<SharedAutomationState>>,
     adaptive_engine_process_manager: AdaptiveEngineProcessManager,
+    adaptive_restraint_processes: Option<Arc<[AdaptiveRestraintProcess]>>,
     process_priority_manager: ProcessPriorityManager,
     priority_efficiency_controller: PriorityEfficiencyController,
     thread_priority_manager: ThreadPriorityManager,
@@ -1193,11 +1195,53 @@ impl RuntimeCore {
     }
 
     pub(super) fn publish_adaptive_engine_process_status(
-        &self,
+        &mut self,
         shared: &SharedAutomationState,
         source: PowerSourceProfile,
-        mut status: AdaptiveEngineProcessSnapshot,
+        status: Option<AdaptiveEngineProcessSnapshot>,
     ) {
+        if status.is_none()
+            && self.adaptive_restraint_processes.is_none()
+            && !self
+                .priority_efficiency_controller
+                .has_adaptive_restraint_claims()
+        {
+            return;
+        }
+
+        let processes = self
+            .priority_efficiency_controller
+            .adaptive_restraint_processes();
+        let previous = self
+            .adaptive_restraint_processes
+            .as_deref()
+            .unwrap_or_default();
+        let audit_changed = !processes
+            .clone()
+            .eq(previous.iter().map(|row| (&row.process, row.state)));
+        if audit_changed {
+            let mut processes = processes.peekable();
+            self.adaptive_restraint_processes = processes.peek().is_some().then(|| {
+                processes
+                    .map(|(process, state)| AdaptiveRestraintProcess {
+                        process: process.clone(),
+                        state,
+                    })
+                    .collect::<Arc<[_]>>()
+            });
+        }
+        let Some(mut status) = status else {
+            if audit_changed {
+                update_feature_status(
+                    shared,
+                    self.adaptive_restraint_processes.clone(),
+                    |features| &features.adaptive_engine_process.restraint_processes,
+                    |features| &mut features.adaptive_engine_process.restraint_processes,
+                );
+            }
+            return;
+        };
+        status.restraint_processes = self.adaptive_restraint_processes.clone();
         status.source = (!status.waiting_for_power_source).then_some(source);
         if status.enabled && !status.observation_paused {
             let owner = ControlOwner::AdaptiveEngine;

@@ -2169,13 +2169,11 @@ fn run_background_automation(
         if let Some(error) = runner.retry_control_releases(&shared, Instant::now()) {
             update_worker_error(&shared, Some(error));
         }
-        if let Some(status) = adaptive_engine_process_status {
-            runner.publish_adaptive_engine_process_status(
-                &shared,
-                active_power_source(plugged_in),
-                status,
-            );
-        }
+        runner.publish_adaptive_engine_process_status(
+            &shared,
+            active_power_source(plugged_in),
+            adaptive_engine_process_status,
+        );
         let wait_now = Instant::now();
         let mut wait_for = if power_plan_checks_required {
             run_scheduled_power_plan_check(&mut scheduler, wait_now, || {

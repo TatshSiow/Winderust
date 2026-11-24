@@ -845,6 +845,10 @@ app_suspension:
 
 adaptive_engine_process:
   process_policies_paused: "Process policies paused"
+  restraint_none: "No processes restrained."
+  restraint_verified: "Below Normal priority verified"
+  restraint_restoration_pending: "Priority restoration pending"
+  restraint_confirmation_pending: "Priority verification pending"
   zone_observations: "Required process observations are unavailable."
   limit_waiting_zones: "Waiting while zoning is active"
   zone_background_targets: "Background processes"

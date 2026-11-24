@@ -842,6 +842,11 @@ Read the relevant section before changing feature policy, ownership, restoration
   active audio, and exclusions. The only restraint write is temporary Below
   Normal priority for a process whose current priority is Normal. Efficiency Mode
   and saved Process Priority take precedence on the same process.
+  Status lists the exact process instances whose restraint is verified, whose
+  priority restoration is pending, or whose priority ownership is unconfirmed.
+  The list follows existing controller transitions and retries without querying
+  Windows again. Pending and unconfirmed entries remain visible while paused or
+  disabled.
   Thread, I/O, GPU, and Memory Priority and Dynamic Priority Boost use their
   dedicated settings.
 - Adaptive Engine pauses its process policies and releases their claims when the

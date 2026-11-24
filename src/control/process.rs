@@ -1,5 +1,6 @@
 use std::{
     cmp::Ordering,
+    collections::BTreeMap,
     path::{Path, PathBuf},
 };
 
@@ -167,6 +168,27 @@ impl ProcessIdentity {
             creation_time: self.creation_time,
             executable_path: self.executable_path_key.clone(),
         }
+    }
+
+    pub(super) fn matches_target_key(&self, key: &ProcessTargetKey) -> bool {
+        self.id == key.id
+            && self.creation_time == key.creation_time
+            && self.executable_path_key == key.executable_path
+    }
+
+    pub(super) fn target_entry<'a, T>(
+        &self,
+        entries: &'a BTreeMap<ProcessTargetKey, T>,
+    ) -> Option<&'a T> {
+        let start = ProcessTargetKey {
+            id: self.id,
+            creation_time: self.creation_time,
+            executable_path: String::new(),
+        };
+        entries
+            .range(start..)
+            .take_while(|(key, _)| key.id == self.id && key.creation_time == self.creation_time)
+            .find_map(|(key, entry)| self.matches_target_key(key).then_some(entry))
     }
 }
 

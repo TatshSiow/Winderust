@@ -350,6 +350,7 @@ fn stored_priority_shadows_restraint_and_hands_back_to_it_when_released() {
         controller.apply_priority_claim(restraint_claim(7, 1), true),
         Ok(ProcessPropertyApplyOutcome::Shadowed)
     );
+    assert!(controller.adaptive_restraint_processes().next().is_none());
     assert_eq!(
         controller.platform.processes[&7].priority,
         ABOVE_NORMAL_PRIORITY_CLASS
@@ -357,10 +358,15 @@ fn stored_priority_shadows_restraint_and_hands_back_to_it_when_released() {
 
     controller.release_all_priority_policy(ControlOwner::ProcessPriority);
     assert_eq!(
+        controller.adaptive_restraint_processes().next(),
+        Some((&identity(7, 1), AdaptiveRestraintState::Verified))
+    );
+    assert_eq!(
         controller.platform.processes[&7].priority,
         BELOW_NORMAL_PRIORITY_CLASS
     );
     controller.release_all_priority_policy(ControlOwner::AdaptiveEngine);
+    assert!(controller.adaptive_restraint_processes().next().is_none());
     assert_eq!(
         controller.platform.processes[&7].priority,
         NORMAL_PRIORITY_CLASS
@@ -526,6 +532,7 @@ fn choosing_the_current_restrained_priority_holds_it_until_exit() {
         ),
         Ok(ProcessPropertyApplyOutcome::Unchanged)
     );
+    assert!(controller.adaptive_restraint_processes().next().is_none());
     controller.release_all_priority_policy(ControlOwner::AdaptiveEngine);
     assert_eq!(
         controller.platform.processes[&7].priority,
@@ -536,6 +543,38 @@ fn choosing_the_current_restrained_priority_holds_it_until_exit() {
         controller.platform.processes[&7].priority,
         NORMAL_PRIORITY_CLASS
     );
+}
+
+#[test]
+fn restraint_audit_distinguishes_uncertain_apply_from_pending_restore() {
+    let mut controller =
+        PriorityEfficiencyController::with_platform(platform_with(7, 1, NORMAL_PRIORITY_CLASS));
+    let process = identity(7, 1);
+    controller.platform.priority_query_failures = VecDeque::from([false, true, true]);
+    assert!(controller
+        .apply_priority_claim(restraint_claim(7, 1), true)
+        .is_err());
+    assert_eq!(
+        controller
+            .adaptive_restraint_processes()
+            .collect::<Vec<_>>(),
+        [(&process, AdaptiveRestraintState::ConfirmationPending)]
+    );
+
+    controller.platform.deny_open = true;
+    let released = controller.release_all_priority_policy(ControlOwner::AdaptiveEngine);
+    assert_eq!(released.failures.len(), 1);
+    assert_eq!(
+        controller
+            .adaptive_restraint_processes()
+            .collect::<Vec<_>>(),
+        [(&process, AdaptiveRestraintState::RestorationPending)]
+    );
+
+    controller.platform.deny_open = false;
+    let retries = controller.retry_pending_releases(controller.release_retry_at.unwrap());
+    assert!(retries.other.failures.is_empty());
+    assert!(controller.adaptive_restraint_processes().next().is_none());
 }
 
 #[test]

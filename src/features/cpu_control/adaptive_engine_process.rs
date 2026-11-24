@@ -18,8 +18,8 @@ use crate::{
     control::{
         cpu_allocation::CpuAllocationCoordinator,
         priority_efficiency::{
-            PriorityClassClaim, PriorityClassPreservation, PriorityClassValue,
-            PriorityEfficiencyController, PriorityEfficiencyReleaseSummary,
+            AdaptiveRestraintProcess, PriorityClassClaim, PriorityClassPreservation,
+            PriorityClassValue, PriorityEfficiencyController, PriorityEfficiencyReleaseSummary,
             ProcessPropertyApplyOutcome,
         },
         process::{ControlOwner, ProcessControlError, ProcessControlTarget},
@@ -66,6 +66,7 @@ pub struct AdaptiveEngineProcessSnapshot {
     pub scanned_processes: usize,
     pub adjusted_processes: usize,
     pub cpu_pressure_restraint_active: bool,
+    pub(crate) restraint_processes: Option<Arc<[AdaptiveRestraintProcess]>>,
     pub foreground_cpu_usage_tenths: Option<u16>,
     pub skipped_processes: usize,
     pub failed_processes: usize,
@@ -1159,6 +1160,7 @@ impl AdaptiveEngineProcessManager {
             scanned_processes,
             adjusted_processes: 0,
             cpu_pressure_restraint_active: cpu_pressure_restraint_applies,
+            restraint_processes: None,
             foreground_cpu_usage_tenths,
             skipped_processes,
             failed_processes: failures.count,
