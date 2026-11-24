@@ -8,7 +8,11 @@ const PROCESS_LIST_COMMIT_WIDE: usize = 94;
 const PROCESS_LIST_COMMIT_COMPACT: usize = 95;
 const HOME_POWER_COMPACT: usize = 96;
 const HOME_WITHOUT_BATTERY: usize = 97;
-const EXTRA_STATES: usize = 98;
+const CONTRAST_DARK_APPEARANCE: usize = 98;
+const CONTRAST_LIGHT_PROCESS_LIST: usize = 99;
+const HOME_HISTORY_WIDE: usize = 100;
+const HOME_HISTORY_COMPACT: usize = 101;
+const EXTRA_STATES: usize = 102;
 pub(super) struct Run {
     pages: Vec<Page>,
     index: usize,
@@ -84,6 +88,8 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                     | 93
                     | PROCESS_LIST_COMMIT_COMPACT
                     | HOME_POWER_COMPACT
+                    | CONTRAST_LIGHT_PROCESS_LIST
+                    | HOME_HISTORY_COMPACT
             )
         });
         let page = match extra {
@@ -109,7 +115,10 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             Some(25 | 87..=88) => Page::ProcessPriority,
             Some(26..=37) => Page::Home,
             Some(38 | 42 | 43) => Page::Home,
-            Some(HOME_POWER_COMPACT | HOME_WITHOUT_BATTERY) => Page::Home,
+            Some(
+                HOME_POWER_COMPACT | HOME_WITHOUT_BATTERY | HOME_HISTORY_WIDE
+                | HOME_HISTORY_COMPACT,
+            ) => Page::Home,
             Some(39) => Page::ProcessList,
             Some(40) => Page::LanguageAndAppearance,
             Some(41) => Page::AdaptiveEngine,
@@ -119,6 +128,8 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             Some(47) => Page::AdaptiveEngine,
             Some(48 | 79..=80) => Page::ProcessList,
             Some(PROCESS_LIST_COMMIT_WIDE | PROCESS_LIST_COMMIT_COMPACT) => Page::ProcessList,
+            Some(CONTRAST_DARK_APPEARANCE) => Page::LanguageAndAppearance,
+            Some(CONTRAST_LIGHT_PROCESS_LIST) => Page::ProcessList,
             Some(49 | 86) => Page::ActionLog,
             Some(50 | 77..=78) => Page::WinderustBehaviour,
             Some(51..=53) => Page::ResourceThresholds,
@@ -152,6 +163,30 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
         };
         rust_i18n::set_locale(app.settings.general.language.locale());
         app.appearance = settings_pages::theme(&app.settings.general);
+        if matches!(
+            extra,
+            Some(CONTRAST_DARK_APPEARANCE | CONTRAST_LIGHT_PROCESS_LIST)
+        ) {
+            use crate::platform::windows::appearance::ContrastColors;
+            app.settings.general.theme_mode = crate::config::AppThemeMode::System;
+            let colors = if extra == Some(CONTRAST_DARK_APPEARANCE) {
+                ContrastColors {
+                    window: 0x000000,
+                    window_text: 0xffffff,
+                    highlight: 0xffff00,
+                    highlight_text: 0x000000,
+                }
+            } else {
+                ContrastColors {
+                    window: 0xffffff,
+                    window_text: 0x000000,
+                    highlight: 0x0055aa,
+                    highlight_text: 0xffffff,
+                }
+            };
+            app.appearance =
+                settings_pages::theme_from_appearance(&app.settings.general, None, Some(colors));
+        }
         if extra.is_some_and(|i| (38..=53).contains(&i)) {
             let _ = app.update(Message::Preferences(settings_pages::Message::Theme(
                 crate::config::AppThemeMode::Amoled,
@@ -758,7 +793,17 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
         }
         if matches!(
             extra,
-            Some(13 | 29..=34 | 38 | 42 | 43 | HOME_POWER_COMPACT | HOME_WITHOUT_BATTERY)
+            Some(
+                13 | 29
+                    ..=34
+                        | 38
+                        | 42
+                        | 43
+                        | HOME_POWER_COMPACT
+                        | HOME_WITHOUT_BATTERY
+                        | HOME_HISTORY_WIDE
+                        | HOME_HISTORY_COMPACT
+            )
         ) {
             app.home.populate_smoke_history();
             app.settings.general.enabled = true;
@@ -767,6 +812,19 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             app.settings.memory_trim.enabled = true;
             app.settings.io_priority.enabled = true;
             app.settings = SettingsEditor::with_settings((*app.settings).clone());
+        }
+        if matches!(
+            extra,
+            Some(
+                PROCESS_LIST_COMMIT_WIDE
+                    | PROCESS_LIST_COMMIT_COMPACT
+                    | CONTRAST_LIGHT_PROCESS_LIST
+            )
+        ) {
+            let _ = app.update(Message::Processes(process_list::Message::CloseSelection));
+            app.settings = SettingsEditor::with_settings(app.settings.global().clone());
+            app.power_plan_control.selected_guid = None;
+            assert!(!app.processes.modal_open());
         }
         if extra == Some(HOME_WITHOUT_BATTERY) {
             use crate::backend::power_source::{BatteryStatus, PowerStatus};
@@ -1150,7 +1208,13 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                 });
         }
         let size = match extra {
-            Some(PROCESS_LIST_COMMIT_COMPACT | HOME_POWER_COMPACT) => iced::Size::new(900.0, 620.0),
+            Some(
+                PROCESS_LIST_COMMIT_COMPACT
+                | HOME_POWER_COMPACT
+                | CONTRAST_LIGHT_PROCESS_LIST
+                | HOME_HISTORY_COMPACT,
+            ) => iced::Size::new(900.0, 620.0),
+            Some(CONTRAST_DARK_APPEARANCE | HOME_HISTORY_WIDE) => iced::Size::new(1120.0, 760.0),
             Some(35..=37 | 40 | 42 | 44..=50 | 52..=69 | 71..=93) => iced::Size::new(900.0, 620.0),
             Some(30) => iced::Size::new(1280.0, 720.0),
             Some(31) => iced::Size::new(1440.0, 900.0),
@@ -1183,6 +1247,40 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
         ]));
     }
     run.ticks += 1;
+    if run.ticks == 3 {
+        match extra {
+            Some(CONTRAST_DARK_APPEARANCE) => {
+                return Some(iced::widget::operation::focus(navigation::rail_id(Some(
+                    Page::SettingsHome,
+                ))));
+            }
+            Some(CONTRAST_LIGHT_PROCESS_LIST) => {
+                return Some(Task::batch([
+                    iced::widget::operation::focus("process-list"),
+                    app.update(Message::Processes(process_list::Message::MoveRowFocus(
+                        true, 400.0,
+                    ))),
+                ]));
+            }
+            Some(HOME_HISTORY_WIDE | HOME_HISTORY_COMPACT) => {
+                let kind = if extra == Some(HOME_HISTORY_WIDE) {
+                    home::ChartKind::Cpu
+                } else {
+                    home::ChartKind::Network
+                };
+                for _ in 0..2 {
+                    let _ = app.update(Message::Home(home::Message::InspectChart(
+                        kind,
+                        home::HistoryAction::Step { newer: false },
+                    )));
+                }
+                return Some(iced::widget::operation::focus(kind.focus_id()).chain(
+                    crate::ui::keyboard_focus::reveal(Some(kind.focus_id().into())),
+                ));
+            }
+            _ => {}
+        }
+    }
     if extra == Some(HOME_POWER_COMPACT) && run.ticks == 3 {
         return Some(iced::widget::operation::snap_to(
             "home-content",
