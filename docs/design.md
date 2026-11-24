@@ -148,6 +148,8 @@ hover/press; background shading supplies feedback.
 - The process list is a dense table, not a card grid. Refresh automatically about once per second only while its page is shown and the window is not hidden to tray. Its command row contains search and process count; omit manual refresh and population pause controls.
 - Page visits and periodic ticks share the same refresh deadline; quick returns reuse the current rows. Load the power-plan catalog when the selected process's Rulesets panel opens, including when returning to that open panel.
 - Rulesets shows the power profile that receives its edits.
+- Copy executable path is available in the context menu and details header when
+  the selected path can be represented as text. Copy the path exactly as observed.
 - Keep process icon, grouped process row, PID/count, and policy columns visible and stable.
 - A grouped CPU or memory total is available only when every displayed member has that measurement.
 - Keep the User column at the right edge. Show the exact process token account when available. When Windows denies token access, show `Unavailable · S#` with an explanatory tooltip; identify kernel pseudo-processes as `Windows kernel`.

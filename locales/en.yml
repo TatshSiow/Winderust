@@ -346,6 +346,7 @@ process_list:
   resume_process: "Temporarily resume process"
   efficiency_mode: "Efficiency Mode"
   open_process_location: "Open process location"
+  copy_executable_path: "Copy executable path"
   status_suspended: "Suspended"
   status_efficiency_mode: "Efficiency Mode"
   cpu_usage: "CPU"

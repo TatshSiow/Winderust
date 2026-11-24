@@ -4,7 +4,7 @@ use crate::backend::power_source::is_plugged_in;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 static REQUESTED: AtomicBool = AtomicBool::new(false);
-const EXTRA_STATES: usize = 79;
+const EXTRA_STATES: usize = 81;
 pub(super) struct Run {
     pages: Vec<Page>,
     index: usize,
@@ -69,6 +69,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                     | 74
                     | 76
                     | 78
+                    | 80
             )
         });
         let page = match extra {
@@ -101,7 +102,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             Some(45 | 74 | 75) => Page::ProcessorAffinityHard,
             Some(46) => Page::AdvancedPowerPlanTuning,
             Some(47) => Page::AdaptiveEngine,
-            Some(48) => Page::ProcessList,
+            Some(48 | 79..=80) => Page::ProcessList,
             Some(49) => Page::ActionLog,
             Some(50 | 77..=78) => Page::WinderustBehaviour,
             Some(51..=53) => Page::ResourceThresholds,
@@ -875,8 +876,14 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
         if extra == Some(77) {
             exercise_settings_export(app);
         }
+        if matches!(extra, Some(79..=80)) {
+            let _ = app.update(Message::Cancel);
+            let context = extra == Some(79);
+            app.processes.show_copy_path_fixture(context);
+            assert_eq!(app.processes.context_open(), context);
+        }
         let size = match extra {
-            Some(35..=37 | 40 | 42 | 44..=50 | 52..=69 | 71..=78) => iced::Size::new(900.0, 620.0),
+            Some(35..=37 | 40 | 42 | 44..=50 | 52..=69 | 71..=80) => iced::Size::new(900.0, 620.0),
             Some(30) => iced::Size::new(1280.0, 720.0),
             Some(31) => iced::Size::new(1440.0, 900.0),
             Some(32) => iced::Size::new(1920.0, 720.0),

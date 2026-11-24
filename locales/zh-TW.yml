@@ -349,6 +349,7 @@ process_list:
   resume_process: "暫時繼續處理程序"
   efficiency_mode: "效率模式"
   open_process_location: "開啟檔案位置"
+  copy_executable_path: "複製執行檔路徑"
   status_suspended: "已暫停"
   status_efficiency_mode: "效率模式"
   cpu_usage: "CPU"

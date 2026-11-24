@@ -68,9 +68,12 @@ impl Selection {
             .filter(|path| !path.as_os_str().is_empty())
     }
 
+    fn path_text(&self) -> Option<&str> {
+        self.path().and_then(Path::to_str)
+    }
+
     fn ruleset_path(&self) -> Option<&str> {
-        self.path()
-            .and_then(Path::to_str)
+        self.path_text()
             .filter(|_| self.processes.iter().any(|process| !inaccessible(process)))
     }
 
@@ -228,6 +231,7 @@ pub(super) enum Message {
         detail_action: Option<u64>,
     },
     DismissActionFeedback,
+    CopyExecutablePath,
     OpenLocation,
     Properties,
     Details(details::Message),
@@ -342,6 +346,28 @@ impl ProcessList {
 
     pub(super) fn context_open(&self) -> bool {
         self.context.is_some() && self.selected.is_some()
+    }
+
+    #[cfg(feature = "render-smoke")]
+    pub(super) fn show_copy_path_fixture(&mut self, context: bool) {
+        self.selected = Some(Selection {
+            nested: false,
+            processes: vec![ProcessInfo {
+                id: u32::MAX,
+                creation_time: None,
+                parent_id: None,
+                session_id: None,
+                user_name: None,
+                is_service_account: None,
+                is_critical: None,
+                can_set_information: false,
+                name: "example.exe".into(),
+                image_path: Some(r"C:\Apps\測試\example.exe".into()),
+            }],
+            name: "example.exe".into(),
+        });
+        self.context = context.then_some(iced::Point::new(130.0, 80.0));
+        self.process_tab = ProcessTab::Immediate;
     }
 
     pub(super) fn modal_open(&self) -> bool {
@@ -696,6 +722,11 @@ impl ProcessList {
                 }
             }
             Message::DismissActionFeedback => self.action_feedback = None,
+            Message::CopyExecutablePath => {
+                if let Some(path) = self.selected.as_ref().and_then(Selection::path_text) {
+                    return iced::clipboard::write(path.to_owned());
+                }
+            }
             Message::Properties => {
                 if let Some(path) = self.selected.as_ref().and_then(Selection::path) {
                     let path = path.to_path_buf();
@@ -1669,6 +1700,7 @@ impl ProcessList {
         }
         if let Some(selection) = &self.selected {
             let path = selection.path();
+            let can_copy_path = selection.path_text().is_some();
             let eligible = selection.processes.iter().any(live_action_available);
             let can_stop = selection.can_stop();
             let tree = selection.processes.len() > 1;
@@ -1751,6 +1783,11 @@ impl ProcessList {
                                 "process_list.open_process_location",
                                 Message::Menu(Box::new(Message::OpenLocation)),
                                 path.is_some(),
+                            ),
+                            (
+                                "process_list.copy_executable_path",
+                                Message::Menu(Box::new(Message::CopyExecutablePath)),
+                                can_copy_path,
                             ),
                             (
                                 "process_list.properties",
@@ -1955,6 +1992,12 @@ impl ProcessList {
                     ]
                     .width(Fill)
                     .spacing(design::space::TIGHT),
+                    super::widgets::tooltip(
+                        super::widgets::icon_button("icons/copy.svg")
+                            .on_press_maybe(can_copy_path.then_some(Message::CopyExecutablePath)),
+                        text(t!("process_list.copy_executable_path").to_string()),
+                        iced::widget::tooltip::Position::Bottom,
+                    ),
                     super::widgets::icon_button("icons/x.svg").on_press(Message::CloseSelection),
                 ]
                 .spacing(design::space::MEDIUM)
@@ -3478,6 +3521,47 @@ mod tests {
         assert_eq!(list.rows.len(), 1);
         assert_eq!(list.offsets, vec![0.0, ROW_HEIGHT]);
     }
+    #[test]
+    fn copy_path_preserves_the_group_path_and_requires_exact_text() {
+        use std::os::windows::ffi::OsStringExt;
+
+        let path = concat!(r"\\server\share\Applications\測試.exe", " ");
+        let mut list = ProcessList {
+            processes: vec![process(10, 1, path), process(11, 2, path)],
+            ..ProcessList::default()
+        };
+        list.rebuild();
+        let mut selected = list.selection(&list.rows[0]);
+        assert_eq!(selected.processes.len(), 2);
+        assert_eq!(selected.path_text(), Some(path));
+
+        let mut settings = Settings::default();
+        settings.general.enabled = false;
+        let mut editor = SettingsEditor::with_settings(settings);
+        let runtime = RuntimeHandle::start(&editor.runtime_settings_snapshot());
+        list.selected = Some(selected.clone());
+        list.context = Some(iced::Point::ORIGIN);
+        let clipboard = list.update(
+            Message::Menu(Box::new(Message::CopyExecutablePath)),
+            &mut editor,
+            &runtime,
+        );
+        assert_eq!(clipboard.units(), 1);
+        assert!(list.selected.is_none());
+        assert!(!list.context_open());
+
+        selected.processes[0].image_path = Some(PathBuf::from(OsString::from_wide(&[0xD800])));
+        assert!(selected.path_text().is_none());
+        selected.processes[0].image_path = None;
+        assert!(selected.path_text().is_none());
+        list.selected = Some(selected);
+        assert_eq!(
+            list.update(Message::CopyExecutablePath, &mut editor, &runtime)
+                .units(),
+            0
+        );
+    }
+
     #[test]
     fn selected_targets_retain_creation_time_across_refresh() {
         let old = process(10, 100, r"C:\A\app.exe");
