@@ -1016,11 +1016,13 @@ Read the relevant section before changing feature policy, ownership, restoration
 - CPU Pressure Restraint, Limit Background Processors, and Dynamic Resource Zones are independent Adaptive Engine producers. Zones-only work must keep AC/Battery automation alive without enabling priority/efficiency assists.
 - The limiter owns its existing percentage, selector, custom mask, and soft/hard method. `dynamic_resource_zone_settings` owns the separate zone share, selector, and custom mask. Speed defaults zoning off; Performance retains zoning on.
 - Zones require fresh eligible foreground and hot background competition outside startup grace. One combined Adaptive generation applies background first, requires verified effective placement, then applies foreground. Loss of competition withdraws foreground immediately on reconciliation; partial failure resolves to the independently eligible limiter or no allocation, retaining controller cleanup/backoff.
-- When enabled CPU Behaviour differs between A/C and battery, unknown power source pauses
-  Adaptive Engine's process policies and releases only their CPU placement and priority claims.
-  Restoration keeps the controllers' existing retry cadence. Confirmed source recovery starts
-  fresh pressure qualification. System Bottleneck and Adaptive Processor Power keep their
-  separate observation and ownership rules.
+- When enabled CPU Behaviour or its ordered By Running App exclusion selectors differ between
+  A/C and battery, unknown power source pauses Adaptive Engine's process policies and releases
+  only their CPU placement and priority claims. Restoration keeps the controllers' existing retry
+  cadence. On reconfiguration or source recovery, Adaptive yields one pass if a pending By Running
+  App observation can change its exclusion. By Running App still observes after manual stops.
+  Confirmed source recovery starts fresh pressure qualification. System Bottleneck and Adaptive
+  Processor Power keep their separate observation and ownership rules.
 - The existing CPU allocation coordinator remains the only owner of baselines and recovery. Explicit Soft > Hard > Instance Balancing > Adaptive precedence applies to zoning too. Unsupported/multiple processor groups or invalid/empty partitions make zoning unavailable, never a silent All fallback.
 - Disabled zoning may deserialize a missing zone block into inactive defaults without rewriting input. Enabled zoning with a missing block fails at deserialization for root, Battery, and presets. Do not infer zone values from the limiter or add a migration.
 

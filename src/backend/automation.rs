@@ -1714,7 +1714,16 @@ fn run_background_automation(
                 process_priority_refresh_interval,
             );
         }
+        let by_running_app_due =
+            by_running_app_refresh_required && scheduler.is_due(RefreshDomain::ByRunningApp, now);
+        // Leave Adaptive due while By Running App refreshes the exclusion after manual controls.
+        let adaptive_exclusion_refresh_pending = settings_changed
+            && adaptive_engine_process_active
+            && by_running_app_due
+            && (by_running_app_required(settings)
+                || runner.by_running_app_manager.active_process_id().is_some());
         let adaptive_engine_process_status = if adaptive_engine_process_refresh_required
+            && !adaptive_exclusion_refresh_pending
             && scheduler.is_due(RefreshDomain::AdaptiveEngineProcess, now)
         {
             let status = runner.run_adaptive_engine_process_update(
@@ -1983,7 +1992,7 @@ fn run_background_automation(
                 CPU_ALLOCATION_RECONCILIATION_RETRY_INITIAL;
             scheduler.schedule_now(RefreshDomain::CpuAllocationReconciliation, now);
         }
-        if by_running_app_refresh_required && scheduler.is_due(RefreshDomain::ByRunningApp, now) {
+        if by_running_app_due {
             if let Some(by_running_app_status) =
                 runner.run_by_running_app_update(settings, &mut observations)
             {

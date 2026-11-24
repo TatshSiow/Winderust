@@ -1,4 +1,5 @@
 use super::*;
+use crate::features::power_plan_control::by_running_app::same_exclusion_selectors;
 
 pub(super) fn automation_refresh_interval(
     hidden_to_tray: bool,
@@ -143,7 +144,8 @@ pub(super) fn adaptive_engine_process_waits_for_source(
             policy.maximum_restrained_apps,
         )
     };
-    shared_policy(ac) != shared_policy(dc)
+    !same_exclusion_selectors(&settings.by_running_app, &battery.by_running_app)
+        || shared_policy(ac) != shared_policy(dc)
         || (ac.limit_background_processors_enabled
             && (ac.cpu_allocation_method != dc.cpu_allocation_method
                 || ac.background_processor_selection != dc.background_processor_selection

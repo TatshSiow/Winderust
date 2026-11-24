@@ -2696,7 +2696,7 @@ fn cpu_allocation_handoffs_bypass_release_retry_deadlines() {
     let route = source_scope(
         source,
         "let immediate_cpu_allocation_reconciliation =",
-        "if by_running_app_refresh_required",
+        "if by_running_app_due {",
     );
     assert!(route.contains("runner.cpu_allocation_immediate_reconciliation_pending()"));
     assert!(route.contains("cpu_allocation_release_retry_pending_at_pass_start"));
@@ -3510,6 +3510,57 @@ fn adaptive_engine_waits_only_for_unverified_source_dependent_cpu_behaviour() {
     settings.adaptive_engine.enabled = false;
     assert!(adaptive_engine_process_waits_for_source(&settings, None));
     assert!(adaptive_enablement_varies_by_source(&settings));
+    settings.battery_profile_mut().adaptive_engine.enabled = false;
+    assert!(!adaptive_engine_process_waits_for_source(&settings, None));
+}
+
+#[test]
+fn adaptive_engine_waits_for_source_dependent_running_app_exclusions() {
+    use crate::config::{ByRunningAppRule, ExecutableSelector};
+
+    let name = |value: &str, plan: Option<&str>| ByRunningAppRule {
+        enabled: true,
+        name: value.to_owned(),
+        selector: ExecutableSelector::ExactName {
+            executable_name: value.to_owned(),
+        },
+        power_plan_guid: plan.map(str::to_owned),
+    };
+    let mut settings = Settings::default();
+    settings.adaptive_engine.enabled = true;
+    settings
+        .adaptive_engine_process
+        .cpu_pressure_restraint_enabled = true;
+    settings.by_running_app.enabled = true;
+    settings.by_running_app.rules = vec![
+        name("game.exe", Some("ac-plan")),
+        name("editor.exe", Some("ac-plan")),
+    ];
+    let battery = settings.battery_profile_mut();
+    let mut relative = name("relative", Some("battery-plan"));
+    relative.selector = ExecutableSelector::ExactPath {
+        executable_path: "relative.exe".into(),
+    };
+    battery.by_running_app.rules = vec![
+        name("unconfigured.exe", None),
+        name("GAME.EXE", Some("battery-plan")),
+        relative,
+        name("editor.exe", Some("battery-plan")),
+    ];
+    assert!(!adaptive_engine_process_waits_for_source(&settings, None));
+    assert!(ordinary_power_plan_waits_for_source(&settings, None));
+
+    settings
+        .battery_profile_mut()
+        .by_running_app
+        .rules
+        .swap(1, 3);
+    assert!(adaptive_engine_process_waits_for_source(&settings, None));
+    for source in [Some(true), Some(false)] {
+        assert!(!adaptive_engine_process_waits_for_source(&settings, source));
+    }
+
+    settings.adaptive_engine.enabled = false;
     settings.battery_profile_mut().adaptive_engine.enabled = false;
     assert!(!adaptive_engine_process_waits_for_source(&settings, None));
 }

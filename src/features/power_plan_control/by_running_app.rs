@@ -317,6 +317,31 @@ fn rule_executable(rule: &ByRunningAppRule) -> Option<(&str, Option<&Path>)> {
     }
 }
 
+pub(crate) fn same_exclusion_selectors(
+    left: &ByRunningAppSettings,
+    right: &ByRunningAppSettings,
+) -> bool {
+    let mut right = exclusion_selectors(right);
+    exclusion_selectors(left).all(|(name, path)| {
+        right.next().is_some_and(|(other_name, other_path)| {
+            path.map(Path::as_os_str) == other_path.map(Path::as_os_str)
+                && same_executable_name(name, other_name)
+        })
+    }) && right.next().is_none()
+}
+
+fn exclusion_selectors(
+    settings: &ByRunningAppSettings,
+) -> impl Iterator<Item = (&str, Option<&Path>)> {
+    settings.rules.iter().filter_map(move |rule| {
+        if !settings.enabled || rule.configured_plan().is_none() {
+            return None;
+        }
+        let (name, path) = rule_executable(rule)?;
+        path.is_none_or(Path::is_absolute).then_some((name, path))
+    })
+}
+
 struct ProcessMatcher<SessionId, ExecutablePath> {
     current_process_id: u32,
     current_session_id: u32,
