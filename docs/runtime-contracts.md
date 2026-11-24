@@ -419,6 +419,8 @@ Read the relevant section before changing feature policy, ownership, restoration
   observed external plan changes clear held By CPU Load state. A failed or
   unconfirmed application cannot start a hold. Active-plan observation precedes
   retained-rule evaluation, using the controller's existing observation cadence.
+  If a later verification detects a different active plan, a hold or release
+  threshold cannot switch it back. The next check reevaluates ordinary rules.
   Release yields to other selected rules or a configured Else plan. The global
   restoration policy runs only when no plan is selected. An Else plan can begin
   or continue the shared temporary episode like any other automatic selection.

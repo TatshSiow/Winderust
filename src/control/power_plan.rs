@@ -754,6 +754,10 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
         if !decision.restore_previous_plan {
             self.cancel_temporary_restoration();
         }
+        let retained_cpu_match = matches!(
+            decision.cpu_load_match,
+            Some(ByCpuLoadMatch::MinimumHold | ByCpuLoadMatch::ReleaseThreshold)
+        );
         self.last_decision = Some(decision);
         self.restoring_previous = false;
         if self.adaptive_active() {
@@ -813,6 +817,11 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
                 TemporaryEffect::Preserve => {}
             }
             self.clear_switch_failure(&target_guid);
+            return Ok(false);
+        }
+        if retained_cpu_match {
+            // A late read can invalidate the active plan after CPU Load chose to retain it.
+            self.clear_ordinary_decision();
             return Ok(false);
         }
         if self.is_switch_suppressed(&target_guid)
@@ -3523,6 +3532,56 @@ mod tests {
             .borrow()
             .iter()
             .any(|event| event.starts_with("apply:")));
+    }
+
+    #[test]
+    fn late_external_plan_read_cancels_cpu_load_retention() {
+        for (usage, selection) in [
+            (20.0, ByCpuLoadMatch::MinimumHold),
+            (70.0, ByCpuLoadMatch::ReleaseThreshold),
+        ] {
+            for restore_previous_plan in [true, false] {
+                let start = Instant::now();
+                let settings = cpu_load_settings();
+                let mut scheduler = ByCpuLoadScheduler::default();
+                let mut controller =
+                    PowerPlanController::with_platform(FakePlatform::new("managed"));
+                let primary = scheduler
+                    .current_decision_at(&settings, Some(80.0), start)
+                    .unwrap();
+                let mut request = cpu_load_decision(&primary);
+                request.restore_previous_plan = restore_previous_plan;
+                assert!(!controller.reconcile_ordinary(request, start).unwrap());
+                scheduler.confirm_applied_rule(
+                    Some(primary.rule_index),
+                    controller.current_guid(),
+                    start,
+                );
+
+                controller.platform.active = "external".into();
+                let (evaluated_at, applied_at) = if restore_previous_plan {
+                    let now = start + Duration::from_secs(1);
+                    (now, now)
+                } else {
+                    let deadline = start + ACTIVE_PLAN_REFRESH_INTERVAL;
+                    (deadline - Duration::from_millis(1), deadline)
+                };
+                controller.refresh_active_plan_if_due(evaluated_at).unwrap();
+                scheduler.observe_active_plan(controller.current_guid());
+                let retained = scheduler
+                    .current_decision_at(&settings, Some(usage), evaluated_at)
+                    .unwrap();
+                assert_eq!(retained.selection, selection);
+                let mut request = cpu_load_decision(&retained);
+                request.restore_previous_plan = restore_previous_plan;
+                controller.platform.events.borrow_mut().clear();
+
+                assert!(!controller.reconcile_ordinary(request, applied_at).unwrap());
+                assert_eq!(controller.current_guid(), Some("external"));
+                assert_eq!(controller.status().cpu_load_match, None);
+                assert_eq!(controller.platform.events.borrow().as_slice(), ["query"]);
+            }
+        }
     }
 
     #[test]
