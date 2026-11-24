@@ -309,6 +309,10 @@ hover/press; background shading supplies feedback.
   and App Suspension in that order. Reuse the existing landing-page cards and
   link each one to its own editor. Keep enable controls, rules, and status per
   feature.
+- Keep shared options for Resource Thresholds, Memory Trim, Instance Limits,
+  and the App Suspension background delay in their feature's expandable toggle
+  card. Let users configure these while the feature is off. Keep rule tables
+  and independent App Suspension controls accessible outside that card.
 - Keep Instance Balancing under CPU Control. Advanced Controls contains Timer
   Resolution and Win32 Priority Separation.
 

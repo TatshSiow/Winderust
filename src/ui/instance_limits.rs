@@ -15,12 +15,14 @@ use rust_i18n::t;
 #[derive(Default)]
 pub(super) struct Editor {
     path: String,
+    settings_expanded: bool,
     draft: Option<(Option<usize>, InstanceLimitsRule, String)>,
 }
 
 #[derive(Debug, Clone)]
 pub(super) enum Message {
     Enabled(bool),
+    ToggleSettings,
     Notify(bool),
     Path(String),
     Browse,
@@ -54,8 +56,13 @@ impl Editor {
         Some(rule)
     }
 
+    pub(super) fn toggle_settings(&mut self) {
+        self.settings_expanded = !self.settings_expanded;
+    }
+
     pub(super) fn update(&mut self, settings: &mut InstanceLimitsSettings, message: Message) {
         match message {
+            Message::ToggleSettings => self.toggle_settings(),
             Message::Enabled(value) => settings.enabled = value,
             Message::Notify(value) => settings.notify = value,
             Message::Path(path) => self.path = path,
@@ -248,19 +255,16 @@ impl Editor {
         }
         super::scrolling::scrollable(
             column![
-                widgets::toggle_card(
-                    "instance_limits.enable",
-                    settings.enabled,
-                    Some(Message::Enabled)
+                widgets::setting_group(
+                    "instance_limits.enable".to_string(),
+                    self.settings_expanded,
+                    Message::ToggleSettings,
+                    widgets::switch(settings.enabled, Some(Message::Enabled)),
+                    column![widgets::setting_row(
+                        "instance_limits.notify",
+                        widgets::switch(settings.notify, Some(Message::Notify)),
+                    )],
                 ),
-                widgets::heading(
-                    t!("instance_limits.notifications").to_string(),
-                    design::typography::BODY
-                ),
-                widgets::settings_card(widgets::setting_row(
-                    "instance_limits.notify",
-                    widgets::switch(settings.notify, Some(Message::Notify)),
-                )),
                 widgets::setting_title("common.rules"),
                 widgets::settings_card(picker),
                 widgets::process_rules_table([], rules, true),

@@ -42,6 +42,7 @@ pub(super) fn manual_result(result: MemoryTrimSnapshot) -> Result<(), String> {
 #[derive(Default)]
 pub(super) struct Editor {
     pub(super) path: String,
+    settings_expanded: bool,
     thresholds: [Option<String>; 3],
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -88,6 +89,7 @@ impl Threshold {
 #[derive(Debug, Clone)]
 pub(super) enum Message {
     Enabled(bool),
+    ToggleSettings,
     Path(String),
     Add,
     Threshold(Threshold, String),
@@ -108,6 +110,7 @@ impl Editor {
 
     pub(super) fn update(&mut self, settings: &mut SettingsEditor, message: Message) {
         match message {
+            Message::ToggleSettings => self.settings_expanded = !self.settings_expanded,
             Message::Enabled(v) if settings.memory_trim.enabled != v => {
                 settings.memory_trim.enabled = v;
             }
@@ -160,12 +163,6 @@ impl Editor {
         settings: &'a MemoryTrimSettings,
         candidates: &'a [super::app_picker::Candidate],
     ) -> Element<'a, Message> {
-        let mut body = column![super::widgets::toggle_card(
-            "memory_trim.enable",
-            settings.enabled,
-            Some(Message::Enabled)
-        ),]
-        .spacing(super::widgets::CARD_GAP);
         let field = |field: Threshold, unit: &str| {
             let formatted;
             let raw = if let Some(raw) = &self.thresholds[field as usize] {
@@ -182,18 +179,18 @@ impl Editor {
                     .width(design::STANDALONE_NUMERIC_WIDTH),
             )
         };
-        body = body
-            .push(super::widgets::heading(
-                t!("memory_trim.category_when_to_trim").to_string(),
-                design::typography::BODY,
-            ))
-            .push(super::widgets::settings_card(
-                super::widgets::settings_rows([
-                    field(Threshold::Load, "%").into(),
-                    field(Threshold::WorkingSet, "MB").into(),
-                    field(Threshold::Idle, "s").into(),
-                ]),
-            ));
+        let mut body = column![super::widgets::setting_group(
+            "memory_trim.enable".to_string(),
+            self.settings_expanded,
+            Message::ToggleSettings,
+            super::widgets::switch(settings.enabled, Some(Message::Enabled)),
+            super::widgets::settings_rows([
+                field(Threshold::Load, "%").into(),
+                field(Threshold::WorkingSet, "MB").into(),
+                field(Threshold::Idle, "s").into(),
+            ]),
+        )]
+        .spacing(super::widgets::CARD_GAP);
         let picker = super::app_picker::view_with_path_selection(
             &self.path,
             candidates,

@@ -1482,6 +1482,9 @@ impl WinderustApp {
             Message::InstanceLimits(instance_limits::Message::Browse) => {
                 return self.browse(Page::InstanceLimits);
             }
+            Message::InstanceLimits(instance_limits::Message::ToggleSettings) => {
+                self.instance_limits.toggle_settings();
+            }
             Message::InstanceLimits(message) => {
                 self.settings.edit_global(|settings| {
                     self.instance_limits
@@ -1506,6 +1509,9 @@ impl WinderustApp {
             }
             Message::ResourceThresholds(resource_thresholds::Message::Tab(resource)) => {
                 self.resource_thresholds.select_tab(resource);
+            }
+            Message::ResourceThresholds(resource_thresholds::Message::ToggleSettings) => {
+                self.resource_thresholds.toggle_settings();
             }
             Message::ResourceThresholds(resource_thresholds::Message::PreviewMatches) => {
                 return self

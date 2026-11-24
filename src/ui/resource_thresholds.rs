@@ -65,6 +65,7 @@ impl std::fmt::Display for ResourceThresholdsScope {
 #[derive(Default)]
 pub(super) struct Editor {
     match_by: MatchBy,
+    settings_expanded: bool,
     path: String,
     name: String,
     duration: Option<String>,
@@ -174,6 +175,7 @@ impl Draft {
 #[derive(Debug, Clone)]
 pub(super) enum Message {
     Enabled(bool),
+    ToggleSettings,
     MatchBy(MatchBy),
     Path(String),
     Name(String),
@@ -301,8 +303,13 @@ impl Editor {
         }
     }
 
+    pub(super) fn toggle_settings(&mut self) {
+        self.settings_expanded = !self.settings_expanded;
+    }
+
     pub(super) fn update(&mut self, settings: &mut ResourceThresholdsSettings, message: Message) {
         match message {
+            Message::ToggleSettings => self.toggle_settings(),
             Message::Enabled(value) => settings.enabled = value,
             Message::MatchBy(value) => self.match_by = value,
             Message::Path(value) => self.path = value,
@@ -526,23 +533,20 @@ impl Editor {
         }
         super::scrolling::scrollable(
             column![
-                widgets::toggle_card(
-                    "resource_thresholds.enable",
-                    settings.enabled,
-                    Some(Message::Enabled)
+                widgets::setting_group(
+                    "resource_thresholds.enable".to_string(),
+                    self.settings_expanded,
+                    Message::ToggleSettings,
+                    widgets::switch(settings.enabled, Some(Message::Enabled)),
+                    widgets::settings_rows([
+                        duration.into(),
+                        widgets::setting_row(
+                            "resource_thresholds.notify",
+                            widgets::switch(settings.notify, Some(Message::Notify)),
+                        )
+                        .into(),
+                    ]),
                 ),
-                widgets::heading(
-                    t!("resource_thresholds.shared").to_string(),
-                    design::typography::BODY
-                ),
-                widgets::settings_card(widgets::settings_rows([
-                    duration.into(),
-                    widgets::setting_row(
-                        "resource_thresholds.notify",
-                        widgets::switch(settings.notify, Some(Message::Notify)),
-                    )
-                    .into(),
-                ])),
                 widgets::setting_title("common.rules"),
                 self.add_rule_card(settings, candidates),
                 widgets::process_rules_table(

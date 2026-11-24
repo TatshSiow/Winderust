@@ -188,6 +188,13 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             if matches!(extra, Some(64..=65)) {
                 let _ = app.update(Message::InstanceLimits(instance_limits::Message::Edit(0)));
             }
+            if extra == Some(63) {
+                let before = app.settings.global().instance_limits.clone();
+                let _ = app.update(Message::InstanceLimits(
+                    instance_limits::Message::ToggleSettings,
+                ));
+                assert_eq!(app.settings.global().instance_limits, before);
+            }
         }
         if matches!(extra, Some(60..=61)) {
             use crate::features::watchdog::keep_running::{
@@ -428,6 +435,10 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                 let _ = app.update(Message::ResourceThresholds(
                     resource_thresholds::Message::CancelRule,
                 ));
+                let _ = app.update(Message::ResourceThresholds(
+                    resource_thresholds::Message::ToggleSettings,
+                ));
+                assert_eq!(app.settings.global().resource_thresholds, before);
             } else if extra == Some(52) {
                 let _ = app.update(Message::ResourceThresholds(
                     resource_thresholds::Message::MonitorEnabled(
@@ -580,6 +591,9 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                         enabled: false,
                         ..Default::default()
                     });
+                let before = app.settings.memory_trim.clone();
+                let _ = app.update(Message::Trim(memory_trim::Message::ToggleSettings));
+                assert_eq!(app.settings.memory_trim, before);
             }
         }
         if extra == Some(9) {
@@ -605,6 +619,9 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
         }
         if extra == Some(21) {
             app.settings.app_suspension.enabled = true;
+            let before = app.settings.app_suspension.clone();
+            let _ = app.update(Message::Suspension(app_suspension::Message::ToggleSettings));
+            assert_eq!(app.settings.app_suspension, before);
         }
         if extra == Some(24) {
             let _ = app.update(Message::Adaptive(adaptive_engine::Message::TuningTab(

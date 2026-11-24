@@ -15,6 +15,7 @@ use std::{collections::BTreeMap, path::Path};
 #[derive(Default)]
 pub(super) struct Editor {
     pub(super) path: String,
+    settings_expanded: bool,
     expanded: [bool; 3],
     delay_drafts: BTreeMap<Delay, String>,
     threshold_drafts: Vec<[Option<ThresholdDraft>; 2]>,
@@ -79,6 +80,7 @@ impl Delay {
 #[derive(Debug, Clone)]
 pub(super) enum Message {
     Enabled(bool),
+    ToggleSettings,
     Group(usize),
     Path(String),
     Add,
@@ -119,6 +121,7 @@ impl Editor {
     ) -> Option<(String, bool)> {
         let s = &settings.app_suspension;
         match m {
+            Message::ToggleSettings => self.settings_expanded = !self.settings_expanded,
             Message::Enabled(v) if s.enabled != v => settings.app_suspension.enabled = v,
             Message::Group(i) => {
                 if let Some(v) = self.expanded.get_mut(i) {
@@ -292,14 +295,13 @@ impl Editor {
     ) -> Element<'a, Message> {
         let s = &settings.app_suspension;
         let live = live_suspension_settings(settings, observed_plugged_in);
-        let mut body = column![
-            super::widgets::toggle_card("app_suspension.enable", s.enabled, Some(Message::Enabled)),
-            super::widgets::heading(
-                t!("app_suspension.behavior").to_string(),
-                design::typography::BODY
-            ),
-            super::widgets::settings_card(self.delay_row(Delay::Background, s)),
-        ]
+        let mut body = column![super::widgets::setting_group(
+            "app_suspension.enable".to_string(),
+            self.settings_expanded,
+            Message::ToggleSettings,
+            super::widgets::switch(s.enabled, Some(Message::Enabled)),
+            column![self.delay_row(Delay::Background, s)],
+        )]
         .spacing(super::widgets::CARD_GAP);
         for (i, key, enabled, toggle, rows) in [
             (
