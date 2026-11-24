@@ -571,6 +571,7 @@ processor_power:
 by_activity:
   power_plans: "電源計畫"
   input_detection: "輸入偵測"
+  input_detection_help: "至少保留一種輸入來源，讓 Winderust 能偵測操作活動。"
   invalid_idle_timeout: "請輸入 1 至 3600 秒的閒置逾時。"
   intro_1: "操作狀態排程會根據鍵盤、滑鼠與控制器活動切換電源計畫。"
   intro_2: "選擇閒置與活動狀態各自使用的電源計畫。輸入偵測會控制狀態切換。"

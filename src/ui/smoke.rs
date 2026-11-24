@@ -685,6 +685,19 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
         if extra == Some(19) {
             app.settings.by_activity.enabled = true;
         }
+        if extra.is_none() && page == Page::ByActivity {
+            app.settings.by_activity.input_detection = Default::default();
+            for message in [
+                by_activity::Message::Keyboard(false),
+                by_activity::Message::Mouse(false),
+                by_activity::Message::Controller(false),
+            ] {
+                let _ = app.update(Message::ByActivity(message));
+            }
+            let input = &app.settings.by_activity.input_detection;
+            assert!(input.controller && !input.keyboard && !input.mouse);
+            app.settings = SettingsEditor::with_settings((*app.settings).clone());
+        }
         if extra == Some(21) {
             app.settings.app_suspension.enabled = true;
             let before = app.settings.app_suspension.clone();

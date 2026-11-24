@@ -569,6 +569,7 @@ processor_power:
 by_activity:
   power_plans: "Power plans"
   input_detection: "Input detection"
+  input_detection_help: "Keep at least one input selected so Winderust can detect activity."
   invalid_idle_timeout: "Enter an idle timeout from 1 to 3600 seconds."
   intro_1: "By Activity switches power plans from keyboard, mouse, and controller activity."
   intro_2: "Choose the Idle and Active plans for each activity state. Input detection controls state changes."

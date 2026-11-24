@@ -4,7 +4,7 @@ use crate::ui::scrolling::scrollable;
 use iced::widget::column;
 use iced::{Element, Fill};
 
-use crate::config::Settings;
+use crate::config::{InputDetectionSettings, Settings};
 use crate::power::PowerPlan;
 
 const IDLE_TIMEOUT_RANGE: std::ops::RangeInclusive<u32> = 1..=3600;
@@ -28,28 +28,29 @@ pub(super) enum Message {
     ActivePlan(Option<String>),
 }
 
+fn input_change(
+    current: &InputDetectionSettings,
+    message: &Message,
+) -> Option<InputDetectionSettings> {
+    let mut changed = current.clone();
+    match *message {
+        Message::Keyboard(value) => changed.keyboard = value,
+        Message::Mouse(value) => changed.mouse = value,
+        Message::Controller(value) => changed.controller = value,
+        _ => return None,
+    }
+    changed.any_enabled().then_some(changed)
+}
+
 pub(super) fn update(settings: &mut crate::application::SettingsEditor, message: Message) {
-    let input_changed = matches!(
-        message,
-        Message::Keyboard(_) | Message::Mouse(_) | Message::Controller(_)
-    );
     let activity = &mut settings.by_activity;
     match message {
         Message::Enabled(value) => activity.enabled = value,
-        Message::Keyboard(value) => {
-            if value || activity.input_detection.mouse || activity.input_detection.controller {
-                activity.input_detection.keyboard = value;
+        Message::Keyboard(_) | Message::Mouse(_) | Message::Controller(_) => {
+            if let Some(changed) = input_change(&activity.input_detection, &message) {
+                activity.input_detection = changed;
             }
-        }
-        Message::Mouse(value) => {
-            if value || activity.input_detection.keyboard || activity.input_detection.controller {
-                activity.input_detection.mouse = value;
-            }
-        }
-        Message::Controller(value) => {
-            if value || activity.input_detection.keyboard || activity.input_detection.mouse {
-                activity.input_detection.controller = value;
-            }
+            activity.switch_to_performance_on_resume = activity.input_detection.any_enabled();
         }
         Message::IdleTimeout(value) => {
             if let Some(timeout) = parse_idle_timeout(&value) {
@@ -58,10 +59,6 @@ pub(super) fn update(settings: &mut crate::application::SettingsEditor, message:
         }
         Message::IdlePlan(guid) => activity.power_plans.power_save_guid = guid,
         Message::ActivePlan(guid) => activity.power_plans.performance_guid = guid,
-    }
-    if input_changed {
-        settings.by_activity.switch_to_performance_on_resume =
-            settings.by_activity.input_detection.any_enabled();
     }
 }
 
@@ -93,8 +90,9 @@ pub(super) fn view<'a>(
     let plan_picker = |guid: &Option<String>, action: fn(Option<String>) -> Message| {
         super::widgets::plan(guid.as_deref(), plans, action)
     };
-    let flag = |key: &str, value, action: fn(bool) -> Message| {
-        widgets::setting_row(key, widgets::switch(value, Some(action)))
+    let flag = |key: &str, value: bool, action: fn(bool) -> Message| {
+        let available = input_change(&activity.input_detection, &action(!value)).is_some();
+        widgets::setting_row(key, widgets::switch(value, available.then_some(action)))
     };
     let power_plans = widgets::settings_rows([
         widgets::setting_row(
@@ -128,10 +126,7 @@ pub(super) fn view<'a>(
                 design::typography::BODY
             ),
             widgets::settings_card(power_plans),
-            widgets::heading(
-                rust_i18n::t!("by_activity.input_detection").to_string(),
-                design::typography::BODY
-            ),
+            widgets::setting_title("by_activity.input_detection"),
             widgets::settings_card(widgets::settings_rows([
                 flag(
                     "by_activity.keyboard_input",
@@ -220,5 +215,56 @@ mod tests {
             settings.by_activity.power_plans.performance_guid.as_deref(),
             Some("active")
         );
+    }
+
+    #[test]
+    fn only_the_last_selected_input_is_unavailable_to_toggle() {
+        use iced::advanced::{
+            layout,
+            widget::{operation::Focusable, Id, Operation, Tree},
+            Layout,
+        };
+        use iced::{Rectangle, Size};
+
+        #[derive(Default)]
+        struct FocusableCount(usize);
+        impl Operation for FocusableCount {
+            fn traverse(&mut self, visit: &mut dyn FnMut(&mut dyn Operation)) {
+                visit(self);
+            }
+
+            fn focusable(&mut self, _: Option<&Id>, _: Rectangle, _: &mut dyn Focusable) {
+                self.0 += 1;
+            }
+        }
+
+        let renderer = iced::Renderer::new(design::typography::FONT, iced::Pixels(14.0));
+        let limits = layout::Limits::new(Size::ZERO, Size::new(466.0, 320.0));
+        let inputs = Inputs::default();
+        let count_focusable = |[keyboard, mouse, controller]: [bool; 3]| {
+            let mut settings = Settings::default();
+            settings.by_activity.input_detection = InputDetectionSettings {
+                keyboard,
+                mouse,
+                controller,
+            };
+            let mut view = view(&settings, &[], &inputs);
+            let mut tree = Tree::new(&view);
+            let node = view.as_widget_mut().layout(&mut tree, &renderer, &limits);
+            let mut count = FocusableCount::default();
+            view.as_widget_mut()
+                .operate(&mut tree, Layout::new(&node), &renderer, &mut count);
+            count.0
+        };
+        let all_available = count_focusable([true, true, true]);
+        for selected in [
+            [true, false, false],
+            [false, true, false],
+            [false, false, true],
+        ] {
+            assert_eq!(count_focusable(selected) + 1, all_available);
+        }
+        assert_eq!(count_focusable([true, false, true]), all_available);
+        assert_eq!(count_focusable([false, false, false]), all_available);
     }
 }
