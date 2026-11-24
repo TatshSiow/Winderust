@@ -1269,7 +1269,6 @@ resource_thresholds:
   enable: "啟用資源門檻"
   enable_help: "在背景監控指定程式，持續符合門檻條件後才執行回應。"
   rules_help: "表格數值依序為警告 / 嚴重門檻。"
-  measurement: "監控項目"
   cpu: "CPU (%)"
   memory_percent: "工作集 (%)"
   memory_mb: "工作集 (MB)"

@@ -335,12 +335,13 @@ hover/press; background shading supplies feedback.
   Matching rows identify other enabled rules by their position in the current
   Resource Thresholds rule list.
   For an Executable path rule, it also lists same-named executables elsewhere.
-- Each resource tab starts with its Enable CPU monitoring or Enable memory monitoring
-  toggle. When enabled, the comparison appears by the tabs and the thresholds
-  appear below the toggle. At or below
-  clears the draft actions for that resource and uses notifications. For monitors
-  with action controls, default to notification only and show the restart rate
-  limit and data-loss consequence inline.
+- Each resource tab starts with a collapsed Enable CPU monitoring or Enable memory
+  monitoring card. Its switch controls monitoring. The header reveals the
+  comparison, memory metric where applicable, thresholds, and eligible actions
+  independently of the switch. At or below clears the draft actions for that
+  resource and uses notifications. Where action controls are available, default
+  to notification only and explain the restart rate limit and risk of losing
+  unsaved work inline.
   The main page owns the default sustained duration and one notification switch.
 - Explain that the chosen scope evaluates eligible instances at each matching path
   together or individually. Working Set measures resident memory and may double-count

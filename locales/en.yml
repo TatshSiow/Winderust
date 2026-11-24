@@ -1266,7 +1266,6 @@ resource_thresholds:
   enable: "Enable Resource Thresholds"
   enable_help: "Monitor configured apps in the background. Warning and critical responses require sustained usage."
   rules_help: "Table values show warning / critical thresholds."
-  measurement: "Measurement"
   cpu: "CPU (%)"
   memory_percent: "Working Set (%)"
   memory_mb: "Working Set (MB)"

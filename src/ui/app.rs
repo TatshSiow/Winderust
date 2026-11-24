@@ -1513,6 +1513,11 @@ impl WinderustApp {
             Message::ResourceThresholds(resource_thresholds::Message::ToggleSettings) => {
                 self.resource_thresholds.toggle_settings();
             }
+            Message::ResourceThresholds(resource_thresholds::Message::ToggleMonitorSettings(
+                resource,
+            )) => {
+                self.resource_thresholds.toggle_monitor_settings(resource);
+            }
             Message::ResourceThresholds(resource_thresholds::Message::PreviewMatches) => {
                 return self
                     .resource_thresholds

@@ -78,6 +78,7 @@ struct Draft {
     duration: String,
     tab: DraftTab,
     monitors: [ThresholdInputs; 2],
+    monitor_settings_expanded: [bool; 2],
     match_preview: MatchPreview,
 }
 
@@ -127,6 +128,7 @@ impl Draft {
                 }
             }),
             rule,
+            monitor_settings_expanded: [false; 2],
             match_preview: MatchPreview::Unrequested,
         }
     }
@@ -191,6 +193,7 @@ pub(super) enum Message {
     MatchPreviewLoaded(Arc<()>, Result<Vec<preview::MatchRow>, String>),
     Scope(ResourceThresholdsScope),
     MonitorEnabled(ResourceThresholdsResource, bool),
+    ToggleMonitorSettings(ResourceThresholdsResource),
     Comparison(ResourceThresholdsResource, ResourceThresholdsComparison),
     MemoryUnit(ResourceThresholdsMemoryUnit),
     Duration(String),
@@ -266,6 +269,13 @@ impl Editor {
     pub(super) fn select_tab(&mut self, resource: ResourceThresholdsResource) {
         if let Some(draft) = &mut self.draft {
             draft.tab = DraftTab::Monitor(resource);
+        }
+    }
+
+    pub(super) fn toggle_monitor_settings(&mut self, resource: ResourceThresholdsResource) {
+        if let Some(draft) = &mut self.draft {
+            let expanded = &mut draft.monitor_settings_expanded[resource as usize];
+            *expanded = !*expanded;
         }
     }
 
@@ -346,6 +356,7 @@ impl Editor {
             }
             Message::CancelRule => self.draft = None,
             Message::Tab(resource) => self.select_tab(resource),
+            Message::ToggleMonitorSettings(resource) => self.toggle_monitor_settings(resource),
             Message::Remove(index) if index < settings.rules.len() => {
                 settings.rules.remove(index);
                 self.draft = None;
@@ -617,25 +628,22 @@ impl Editor {
     fn monitor_details(draft: &Draft, resource: ResourceThresholdsResource) -> Column<'_, Message> {
         let rule = &draft.rule;
         let monitor = rule.monitor(resource);
-        let mut details = column![widgets::toggle_card(
-            match resource {
-                ResourceThresholdsResource::Cpu => "resource_thresholds.monitor_cpu",
-                ResourceThresholdsResource::Memory => "resource_thresholds.monitor_memory",
-            },
-            monitor.enabled,
-            Some(move |enabled| Message::MonitorEnabled(resource, enabled)),
-        )]
-        .spacing(widgets::CARD_GAP);
-        if !monitor.enabled {
-            return details;
-        }
+        let mut measurement = vec![widgets::setting_row(
+            "resource_thresholds.comparison",
+            widgets::pick_list(
+                [
+                    ResourceThresholdsComparison::AtOrAbove,
+                    ResourceThresholdsComparison::AtOrBelow,
+                ],
+                Some(monitor.comparison),
+                move |value| Message::Comparison(resource, value),
+            )
+            .width(180),
+        )
+        .into()];
         if resource == ResourceThresholdsResource::Memory {
-            details = details
-                .push(widgets::heading(
-                    t!("resource_thresholds.measurement").to_string(),
-                    design::typography::BODY,
-                ))
-                .push(widgets::settings_card(widgets::setting_row(
+            measurement.push(
+                widgets::setting_row(
                     "resource_thresholds.memory_metric",
                     widgets::pick_list(
                         ResourceThresholdsMemoryUnit::ALL,
@@ -643,41 +651,23 @@ impl Editor {
                         Message::MemoryUnit,
                     )
                     .width(180),
-                )));
+                )
+                .into(),
+            );
         }
+        // Keep the measurement and response sections in separate repaint regions.
+        // The Memory tab adds a metric row that shifts both response sections.
+        let mut rows = vec![super::scrolling::repaint_group(widgets::settings_rows(
+            measurement,
+        ))];
         let raw = &draft.monitors[resource as usize];
         let metric = rule.metric(resource);
         for (critical, response, threshold) in [
             (false, &monitor.warning, &raw.warning),
             (true, &monitor.critical, &raw.critical),
         ] {
-            let threshold = widgets::setting_row_with_unit(
-                "resource_thresholds.threshold",
-                metric.unit(),
-                widgets::text_input("", threshold)
-                    .on_input(move |value| Message::Threshold(resource, critical, value))
-                    .on_submit(Message::SaveRule)
-                    .width(design::STANDALONE_NUMERIC_WIDTH),
-            )
-            .into();
-            let action = rule.allows_actions(resource).then(|| {
-                widgets::setting_row(
-                    "resource_thresholds.action",
-                    widgets::pick_list(
-                        [
-                            ResourceThresholdsAction::None,
-                            ResourceThresholdsAction::Terminate,
-                            ResourceThresholdsAction::Restart,
-                        ],
-                        Some(response.action),
-                        move |value| Message::Action(resource, critical, value),
-                    )
-                    .width(180),
-                )
-                .into()
-            });
-            details = details
-                .push(widgets::heading(
+            let mut details = column![
+                widgets::heading(
                     format!(
                         "{} · {}",
                         metric,
@@ -688,12 +678,50 @@ impl Editor {
                         })
                     ),
                     design::typography::BODY,
-                ))
-                .push(widgets::settings_card(widgets::settings_rows(
-                    std::iter::once(threshold).chain(action),
-                )));
+                ),
+                widgets::setting_row_with_unit(
+                    "resource_thresholds.threshold",
+                    metric.unit(),
+                    widgets::text_input("", threshold)
+                        .on_input(move |value| Message::Threshold(resource, critical, value))
+                        .on_submit(Message::SaveRule)
+                        .width(design::STANDALONE_NUMERIC_WIDTH),
+                ),
+            ]
+            .spacing(design::space::MEDIUM);
+            if rule.allows_actions(resource) {
+                details = details
+                    .push(widgets::settings_divider())
+                    .push(widgets::setting_row(
+                        "resource_thresholds.action",
+                        widgets::pick_list(
+                            [
+                                ResourceThresholdsAction::None,
+                                ResourceThresholdsAction::Terminate,
+                                ResourceThresholdsAction::Restart,
+                            ],
+                            Some(response.action),
+                            move |value| Message::Action(resource, critical, value),
+                        )
+                        .width(180),
+                    ));
+            }
+            rows.push(super::scrolling::repaint_group(details));
         }
-        details
+        column![widgets::setting_group(
+            match resource {
+                ResourceThresholdsResource::Cpu => "resource_thresholds.monitor_cpu",
+                ResourceThresholdsResource::Memory => "resource_thresholds.monitor_memory",
+            }
+            .into(),
+            draft.monitor_settings_expanded[resource as usize],
+            Message::ToggleMonitorSettings(resource),
+            widgets::switch(
+                monitor.enabled,
+                Some(move |enabled| Message::MonitorEnabled(resource, enabled)),
+            ),
+            widgets::settings_rows(rows),
+        )]
     }
 
     fn match_preview_details(draft: &Draft) -> Column<'_, Message> {
@@ -843,30 +871,6 @@ impl Editor {
                 "resource-thresholds-match-preview",
             ),
         };
-        let comparison = match draft.tab {
-            DraftTab::Monitor(resource) if rule.monitor(resource).enabled => Some(
-                row![
-                    widgets::tooltip(
-                        text(t!("resource_thresholds.comparison").to_string())
-                            .style(text::secondary),
-                        text(t!("resource_thresholds.comparison_help").to_string()).width(280),
-                        iced::widget::tooltip::Position::Top,
-                    ),
-                    widgets::pick_list(
-                        [
-                            ResourceThresholdsComparison::AtOrAbove,
-                            ResourceThresholdsComparison::AtOrBelow
-                        ],
-                        Some(rule.monitor(resource).comparison),
-                        move |value| Message::Comparison(resource, value),
-                    )
-                    .width(180),
-                ]
-                .spacing(design::space::SMALL)
-                .align_y(iced::Center),
-            ),
-            _ => None,
-        };
         let frame = widgets::rule_dialog(
             t!(if draft.index.is_some() {
                 "resource_thresholds.edit_rule"
@@ -900,30 +904,24 @@ impl Editor {
                     )
                     .width(180),
                 )),
-                row![
-                    iced::widget::container(row![
-                        widgets::panel_tab(
-                            t!("resource_thresholds.cpu_tab").to_string(),
-                            draft.tab == DraftTab::Monitor(ResourceThresholdsResource::Cpu),
-                            Message::Tab(ResourceThresholdsResource::Cpu)
-                        ),
-                        widgets::panel_tab(
-                            t!("resource_thresholds.memory_tab").to_string(),
-                            draft.tab == DraftTab::Monitor(ResourceThresholdsResource::Memory),
-                            Message::Tab(ResourceThresholdsResource::Memory)
-                        ),
-                        widgets::panel_tab(
-                            t!("resource_thresholds.match_preview").to_string(),
-                            draft.tab == DraftTab::MatchPreview,
-                            Message::PreviewMatches
-                        ),
-                    ])
-                    .style(widgets::tab_bar),
-                    iced::widget::Space::new().width(Fill)
-                ]
-                .extend(comparison.map(Into::into))
-                .spacing(design::space::SMALL)
-                .align_y(iced::Center),
+                iced::widget::container(row![
+                    widgets::panel_tab(
+                        t!("resource_thresholds.cpu_tab").to_string(),
+                        draft.tab == DraftTab::Monitor(ResourceThresholdsResource::Cpu),
+                        Message::Tab(ResourceThresholdsResource::Cpu)
+                    ),
+                    widgets::panel_tab(
+                        t!("resource_thresholds.memory_tab").to_string(),
+                        draft.tab == DraftTab::Monitor(ResourceThresholdsResource::Memory),
+                        Message::Tab(ResourceThresholdsResource::Memory)
+                    ),
+                    widgets::panel_tab(
+                        t!("resource_thresholds.match_preview").to_string(),
+                        draft.tab == DraftTab::MatchPreview,
+                        Message::PreviewMatches
+                    ),
+                ])
+                .style(widgets::tab_bar),
             ]
             .extend(validation)
             .push(super::motion::wrap(
@@ -1161,6 +1159,43 @@ mod tests {
     }
 
     #[test]
+    fn monitor_disclosure_is_independent_of_tabs_and_enablement() {
+        use ResourceThresholdsResource::{Cpu, Memory};
+
+        let mut rule = ResourceThresholdsRule::new(r"C:\Apps\test.exe".into());
+        rule.memory.enabled = true;
+        rule.cpu.critical.action = ResourceThresholdsAction::Restart;
+        let mut settings = ResourceThresholdsSettings {
+            rules: vec![rule.clone()],
+            ..Default::default()
+        };
+        let mut editor = Editor::default();
+        editor.update(&mut settings, Message::Edit(0));
+        assert_eq!(
+            editor.draft.as_ref().unwrap().monitor_settings_expanded,
+            [false, false]
+        );
+        editor.update(&mut settings, Message::ToggleMonitorSettings(Cpu));
+        editor.update(&mut settings, Message::MonitorEnabled(Cpu, false));
+        editor.update(&mut settings, Message::Tab(Memory));
+        editor.update(&mut settings, Message::Tab(Cpu));
+        assert_eq!(
+            editor.draft.as_ref().unwrap().monitor_settings_expanded,
+            [true, false]
+        );
+        assert_eq!(settings.rules[0], rule);
+
+        editor.update(&mut settings, Message::SaveRule);
+        rule.cpu.enabled = false;
+        assert_eq!(settings.rules[0], rule);
+        editor.update(&mut settings, Message::Edit(0));
+        assert_eq!(
+            editor.draft.as_ref().unwrap().monitor_settings_expanded,
+            [false, false]
+        );
+    }
+
+    #[test]
     fn closing_and_reopening_a_rule_discards_its_pending_match_preview() {
         let mut editor = Editor::default();
         let mut settings = ResourceThresholdsSettings {
@@ -1267,6 +1302,9 @@ mod tests {
         };
         let mut editor = Editor::default();
         editor.update(&mut settings, Message::Edit(0));
+        for resource in ResourceThresholdsResource::ALL {
+            editor.update(&mut settings, Message::ToggleMonitorSettings(resource));
+        }
         let mut renderer = iced::Renderer::new(design::typography::FONT, iced::Pixels(14.0));
         let bounds = Rectangle::with_size(Size::new(1400.0, 900.0));
         let physical = Size::new(2100, 1350);

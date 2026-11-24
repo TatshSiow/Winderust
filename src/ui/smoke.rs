@@ -441,6 +441,11 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                 assert_eq!(app.settings.global().resource_thresholds, before);
             } else if extra == Some(52) {
                 let _ = app.update(Message::ResourceThresholds(
+                    resource_thresholds::Message::ToggleMonitorSettings(
+                        crate::config::ResourceThresholdsResource::Cpu,
+                    ),
+                ));
+                let _ = app.update(Message::ResourceThresholds(
                     resource_thresholds::Message::MonitorEnabled(
                         crate::config::ResourceThresholdsResource::Cpu,
                         false,
@@ -449,6 +454,11 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             } else if extra == Some(53) {
                 let _ = app.update(Message::ResourceThresholds(
                     resource_thresholds::Message::Tab(
+                        crate::config::ResourceThresholdsResource::Memory,
+                    ),
+                ));
+                let _ = app.update(Message::ResourceThresholds(
+                    resource_thresholds::Message::ToggleMonitorSettings(
                         crate::config::ResourceThresholdsResource::Memory,
                     ),
                 ));
