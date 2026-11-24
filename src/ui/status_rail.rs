@@ -866,12 +866,18 @@ fn sidebar_state(
             return FeatureRunState::Error;
         }
     }
-    if page == Page::CpuLimiter && runtime.feature_status.cpu_limiter.waiting_for_power_source {
-        return if runtime.worker_error.is_some() || summary.last_error.is_some() {
-            FeatureRunState::Error
-        } else {
-            FeatureRunState::Paused
-        };
+    if page == Page::CpuLimiter {
+        let limiter = &runtime.feature_status.cpu_limiter;
+        if limiter.release_pending && summary.last_error.is_some() {
+            return FeatureRunState::Error;
+        }
+        if limiter.waiting_for_power_source {
+            return if runtime.worker_error.is_some() || summary.last_error.is_some() {
+                FeatureRunState::Error
+            } else {
+                FeatureRunState::Paused
+            };
+        }
     }
     if page == Page::MemoryTrim
         && matches!(
@@ -2013,6 +2019,18 @@ mod tests {
         let waiting = labels(&runtime);
         assert_eq!(waiting[0], t!("sidebar_status.paused"));
         assert_eq!(waiting[1], t!("cpu_limiter.waiting_for_power_source"));
+
+        let limiter = &mut std::sync::Arc::make_mut(&mut runtime.feature_status).cpu_limiter;
+        limiter.waiting_for_power_source = false;
+        limiter.release_pending = true;
+        limiter.last_error = Some("release failed".into());
+        let releasing = labels(&runtime);
+        assert_eq!(releasing[0], t!("common.error"));
+        assert!(releasing.iter().any(|text| text == "release failed"));
+
+        let limiter = &mut std::sync::Arc::make_mut(&mut runtime.feature_status).cpu_limiter;
+        limiter.release_pending = false;
+        assert_eq!(labels(&runtime)[0], t!("common.inactive"));
     }
 
     #[test]

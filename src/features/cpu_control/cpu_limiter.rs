@@ -34,6 +34,7 @@ pub struct CpuLimiterSnapshot {
     pub enabled: bool,
     pub(crate) observation_paused: bool,
     pub(crate) waiting_for_power_source: bool,
+    pub(crate) release_pending: bool,
     pub scanned_processes: usize,
     pub limited_processes: usize,
     pub tracked_processes: usize,
@@ -365,6 +366,7 @@ impl CpuLimiterManager {
             enabled: true,
             observation_paused: false,
             waiting_for_power_source: false,
+            release_pending: false,
             scanned_processes,
             limited_processes: limited_apps.len(),
             failed_apps: failed_apps.into_iter().collect(),
@@ -426,6 +428,7 @@ impl CpuLimiterManager {
         }
         CpuLimiterSnapshot {
             enabled,
+            release_pending: self.release_pending,
             last_error: release_error
                 .filter(|_| self.release_pending)
                 .or(last_error),
