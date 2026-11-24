@@ -105,7 +105,7 @@ fn usable_basename(value: &[u16], terminated: bool) -> bool {
     terminated
         && !value.is_empty()
         && value.len() < 259
-        && String::from_utf16(value).is_ok()
+        && char::decode_utf16(value.iter().copied()).all(|unit| unit.is_ok())
         && !value.iter().any(|value| {
             *value < 32
                 || b"\\/:\"<>|?*"
