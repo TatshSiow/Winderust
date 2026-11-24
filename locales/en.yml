@@ -533,7 +533,7 @@ processor_power:
   readback_difference: "%{source} · %{setting}. Expected %{requested}, read back %{actual}."
   ac_preset: "AC Preset"
   battery_preset: "Battery Preset"
-  core_parking_min: "Core parking min"
+  core_parking_min: "Minimum unparked processors"
   core_parking_min_help: "Minimum share of logical processors Windows keeps unparked in each NUMA node."
   processor_min: "Processor min"
   processor_min_help: "Lowest processor performance state Windows can request, as a share of maximum performance."

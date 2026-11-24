@@ -535,7 +535,7 @@ processor_power:
   readback_difference: "%{source} · %{setting}。預期值為 %{requested}，讀回值為 %{actual}。"
   ac_preset: "插電預設"
   battery_preset: "電池預設"
-  core_parking_min: "核心停駐最小值"
+  core_parking_min: "未停駐邏輯處理器最低比例"
   core_parking_min_help: "Windows 在每個 NUMA 節點中維持未停駐狀態的邏輯處理器最低比例。"
   processor_min: "最小處理器效能"
   processor_min_help: "Windows 可要求的最低處理器效能狀態，以最大效能的百分比表示。"
