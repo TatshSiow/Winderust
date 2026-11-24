@@ -1343,7 +1343,7 @@ pub(super) fn slider_stepper<'a, M: Clone + 'a>(
     draft: Option<&str>,
     range: std::ops::RangeInclusive<u32>,
     step: u32,
-    action: fn(String) -> M,
+    action: impl Fn(String) -> M + Clone + 'a,
 ) -> Element<'a, M> {
     let formatted;
     let input = if let Some(draft) = draft {
@@ -1354,10 +1354,14 @@ pub(super) fn slider_stepper<'a, M: Clone + 'a>(
     };
     let stepper_range = u64::from(*range.start())..=u64::from(*range.end());
     let slider_value = value.clamp(*stepper_range.start(), *stepper_range.end()) as u32;
+    let on_slide = action.clone();
+    let slider = slider(range, slider_value, move |value| {
+        on_slide(value.to_string())
+    })
+    .step(step)
+    .width(Fill);
     row![
-        slider(range, slider_value, move |value| action(value.to_string()))
-            .step(step)
-            .width(Fill),
+        slider,
         stepper(input, stepper_range, u64::from(step), Some(action)),
     ]
     .spacing(design::space::SMALL)

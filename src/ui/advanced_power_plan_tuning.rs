@@ -1,6 +1,6 @@
 use super::widgets::{
     action_button, icon_button, pick_list, power_plan_label, preset_select,
-    processor_boost_mode_label, slider, text_input,
+    processor_boost_mode_label, text_input,
 };
 use super::{design, power_plan_control};
 use crate::application::{
@@ -266,7 +266,6 @@ pub(super) enum Message {
     ReviewRestore,
     ConfirmApply,
     CancelApply,
-    Value(Source, Field, u32),
     ValueText(Source, Field, String),
     Boost(Source, ProcessorBoostMode),
     Scheduling(Source, SchedulingField, ProcessorSchedulingPolicy),
@@ -822,21 +821,15 @@ impl Editor {
                 self.confirm_apply(plans);
             }
             Message::CancelApply => self.cancel_apply_review(),
-            Message::Value(source, field, value) => {
-                if let Some(values) = self.values.as_mut() {
-                    self.invalid_percentages[source as usize].0[field as usize] = None;
-                    set_field(source_values(values, source), field, value);
-                    self.update_dirty();
-                }
-            }
-            Message::ValueText(source, field, value) => {
-                if self.values.is_some() {
-                    if let Some(value) =
-                        self.invalid_percentages[source as usize].edit(field, value)
-                    {
-                        self.update(settings, plans, Message::Value(source, field, value));
-                    }
-                }
+            Message::ValueText(source, field, raw) => {
+                let Some(values) = self.values.as_mut() else {
+                    return;
+                };
+                let Some(value) = self.invalid_percentages[source as usize].edit(field, raw) else {
+                    return;
+                };
+                set_field(source_values(values, source), field, value);
+                self.update_dirty();
             }
             Message::Boost(source, value) => {
                 if let Some(values) = self.values.as_mut() {
@@ -1072,29 +1065,22 @@ impl Editor {
                 let action = preset_select(Rc::clone(&options), selected, move |p| {
                     Message::Load(source, p)
                 });
+                let invalid = &self.invalid_percentages[source as usize];
                 let mut controls = Vec::new();
                 for (field, label, value) in fields(values.processor) {
                     controls.push(
-                        column![row![
-                            text(super::widgets::label_with_unit(&t!(label), "%")).width(Fill),
-                            slider(0..=100, value, move |v| Message::Value(source, field, v))
-                                .width(180),
-                            super::widgets::stepper(
-                                &self.invalid_percentages[source as usize].text(field, value),
+                        column![
+                            super::widgets::setting_title_with_unit(label, "%"),
+                            super::widgets::slider_stepper(
+                                u64::from(value),
+                                invalid.0[field as usize].as_deref(),
                                 0..=100,
                                 1,
-                                Some(move |v| Message::ValueText(source, field, v))
-                            )
+                                move |value| Message::ValueText(source, field, value),
+                            ),
                         ]
                         .spacing(design::space::SMALL)
-                        .height(46)
-                        .align_y(iced::Center)]
-                        .spacing(design::space::SMALL)
-                        .extend(
-                            self.invalid_percentages[source as usize]
-                                .feedback(field)
-                                .map(Element::from),
-                        )
+                        .extend(invalid.feedback(field).map(Element::from))
                         .into(),
                     );
                 }
@@ -1881,7 +1867,7 @@ mod tests {
         editor.update(
             &mut settings,
             &[],
-            Message::Value(Source::Ac, Field::Parking, 0),
+            Message::ValueText(Source::Ac, Field::Parking, "0".into()),
         );
         assert!(!editor.invalid_percentages[0].any());
         assert!(editor.invalid_percentages[1].any());
@@ -2102,7 +2088,7 @@ mod tests {
             editor.update(
                 &mut settings,
                 &[],
-                Message::Value(Source::Ac, Field::Maximum, value),
+                Message::ValueText(Source::Ac, Field::Maximum, value.to_string()),
             );
             assert_eq!(editor.dirty, dirty);
         }
@@ -2792,7 +2778,7 @@ mod tests {
         editor.update(
             &mut settings,
             &plans,
-            Message::Value(Source::Ac, Field::Minimum, 33),
+            Message::ValueText(Source::Ac, Field::Minimum, "33".into()),
         );
         editor.update(
             &mut settings,
@@ -2855,7 +2841,7 @@ mod tests {
                 editor.update(
                     &mut settings,
                     &plans,
-                    Message::Value(Source::Ac, Field::Minimum, 33),
+                    Message::ValueText(Source::Ac, Field::Minimum, "33".into()),
                 );
             }
             if invalid {
@@ -2933,7 +2919,7 @@ mod tests {
             editor.update(
                 &mut test_settings(),
                 &plans,
-                Message::Value(Source::Ac, Field::Minimum, 25),
+                Message::ValueText(Source::Ac, Field::Minimum, "25".into()),
             );
             assert!(!editor.dirty);
             assert!(!editor.confirm_apply(&plans));

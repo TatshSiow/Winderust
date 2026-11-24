@@ -292,7 +292,8 @@ hover/press; background shading supplies feedback.
   separately for Plugged In and On Battery. Offer all six scheduling choices
   for recognized policy values. For unavailable controls, distinguish missing,
   unreadable, and unknown values, and show the raw index for unknown values.
-  Keep the other controls editable.
+  Keep the other controls editable. Put each percentage label above its slider
+  and stepper so the label can wrap beside the Info panel.
 - Built-in presets keep current scheduling policies; custom presets can capture
   choices or keep current. Re-read after every Apply attempt, including partial
   failure. Adaptive Engine does not own these persistent writes.
