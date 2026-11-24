@@ -771,7 +771,14 @@ fn waiting_for_power_source(page: Page, runtime: &RuntimeStatusSnapshot) -> bool
                 .dynamic_priority_boost
                 .waiting_for_power_source
         }
+        Page::IoPriority => runtime.feature_status.io_priority.waiting_for_power_source,
         Page::GpuPriority => runtime.feature_status.gpu_priority.waiting_for_power_source,
+        Page::MemoryPriority => {
+            runtime
+                .feature_status
+                .memory_priority
+                .waiting_for_power_source
+        }
         Page::BackgroundEfficiency => {
             runtime
                 .feature_status
@@ -1994,12 +2001,16 @@ mod tests {
         features.process_priority.waiting_for_power_source = true;
         features.thread_priority.waiting_for_power_source = true;
         features.dynamic_priority_boost.waiting_for_power_source = true;
+        features.io_priority.waiting_for_power_source = true;
         features.gpu_priority.waiting_for_power_source = true;
+        features.memory_priority.waiting_for_power_source = true;
         for page in [
             Page::ProcessPriority,
             Page::ThreadPriority,
             Page::DynamicPriorityBoost,
+            Page::IoPriority,
             Page::GpuPriority,
+            Page::MemoryPriority,
         ] {
             let paused = rail_text(view(page, &settings, &runtime, &[], None).unwrap());
             assert_eq!(paused[0], t!("sidebar_status.paused"));
@@ -2010,12 +2021,16 @@ mod tests {
         features.process_priority.last_error = Some("priority restore failed".into());
         features.thread_priority.last_error = Some("thread restore failed".into());
         features.dynamic_priority_boost.last_error = Some("boost restore failed".into());
+        features.io_priority.last_error = Some("I/O restore failed".into());
         features.gpu_priority.last_error = Some("GPU restore failed".into());
+        features.memory_priority.last_error = Some("memory restore failed".into());
         for (page, reason) in [
             (Page::ProcessPriority, "priority restore failed"),
             (Page::ThreadPriority, "thread restore failed"),
             (Page::DynamicPriorityBoost, "boost restore failed"),
+            (Page::IoPriority, "I/O restore failed"),
             (Page::GpuPriority, "GPU restore failed"),
+            (Page::MemoryPriority, "memory restore failed"),
         ] {
             let error = rail_text(view(page, &settings, &runtime, &[], None).unwrap());
             assert_eq!(error[0], t!("common.error"));

@@ -551,7 +551,7 @@ impl RuntimeCore {
             }
             Err(_) => errors.push("Suspension restoration state is unavailable.".to_owned()),
         }
-        self.run_memory_priority_update(&settings, &mut observations);
+        self.run_memory_priority_update(&settings, false, &mut observations);
         if let Err(error) = self.memory_priority_controller.shutdown() {
             errors.push(format!("Memory Priority restoration failed: {error}"));
         }
@@ -570,7 +570,7 @@ impl RuntimeCore {
             errors.push(format!("Thread Priority restoration failed: {error}"));
         }
         self.run_process_priority_update(&settings, false, &mut observations);
-        self.run_io_priority_update(&settings, &mut observations);
+        self.run_io_priority_update(&settings, false, &mut observations);
         if let Err(error) = self.io_priority_controller.shutdown() {
             errors.push(format!("I/O Priority restoration failed: {error}"));
         }
@@ -1299,8 +1299,14 @@ impl RuntimeCore {
     pub(super) fn run_io_priority_update(
         &mut self,
         settings: &Settings,
+        waiting_for_power_source: bool,
         observations: &mut CycleObservations,
     ) -> IoPrioritySnapshot {
+        if waiting_for_power_source {
+            return self
+                .io_priority_manager
+                .pause_for_power_source(&mut self.io_priority_controller, &mut self.action_log);
+        }
         self.io_priority_manager.update(
             &mut self.io_priority_controller,
             &settings.io_priority,
@@ -1950,8 +1956,15 @@ impl RuntimeCore {
     pub(super) fn run_memory_priority_update(
         &mut self,
         settings: &Settings,
+        waiting_for_power_source: bool,
         observations: &mut CycleObservations,
     ) -> MemoryPrioritySnapshot {
+        if waiting_for_power_source {
+            return self.memory_priority_manager.pause_for_power_source(
+                &mut self.memory_priority_controller,
+                &mut self.action_log,
+            );
+        }
         self.memory_priority_manager.update_rules(
             &mut self.memory_priority_controller,
             &settings.memory_priority,

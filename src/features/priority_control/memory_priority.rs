@@ -30,6 +30,7 @@ use super::PriorityProcessTier;
 pub struct MemoryPrioritySnapshot {
     pub enabled: bool,
     pub observation_paused: bool,
+    pub(crate) waiting_for_power_source: bool,
     pub adjusted_processes: usize,
     pub skipped_processes: usize,
     pub failed_processes: usize,
@@ -400,6 +401,24 @@ impl MemoryPriorityManager {
             "foreground app is unknown",
             None,
         )
+    }
+
+    pub(crate) fn pause_for_power_source(
+        &mut self,
+        controller: &mut MemoryPriorityController,
+        action_log: &mut ActionLog,
+    ) -> MemoryPrioritySnapshot {
+        MemoryPrioritySnapshot {
+            waiting_for_power_source: true,
+            ..self.paused_snapshot(
+                controller,
+                ControlOwner::MemoryPriority,
+                ActionLogFeature::MemoryPriority,
+                action_log,
+                "power source is unknown",
+                None,
+            )
+        }
     }
 
     fn paused_snapshot(

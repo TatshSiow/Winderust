@@ -1536,8 +1536,14 @@ fn run_background_automation(
                 )
             },
         );
-        let io_priority_refresh_required =
-            settings_changed || feature_refresh_required(settings, settings.io_priority.enabled);
+        let io_priority_schedule = priority_source_schedule(
+            &configured_settings,
+            settings,
+            plugged_in,
+            windows_event_watcher_active,
+            settings_changed,
+            |profile| (&profile.io_priority, profile.io_priority.enabled),
+        );
         let gpu_priority_schedule = priority_source_schedule(
             &configured_settings,
             settings,
@@ -1546,8 +1552,14 @@ fn run_background_automation(
             settings_changed,
             |profile| (&profile.gpu_priority, profile.gpu_priority.enabled),
         );
-        let memory_priority_refresh_required = settings_changed
-            || feature_refresh_required(settings, settings.memory_priority.enabled);
+        let memory_priority_schedule = priority_source_schedule(
+            &configured_settings,
+            settings,
+            plugged_in,
+            windows_event_watcher_active,
+            settings_changed,
+            |profile| (&profile.memory_priority, profile.memory_priority.enabled),
+        );
         let watchdog_refresh_required = settings_changed
             || feature_refresh_required(
                 configured_settings.as_ref(),
@@ -1705,8 +1717,13 @@ fn run_background_automation(
                 BOTTLENECK_CLASSIFIER_REFRESH_INTERVAL,
             );
         }
-        if io_priority_refresh_required && scheduler.is_due(RefreshDomain::IoPriority, now) {
-            let io_priority_status = runner.run_io_priority_update(settings, &mut observations);
+        if io_priority_schedule.refresh_required && scheduler.is_due(RefreshDomain::IoPriority, now)
+        {
+            let io_priority_status = runner.run_io_priority_update(
+                settings,
+                io_priority_schedule.waiting_for_source,
+                &mut observations,
+            );
             update_io_priority_status(&shared, io_priority_status);
             scheduler.schedule_after(RefreshDomain::IoPriority, now, io_priority_refresh_interval);
         }
@@ -1755,10 +1772,14 @@ fn run_background_automation(
                 gpu_priority_refresh_interval,
             );
         }
-        if memory_priority_refresh_required && scheduler.is_due(RefreshDomain::MemoryPriority, now)
+        if memory_priority_schedule.refresh_required
+            && scheduler.is_due(RefreshDomain::MemoryPriority, now)
         {
-            let memory_priority_status =
-                runner.run_memory_priority_update(settings, &mut observations);
+            let memory_priority_status = runner.run_memory_priority_update(
+                settings,
+                memory_priority_schedule.waiting_for_source,
+                &mut observations,
+            );
             update_memory_priority_status(&shared, memory_priority_status);
             scheduler.schedule_after(
                 RefreshDomain::MemoryPriority,
@@ -2205,7 +2226,7 @@ fn run_background_automation(
                     dynamic_priority_boost_refresh_interval,
                 ),
                 (
-                    io_priority_refresh_required,
+                    io_priority_schedule.refresh_required,
                     RefreshDomain::IoPriority,
                     io_priority_refresh_interval,
                 ),
@@ -2215,7 +2236,7 @@ fn run_background_automation(
                     gpu_priority_refresh_interval,
                 ),
                 (
-                    memory_priority_refresh_required,
+                    memory_priority_schedule.refresh_required,
                     RefreshDomain::MemoryPriority,
                     memory_priority_refresh_interval,
                 ),
@@ -2292,7 +2313,9 @@ fn run_background_automation(
         if process_priority_schedule.source_recheck
             || thread_priority_schedule.source_recheck
             || dynamic_priority_boost_schedule.source_recheck
+            || io_priority_schedule.source_recheck
             || gpu_priority_schedule.source_recheck
+            || memory_priority_schedule.source_recheck
             || background_efficiency_waits_for_source
             || timer_resolution_waits_for_source
             || (!timer_resolution_active
