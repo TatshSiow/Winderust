@@ -54,6 +54,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                     | 42
                     | 45
                     | 46
+                    | 49
                     | 52
                     | 55
                     | 56
@@ -652,6 +653,9 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             app.settings.process_priority.enabled = true;
             app.settings.memory_trim.enabled = true;
             app.settings.io_priority.enabled = true;
+            app.settings = SettingsEditor::with_settings((*app.settings).clone());
+        }
+        if matches!(extra, Some(13 | 16 | 29..=34 | 38 | 42 | 43 | 49)) {
             use crate::action_log::{ActionLogEntry, ActionLogFeature, ActionLogResult};
             app.status.action_log_entries = Arc::new(
                 (0..10)
@@ -671,7 +675,6 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                     })
                     .collect(),
             );
-            app.settings = SettingsEditor::with_settings((*app.settings).clone());
         }
         let search = if matches!(extra, Some(26..=28 | 43)) {
             if extra == Some(26) {
@@ -720,6 +723,15 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                 let _ = app.update(down());
             }
             open
+        } else if matches!(extra, Some(16 | 49)) {
+            let query = if extra == Some(16) {
+                "1234"
+            } else {
+                "no-match.exe"
+            };
+            app.update(Message::ActionLog(action_log::Message::Search(
+                query.into(),
+            )))
         } else {
             Task::none()
         };

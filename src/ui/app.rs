@@ -1360,6 +1360,7 @@ impl WinderustApp {
                         | action_log::Message::Feature(..)
                         | action_log::Message::AllLevels(_)
                         | action_log::Message::AllFeatures(_)
+                        | action_log::Message::Search(_)
                 );
                 self.action_log.update(message);
                 if reset {

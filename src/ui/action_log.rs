@@ -1,9 +1,11 @@
-use std::sync::Arc;
+use std::{num::NonZeroU32, sync::Arc};
 
 use super::popover;
 
 use super::design;
-use super::widgets::{button, checkbox, pick_list, Choice};
+use super::widgets::{
+    button, checkbox, pick_list, search_field, text_input, Choice, SEARCH_INPUT_PADDING,
+};
 use crate::action_log::{ActionLogEntry, ActionLogFeature, ActionLogLevel, ActionLogResult};
 use crate::config::ActionLogMode;
 use crate::ui::scrolling::scrollable;
@@ -15,6 +17,7 @@ use rust_i18n::t;
 pub(super) struct Editor {
     level: Vec<ActionLogLevel>,
     feature: Vec<ActionLogFeature>,
+    search: String,
     offset: std::cell::Cell<f32>,
     pending_export: Option<Arc<Vec<ActionLogEntry>>>,
 }
@@ -23,6 +26,7 @@ impl Default for Editor {
         Self {
             level: ActionLogLevel::ALL.to_vec(),
             feature: FEATURES.to_vec(),
+            search: String::new(),
             offset: std::cell::Cell::new(0.0),
             pending_export: None,
         }
@@ -34,6 +38,7 @@ pub(super) enum Message {
     Feature(ActionLogFeature, bool),
     AllLevels(bool),
     AllFeatures(bool),
+    Search(String),
     Scrolled(f32),
     KeyboardScroll(Scroll, f32),
     Clear,
@@ -82,6 +87,7 @@ impl Editor {
             entries,
             &self.level,
             &self.feature,
+            &self.search,
         ))
         .len();
         let max = (count as f32 * ACTION_LOG_ROW_HEIGHT - height).max(0.0);
@@ -141,6 +147,10 @@ impl Editor {
                 } else {
                     Vec::new()
                 };
+                self.offset.set(0.0);
+            }
+            Message::Search(query) => {
+                self.search = query;
                 self.offset.set(0.0);
             }
             Message::Scrolled(offset) => self.offset.set(offset),
@@ -267,9 +277,21 @@ impl Editor {
         entries: &'a [ActionLogEntry],
         candidates: &'a [super::app_picker::Candidate],
     ) -> Element<'a, Message> {
-        super::widgets::table_frame(iced::widget::responsive(move |size| {
-            self.view_at_size(entries, candidates, size)
-        }))
+        column![
+            super::scrolling::repaint_group(search_field(
+                text_input(&t!("action_log.search_placeholder"), &self.search)
+                    .padding(SEARCH_INPUT_PADDING)
+                    .on_input(Message::Search)
+                    .width(280),
+                (!self.search.is_empty()).then(|| Message::Search(String::new())),
+            )),
+            super::widgets::table_frame(iced::widget::responsive(move |size| {
+                self.view_at_size(entries, candidates, size)
+            })),
+        ]
+        .spacing(design::space::SMALL)
+        .height(Fill)
+        .into()
     }
 
     fn view_at_size<'a>(
@@ -282,6 +304,7 @@ impl Editor {
             entries,
             &self.level,
             &self.feature,
+            &self.search,
         ));
         let count = groups.len();
         let body_height =
@@ -634,9 +657,16 @@ fn action_log_filtered_entries<'a>(
     entries: &'a [ActionLogEntry],
     level_filter: &'a [ActionLogLevel],
     feature_filter: &'a [ActionLogFeature],
+    search: &str,
 ) -> impl Iterator<Item = &'a ActionLogEntry> {
+    let search = search.trim().to_lowercase();
+    let pid = search.parse::<NonZeroU32>().ok().map(NonZeroU32::get);
     entries.iter().rev().filter(move |entry| {
-        level_filter.contains(&entry.result.level()) && feature_filter.contains(&entry.feature)
+        level_filter.contains(&entry.result.level())
+            && feature_filter.contains(&entry.feature)
+            && (search.is_empty()
+                || pid.is_some_and(|pid| entry.process_id == Some(pid))
+                || entry.process_name.to_lowercase().contains(search.as_str()))
     })
 }
 
@@ -833,7 +863,7 @@ mod tests {
         ] {
             let levels = [level];
             let filtered: Vec<_> =
-                action_log_filtered_entries(&entries, &levels, &FEATURES).collect();
+                action_log_filtered_entries(&entries, &levels, &FEATURES, "").collect();
             assert_eq!(
                 filtered
                     .iter()
@@ -934,7 +964,7 @@ mod tests {
             );
         }
         let entries = log.entries();
-        let filtered = action_log_filtered_entries(&entries, &ActionLogLevel::ALL, &FEATURES);
+        let filtered = action_log_filtered_entries(&entries, &ActionLogLevel::ALL, &FEATURES, "");
         assert_eq!(
             group_entries(filtered)
                 .iter()
@@ -961,7 +991,7 @@ mod tests {
             );
         }
         let entries = log.entries();
-        let filtered = action_log_filtered_entries(&entries, &ActionLogLevel::ALL, &FEATURES);
+        let filtered = action_log_filtered_entries(&entries, &ActionLogLevel::ALL, &FEATURES, "");
         assert_eq!(
             group_entries(filtered)
                 .iter()
@@ -1007,7 +1037,7 @@ mod tests {
                 }
                 let entries = log.entries();
                 let filtered =
-                    action_log_filtered_entries(&entries, &ActionLogLevel::ALL, &FEATURES);
+                    action_log_filtered_entries(&entries, &ActionLogLevel::ALL, &FEATURES, "");
                 let groups = group_entries(filtered);
                 assert_eq!(groups.len(), 2, "{feature:?} {result:?}");
                 assert_eq!(groups[0].len(), 3);
@@ -1050,6 +1080,70 @@ mod tests {
     }
 
     #[test]
+    fn process_search_filters_batch_members_and_keyboard_scroll() {
+        use ActionLogFeature::{CpuLimiter, SleepPrevention};
+        use ActionLogResult::{Applied, Failed};
+
+        let mut log = crate::action_log::ActionLog::new(6);
+        log.begin_batch();
+        for (feature, result, pid, name) in [
+            (CpuLimiter, Failed, 1000, "ÄPP.exe"),
+            (CpuLimiter, Failed, 420, "Other.exe"),
+            (CpuLimiter, Failed, 42, "äpp-helper.exe"),
+            (CpuLimiter, Applied, 41, "Äpp.exe"),
+            (SleepPrevention, Failed, 40, "Äpp.exe"),
+        ] {
+            log.record(feature, Some(pid), name, result, "Same reason.");
+        }
+        log.begin_batch();
+        log.record(CpuLimiter, Some(43), "Äpp.exe", Failed, "Same reason.");
+        let entries = Arc::new(log.entries());
+        let mut editor = Editor {
+            level: vec![ActionLogLevel::Error],
+            feature: vec![CpuLimiter],
+            ..Editor::default()
+        };
+
+        editor.update(Message::Search(" ÄPP ".into()));
+        let groups = group_entries(action_log_filtered_entries(
+            &entries,
+            &editor.level,
+            &editor.feature,
+            &editor.search,
+        ));
+        let grouped_pids: Vec<Vec<_>> = groups
+            .iter()
+            .map(|group| group.iter().map(|entry| entry.process_id).collect())
+            .collect();
+        assert_eq!(
+            grouped_pids,
+            vec![vec![Some(43)], vec![Some(42), Some(1000)]]
+        );
+        let _ = editor.keyboard_scroll::<Message>(&entries, Scroll::End, ACTION_LOG_ROW_HEIGHT);
+        assert_eq!(editor.offset.get(), ACTION_LOG_ROW_HEIGHT);
+
+        editor.update(Message::Search("42".into()));
+        assert_eq!(editor.offset.get(), 0.0);
+        let matches: Vec<_> =
+            action_log_filtered_entries(&entries, &editor.level, &editor.feature, &editor.search)
+                .map(|entry| entry.process_id)
+                .collect();
+        assert_eq!(matches, vec![Some(42)]);
+        let _ = editor.keyboard_scroll::<Message>(&entries, Scroll::End, ACTION_LOG_ROW_HEIGHT);
+        assert_eq!(editor.offset.get(), 0.0);
+
+        assert!(editor.begin_export(&entries));
+        assert!(Arc::ptr_eq(&entries, &editor.finish_export().unwrap()));
+
+        editor.update(Message::Search(String::new()));
+        assert_eq!(
+            action_log_filtered_entries(&entries, &editor.level, &editor.feature, &editor.search)
+                .count(),
+            4
+        );
+    }
+
+    #[test]
     fn combined_filters_reverse_order_and_csv_preserves_quoted_unicode() {
         let mut entries = vec![ActionLogEntry {
             batch_id: 1,
@@ -1071,44 +1165,45 @@ mod tests {
             action_log_filtered_entries(
                 &entries,
                 &[ActionLogLevel::Error],
-                &[ActionLogFeature::CpuLimiter]
+                &[ActionLogFeature::CpuLimiter],
+                "",
             )
             .next()
             .map(|entry| entry.sequence),
             Some(2)
         );
         assert_eq!(
-            action_log_filtered_entries(&entries, &ActionLogLevel::ALL, &FEATURES)
+            action_log_filtered_entries(&entries, &ActionLogLevel::ALL, &FEATURES, "")
                 .next()
                 .map(|entry| entry.sequence),
             Some(2)
         );
         let mut editor = Editor::default();
         assert_eq!(
-            action_log_filtered_entries(&entries, &editor.level, &editor.feature).count(),
+            action_log_filtered_entries(&entries, &editor.level, &editor.feature, "").count(),
             2
         );
         editor.update(Message::AllLevels(false));
         assert!(
-            action_log_filtered_entries(&entries, &editor.level, &editor.feature)
+            action_log_filtered_entries(&entries, &editor.level, &editor.feature, "")
                 .next()
                 .is_none()
         );
         editor.update(Message::Level(ActionLogLevel::Information, true));
         editor.update(Message::Level(ActionLogLevel::Error, true));
         assert_eq!(
-            action_log_filtered_entries(&entries, &editor.level, &editor.feature).count(),
+            action_log_filtered_entries(&entries, &editor.level, &editor.feature, "").count(),
             2
         );
         editor.update(Message::AllFeatures(false));
         assert!(
-            action_log_filtered_entries(&entries, &editor.level, &editor.feature)
+            action_log_filtered_entries(&entries, &editor.level, &editor.feature, "")
                 .next()
                 .is_none()
         );
         editor.update(Message::Feature(ActionLogFeature::CpuLimiter, true));
         assert_eq!(
-            action_log_filtered_entries(&entries, &editor.level, &editor.feature).count(),
+            action_log_filtered_entries(&entries, &editor.level, &editor.feature, "").count(),
             2
         );
         editor.update(Message::AllLevels(true));
