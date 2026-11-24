@@ -144,7 +144,7 @@ impl Editor {
         ] {
             let label = match tier {
                 Tier::Background => "efficiency_mode.enable",
-                Tier::Focus => "efficiency_mode.foreground_detection",
+                Tier::Focus => "common.foreground_detection",
                 Tier::VisibleWindow => "common.visible_window_detection",
             }
             .to_string();

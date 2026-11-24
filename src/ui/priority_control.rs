@@ -544,7 +544,7 @@ impl Editor {
             let mut group = column![].spacing(design::space::MEDIUM);
             let label = match tier {
                 Tier::Background => format!("{key}.enable"),
-                Tier::Focus => format!("{key}.foreground_detection"),
+                Tier::Focus => "common.foreground_detection".to_string(),
                 Tier::VisibleWindow => "common.visible_window_detection".to_string(),
             };
             let action: Element<'_, Message> = if tier == Tier::Background {
@@ -589,7 +589,7 @@ impl Editor {
         body = body.push(super::widgets::setting_title_with_help(
             "common.rules",
             "",
-            &format!("{key}.exclusions_help"),
+            "priority_control.custom_rules_help",
         ));
         body = body.push(super::widgets::settings_card(
             super::app_picker::view_with_path_selection(
