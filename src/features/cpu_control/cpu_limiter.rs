@@ -40,7 +40,7 @@ pub struct CpuLimiterSnapshot {
     pub tracked_processes: usize,
     pub skipped_processes: usize,
     pub failed_processes: usize,
-    pub limited_apps: Vec<String>,
+    pub(crate) active_limits: Vec<(String, CpuLimiterActivation)>,
     pub(crate) restore_pending_apps: Vec<String>,
     pub failed_apps: Vec<String>,
     pub auto_excluded_processes: Vec<String>,
@@ -315,7 +315,7 @@ impl CpuLimiterManager {
                 BTreeMap::new()
             }
         };
-        let mut limited_apps = Vec::new();
+        let mut active_limits = Vec::new();
         let mut restore_pending_apps = BTreeSet::new();
         for (key, target) in selected {
             let activation = match by_key.remove(&key) {
@@ -326,7 +326,7 @@ impl CpuLimiterManager {
                 }
                 None => continue,
             };
-            limited_apps.push(target.executable_path.clone());
+            active_limits.push((target.executable_path.clone(), activation));
             if !self.limited.contains_key(&key) {
                 action_log.record(
                     ActionLogFeature::CpuLimiter,
@@ -368,12 +368,12 @@ impl CpuLimiterManager {
             waiting_for_power_source: false,
             release_pending: false,
             scanned_processes,
-            limited_processes: limited_apps.len(),
+            limited_processes: active_limits.len(),
             failed_apps: failed_apps.into_iter().collect(),
             tracked_processes,
             skipped_processes,
             failed_processes,
-            limited_apps,
+            active_limits,
             restore_pending_apps: restore_pending_apps.into_iter().collect(),
             auto_excluded_processes: auto_excluded_processes.into_iter().collect(),
             last_error,
@@ -477,7 +477,7 @@ pub fn is_builtin_excluded(process_name: &str) -> bool {
 fn limiter_activation_detail(activation: CpuLimiterActivation) -> String {
     let (allowed_cpu_time_percent, detail) = match activation {
         CpuLimiterActivation::Job(percent) => (percent, ""),
-        CpuLimiterActivation::AncestorJob => {
+        CpuLimiterActivation::AncestorJob(_) => {
             return "Managed under its ancestor app group's CPU Limiter target.".to_owned();
         }
         CpuLimiterActivation::ThreadFallback(percent) => (
@@ -1048,7 +1048,7 @@ mod tests {
             "Set the managed app group's Allowed CPU Time target to 1%. Automatic thread fallback was used because Windows kept the app in another Job Object."
         );
         assert_eq!(
-            limiter_activation_detail(CpuLimiterActivation::AncestorJob),
+            limiter_activation_detail(CpuLimiterActivation::AncestorJob(1)),
             "Managed under its ancestor app group's CPU Limiter target."
         );
     }

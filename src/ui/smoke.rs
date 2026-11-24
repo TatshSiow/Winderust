@@ -4,7 +4,7 @@ use crate::backend::power_source::is_plugged_in;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 static REQUESTED: AtomicBool = AtomicBool::new(false);
-const EXTRA_STATES: usize = 89;
+const EXTRA_STATES: usize = 92;
 pub(super) struct Run {
     pages: Vec<Page>,
     index: usize,
@@ -75,11 +75,13 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                     | 85
                     | 86
                     | 88
+                    | 90
+                    | 91
             )
         });
         let page = match extra {
             Some(0) => Page::EfficiencyMode,
-            Some(1) => Page::CpuLimiter,
+            Some(1 | 89..=91) => Page::CpuLimiter,
             Some(2) => Page::SettingsHome,
             Some(3) => Page::Home,
             Some(4 | 6..=10) => Page::AdaptiveEngine,
@@ -987,8 +989,48 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             let _ = app.update(Message::SidePanelTab(SidePanelTab::Status));
             assert_eq!(app.side_panel_tab, SidePanelTab::Status);
         }
+        if matches!(extra, Some(89..=91)) {
+            use crate::config::Settings;
+            use crate::control::cpu_limiter::CpuLimiterActivation;
+
+            let path = r"C:\Apps\example.exe";
+            let mut settings = Settings {
+                general: app.settings.global().general.clone(),
+                ..Settings::default()
+            };
+            settings.general.enabled = true;
+            settings.cpu_limiter.enabled = true;
+            settings.cpu_limiter.rules =
+                vec![super::super::process_rules::new_cpu_limiter_rule(path)];
+            let plugged_in = is_plugged_in().unwrap_or(true);
+            let source = if plugged_in {
+                PowerSourceProfile::PluggedIn
+            } else {
+                PowerSourceProfile::OnBattery
+            };
+            app.settings = SettingsEditor::with_settings(settings);
+            app.settings.select_power_source(source);
+            app.power_source = source;
+            app.cpu_limiter = Default::default();
+            let status = &mut Arc::make_mut(&mut app.status.feature_status).cpu_limiter;
+            status.source = Some(source);
+            status.enabled = true;
+            status.limited_processes = 1;
+            status.active_limits = vec![(
+                path.into(),
+                match extra {
+                    Some(89) => CpuLimiterActivation::Job(40),
+                    Some(90) => CpuLimiterActivation::AncestorJob(60),
+                    _ => CpuLimiterActivation::ThreadFallback(25),
+                },
+            )];
+            assert!(app.cpu_limiter_rule_status(|| Some(plugged_in)).is_some());
+            assert!(app.cpu_limiter_rule_status(|| Some(!plugged_in)).is_none());
+            let _ = app.update(Message::CpuLimiter(cpu_limiter::Message::Edit(0)));
+            assert!(app.cpu_limiter.has_pending_editor());
+        }
         let size = match extra {
-            Some(35..=37 | 40 | 42 | 44..=50 | 52..=69 | 71..=88) => iced::Size::new(900.0, 620.0),
+            Some(35..=37 | 40 | 42 | 44..=50 | 52..=69 | 71..=91) => iced::Size::new(900.0, 620.0),
             Some(30) => iced::Size::new(1280.0, 720.0),
             Some(31) => iced::Size::new(1440.0, 900.0),
             Some(32) => iced::Size::new(1920.0, 720.0),

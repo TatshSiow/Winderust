@@ -652,6 +652,9 @@ Read the relevant section before changing feature policy, ownership, restoration
   own CPU allocation or Windows CPU-rate state.
   On Exit, the shared suspension controller's final Job cleanup determines the Job result.
   CPU Limiter reports its own thread fallback and timing worker failures separately.
+  The applied rule's editor shows the worker's confirmed duty-cycle target and backend,
+  including a parent app group's target for inherited members. The percentage is the
+  configured awake share of each 100 ms cycle.
   Inherited Job coverage retains a child while the matching Job is owned and the child
   may still be live. A complete process census drops absent or replaced child generations.
   CPU Limiter reads the foreground only when an eligible rule's Focus cap differs from another

@@ -9,6 +9,7 @@ use std::ops::{Deref, DerefMut};
 
 use crate::application::SettingsEditor;
 use crate::config::{CpuLimiterRule, CpuLimiterSettings, ProcessRuleMode};
+use crate::control::cpu_limiter::CpuLimiterActivation;
 use crate::features::cpu_control::cpu_limiter::CpuLimiterSnapshot;
 use crate::ui::process_rules::{
     can_add_cpu_limiter_process, exact_path_input, new_cpu_limiter_rule, picked_path_input,
@@ -451,13 +452,21 @@ impl CpuLimiter {
         let chip = iced::widget::container(text(t!(key).to_string()))
             .padding([4, 8])
             .style(move |theme| super::widgets::rule_status_chip(theme, key));
+        let mut status_rows = vec![super::widgets::setting_row("common.status", chip).into()];
+        if let Some(limit) = status
+            .filter(|_| key == "common.applied")
+            .and_then(|status| active_limit_label(rule.executable_path.trim_start(), status))
+        {
+            status_rows
+                .push(super::widgets::setting_row("cpu_limiter.active_target", text(limit)).into());
+        }
         let mut details = column![
             super::app_picker::app_name(&rule.executable_path, candidates),
             text(rule.executable_path.as_str())
                 .style(text::secondary)
                 .wrapping(text::Wrapping::WordOrGlyph),
             super::widgets::setting_title("common.rule_details"),
-            super::widgets::settings_card(super::widgets::setting_row("common.status", chip)),
+            super::widgets::settings_card(super::widgets::settings_rows(status_rows)),
         ]
         .spacing(super::widgets::CARD_GAP);
         let mut limits = Vec::new();
@@ -536,12 +545,7 @@ fn rule_status(
     let Some(status) = status.filter(|_| !rule_path.is_empty()) else {
         return "common.unknown";
     };
-    let matches_rule = |path: &String| {
-        crate::foreground::same_executable_path(
-            std::path::Path::new(path),
-            std::path::Path::new(rule_path),
-        )
-    };
+    let matches_rule = |path: &String| matches_rule_path(rule_path, path);
     if status.failed_apps.iter().any(matches_rule) {
         "common.error"
     } else if status.observation_paused {
@@ -550,11 +554,45 @@ fn rule_status(
         "common.unknown"
     } else if status.restore_pending_apps.iter().any(matches_rule) {
         "cpu_limiter.restore_pending"
-    } else if status.limited_apps.iter().any(matches_rule) {
+    } else if matching_active_limits(rule_path, status).next().is_some() {
         "common.applied"
     } else {
         "common.waiting"
     }
+}
+
+fn matches_rule_path(rule_path: &str, actual_path: &str) -> bool {
+    crate::foreground::same_executable_path(
+        std::path::Path::new(rule_path),
+        std::path::Path::new(actual_path),
+    )
+}
+
+fn matching_active_limits<'a>(
+    rule_path: &'a str,
+    status: &'a CpuLimiterSnapshot,
+) -> impl Iterator<Item = CpuLimiterActivation> + 'a {
+    status
+        .active_limits
+        .iter()
+        .filter_map(move |(path, limit)| matches_rule_path(rule_path, path).then_some(*limit))
+}
+
+fn active_limit_label(rule_path: &str, status: &CpuLimiterSnapshot) -> Option<String> {
+    use CpuLimiterActivation::{AncestorJob, Job, ThreadFallback};
+
+    let mut limits = matching_active_limits(rule_path, status);
+    let first = limits.next()?;
+    let label = if limits.all(|limit| limit == first) {
+        match first {
+            Job(percent) => t!("cpu_limiter.active_app_group", percent = percent),
+            AncestorJob(percent) => t!("cpu_limiter.active_inherited", percent = percent),
+            ThreadFallback(percent) => t!("cpu_limiter.active_thread_fallback", percent = percent),
+        }
+    } else {
+        t!("cpu_limiter.active_varies")
+    };
+    Some(label.into_owned())
 }
 
 #[cfg(test)]
@@ -592,11 +630,14 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(rule_status(&rule, true, Some(&status)), "common.waiting");
-        status
-            .limited_apps
-            .push(concat!(r"C:\Apps\test.exe", "\u{3000}").into());
+        status.active_limits.push((
+            concat!(r"C:\Apps\test.exe", "\u{3000}").into(),
+            CpuLimiterActivation::Job(40),
+        ));
         assert_eq!(rule_status(&rule, true, Some(&status)), "common.waiting");
-        status.limited_apps.push(r"c:\apps\TEST.exe".into());
+        status
+            .active_limits
+            .push((r"c:\apps\TEST.exe".into(), CpuLimiterActivation::Job(40)));
         assert_eq!(rule_status(&rule, true, Some(&status)), "common.applied");
         status.restore_pending_apps.push(r"c:\apps\TEST.exe".into());
         assert_eq!(
@@ -617,6 +658,43 @@ mod tests {
         assert_eq!(rule_status(&rule, true, Some(&status)), "common.unknown");
         rule.enabled = false;
         assert_eq!(rule_status(&rule, true, Some(&status)), "common.inactive");
+    }
+
+    #[test]
+    fn runtime_limit_label_uses_matching_targets_and_reports_different_limits() {
+        use CpuLimiterActivation::{AncestorJob, Job, ThreadFallback};
+
+        let path = r"C:\Apps\test.exe";
+        let mut status = CpuLimiterSnapshot {
+            active_limits: vec![(r"C:\Other\test.exe".into(), Job(55))],
+            ..Default::default()
+        };
+        assert_eq!(active_limit_label(path, &status), None);
+
+        let matching = r"c:\apps\TEST.exe";
+        status.active_limits.push((matching.into(), Job(40)));
+        status.active_limits.push((matching.into(), Job(40)));
+        assert_eq!(
+            active_limit_label(path, &status).as_deref(),
+            Some(t!("cpu_limiter.active_app_group", percent = 40).as_ref())
+        );
+        status.active_limits[2].1 = Job(25);
+        assert_eq!(
+            active_limit_label(path, &status).as_deref(),
+            Some(t!("cpu_limiter.active_varies").as_ref())
+        );
+
+        status.active_limits.pop();
+        status.active_limits[1].1 = ThreadFallback(40);
+        assert_eq!(
+            active_limit_label(path, &status).as_deref(),
+            Some(t!("cpu_limiter.active_thread_fallback", percent = 40).as_ref())
+        );
+        status.active_limits[1].1 = AncestorJob(60);
+        assert_eq!(
+            active_limit_label(path, &status).as_deref(),
+            Some(t!("cpu_limiter.active_inherited", percent = 60).as_ref())
+        );
     }
 
     #[test]

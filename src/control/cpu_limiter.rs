@@ -121,9 +121,10 @@ impl CpuLimiterBackend {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CpuLimiterActivation {
     Job(u8),
-    AncestorJob,
+    AncestorJob(u8),
     ThreadFallback(u8),
 }
 
@@ -594,7 +595,7 @@ fn observe_worker_target(target: &WorkerTarget, covered: bool) -> CpuLimiterTarg
     }
     let percent = target.target.allowed_cpu_time_percent;
     let activation = match (&target.backend, covered) {
-        (CpuLimiterBackend::Job, true) => CpuLimiterActivation::AncestorJob,
+        (CpuLimiterBackend::Job, true) => CpuLimiterActivation::AncestorJob(percent),
         (CpuLimiterBackend::Job, false) => CpuLimiterActivation::Job(percent),
         (CpuLimiterBackend::Thread(_), _) => CpuLimiterActivation::ThreadFallback(percent),
     };

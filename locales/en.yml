@@ -1163,6 +1163,11 @@ cpu_limiter:
   visible_window_allowed_cpu_time: "Visible Window Allowed CPU Time"
   background_allowed_cpu_time: "Background Allowed CPU Time"
   restore_pending: "Restore pending"
+  active_target: "Current CPU time target"
+  active_app_group: "%{percent}% · App group"
+  active_inherited: "%{percent}% · Inherited app group"
+  active_thread_fallback: "%{percent}% · Thread fallback"
+  active_varies: "Target or method varies by process"
 
 about:
   intro_1: "Winderust is a local Windows power automation utility."

@@ -290,6 +290,9 @@ hover/press; background shading supplies feedback.
   disabled. A 100% target is Unlimited.
   CPU Limiter rule status follows the published observation for the selected live power source.
   With the other profile selected or the source unconfirmed, enabled rules show Unknown.
+  The applied rule's editor shows its current duty-cycle target and whether it uses an app
+  group, inherits another app group's target, or uses thread fallback. The editor indicates
+  when the target or method varies by process.
 
 ### Advanced Power Plan Tuning
 
