@@ -139,7 +139,7 @@ pub(super) fn process_rule_target<'a, M: 'a>(
 fn rule_path_text(path: String) -> iced::widget::Text<'static> {
     text(path)
         .style(text::secondary)
-        .wrapping(text::Wrapping::None)
+        .wrapping(text::Wrapping::WordOrGlyph)
 }
 
 pub(super) fn process_rule_header_with_target<'a, M: 'a>(
@@ -1762,6 +1762,49 @@ mod step_tests {
             assert_eq!(node.children()[0].bounds().width, width.max(900.0));
             assert!(node.bounds().height < 100.0);
         }
+    }
+
+    #[test]
+    fn long_executable_paths_grow_rule_rows_without_moving_action_columns() {
+        use super::{process_rule_header, rule_actions};
+        use iced::advanced::{layout, widget::Tree};
+        use iced::{widget::text, Pixels, Renderer, Size};
+
+        let renderer = Renderer::new(super::design::typography::FONT, Pixels(14.0));
+        // Instance Balancing uses the smallest shared rule table with a Status column.
+        let limits = layout::Limits::new(Size::ZERO, Size::new(860.0, 620.0));
+        let measure = |path| {
+            let mut view = process_rule_header(
+                path,
+                &[],
+                super::checkbox(true).on_toggle(|_| ()).into(),
+                Some(text("Active").into()),
+                Vec::new(),
+                rule_actions(Some(()), Some(())),
+            );
+            let mut tree = Tree::new(&view);
+            let node = view.as_widget_mut().layout(&mut tree, &renderer, &limits);
+            let row = &node.children()[0];
+            let [_, _, _, path, actions] = row.children() else {
+                panic!("expected Enable, Status, App name, Executable path, and Actions");
+            };
+            (row.bounds(), path.bounds(), actions.bounds())
+        };
+        let (short_row, short_path, short_actions) = measure(r"C:\Apps\renderer.exe");
+        let (long_row, long_path, long_actions) = measure(concat!(
+            r"C:\Apps\",
+            "LongApplicationDirectoryNameWithoutAnySpacesOrHyphens",
+            "WithAnAdditionalPrefixToRequireMultipleLinesInTheCell",
+            r"\renderer.exe"
+        ));
+
+        assert_eq!(long_path.width, short_path.width);
+        assert!(long_path.height > short_path.height);
+        assert!(long_row.height > short_row.height);
+        assert_eq!(long_actions.x, short_actions.x);
+        assert_eq!(long_actions.size(), short_actions.size());
+        assert!(long_path.x + long_path.width <= long_actions.x);
+        assert!(long_actions.y + long_actions.height <= long_row.height);
     }
 
     #[test]

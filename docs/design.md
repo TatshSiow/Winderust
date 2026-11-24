@@ -473,7 +473,8 @@ hover/press; background shading supplies feedback.
   rule. Single-value edits use inline controls. Rule dialogs share a header and
   Cancel and OK footer, with target or name first and related controls grouped.
   OK stages a draft for the page's Save action.
-- Executable rule tables show App name and Executable path. Name-based rules
+- Executable rule tables show App name and Executable path. Long paths wrap
+  within their column so the full target stays readable. Name-based rules
   show their exact filename and Any path with an Executable name label.
 - Keep breadcrumbs anchored at the top left. Power-source selectors stay beneath the breadcrumb; page-level reference stays in the right sidebar.
 - Quit confirmation is centered over a dimmed window. With unsaved changes show Cancel, Save and quit, and Quit without saving; otherwise show Cancel and Quit. Shutdown errors stay visible.
