@@ -3318,6 +3318,7 @@ impl WinderustApp {
                 | Page::InstanceBalancing
                 | Page::ByFocus
                 | Page::ByRunningApp
+                | Page::Watchdog
         ) || priority_kind(self.page).is_some();
         let save_card =
             || widgets::settings_card(self.save_notice(settings_are_pending)).width(360);
