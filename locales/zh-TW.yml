@@ -290,6 +290,7 @@ home:
   memory_usage: "RAM 使用量"
   memory_used: "使用量"
   memory_available: "可用記憶體"
+  memory_committed: "已認可：%{amount}"
   cpu_frequency_relative: "時脈（相對值）"
   chart_history: "歷程記錄"
   chart_history_at: "歷程記錄 · %{time}"

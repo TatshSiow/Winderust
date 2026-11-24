@@ -256,6 +256,10 @@ impl Model {
                     percent: Some(44.0 + wave as f32),
                     used_physical_bytes: Some(7 * 1024 * 1024 * 1024),
                     total_physical_bytes: Some(16 * 1024 * 1024 * 1024),
+                    system_commit: Some(crate::backend::dashboard_metrics::SystemCommit {
+                        committed_bytes: 18_500_000_000,
+                        limit_bytes: 28_400_000_000,
+                    }),
                 },
                 io: IoUsageSnapshot {
                     bytes_per_second: Some(30_000_000.0 + wave * 10_000_000.0),
@@ -668,6 +672,31 @@ impl Model {
                 .spacing(design::space::TIGHT);
                 (second.into_owned(), second_value, details.into())
             };
+        let mut secondary =
+            column![
+                super::widgets::heading(right_value, design::typography::DIALOG_TITLE).style(
+                    move |theme: &Theme| text::Style {
+                        color: Some(if kind == ChartKind::Cpu {
+                            chart_text_color(theme, 1)
+                        } else {
+                            theme.palette().text
+                        }),
+                    }
+                )
+            ]
+            .spacing(design::space::TIGHT)
+            .align_x(iced::Right);
+        if kind == ChartKind::Memory && !inspecting {
+            let amount = sample.memory.system_commit.map_or_else(
+                || t!("common.unknown").into_owned(),
+                |commit| memory_range_label(commit.committed_bytes, commit.limit_bytes),
+            );
+            secondary = secondary.push(
+                text(t!("home.memory_committed", amount = amount).into_owned())
+                    .size(design::typography::CAPTION)
+                    .style(text::secondary),
+            );
+        }
         let card = container(
             column![
                 row![
@@ -679,21 +708,10 @@ impl Model {
                 ]
                 .align_y(iced::Center)
                 .spacing(design::space::SMALL),
-                row![
-                    container(primary).width(Fill),
-                    super::widgets::heading(right_value, design::typography::DIALOG_TITLE).style(
-                        move |theme: &Theme| text::Style {
-                            color: Some(if kind == ChartKind::Cpu {
-                                chart_text_color(theme, 1)
-                            } else {
-                                theme.palette().text
-                            }),
-                        }
-                    ),
-                ]
-                .height(55)
-                .align_y(iced::Top)
-                .spacing(design::space::SMALL),
+                row![container(primary).width(Fill), secondary]
+                    .height(55)
+                    .align_y(iced::Top)
+                    .spacing(design::space::SMALL),
                 plot,
                 legend,
             ]
@@ -1457,26 +1475,31 @@ fn cpu_frequency_label(frequency_mhz: Option<u32>) -> String {
 }
 
 fn memory_usage_value_label(snapshot: MemoryUsageSnapshot) -> String {
-    match (snapshot.used_physical_bytes, snapshot.total_physical_bytes) {
-        (Some(used), Some(total)) => {
-            let used_parts = memory_capacity_parts(used);
-            let total_parts = memory_capacity_parts(total);
-            if used_parts.unit == total_parts.unit && total_parts.unit != "B" {
-                format!(
-                    "{} / {} {}",
-                    format_capacity_number(used_parts.value),
-                    format_capacity_number(total_parts.value),
-                    total_parts.unit
-                )
-            } else {
-                format!(
-                    "{} / {}",
-                    format_memory_capacity(used),
-                    format_memory_capacity(total)
-                )
-            }
-        }
-        _ => t!("home.collecting").to_string(),
+    snapshot
+        .used_physical_bytes
+        .zip(snapshot.total_physical_bytes)
+        .map_or_else(
+            || t!("home.collecting").into_owned(),
+            |(used, total)| memory_range_label(used, total),
+        )
+}
+
+fn memory_range_label(used: u64, total: u64) -> String {
+    let used_parts = memory_capacity_parts(used);
+    let total_parts = memory_capacity_parts(total);
+    if used_parts.unit == total_parts.unit && total_parts.unit != "B" {
+        format!(
+            "{} / {} {}",
+            format_capacity_number(used_parts.value),
+            format_capacity_number(total_parts.value),
+            total_parts.unit
+        )
+    } else {
+        format!(
+            "{} / {}",
+            format_memory_capacity(used),
+            format_memory_capacity(total)
+        )
     }
 }
 
@@ -2188,6 +2211,7 @@ mod tests {
                     percent: Some(84.0),
                     used_physical_bytes: Some(13_200_000_000),
                     total_physical_bytes: Some(15_600_000_000),
+                    ..Default::default()
                 },
                 io: IoUsageSnapshot {
                     bytes_per_second: Some(45_700_000.0),

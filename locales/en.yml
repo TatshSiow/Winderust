@@ -290,6 +290,7 @@ home:
   memory_usage: "RAM Usage"
   memory_used: "Used"
   memory_available: "Available"
+  memory_committed: "Committed: %{amount}"
   cpu_frequency_relative: "Frequency (relative)"
   chart_history: "History"
   chart_history_at: "History · %{time}"

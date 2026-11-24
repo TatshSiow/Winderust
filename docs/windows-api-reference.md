@@ -1152,6 +1152,10 @@ state.
 - `src/backend/dashboard_metrics.rs::DiskUsageMonitor` uses PDH English counters `\PhysicalDisk(_Total)\Disk Read Bytes/sec` and `\PhysicalDisk(_Total)\Disk Write Bytes/sec`. Home reports total physical-disk throughput across all disks. Adaptive Processor Power samples process I/O separately through `IoUsageMonitor`. The Home worker owns and closes the PDH query, primes rate counters, and rejects invalid samples.
 - Official references: https://learn.microsoft.com/en-us/windows-server/storage/storage-spaces/performance-history-for-drives and https://learn.microsoft.com/en-us/windows/win32/perfctrs/displaying-performance-data . No undocumented contract.
 
+## Home memory usage
+
+`src/backend/dashboard_metrics.rs::sample_memory_usage` uses [K32GetPerformanceInfo](https://learn.microsoft.com/en-us/windows/win32/api/psapi/nf-psapi-getperformanceinfo) once per visible Home sample. Convert `PhysicalTotal` and `PhysicalAvailable` to physical bytes and `CommitTotal` and `CommitLimit` to system committed bytes and its current limit. All four fields count pages. Use checked multiplication by `PageSize` from [PERFORMANCE_INFORMATION](https://learn.microsoft.com/en-us/windows/win32/api/psapi/ns-psapi-performance_information). The current commit limit can change as paging files grow. No undocumented contract is used.
+
 ## UI animation preference
 
 - src/platform/windows/appearance.rs::read reads UISettings.AnimationsEnabled alongside theme/accent values. src/ui/settings_pages.rs::theme passes this preference to shared Iced transitions in src/ui/motion.rs; failed reads disable motion. Existing Windows appearance-change notifications refresh it. No undocumented Windows contract is used; UI transitions use `iced_anim`.
