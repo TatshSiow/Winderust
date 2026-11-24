@@ -1515,10 +1515,27 @@ fn run_background_automation(
             settings_changed,
             |profile| (&profile.process_priority, profile.process_priority.enabled),
         );
-        let thread_priority_refresh_required = settings_changed
-            || feature_refresh_required(settings, settings.thread_priority.enabled);
-        let dynamic_priority_boost_refresh_required = settings_changed
-            || feature_refresh_required(settings, settings.dynamic_priority_boost.enabled);
+        let thread_priority_schedule = priority_source_schedule(
+            &configured_settings,
+            settings,
+            plugged_in,
+            windows_event_watcher_active,
+            settings_changed,
+            |profile| (&profile.thread_priority, profile.thread_priority.enabled),
+        );
+        let dynamic_priority_boost_schedule = priority_source_schedule(
+            &configured_settings,
+            settings,
+            plugged_in,
+            windows_event_watcher_active,
+            settings_changed,
+            |profile| {
+                (
+                    &profile.dynamic_priority_boost,
+                    profile.dynamic_priority_boost.enabled,
+                )
+            },
+        );
         let io_priority_refresh_required =
             settings_changed || feature_refresh_required(settings, settings.io_priority.enabled);
         let gpu_priority_schedule = priority_source_schedule(
@@ -1693,10 +1710,14 @@ fn run_background_automation(
             update_io_priority_status(&shared, io_priority_status);
             scheduler.schedule_after(RefreshDomain::IoPriority, now, io_priority_refresh_interval);
         }
-        if thread_priority_refresh_required && scheduler.is_due(RefreshDomain::ThreadPriority, now)
+        if thread_priority_schedule.refresh_required
+            && scheduler.is_due(RefreshDomain::ThreadPriority, now)
         {
-            let thread_priority_status =
-                runner.run_thread_priority_update(settings, &mut observations);
+            let thread_priority_status = runner.run_thread_priority_update(
+                settings,
+                thread_priority_schedule.waiting_for_source,
+                &mut observations,
+            );
             update_thread_priority_status(&shared, thread_priority_status);
             scheduler.schedule_after(
                 RefreshDomain::ThreadPriority,
@@ -1704,11 +1725,14 @@ fn run_background_automation(
                 thread_priority_refresh_interval,
             );
         }
-        if dynamic_priority_boost_refresh_required
+        if dynamic_priority_boost_schedule.refresh_required
             && scheduler.is_due(RefreshDomain::DynamicPriorityBoost, now)
         {
-            let dynamic_priority_boost_status =
-                runner.run_dynamic_priority_boost_update(settings, &mut observations);
+            let dynamic_priority_boost_status = runner.run_dynamic_priority_boost_update(
+                settings,
+                dynamic_priority_boost_schedule.waiting_for_source,
+                &mut observations,
+            );
             update_dynamic_priority_boost_status(&shared, dynamic_priority_boost_status);
             scheduler.schedule_after(
                 RefreshDomain::DynamicPriorityBoost,
@@ -2171,12 +2195,12 @@ fn run_background_automation(
                     process_priority_refresh_interval,
                 ),
                 (
-                    thread_priority_refresh_required,
+                    thread_priority_schedule.refresh_required,
                     RefreshDomain::ThreadPriority,
                     thread_priority_refresh_interval,
                 ),
                 (
-                    dynamic_priority_boost_refresh_required,
+                    dynamic_priority_boost_schedule.refresh_required,
                     RefreshDomain::DynamicPriorityBoost,
                     dynamic_priority_boost_refresh_interval,
                 ),
@@ -2266,6 +2290,8 @@ fn run_background_automation(
             wait_for = Some(min_worker_wait(wait_for, delay));
         }
         if process_priority_schedule.source_recheck
+            || thread_priority_schedule.source_recheck
+            || dynamic_priority_boost_schedule.source_recheck
             || gpu_priority_schedule.source_recheck
             || background_efficiency_waits_for_source
             || timer_resolution_waits_for_source

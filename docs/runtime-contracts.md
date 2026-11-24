@@ -866,10 +866,11 @@ Read the relevant section before changing feature policy, ownership, restoration
   only its Background Efficiency claims and rechecks the source while paused, or
   when a dormant profile could become active without power notifications.
 - Every Priority Control page uses three ordered default tiers: Focus App, then apps with visible windows, then background. Visible Window Detection defaults off and has its own selectable value; custom process rules independently override all three tiers. Retired Auto priority values are rejected rather than mapped to current defaults.
-- Process Priority and GPU Priority pause when Windows cannot verify the power
-  source and their effective enablement or saved enabled settings differ. They
-  release their automatic claims through their existing restoration paths. A
-  dormant profile rechecks the source when full power notifications are unavailable.
+- Process Priority, Thread Priority, Dynamic Priority Boost, and GPU Priority
+  pause when Windows cannot verify the power source and their effective
+  enablement or saved enabled settings differ. They release their automatic claims
+  through their existing restoration paths. A dormant profile rechecks the source
+  when full power notifications are unavailable.
 - Foreground Detection requires an executable tied to the captured process generation. An
   unavailable or unverified image makes the Focus observation unavailable.
 - I/O Priority and Dynamic Priority Boost restoration retries publish their current

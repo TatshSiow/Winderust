@@ -36,6 +36,7 @@ pub struct DynamicPriorityBoostSnapshot {
     pub failed_processes: usize,
     pub auto_excluded_processes: Vec<String>,
     pub observation_paused: bool,
+    pub(crate) waiting_for_power_source: bool,
     pub last_error: Option<String>,
 }
 
@@ -296,9 +297,22 @@ impl DynamicPriorityBoostManager {
             failed_processes: release_failures.count + self.non_release_failures.count,
             auto_excluded_processes: auto_excluded_processes.into_iter().collect(),
             observation_paused: false,
+            waiting_for_power_source: false,
             last_error: release_failures
                 .last_error
                 .or_else(|| self.non_release_failures.last_error.clone()),
+        }
+    }
+
+    pub(crate) fn pause_for_power_source(
+        &mut self,
+        controller: &mut DynamicPriorityBoostController,
+        action_log: &mut ActionLog,
+    ) -> DynamicPriorityBoostSnapshot {
+        self.non_release_failures = DynamicPriorityBoostFailures::default();
+        DynamicPriorityBoostSnapshot {
+            waiting_for_power_source: true,
+            ..self.paused_snapshot(controller, action_log, "power source is unknown")
         }
     }
 

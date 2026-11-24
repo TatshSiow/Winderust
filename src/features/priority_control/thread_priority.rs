@@ -33,6 +33,7 @@ pub struct ThreadPrioritySnapshot {
     pub failed_processes: usize,
     pub auto_excluded_processes: Vec<String>,
     pub(crate) observation_paused: bool,
+    pub(crate) waiting_for_power_source: bool,
     pub last_error: Option<String>,
 }
 
@@ -323,6 +324,18 @@ impl ThreadPriorityManager {
             .last_error
             .or_else(|| self.non_release_failures.last_error.clone());
         status
+    }
+
+    pub(crate) fn pause_for_power_source(
+        &mut self,
+        controller: &mut ThreadPriorityController,
+        action_log: &mut ActionLog,
+    ) -> ThreadPrioritySnapshot {
+        self.non_release_failures = ThreadPriorityFailures::default();
+        ThreadPrioritySnapshot {
+            waiting_for_power_source: true,
+            ..self.paused_snapshot(controller, action_log, "power source is unknown", None)
+        }
     }
 
     fn paused_snapshot(

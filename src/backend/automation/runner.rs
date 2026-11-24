@@ -559,13 +559,13 @@ impl RuntimeCore {
         if let Err(error) = self.gpu_priority_controller.shutdown() {
             errors.push(format!("GPU Priority restoration failed: {error}"));
         }
-        self.run_dynamic_priority_boost_update(&settings, &mut observations);
+        self.run_dynamic_priority_boost_update(&settings, false, &mut observations);
         if let Err(error) = self.dynamic_priority_boost_controller.shutdown() {
             errors.push(format!(
                 "Dynamic Priority Boost restoration failed: {error}"
             ));
         }
-        self.run_thread_priority_update(&settings, &mut observations);
+        self.run_thread_priority_update(&settings, false, &mut observations);
         if let Err(error) = self.thread_priority_controller.shutdown() {
             errors.push(format!("Thread Priority restoration failed: {error}"));
         }
@@ -1338,8 +1338,15 @@ impl RuntimeCore {
     pub(super) fn run_thread_priority_update(
         &mut self,
         settings: &Settings,
+        waiting_for_power_source: bool,
         observations: &mut CycleObservations,
     ) -> ThreadPrioritySnapshot {
+        if waiting_for_power_source {
+            return self.thread_priority_manager.pause_for_power_source(
+                &mut self.thread_priority_controller,
+                &mut self.action_log,
+            );
+        }
         self.thread_priority_manager.update(
             &mut self.thread_priority_controller,
             &settings.thread_priority,
@@ -1354,8 +1361,15 @@ impl RuntimeCore {
     pub(super) fn run_dynamic_priority_boost_update(
         &mut self,
         settings: &Settings,
+        waiting_for_power_source: bool,
         observations: &mut CycleObservations,
     ) -> DynamicPriorityBoostSnapshot {
+        if waiting_for_power_source {
+            return self.dynamic_priority_boost_manager.pause_for_power_source(
+                &mut self.dynamic_priority_boost_controller,
+                &mut self.action_log,
+            );
+        }
         self.dynamic_priority_boost_manager.update(
             &mut self.dynamic_priority_boost_controller,
             &settings.dynamic_priority_boost,
