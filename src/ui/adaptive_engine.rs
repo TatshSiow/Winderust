@@ -38,6 +38,14 @@ impl TuningTab {
         }
     }
 }
+
+#[derive(Debug, Clone, Copy)]
+pub(super) enum TuningGroup {
+    SharedDetection,
+    BackgroundProcessors,
+    ResourceZones,
+}
+
 fn can_add_exclusion(settings: &AdaptiveEngineProcessSettings, path: &str) -> bool {
     can_add_exact_process_candidate(
         path,
@@ -94,7 +102,7 @@ pub(super) enum Message {
     Toggle(fn(&mut Settings, bool), bool),
     InterruptTiming(super::interrupt_timing::Message),
     TuningTab(TuningTab),
-    Collapse(usize),
+    Collapse(TuningGroup),
     Number(
         fn(&mut Settings, u64),
         String,
@@ -145,11 +153,10 @@ impl Editor {
                     self.tuning_tabs[usize::from(self.draft.is_some())] = tab;
                 }
             }
-            Message::Collapse(index) => {
-                if let Some(value) = self.expanded[usize::from(self.draft.is_some())].get_mut(index)
-                {
-                    *value = !*value;
-                }
+            Message::Collapse(group) => {
+                let expanded =
+                    &mut self.expanded[usize::from(self.draft.is_some())][group as usize];
+                *expanded = !*expanded;
             }
             message @ (Message::ViewBuiltIn(p) | Message::BuiltIn(p)) => {
                 let Some(index) = BuiltInAdaptiveEnginePreset::ALL
@@ -602,9 +609,8 @@ impl Editor {
         let mut body = column![].spacing(super::widgets::CARD_GAP);
         match tab {
             TuningTab::CpuBehaviour => {
-                if let Some(interrupt_timing) = interrupt_timing {
-                    body = body.push(interrupt_timing.view().map(Message::InterruptTiming));
-                }
+                use TuningGroup::{BackgroundProcessors, ResourceZones, SharedDetection};
+
                 let custom_selection = editable
                     && (s.adaptive_engine_process.background_processor_selection
                         == BackgroundProcessorSelection::Custom
@@ -668,13 +674,15 @@ impl Editor {
                     )
                     .into(),
                 ]);
-                body = body
-                    .push(super::widgets::heading(
-                        t!("adaptive_engine_process.shared_detection").to_string(),
-                        design::typography::BODY,
-                    ))
-                    .push(super::widgets::settings_card(pressure));
-                let action = super::widgets::switch(
+                body = body.push(super::widgets::setting_group(
+                    "adaptive_engine_process.shared_detection".to_string(),
+                    self.expanded[usize::from(preset)][SharedDetection as usize],
+                    Message::Collapse(SharedDetection),
+                    iced::widget::Space::new(),
+                    pressure,
+                ));
+                body = body.push(super::widgets::toggle_card(
+                    "adaptive_engine.cpu_pressure",
                     s.adaptive_engine_process.cpu_pressure_restraint_enabled,
                     editable.then_some(|v| {
                         Message::Toggle(
@@ -682,16 +690,6 @@ impl Editor {
                             v,
                         )
                     }),
-                );
-                body = body.push(super::widgets::setting_group(
-                    "adaptive_engine.cpu_pressure".to_string(),
-                    self.expanded[usize::from(preset)][0],
-                    Message::Collapse(0),
-                    action,
-                    column![text(
-                        t!("adaptive_engine_process.cpu_pressure_restraint_help").to_string()
-                    )
-                    .style(text::secondary)],
                 ));
                 let mut allocation = super::widgets::settings_rows([
                     choice!(
@@ -757,8 +755,8 @@ impl Editor {
                 }
                 body = body.push(super::widgets::setting_group(
                     "adaptive_engine_process.limit_background_processors".to_string(),
-                    self.expanded[usize::from(preset)][1],
-                    Message::Collapse(1),
+                    self.expanded[usize::from(preset)][BackgroundProcessors as usize],
+                    Message::Collapse(BackgroundProcessors),
                     super::widgets::switch(
                         s.adaptive_engine_process
                             .limit_background_processors_enabled,
@@ -831,8 +829,8 @@ impl Editor {
                 }
                 body = body.push(super::widgets::setting_group(
                     "adaptive_engine_process.dynamic_resource_zones".to_string(),
-                    self.expanded[usize::from(preset)][2],
-                    Message::Collapse(2),
+                    self.expanded[usize::from(preset)][ResourceZones as usize],
+                    Message::Collapse(ResourceZones),
                     super::widgets::switch(
                         s.adaptive_engine_process.dynamic_resource_zones_enabled,
                         editable.then_some(|v| {
@@ -844,6 +842,9 @@ impl Editor {
                     ),
                     zone_content,
                 ));
+                if let Some(interrupt_timing) = interrupt_timing {
+                    body = body.push(interrupt_timing.view().map(Message::InterruptTiming));
+                }
             }
             TuningTab::CustomRules => {}
         }
@@ -895,14 +896,17 @@ impl Editor {
         if !preset && !self.error.is_empty() {
             body = body.push(text(self.error.clone()).style(text::danger));
         }
-        scrollable(header.push(super::motion::wrap(
-            body,
-            true,
-            super::motion::Effect::Content(tab as u64),
-        )))
-        .width(Fill)
-        .height(Fill)
-        .into()
+        header
+            .push(
+                scrollable(super::motion::wrap(
+                    body,
+                    true,
+                    super::motion::Effect::Content(tab as u64),
+                ))
+                .width(Fill)
+                .height(Fill),
+            )
+            .into()
     }
     pub(super) fn presets_panel<'a>(&'a self, live: &'a SettingsEditor) -> Element<'a, Message> {
         let mut rail = preset_list().push(super::widgets::heading(
@@ -1028,7 +1032,7 @@ mod tests {
         );
         let before = settings.clone();
         editor.update(&mut settings, Message::New);
-        editor.update(&mut settings, Message::Collapse(2));
+        editor.update(&mut settings, Message::Collapse(TuningGroup::ResourceZones));
         editor.set_cpu_selection(
             &mut settings,
             true,
@@ -1303,7 +1307,10 @@ mod tests {
         let mut settings = SettingsEditor::with_settings(Settings::default());
         let before = settings.clone();
         editor.update(&mut settings, Message::TuningTab(TuningTab::CustomRules));
-        editor.update(&mut settings, Message::Collapse(0));
+        editor.update(
+            &mut settings,
+            Message::Collapse(TuningGroup::SharedDetection),
+        );
         assert_eq!(settings.global(), &before);
         editor.update(
             &mut settings,
@@ -1313,7 +1320,10 @@ mod tests {
         assert_eq!(editor.expanded[1], [false; 3]);
         editor.update(&mut settings, Message::TuningTab(TuningTab::CustomRules));
         assert_eq!(editor.tuning_tabs[1], TuningTab::CpuBehaviour);
-        editor.update(&mut settings, Message::Collapse(1));
+        editor.update(
+            &mut settings,
+            Message::Collapse(TuningGroup::BackgroundProcessors),
+        );
         editor.update(&mut settings, Message::Cancel);
         assert_eq!(editor.tuning_tabs[0], TuningTab::CustomRules);
         assert_eq!(editor.expanded[0], [true, false, false]);

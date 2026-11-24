@@ -4,30 +4,33 @@ use crate::backend::power_source::is_plugged_in;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 static REQUESTED: AtomicBool = AtomicBool::new(false);
+const EXTRA_STATES: usize = 72;
 pub(super) struct Run {
     pages: Vec<Page>,
     index: usize,
     ticks: u8,
 }
 impl Run {
+    fn pages() -> Vec<Page> {
+        let mut pages = Vec::new();
+        for section in Page::sections() {
+            if !pages.contains(&section.landing_page) {
+                pages.push(section.landing_page);
+            }
+            for page in section.pages {
+                if !pages.contains(page) {
+                    pages.push(*page);
+                }
+            }
+        }
+        pages
+    }
+
     pub(super) fn requested() -> Option<Self> {
-        REQUESTED.load(Ordering::Relaxed).then(|| {
-            let mut pages = Vec::new();
-            for section in Page::sections() {
-                if !pages.contains(&section.landing_page) {
-                    pages.push(section.landing_page);
-                }
-                for page in section.pages {
-                    if !pages.contains(page) {
-                        pages.push(*page);
-                    }
-                }
-            }
-            Self {
-                pages,
-                index: 0,
-                ticks: 0,
-            }
+        REQUESTED.load(Ordering::Relaxed).then(|| Self {
+            pages: Self::pages(),
+            index: 0,
+            ticks: 0,
         })
     }
 }
@@ -35,7 +38,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
     let window = app.window?;
     let run = app.smoke.as_mut()?;
     let extra = run.index.checked_sub(run.pages.len() * 2);
-    if extra == Some(72) {
+    if extra == Some(EXTRA_STATES) {
         return Some(app.shutdown());
     }
     if run.ticks == 0 {
@@ -491,12 +494,14 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
         }
         if let Some(index @ 4..=11) = extra {
             if index <= 10 {
-                use adaptive_engine::{Message as AdaptiveMessage, TuningTab};
+                use adaptive_engine::{Message as AdaptiveMessage, TuningGroup, TuningTab};
                 if index == 4 {
                     let _ = app.update(Message::Adaptive(AdaptiveMessage::TuningTab(
                         TuningTab::CpuBehaviour,
                     )));
-                    let _ = app.update(Message::Adaptive(AdaptiveMessage::Collapse(0)));
+                    let _ = app.update(Message::Adaptive(AdaptiveMessage::Collapse(
+                        TuningGroup::SharedDetection,
+                    )));
                 } else if index == 5 {
                     use adaptive_processor_power::{BuiltInPreset, Message as PowerMessage, Tab};
 
@@ -535,7 +540,9 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                     let _ = app.update(Message::Adaptive(AdaptiveMessage::TuningTab(
                         TuningTab::CpuBehaviour,
                     )));
-                    let _ = app.update(Message::Adaptive(AdaptiveMessage::Collapse(1)));
+                    let _ = app.update(Message::Adaptive(AdaptiveMessage::Collapse(
+                        TuningGroup::BackgroundProcessors,
+                    )));
                 } else if index == 7 {
                     app.settings.adaptive_engine_process.custom_rules.push(
                         crate::config::ProcessExclusionRule {
@@ -603,7 +610,9 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             let _ = app.update(Message::Adaptive(adaptive_engine::Message::TuningTab(
                 adaptive_engine::TuningTab::CpuBehaviour,
             )));
-            let _ = app.update(Message::Adaptive(adaptive_engine::Message::Collapse(2)));
+            let _ = app.update(Message::Adaptive(adaptive_engine::Message::Collapse(
+                adaptive_engine::TuningGroup::ResourceZones,
+            )));
         }
         if extra == Some(17) {
             app.adaptive = adaptive_engine::Editor::default();
@@ -1022,6 +1031,6 @@ pub(crate) fn render_all_pages() {
             .filter_map(Result::ok)
             .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "png"))
             .count(),
-        154
+        Run::pages().len() * 2 + EXTRA_STATES
     );
 }
