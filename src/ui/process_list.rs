@@ -1223,7 +1223,7 @@ impl ProcessList {
             self.processes[*i].user_name != p.user_name
                 || self.processes[*i].session_id != p.session_id
         }) {
-            return t!("process_list.multiple_users").to_string();
+            return t!("process_list.mixed_accounts_or_sessions").to_string();
         }
         let unavailable: std::borrow::Cow<'static, str> = t!("process_list.user_unavailable");
         let user = p.user_name.as_deref().unwrap_or(&unavailable);

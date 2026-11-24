@@ -351,7 +351,7 @@ process_list:
   cpu_usage: "CPU"
   memory_usage: "Memory"
   user: "User"
-  multiple_users: "Multiple accounts"
+  mixed_accounts_or_sessions: "Mixed accounts or sessions"
   user_unavailable: "Unavailable"
   no_path_specific_plan: "No path-specific plan"
   details_power: "Power plans"
