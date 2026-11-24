@@ -1525,7 +1525,7 @@ impl WinderustApp {
             }
             Message::TrimFinished(result) => {
                 self.manual_trim_pending = false;
-                if let Err(error) = result.and_then(memory_trim::manual_result) {
+                if let Err(error) = result.and_then(|result| self.trim.manual_result(result)) {
                     self.error_message = error;
                 }
             }
@@ -2748,7 +2748,7 @@ impl WinderustApp {
         self.cpu_rules = Default::default();
         self.suspension = Default::default();
         self.sleep_prevention = Default::default();
-        self.trim = Default::default();
+        self.trim.reset_drafts();
         self.resource_thresholds = Default::default();
         self.keep_running = Default::default();
         self.instance_limits = Default::default();
@@ -3299,25 +3299,30 @@ impl WinderustApp {
                                 manual_trim_blocked: true
                             }
                         );
-                    column![
-                        panel,
-                        iced::widget::rule::horizontal(1),
-                        container(
-                            button(
-                                container(text(t!("memory_trim.trim_now").to_string()))
-                                    .center_x(Fill)
-                            )
-                            .width(Fill)
-                            .height(32)
-                            .style(widgets::primary_button)
-                            .on_press_maybe(
-                                can_trim.then_some(Message::Trim(memory_trim::Message::TrimNow))
-                            )
+                    column![panel, iced::widget::rule::horizontal(1)]
+                        .extend(
+                            self.trim
+                                .last_result_view()
+                                .map(|view| view.map(Message::Trim)),
                         )
-                        .padding([design::space::MEDIUM as u16, 0])
-                    ]
-                    .height(Fill)
-                    .into()
+                        .push(
+                            container(
+                                button(
+                                    container(text(t!("memory_trim.trim_now").to_string()))
+                                        .center_x(Fill),
+                                )
+                                .width(Fill)
+                                .height(32)
+                                .style(widgets::primary_button)
+                                .on_press_maybe(
+                                    can_trim
+                                        .then_some(Message::Trim(memory_trim::Message::TrimNow)),
+                                ),
+                            )
+                            .padding([design::space::MEDIUM as u16, 0]),
+                        )
+                        .height(Fill)
+                        .into()
                 } else {
                     panel
                 }

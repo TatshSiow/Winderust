@@ -1062,6 +1062,11 @@ memory_trim:
   manual_foreground_unknown: "Memory Trim could not verify the foreground app."
   manual_failed: "Memory Trim completed with %{trimmed} successful and %{failed} failed attempts."
   manual_result_unavailable: "Memory Trim did not return a manual result."
+  last_manual_trim: "Last manual trim"
+  manual_no_trim: "No processes trimmed."
+  manual_reduction: "Observed working-set reduction of %{reduction}."
+  manual_reduction_unavailable: "Working-set reduction unavailable."
+  manual_readback_coverage: "Measured %{measured} of %{trimmed} trimmed processes."
   waiting_for_memory_load: "Memory load is %{load}%, below the %{threshold}% threshold."
 
 cpu_sets_soft:

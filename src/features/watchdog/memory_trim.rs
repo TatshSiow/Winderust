@@ -44,12 +44,19 @@ pub struct MemoryTrimSnapshot {
     pub candidate_processes: usize,
     pub(crate) has_deferred_candidates: bool,
     pub trimmed_processes: usize,
+    pub(crate) readback: Option<MemoryTrimReadback>,
     pub skipped_processes: usize,
     pub failed_processes: usize,
     pub memory_load_percent: Option<u8>,
     pub auto_excluded_processes: Vec<String>,
     pub status: MemoryTrimStatus,
     pub last_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct MemoryTrimReadback {
+    pub(crate) processes: usize,
+    pub(crate) reduction_bytes: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -421,6 +428,7 @@ impl MemoryTrimManager {
         let mut candidate_processes = 0;
         let mut has_deferred_candidates = false;
         let mut trimmed_processes = 0;
+        let mut readback = None::<MemoryTrimReadback>;
         let mut skipped_processes = 0;
         let mut failures = MemoryTrimFailures::default();
         let mut auto_excluded_processes = BTreeSet::new();
@@ -475,6 +483,14 @@ impl MemoryTrimManager {
                 }) => {
                     candidate_processes += 1;
                     trimmed_processes += 1;
+                    if let Some(bytes) =
+                        working_set_reduction_bytes.filter(|_| mode == MemoryTrimMode::Manual)
+                    {
+                        let measurement = readback.get_or_insert_default();
+                        measurement.processes += 1;
+                        measurement.reduction_bytes =
+                            measurement.reduction_bytes.saturating_add(bytes);
+                    }
                     successful_trim_paths.insert(path_key);
                     action_log.record(
                         ActionLogFeature::MemoryTrim,
@@ -518,6 +534,7 @@ impl MemoryTrimManager {
             candidate_processes,
             has_deferred_candidates,
             trimmed_processes,
+            readback,
             skipped_processes,
             failed_processes: failures.count,
             memory_load_percent: Some(memory_load_percent),
@@ -785,7 +802,7 @@ pub fn is_builtin_excluded(process_name: &str) -> bool {
     contains_process_name(BUILT_IN_EXCLUSIONS, process_name)
 }
 
-fn size_label(bytes: u64) -> String {
+pub(crate) fn size_label(bytes: u64) -> String {
     if bytes >= MB {
         format!("{} MB", bytes / MB)
     } else if bytes >= 1_000 {

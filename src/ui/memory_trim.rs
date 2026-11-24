@@ -1,42 +1,45 @@
 use super::design;
-use super::widgets::{checkbox, text_input};
+use super::widgets::{checkbox, heading, text_input};
 use crate::application::SettingsEditor;
 use crate::config::MemoryTrimSettings;
-use crate::memory_trim::{MemoryTrimSnapshot, MemoryTrimStatus};
+use crate::memory_trim::{size_label, MemoryTrimReadback, MemoryTrimSnapshot, MemoryTrimStatus};
 use crate::ui::process_rules::{
     can_add_memory_trim_exclusion, exact_path_input, new_process_exclusion_rule, picked_path_input,
 };
 use crate::ui::scrolling::scrollable;
-use iced::widget::column;
+use iced::widget::{column, text};
 use iced::{Element, Fill};
 use rust_i18n::t;
 
-pub(super) fn manual_result(result: MemoryTrimSnapshot) -> Result<(), String> {
-    let key = match result.status {
-        MemoryTrimStatus::AutomationDisabled => "memory_trim.manual_automation_disabled",
-        MemoryTrimStatus::Disabled => "memory_trim.manual_disabled",
-        MemoryTrimStatus::WaitingForPowerSource { .. } => "memory_trim.manual_power_source_unknown",
-        MemoryTrimStatus::ForegroundUnknown => "memory_trim.manual_foreground_unknown",
-        MemoryTrimStatus::ManualCompleted => {
-            if result.failed_processes == 0 {
-                return result.last_error.map_or(Ok(()), Err);
-            }
-            let summary = t!(
-                "memory_trim.manual_failed",
-                trimmed = result.trimmed_processes,
-                failed = result.failed_processes
-            );
-            return Err(match result.last_error {
-                Some(error) => format!("{summary}\n{error}"),
-                None => summary.into_owned(),
-            });
+#[derive(Clone, Copy)]
+struct ManualTrimResult {
+    trimmed: usize,
+    readback: Option<MemoryTrimReadback>,
+}
+
+impl ManualTrimResult {
+    fn summary(self) -> String {
+        match (self.trimmed, self.readback) {
+            (0, _) => t!("memory_trim.manual_no_trim").into_owned(),
+            (_, None) => t!("memory_trim.manual_reduction_unavailable").into_owned(),
+            (_, Some(readback)) => t!(
+                "memory_trim.manual_reduction",
+                reduction = size_label(readback.reduction_bytes)
+            )
+            .into_owned(),
         }
-        MemoryTrimStatus::Error(error) => return Err(error),
-        MemoryTrimStatus::WaitingForMemoryLoad { .. } | MemoryTrimStatus::Active => {
-            "memory_trim.manual_result_unavailable"
-        }
-    };
-    Err(t!(key).into_owned())
+    }
+
+    fn coverage(self) -> Option<String> {
+        (self.trimmed > 0).then(|| {
+            t!(
+                "memory_trim.manual_readback_coverage",
+                measured = self.readback.map_or(0, |readback| readback.processes),
+                trimmed = self.trimmed
+            )
+            .into_owned()
+        })
+    }
 }
 
 #[derive(Default)]
@@ -44,6 +47,7 @@ pub(super) struct Editor {
     pub(super) path: String,
     settings_expanded: bool,
     thresholds: [Option<String>; 3],
+    last_result: Option<ManualTrimResult>,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Threshold {
@@ -100,6 +104,70 @@ pub(super) enum Message {
     Browse,
 }
 impl Editor {
+    pub(super) fn manual_result(&mut self, result: MemoryTrimSnapshot) -> Result<(), String> {
+        let key = match result.status {
+            MemoryTrimStatus::AutomationDisabled => "memory_trim.manual_automation_disabled",
+            MemoryTrimStatus::Disabled => "memory_trim.manual_disabled",
+            MemoryTrimStatus::WaitingForPowerSource { .. } => {
+                "memory_trim.manual_power_source_unknown"
+            }
+            MemoryTrimStatus::ForegroundUnknown => "memory_trim.manual_foreground_unknown",
+            MemoryTrimStatus::ManualCompleted => {
+                self.last_result = Some(ManualTrimResult {
+                    trimmed: result.trimmed_processes,
+                    readback: result.readback,
+                });
+                if result.failed_processes == 0 {
+                    return result.last_error.map_or(Ok(()), Err);
+                }
+                let summary = t!(
+                    "memory_trim.manual_failed",
+                    trimmed = result.trimmed_processes,
+                    failed = result.failed_processes
+                );
+                return Err(match result.last_error {
+                    Some(error) => format!("{summary}\n{error}"),
+                    None => summary.into_owned(),
+                });
+            }
+            MemoryTrimStatus::Error(error) => return Err(error),
+            MemoryTrimStatus::WaitingForMemoryLoad { .. } | MemoryTrimStatus::Active => {
+                "memory_trim.manual_result_unavailable"
+            }
+        };
+        Err(t!(key).into_owned())
+    }
+
+    pub(super) fn reset_drafts(&mut self) {
+        *self = Self {
+            last_result: self.last_result,
+            ..Self::default()
+        };
+    }
+
+    pub(super) fn last_result_view(&self) -> Option<Element<'_, Message>> {
+        let result = self.last_result?;
+        let caption = |label: String| -> Element<'_, Message> {
+            text(label)
+                .size(design::typography::CAPTION)
+                .style(text::secondary)
+                .wrapping(text::Wrapping::WordOrGlyph)
+                .into()
+        };
+        Some(
+            column![
+                heading(
+                    t!("memory_trim.last_manual_trim").into_owned(),
+                    design::typography::BODY,
+                ),
+                caption(result.summary()),
+            ]
+            .extend(result.coverage().map(caption))
+            .spacing(design::space::TIGHT)
+            .into(),
+        )
+    }
+
     pub(super) fn invalid_threshold(&self) -> Option<Threshold> {
         Threshold::ALL.into_iter().find(|&field| {
             self.thresholds[field as usize]
@@ -235,6 +303,45 @@ impl Editor {
 mod tests {
     use super::*;
     use crate::config::{PowerSourceProfile, Settings};
+
+    #[test]
+    fn last_manual_trim_remains_visible_after_skipped_commands_and_draft_resets() {
+        let mut editor = Editor::default();
+        assert!(editor.last_result_view().is_none());
+
+        let result = editor.manual_result(MemoryTrimSnapshot {
+            status: MemoryTrimStatus::ManualCompleted,
+            trimmed_processes: 3,
+            failed_processes: 1,
+            readback: Some(MemoryTrimReadback {
+                processes: 2,
+                reduction_bytes: 0,
+            }),
+            ..Default::default()
+        });
+        assert!(result.is_err());
+        assert!(editor.last_result_view().is_some());
+        assert!(editor.last_result.unwrap().summary().contains("0 B"));
+        assert!(editor
+            .last_result
+            .unwrap()
+            .coverage()
+            .unwrap()
+            .contains('2'));
+
+        assert!(editor.manual_result(MemoryTrimSnapshot::default()).is_err());
+        editor.reset_drafts();
+        assert_eq!(editor.last_result.unwrap().trimmed, 3);
+
+        editor
+            .manual_result(MemoryTrimSnapshot {
+                status: MemoryTrimStatus::ManualCompleted,
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(editor.last_result.unwrap().trimmed, 0);
+        assert!(editor.last_result.unwrap().coverage().is_none());
+    }
 
     #[test]
     fn picked_memory_exclusion_preserves_a_distinct_executable_path_on_save() {

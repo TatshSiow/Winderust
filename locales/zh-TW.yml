@@ -1065,6 +1065,11 @@ memory_trim:
   manual_foreground_unknown: "記憶體修剪無法確認前景應用程式。"
   manual_failed: "記憶體修剪已完成，成功 %{trimmed} 次，失敗 %{failed} 次。"
   manual_result_unavailable: "記憶體修剪未回報手動執行結果。"
+  last_manual_trim: "上次手動修剪"
+  manual_no_trim: "未修剪任何處理程序。"
+  manual_reduction: "觀測到的工作集減少量為 %{reduction}。"
+  manual_reduction_unavailable: "無法取得工作集減少量。"
+  manual_readback_coverage: "已量測 %{measured} 個已修剪的處理程序（共 %{trimmed} 個）。"
   waiting_for_memory_load: "系統記憶體使用率為 %{load}%，低於 %{threshold}% 的門檻。"
 
 cpu_sets_soft:

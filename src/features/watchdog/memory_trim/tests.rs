@@ -28,7 +28,7 @@ fn cpu_sample(cpu_time_100ns: u64, sampled_at: Instant) -> ProcessCpuSample {
 struct BatchTestPlatform {
     sampled_at: Instant,
     fail_before_pid: u32,
-    working_set_samples: VecDeque<u64>,
+    working_set_samples: VecDeque<Option<u64>>,
 }
 
 impl BatchTestPlatform {
@@ -53,7 +53,10 @@ impl MemoryTrimPlatform for BatchTestPlatform {
     }
 
     fn working_set_bytes(&mut self, _process: &Self::Process) -> Result<u64, ProcessControlError> {
-        Ok(self.working_set_samples.pop_front().unwrap_or(MB))
+        self.working_set_samples
+            .pop_front()
+            .unwrap_or(Some(MB))
+            .ok_or_else(|| ProcessControlError::Failed("working-set readback unavailable".into()))
     }
 
     fn cpu_sample(
@@ -151,6 +154,52 @@ fn run_observed_batch_pass(
         &mut ActionLog::new(16),
         || Ok(memory_load_percent),
     )
+}
+
+#[test]
+fn trim_now_readback_keeps_zero_and_missing_samples_distinct() {
+    let cases = [
+        (vec![Some(0)], 1, 0, None),
+        (vec![Some(MB), Some(MB), None], 1, 1, None),
+        (
+            vec![Some(MB), Some(MB), Some(MB)],
+            1,
+            1,
+            Some(MemoryTrimReadback {
+                processes: 1,
+                reduction_bytes: 0,
+            }),
+        ),
+        (
+            [
+                [Some(3 * MB), Some(3 * MB), Some(MB)],
+                [Some(MB), Some(MB), None],
+                [Some(MB), Some(MB), Some(MB)],
+            ]
+            .concat(),
+            3,
+            3,
+            Some(MemoryTrimReadback {
+                processes: 2,
+                reduction_bytes: 2 * MB,
+            }),
+        ),
+    ];
+    for (samples, processes, trimmed, readback) in cases {
+        let result = run_batch_pass(
+            &mut MemoryTrimManager::default(),
+            &batch_processes(processes),
+            MemoryTrimMode::Manual,
+            BatchTestPlatform {
+                working_set_samples: samples.into(),
+                ..BatchTestPlatform::new(Instant::now(), 0)
+            },
+            90,
+        );
+        assert_eq!(result.status, MemoryTrimStatus::ManualCompleted);
+        assert_eq!(result.trimmed_processes, trimmed);
+        assert_eq!(result.readback, readback);
+    }
 }
 
 #[test]
@@ -447,7 +496,7 @@ fn both_trim_modes_wait_after_working_set_falls_below_minimum() {
             &processes,
             mode,
             BatchTestPlatform {
-                working_set_samples: VecDeque::from([MB, MB - 1]),
+                working_set_samples: VecDeque::from([Some(MB), Some(MB - 1)]),
                 ..BatchTestPlatform::new(attempted_at, u32::MAX)
             },
             90,

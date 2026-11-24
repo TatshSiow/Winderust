@@ -18,7 +18,9 @@ const SHOW_SHORTCUT_INVALID: usize = 104;
 const SHOW_SHORTCUT_READY: usize = 105;
 const DOCK_FOCUS_WIDE: usize = 106;
 const DOCK_FOCUS_COMPACT: usize = 107;
-const EXTRA_STATES: usize = 108;
+const MEMORY_TRIM_PARTIAL: usize = 108;
+const MEMORY_TRIM_UNKNOWN: usize = 109;
+const EXTRA_STATES: usize = 110;
 pub(super) struct Run {
     pages: Vec<Page>,
     index: usize,
@@ -99,6 +101,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                     | RESOURCE_PREVIEW_INSTANCE
                     | SHOW_SHORTCUT_READY
                     | DOCK_FOCUS_COMPACT
+                    | MEMORY_TRIM_UNKNOWN
             )
         });
         let page = match extra {
@@ -108,7 +111,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             Some(3) => Page::Home,
             Some(4 | 6..=10) => Page::AdaptiveEngine,
             Some(5 | 70 | 71) => Page::AdaptiveProcessorPower,
-            Some(11) => Page::MemoryTrim,
+            Some(11 | MEMORY_TRIM_PARTIAL | MEMORY_TRIM_UNKNOWN) => Page::MemoryTrim,
             Some(12 | 82) => Page::ByFocus,
             Some(13) => Page::Home,
             Some(14) => Page::ProcessList,
@@ -1294,6 +1297,21 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             app.reset_editors();
             app.side_panel_open = true;
         }
+        if matches!(extra, Some(MEMORY_TRIM_PARTIAL | MEMORY_TRIM_UNKNOWN)) {
+            use crate::memory_trim::{MemoryTrimReadback, MemoryTrimSnapshot, MemoryTrimStatus};
+
+            app.side_panel_open = true;
+            let _ = app.update(Message::SidePanelTab(SidePanelTab::Status));
+            let _ = app.update(Message::TrimFinished(Ok(MemoryTrimSnapshot {
+                status: MemoryTrimStatus::ManualCompleted,
+                trimmed_processes: 3,
+                readback: (extra == Some(MEMORY_TRIM_PARTIAL)).then_some(MemoryTrimReadback {
+                    processes: 2,
+                    reduction_bytes: 12_000_000,
+                }),
+                ..Default::default()
+            })));
+        }
         let size = match extra {
             Some(
                 PROCESS_LIST_COMMIT_COMPACT
@@ -1301,7 +1319,9 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                 | CONTRAST_LIGHT_PROCESS_LIST
                 | HOME_HISTORY_COMPACT
                 | SHOW_SHORTCUT_READY
-                | DOCK_FOCUS_COMPACT,
+                | DOCK_FOCUS_COMPACT
+                | MEMORY_TRIM_PARTIAL
+                | MEMORY_TRIM_UNKNOWN,
             ) => iced::Size::new(900.0, 620.0),
             Some(RESOURCE_PREVIEW_INSTANCE) => iced::Size::new(900.0, 620.0),
             Some(RESOURCE_PREVIEW_COMBINED | SHOW_SHORTCUT_INVALID | DOCK_FOCUS_WIDE) => {
