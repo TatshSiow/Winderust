@@ -377,12 +377,12 @@ impl Events {
         let mut unresolved_attribution = 0;
         let mut timeline = [[0_i128; 3]; CAPTURE_SECONDS];
         for event in self.interrupts {
-            if event.entry < *window.start() {
-                incomplete_intervals += usize::from(event.end >= *window.start());
-                continue;
-            }
             if event.end > drain_end {
                 invalid_intervals += 1;
+                continue;
+            }
+            if event.entry < *window.start() {
+                incomplete_intervals += usize::from(event.end >= *window.start());
                 continue;
             }
             if event.entry > *window.end() {
@@ -659,11 +659,12 @@ mod tests {
                 sample(0, 117, 120),
                 sample(0, 121, 125),
                 sample(0, 116, 127),
+                sample(0, 98, 127),
             ],
             ..Events::default()
         };
         let report = events.report(100..=120, 126, 1_000, Some(1)).unwrap();
-        assert_eq!(report.invalid_intervals, 1);
+        assert_eq!(report.invalid_intervals, 2);
         assert_eq!(report.incomplete_intervals, 2);
         assert_eq!(report.modules[0].count, 2);
         assert_eq!(report.modules[0].total_inclusive_ms, 5.0);
