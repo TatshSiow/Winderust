@@ -9,7 +9,10 @@ use crate::foreground::{
 };
 use crate::ui::scrolling::scrollable;
 use iced::widget::{column, container, image, mouse_area, responsive, row, text, Space};
-use iced::{keyboard::key::Named, Element, Fill, Task};
+use iced::{
+    keyboard::{key::Named, Modifiers},
+    Element, Fill, Point, Rectangle, Task,
+};
 use rust_i18n::t;
 use std::{
     borrow::Cow,
@@ -188,6 +191,22 @@ pub(super) enum MenuBranch {
     Types,
     Levels(Kind),
 }
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum ContextAnchor {
+    Pointer(Point),
+    FocusedRow(Point),
+}
+
+impl ContextAnchor {
+    fn window_position(self, origin: Point) -> Point {
+        match self {
+            Self::Pointer(point) => Point::new(origin.x + point.x, origin.y + point.y),
+            Self::FocusedRow(point) => point,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(super) enum Message {
     Refresh,
@@ -205,7 +224,6 @@ pub(super) enum Message {
     Expand(OsString),
     Sort(Sort),
     Column(Sort, bool),
-    Select(usize, u64),
     Focus(usize, u64),
     MoveRowFocus(bool, f32),
     OpenFocused(f32),
@@ -214,6 +232,7 @@ pub(super) enum Message {
     Context(usize, u64),
     PointerMoved(iced::Point),
     OpenDetails,
+    OpenContextFocused(Rectangle),
     ProcessTab(ProcessTab),
     MenuBranch(MenuBranch),
     Menu(Box<Message>),
@@ -269,7 +288,7 @@ pub(super) struct ProcessList {
     selected: Option<Selection>,
     focused: Option<FocusedRow>,
     pointer: iced::Point,
-    context: Option<iced::Point>,
+    context: Option<ContextAnchor>,
     menu_branch: MenuBranch,
     process_tab: ProcessTab,
     detail_action_id: u64,
@@ -369,7 +388,7 @@ impl ProcessList {
             }],
             name: "example.exe".into(),
         });
-        self.context = context.then_some(iced::Point::new(130.0, 80.0));
+        self.context = context.then_some(ContextAnchor::Pointer(Point::new(130.0, 80.0)));
         self.process_tab = ProcessTab::Immediate;
     }
 
@@ -516,13 +535,16 @@ impl ProcessList {
                 self.process_tab = ProcessTab::Rulesets;
             }
             Message::Context(index, revision) => {
-                if revision != self.rows_revision || index >= self.rows.len() {
-                    return Task::none();
+                if revision == self.rows_revision && index < self.rows.len() {
+                    return self.open_context(
+                        index,
+                        ContextAnchor::Pointer(self.pointer),
+                        settings,
+                    );
                 }
-                let task = self.update(Message::Select(index, revision), settings, runtime);
-                self.context = Some(self.pointer);
-                self.menu_branch = MenuBranch::Closed;
-                return task;
+            }
+            Message::OpenContextFocused(bounds) => {
+                return self.open_context_focused(bounds, settings)
             }
             Message::Focus(index, revision) => {
                 if self.focus_row(index, revision) {
@@ -532,19 +554,12 @@ impl ProcessList {
             Message::MoveRowFocus(forward, height) => return self.move_row_focus(forward, height),
             Message::OpenFocused(height) => {
                 if self.selected.is_none() && self.stopping.is_none() {
-                    let focused = self.focused_index();
-                    if let Some(task) = focused.and_then(|index| self.reveal_row(index, height)) {
-                        return task;
-                    }
-                    let row = focused
-                        .or_else(|| self.focused.is_none().then(|| self.first_visible_row()));
-                    if let Some(index) = row {
+                    if let Some(index) = self.focused_or_first_visible_row() {
+                        if let Some(task) = self.reveal_row(index, height) {
+                            return task;
+                        }
                         self.focus_row(index, self.rows_revision);
-                        return self.update(
-                            Message::Select(index, self.rows_revision),
-                            settings,
-                            runtime,
-                        );
+                        return self.select(index, settings);
                     }
                 }
             }
@@ -576,28 +591,6 @@ impl ProcessList {
                     return self.update(Message::Stop(false), settings, runtime);
                 }
             }
-            Message::Select(index, revision) => {
-                let Some(entry) = self
-                    .rows
-                    .get(index)
-                    .filter(|_| revision == self.rows_revision)
-                else {
-                    return Task::none();
-                };
-                let selection = self.selection(entry);
-                self.context = None;
-                self.stopping = None;
-                self.reset_detail_feedback();
-                self.rulesets_error = None;
-                self.current.clear();
-                self.efficiency = None;
-                self.selected = Some(selection.clone());
-                self.process_tab = ProcessTab::Immediate;
-                return self.read_current(
-                    selection,
-                    settings.general.allow_cross_session_process_control,
-                );
-            }
             Message::Current(query_id, result) => {
                 if query_id == self.current_query_id && self.selected.is_some() {
                     match result {
@@ -610,11 +603,15 @@ impl ProcessList {
                 }
             }
             Message::CloseSelection => {
+                let return_to_table = matches!(self.context, Some(ContextAnchor::FocusedRow(_)));
                 self.selected = None;
                 self.context = None;
                 self.stopping = None;
                 self.reset_detail_feedback();
                 self.rulesets_error = None;
+                if return_to_table {
+                    return iced::widget::operation::focus(PROCESS_TABLE);
+                }
             }
             Message::Action(action) => {
                 let detail_action = self.begin_detail_action();
@@ -1026,6 +1023,66 @@ impl ProcessList {
 
     fn focused_index(&self) -> Option<usize> {
         self.rows.iter().position(|entry| self.is_focused(entry))
+    }
+
+    fn focused_or_first_visible_row(&self) -> Option<usize> {
+        self.focused_index().or_else(|| {
+            (self.focused.is_none() && !self.rows.is_empty()).then(|| self.first_visible_row())
+        })
+    }
+
+    fn open_context_focused(
+        &mut self,
+        bounds: Rectangle,
+        settings: &SettingsEditor,
+    ) -> Task<Message> {
+        if self.selected.is_some() || self.stopping.is_some() {
+            return Task::none();
+        }
+        let Some(index) = self.focused_or_first_visible_row() else {
+            return Task::none();
+        };
+        if let Some(task) = self.reveal_row(index, bounds.height) {
+            return task;
+        }
+        let row_bottom = self.offsets[index + 1] - self.offset.get();
+        let position = Point::new(
+            bounds.x + design::space::MEDIUM as f32,
+            bounds.y + row_bottom.clamp(0.0, bounds.height),
+        );
+        self.focus_row(index, self.rows_revision);
+        Task::batch([
+            self.open_context(index, ContextAnchor::FocusedRow(position), settings),
+            super::keyboard_focus::move_focus(true, true),
+        ])
+    }
+
+    fn open_context(
+        &mut self,
+        index: usize,
+        anchor: ContextAnchor,
+        settings: &SettingsEditor,
+    ) -> Task<Message> {
+        let task = self.select(index, settings);
+        self.context = Some(anchor);
+        self.menu_branch = MenuBranch::Closed;
+        task
+    }
+
+    fn select(&mut self, index: usize, settings: &SettingsEditor) -> Task<Message> {
+        let selection = self.selection(&self.rows[index]);
+        self.context = None;
+        self.stopping = None;
+        self.reset_detail_feedback();
+        self.rulesets_error = None;
+        self.current.clear();
+        self.efficiency = None;
+        self.selected = Some(selection.clone());
+        self.process_tab = ProcessTab::Immediate;
+        self.read_current(
+            selection,
+            settings.general.allow_cross_session_process_control,
+        )
     }
 
     fn first_visible_row(&self) -> usize {
@@ -1616,13 +1673,21 @@ impl ProcessList {
                 table,
                 PROCESS_TABLE,
                 !self.rows.is_empty(),
-                |key, height| {
-                    Some(match key {
-                        Named::ArrowUp => (Message::MoveRowFocus(false, height), true),
-                        Named::ArrowDown => (Message::MoveRowFocus(true, height), true),
-                        Named::Enter => (Message::OpenFocused(height), false),
-                        Named::Space => (Message::ExpandFocused(Some(height)), false),
-                        Named::Delete => (Message::DeleteFocused(height), false),
+                |key, modifiers, bounds| {
+                    let height = bounds.height;
+                    Some(match (key, modifiers) {
+                        (Named::F10, Modifiers::SHIFT) => {
+                            (Message::OpenContextFocused(bounds), false)
+                        }
+                        (key, modifiers) if modifiers.is_empty() => match key {
+                            Named::ArrowUp => (Message::MoveRowFocus(false, height), true),
+                            Named::ArrowDown => (Message::MoveRowFocus(true, height), true),
+                            Named::Enter => (Message::OpenFocused(height), false),
+                            Named::Space => (Message::ExpandFocused(Some(height)), false),
+                            Named::Delete => (Message::DeleteFocused(height), false),
+                            Named::ContextMenu => (Message::OpenContextFocused(bounds), false),
+                            _ => return None,
+                        },
                         _ => return None,
                     })
                 },
@@ -1740,7 +1805,7 @@ impl ProcessList {
             } else {
                 "process_list.suspend_process"
             };
-            if let Some(position) = self.context {
+            if let Some(anchor) = self.context {
                 return iced::widget::stack![
                     super::modal::background(body),
                     responsive(move |_size| {
@@ -1979,9 +2044,10 @@ impl ProcessList {
                         }
                         iced::widget::float(cascade)
                             .translate(move |bounds, viewport| {
+                                let position = anchor.window_position(bounds.position());
                                 let desired = iced::Point::new(
-                                    bounds.x + position.x - viewport.x,
-                                    bounds.y + position.y - viewport.y,
+                                    position.x - viewport.x,
+                                    position.y - viewport.y,
                                 );
                                 let point = popup_position(desired, viewport.size(), bounds.size());
                                 iced::Vector::new(
@@ -3037,7 +3103,7 @@ mod tests {
         for tree in [false, true] {
             list.selected = Some(selection.clone());
             assert!(list.modal_open());
-            list.context = Some(iced::Point::ORIGIN);
+            list.context = Some(ContextAnchor::Pointer(Point::ORIGIN));
             assert!(!list.modal_open());
             list.context = None;
             let _ = list.update(Message::Stop(tree), &mut editor, &runtime);
@@ -3136,7 +3202,7 @@ mod tests {
             processes: vec![process(10, 100, "app.exe")],
             name: "app.exe".into(),
         });
-        for context in [Some(iced::Point::ORIGIN), None] {
+        for context in [Some(ContextAnchor::Pointer(Point::ORIGIN)), None] {
             list.context = context;
             let view = list.view(&settings, PlanCatalog::Loaded(&[]));
             tree.diff(&view);
@@ -3242,7 +3308,7 @@ mod tests {
     }
 
     #[test]
-    fn process_table_accepts_arrow_keys_when_focused() {
+    fn process_table_accepts_arrows_and_context_shortcuts_when_focused() {
         use iced::advanced::{layout, widget::Tree, Layout, Shell};
         use iced::{keyboard, mouse, Event, Rectangle, Renderer, Size};
 
@@ -3261,15 +3327,6 @@ mod tests {
             &renderer,
             &layout::Limits::new(Size::ZERO, viewport.size()),
         );
-        let arrow = Event::Keyboard(keyboard::Event::KeyPressed {
-            key: keyboard::Key::Named(Named::ArrowDown),
-            modified_key: keyboard::Key::Named(Named::ArrowDown),
-            physical_key: keyboard::key::Physical::Code(keyboard::key::Code::ArrowDown),
-            location: keyboard::Location::Standard,
-            modifiers: keyboard::Modifiers::empty(),
-            text: None,
-            repeat: false,
-        });
         for focused in [false, true] {
             if focused {
                 view.as_widget_mut().operate(
@@ -3279,25 +3336,92 @@ mod tests {
                     &mut iced::advanced::widget::operation::focusable::focus(PROCESS_TABLE.into()),
                 );
             }
-            let mut messages = Vec::new();
-            view.as_widget_mut().update(
-                &mut tree,
-                &arrow,
-                Layout::new(&node),
-                mouse::Cursor::Unavailable,
-                &renderer,
-                &mut iced::advanced::clipboard::Null,
-                &mut Shell::new(&mut messages),
-                &viewport,
-            );
-            if focused {
-                assert!(
-                    matches!(messages.as_slice(), [Message::MoveRowFocus(true, height)] if *height > 0.0)
+            for (key, modifiers, repeat, handled) in [
+                (Named::ArrowDown, Modifiers::empty(), false, true),
+                (Named::F10, Modifiers::SHIFT, false, true),
+                (Named::ContextMenu, Modifiers::empty(), false, true),
+                (Named::F10, Modifiers::SHIFT, true, true),
+                (Named::F10, Modifiers::empty(), false, false),
+                (Named::F10, Modifiers::SHIFT | Modifiers::CTRL, false, false),
+            ] {
+                let event = Event::Keyboard(keyboard::Event::KeyPressed {
+                    key: keyboard::Key::Named(key),
+                    modified_key: keyboard::Key::Named(key),
+                    physical_key: keyboard::key::Physical::Unidentified(
+                        keyboard::key::NativeCode::Unidentified,
+                    ),
+                    location: keyboard::Location::Standard,
+                    modifiers,
+                    text: None,
+                    repeat,
+                });
+                let mut messages = Vec::new();
+                let mut shell = Shell::new(&mut messages);
+                view.as_widget_mut().update(
+                    &mut tree,
+                    &event,
+                    Layout::new(&node),
+                    mouse::Cursor::Unavailable,
+                    &renderer,
+                    &mut iced::advanced::clipboard::Null,
+                    &mut shell,
+                    &viewport,
                 );
-            } else {
-                assert!(messages.is_empty());
+                assert_eq!(shell.is_event_captured(), focused && handled);
+                if !focused || !handled || repeat {
+                    assert!(messages.is_empty());
+                } else if key == Named::ArrowDown {
+                    assert!(
+                        matches!(messages.as_slice(), [Message::MoveRowFocus(true, height)] if *height > 0.0)
+                    );
+                } else {
+                    assert!(
+                        matches!(messages.as_slice(), [Message::OpenContextFocused(bounds)] if bounds.height > 0.0 && bounds.y > 0.0)
+                    );
+                }
             }
         }
+    }
+
+    #[test]
+    fn keyboard_context_requires_a_visible_and_still_identical_row() {
+        let mut list = ProcessList {
+            processes: (1..=10)
+                .map(|id| process(id, u64::from(id), &format!("app{id}.exe")))
+                .collect(),
+            sort: Sort::Pid,
+            ..ProcessList::default()
+        };
+        list.rebuild();
+        let settings = SettingsEditor::with_settings(Settings::default());
+        let bounds = Rectangle {
+            x: 100.0,
+            y: 150.0,
+            width: 540.0,
+            height: 2.0 * ROW_HEIGHT,
+        };
+        assert!(list.focus_row(8, list.rows_revision));
+        let _ = list.open_context_focused(bounds, &settings);
+        assert!(!list.context_open());
+        assert_eq!(list.offset.get(), 7.0 * ROW_HEIGHT);
+
+        // A real row departure must never retarget the old focus to a reused PID.
+        list.processes[8].creation_time = Some(100);
+        list.rebuild();
+        let _ = list.open_context_focused(bounds, &settings);
+        assert!(!list.context_open());
+
+        assert!(list.focus_row(8, list.rows_revision));
+        let _ = list.open_context_focused(bounds, &settings);
+        assert!(list.context_open());
+        assert_eq!(list.selected.as_ref().unwrap().processes[0].id, 9);
+        assert_eq!(
+            list.context,
+            Some(ContextAnchor::FocusedRow(Point::new(
+                bounds.x + design::space::MEDIUM as f32,
+                bounds.y + bounds.height,
+            )))
+        );
     }
 
     #[test]
@@ -3461,7 +3585,7 @@ mod tests {
         assert_eq!(list.detail_feedback, Some(Ok("Latest success".into())));
         assert_eq!(list.action_feedback, Some(Err("Delayed failure".into())));
 
-        list.context = Some(iced::Point::ORIGIN);
+        list.context = Some(ContextAnchor::Pointer(Point::ORIGIN));
         assert_eq!(list.begin_detail_action(), None);
         list.record_action_result(Err("Context failure".into()), None);
         assert_eq!(list.action_feedback, Some(Err("Context failure".into())));
@@ -3637,7 +3761,7 @@ mod tests {
         let mut editor = SettingsEditor::with_settings(settings);
         let runtime = RuntimeHandle::start(&editor.runtime_settings_snapshot());
         list.selected = Some(selected.clone());
-        list.context = Some(iced::Point::ORIGIN);
+        list.context = Some(ContextAnchor::Pointer(Point::ORIGIN));
         let clipboard = list.update(
             Message::Menu(Box::new(Message::CopyExecutablePath)),
             &mut editor,

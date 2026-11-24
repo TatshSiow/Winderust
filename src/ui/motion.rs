@@ -6,8 +6,8 @@ use iced::advanced::{
     Clipboard, Layout, Shell, Widget,
 };
 use iced::{
-    keyboard::key::Named, mouse, overlay, Element, Event, Length, Rectangle, Renderer, Size, Theme,
-    Vector,
+    keyboard::{key::Named, Modifiers},
+    mouse, overlay, Element, Event, Length, Rectangle, Renderer, Size, Theme, Vector,
 };
 use std::{
     sync::atomic::{AtomicBool, Ordering},
@@ -59,7 +59,7 @@ struct Motion<'a, M> {
     action: Option<KeyboardAction<'a, M>>,
 }
 pub(super) type Action<'a, M> = Box<dyn Fn() -> M + 'a>;
-type KeyHandler<M> = fn(Named, f32) -> Option<(M, bool)>;
+type KeyHandler<M> = fn(Named, Modifiers, Rectangle) -> Option<(M, bool)>;
 
 enum KeyboardAction<'a, M> {
     Activate(Action<'a, M>),
@@ -378,9 +378,9 @@ impl<M> Widget<M, Theme, Renderer> for Motion<'_, M> {
                 }
             }
             Some(KeyboardAction::Keys { handle, .. }) => {
-                let key = state.focus.pressed_key(event, shell);
-                if let Some((message, publish)) = key.and_then(|(key, repeat)| {
-                    handle(key, layout.bounds().height)
+                let key = state.focus.pressed_named_key(event, shell);
+                if let Some((message, publish)) = key.and_then(|(key, modifiers, repeat)| {
+                    handle(key, modifiers, layout.bounds())
                         .map(|(message, repeatable)| (message, !repeat || repeatable))
                 }) {
                     shell.capture_event();

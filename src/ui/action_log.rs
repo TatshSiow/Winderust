@@ -432,7 +432,13 @@ impl Editor {
                 ),
                 "action-log-table",
                 count != 0,
-                Scroll::from_key,
+                |key, modifiers, bounds| {
+                    if modifiers.is_empty() {
+                        Scroll::from_key(key, bounds.height)
+                    } else {
+                        None
+                    }
+                },
             ),
         ]
         .height(Fill);

@@ -847,6 +847,23 @@ impl WinderustApp {
                 _ => return Task::none(),
             }
         }
+        if !review_open && self.process_context_open() {
+            if status != iced::event::Status::Ignored {
+                return Task::none();
+            }
+            return match key {
+                Key::Named(Named::Tab) if tab => {
+                    super::keyboard_focus::move_focus(!modifiers.shift(), true)
+                }
+                Key::Named(Named::Escape) if modifiers.is_empty() && !repeat => {
+                    self.update(Message::Processes(process_list::Message::CloseSelection))
+                }
+                Key::Named(Named::ArrowUp | Named::ArrowDown) if modifiers.is_empty() => {
+                    super::keyboard_focus::move_focus(key == Key::Named(Named::ArrowDown), true)
+                }
+                _ => Task::none(),
+            };
+        }
         let cancel_dialog = match self.page {
             _ if review_open => Some(Message::PowerTuning(
                 advanced_power_plan_tuning::Message::CancelApply,
@@ -854,7 +871,7 @@ impl WinderustApp {
             Page::ProcessList
                 if key == Key::Named(Named::Escape)
                     && modifiers.is_empty()
-                    && (self.processes.modal_open() || self.processes.context_open()) =>
+                    && self.processes.modal_open() =>
             {
                 Some(Message::Processes(process_list::Message::CloseSelection))
             }
@@ -1968,7 +1985,7 @@ impl WinderustApp {
                     .processes
                     .update(message, &mut self.settings, &self.runtime)
                     .map(Message::Processes);
-                if self.processes.modal_open() {
+                if self.processes.modal_open() || self.processes.context_open() {
                     self.navigation.dismiss();
                 }
                 return if load_plans && self.processes.rulesets_open() {
@@ -2851,12 +2868,17 @@ impl WinderustApp {
             }
     }
 
+    fn process_context_open(&self) -> bool {
+        self.page == Page::ProcessList && self.processes.context_open()
+    }
+
     fn view(&self, _window: iced::window::Id) -> Element<'_, Message> {
         let picker_open = self.picker_open();
         window_frame::view(
             super::modal::picker(self.view_workspace(), picker_open, Message::DismissPickers),
             self.maximized,
-            !picker_open,
+            !picker_open
+                && (!self.process_context_open() || self.closing || !self.error_message.is_empty()),
             Message::WindowAction,
         )
     }
@@ -3021,7 +3043,7 @@ impl WinderustApp {
             .style(widgets::surface);
             return centered_modal(content, dialog.into());
         }
-        if self.page == Page::ProcessList && self.processes.context_open() {
+        if self.process_context_open() {
             iced::widget::stack![
                 content,
                 iced::widget::opaque(
@@ -3160,7 +3182,9 @@ impl WinderustApp {
         let read_power_source =
             || *observed_power_source.get_or_init(crate::backend::power_source::is_plugged_in);
         let shield = |content| {
-            if self.page == Page::ProcessList && self.processes.modal_open() {
+            if self.page == Page::ProcessList
+                && (self.processes.modal_open() || self.processes.context_open())
+            {
                 super::modal::background(content)
             } else {
                 content

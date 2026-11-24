@@ -200,6 +200,16 @@ impl Focus {
         event: &Event,
         shell: &Shell<'_, M>,
     ) -> Option<(Named, bool)> {
+        self.pressed_named_key(event, shell)
+            .filter(|(_, modifiers, _)| modifiers.is_empty())
+            .map(|(key, _, repeat)| (key, repeat))
+    }
+
+    pub(super) fn pressed_named_key<M>(
+        &self,
+        event: &Event,
+        shell: &Shell<'_, M>,
+    ) -> Option<(Named, keyboard::Modifiers, bool)> {
         if let Event::Keyboard(keyboard::Event::KeyPressed {
             key: keyboard::Key::Named(key),
             modifiers,
@@ -207,8 +217,8 @@ impl Focus {
             ..
         }) = event
         {
-            if self.0 && modifiers.is_empty() && !shell.is_event_captured() {
-                return Some((*key, *repeat));
+            if self.0 && !shell.is_event_captured() {
+                return Some((*key, *modifiers, *repeat));
             }
         }
         None
