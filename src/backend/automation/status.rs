@@ -135,18 +135,6 @@ pub(super) fn update_keep_running_status(
     );
 }
 
-pub(super) fn update_instance_balancing_status(
-    shared: &SharedAutomationState,
-    status: InstanceBalancingSnapshot,
-) {
-    update_feature_status(
-        shared,
-        status,
-        |feature_status| &feature_status.instance_balancing,
-        |feature_status| &mut feature_status.instance_balancing,
-    );
-}
-
 pub(super) fn update_cpu_sets_soft_status(
     shared: &SharedAutomationState,
     status: CpuAllocationSnapshot,

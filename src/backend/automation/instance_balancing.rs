@@ -427,21 +427,43 @@ fn context_is_current(
     {
         return false;
     }
+    let state = lock_unpoisoned(&shared.state);
+    intake_is_current(&state, configured, true)
+}
+
+fn intake_is_current(
+    state: &AutomationWorkerState,
+    configured: &Arc<Settings>,
+    watcher_active: bool,
+) -> bool {
+    !state.stop_requested
+        && Arc::ptr_eq(&state.settings, configured)
+        && state.windows_event_watcher_active == watcher_active
+        && !state.pending_events.suspend_resume
+        && !state.pending_events.session_changed
+        && state.pending_events.windows_event_watcher_change.is_none()
+        && !state.pending_instance_balancing_resets.all
+        && state.pending_instance_balancing_resets.paths.is_empty()
+}
+
+pub(super) fn publish_status(
+    shared: &SharedAutomationState,
+    configured: &Arc<Settings>,
+    watcher_active: bool,
+    status: InstanceBalancingSnapshot,
+) {
+    let mut state = lock_unpoisoned(&shared.state);
+    if !intake_is_current(&state, configured, watcher_active)
+        || (state.pending_events.power_changed
+            && watcher_active
+            && instance_balancing_required(configured)
+            && cpu_allocation_source_difference(configured).is_some())
+        || state.status.feature_status.instance_balancing == status
     {
-        let state = lock_unpoisoned(&shared.state);
-        if state.stop_requested
-            || !Arc::ptr_eq(&state.settings, configured)
-            || !state.windows_event_watcher_active
-            || state.pending_events.suspend_resume
-            || state.pending_events.session_changed
-            || state.pending_events.windows_event_watcher_change.is_some()
-            || state.pending_instance_balancing_resets.all
-            || !state.pending_instance_balancing_resets.paths.is_empty()
-        {
-            return false;
-        }
+        return;
     }
-    true
+    Arc::make_mut(&mut state.status.feature_status).instance_balancing = status;
+    bump_status_generation(shared, &mut state);
 }
 
 struct PlanRejection {

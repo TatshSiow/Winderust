@@ -769,6 +769,8 @@ Read the relevant section before changing feature policy, ownership, restoration
   unavailable eligibility withdraw that rule's claims. A fresh catalog, topology
   and eligibility pass must match before group application. Settings, session and
   watcher changes cancel subsequent work; an admitted native operation may finish.
+  Status discards new observations superseded by saved settings or a change in
+  the observation context.
   Native writes are not atomic across members. Any failed or shadowed share stops
   the plan and withdraws every balancing claim for the rule, retaining failed cleanup.
   A failed target operation records Failed in Action Log. Context and eligibility

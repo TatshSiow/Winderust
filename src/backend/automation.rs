@@ -1922,7 +1922,12 @@ fn run_background_automation(
                 alternate_cpu_allocation_profile,
                 windows_event_watcher_active,
             );
-            update_instance_balancing_status(&shared, status);
+            instance_balancing::publish_status(
+                &shared,
+                &configured_settings,
+                windows_event_watcher_active,
+                status,
+            );
             scheduler.schedule_after(
                 RefreshDomain::InstanceBalancing,
                 now,
@@ -2186,7 +2191,12 @@ fn run_background_automation(
             .instance_balancing
             .take_settled_release_status(&runner.cpu_allocation_coordinator)
         {
-            update_instance_balancing_status(&shared, status);
+            instance_balancing::publish_status(
+                &shared,
+                &configured_settings,
+                windows_event_watcher_active,
+                status,
+            );
         }
         runner.publish_action_log_if_changed(&shared);
         let by_activity =

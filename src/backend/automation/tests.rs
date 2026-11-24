@@ -2910,6 +2910,51 @@ fn shared_automation_state(settings: Settings) -> SharedAutomationState {
 }
 
 #[test]
+fn instance_balancing_status_rejects_samples_from_superseded_intake() {
+    let mut settings = Settings::default();
+    settings.general.enabled = true;
+    settings.instance_balancing.enabled = true;
+    settings
+        .instance_balancing
+        .rules
+        .push(crate::config::InstanceBalancingRule {
+            enabled: true,
+            executable_path: r"C:\Apps\original.exe".into(),
+        });
+    let shared = shared_automation_state(settings.clone());
+    let old = automation_snapshot(&shared).unwrap();
+    let observed = InstanceBalancingSnapshot {
+        enabled: true,
+        process_activity_known: true,
+        scanned_processes: 3,
+        detail: Some(InstanceBalancingDetail::WaitingForStableCohort),
+        ..Default::default()
+    };
+    settings.instance_balancing.rules[0].executable_path = r"C:\Apps\new.exe".into();
+    {
+        let mut state = lock_unpoisoned(&shared.state);
+        instance_balancing::record_settings_changes(&mut state, &settings);
+        state.settings = Arc::new(settings);
+    }
+    instance_balancing::publish_status(&shared, &old.settings, true, observed.clone());
+    assert_eq!(shared.status_generation.load(Ordering::Acquire), 0);
+
+    let current = automation_snapshot(&shared).unwrap();
+    instance_balancing::publish_status(&shared, &current.settings, true, observed);
+    assert_eq!(shared.status_generation.load(Ordering::Acquire), 1);
+
+    set_windows_event_watcher_active(&shared, false);
+    set_windows_event_watcher_active(&shared, true);
+    instance_balancing::publish_status(
+        &shared,
+        &current.settings,
+        true,
+        InstanceBalancingSnapshot::default(),
+    );
+    assert_eq!(shared.status_generation.load(Ordering::Acquire), 1);
+}
+
+#[test]
 fn tray_visibility_edges_remain_pending_before_the_worker_waits() {
     let shared = shared_automation_state(Settings::default());
     lock_unpoisoned(&shared.state).worker_accepting_work = true;
