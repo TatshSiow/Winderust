@@ -3316,6 +3316,8 @@ impl WinderustApp {
                 | Page::KeepRunning
                 | Page::InstanceLimits
                 | Page::InstanceBalancing
+                | Page::ByFocus
+                | Page::ByRunningApp
         ) || priority_kind(self.page).is_some();
         let save_card =
             || widgets::settings_card(self.save_notice(settings_are_pending)).width(360);
@@ -3332,18 +3334,20 @@ impl WinderustApp {
         ))
         .width(Fill)
         .height(Fill);
-        let content =
-            if save_notice_in_editor && save_notice_visible && !self.navigation_search_open {
-                column![
-                    content,
-                    container(save_card()).width(Fill).align_x(iced::Right)
-                ]
+        let content = if save_notice_in_editor {
+            column![content]
+                .extend(save_notice_visible.then(|| {
+                    container(save_card())
+                        .width(Fill)
+                        .align_x(iced::Right)
+                        .into()
+                }))
                 .spacing(design::space::MEDIUM)
                 .height(Fill)
                 .into()
-            } else {
-                content.into()
-            };
+        } else {
+            content.into()
+        };
         let body = page_canvas(shield(heading), content);
         let panel_visible = side_panel.is_some();
         let layout = row![
@@ -3531,7 +3535,8 @@ impl WinderustApp {
             return centered_modal(layout, modal);
         }
         if save_notice_in_editor {
-            return layout;
+            // Match the background child in Search and other modal stacks.
+            return iced::widget::stack![layout].into();
         }
         iced::widget::stack![
             layout,
