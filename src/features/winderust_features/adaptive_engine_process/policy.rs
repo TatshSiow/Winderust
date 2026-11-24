@@ -37,11 +37,11 @@ pub(super) fn should_skip_process(
     current_process_id: u32,
     foreground_process_id: Option<u32>,
     foreground_process_group_ids: &BTreeSet<u32>,
-    background_efficiency_process_ids: &BTreeSet<u32>,
+    excluded_process_id: Option<u32>,
 ) -> bool {
     process_id == 0
         || process_id == current_process_id
-        || background_efficiency_process_ids.contains(&process_id)
+        || excluded_process_id == Some(process_id)
         || is_builtin_excluded(process_name)
         || should_skip_foreground_process(
             process_id,

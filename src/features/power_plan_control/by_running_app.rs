@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::HashMap,
     path::{Path, PathBuf},
 };
 
@@ -149,11 +149,8 @@ impl ByRunningAppManager {
                 .is_none_or(|active| active.rule_index < rule_index)
     }
 
-    pub fn active_process_ids(&self) -> BTreeSet<u32> {
-        self.active
-            .as_ref()
-            .map(|active| BTreeSet::from([active.process_id]))
-            .unwrap_or_default()
+    pub fn active_process_id(&self) -> Option<u32> {
+        self.active.as_ref().map(|active| active.process_id)
     }
 
     pub fn active_decision(&self) -> Option<(usize, String, String, String)> {

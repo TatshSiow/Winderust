@@ -1021,7 +1021,7 @@ fn adaptive_engine_source_wait_clears_qualification_and_rearms_after_update() {
             allow_cross_session_process_control: false,
             foreground_process_id: None,
             total_cpu_usage_percent: None,
-            excluded_process_ids: &BTreeSet::new(),
+            excluded_process_id: None,
             explicit_cpu_allocation_paths: &[],
             observations: &mut CycleObservations::default(),
         },

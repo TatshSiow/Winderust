@@ -594,7 +594,7 @@ mod tests {
                     allow_cross_session_process_control: true,
                     foreground_process_id: Some(42),
                     total_cpu_usage_percent: Some(0.0),
-                    excluded_process_ids: &BTreeSet::new(),
+                    excluded_process_id: None,
                     explicit_cpu_allocation_paths: &[],
                     observations: &mut observations,
                 },

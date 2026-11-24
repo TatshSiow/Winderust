@@ -233,7 +233,7 @@ pub struct AdaptiveEngineProcessUpdate<'a> {
     pub allow_cross_session_process_control: bool,
     pub foreground_process_id: Option<u32>,
     pub total_cpu_usage_percent: Option<f32>,
-    pub excluded_process_ids: &'a BTreeSet<u32>,
+    pub excluded_process_id: Option<u32>,
     pub explicit_cpu_allocation_paths: &'a [String],
     pub observations: &'a mut CycleObservations,
 }
@@ -300,7 +300,7 @@ impl AdaptiveEngineProcessManager {
             allow_cross_session_process_control,
             foreground_process_id,
             total_cpu_usage_percent,
-            excluded_process_ids,
+            excluded_process_id,
             explicit_cpu_allocation_paths,
             observations,
         } = input;
@@ -545,7 +545,7 @@ impl AdaptiveEngineProcessManager {
                     current_process_id,
                     foreground_process_id,
                     &foreground_group,
-                    excluded_process_ids,
+                    excluded_process_id,
                 )
             {
                 continue;
@@ -569,7 +569,7 @@ impl AdaptiveEngineProcessManager {
             .iter()
             .find(|process| process.id == foreground_id)
             .is_some_and(|process| {
-                !excluded_process_ids.contains(&foreground_id)
+                excluded_process_id != Some(foreground_id)
                     && focus_process_priority_eligible(
                         foreground_id,
                         &process.name,
@@ -902,7 +902,7 @@ impl AdaptiveEngineProcessManager {
                     };
                     if process.is_critical != Some(false)
                         || !process.can_set_information
-                        || excluded_process_ids.contains(process_id)
+                        || excluded_process_id == Some(*process_id)
                         || !focus_process_priority_eligible(
                             *process_id,
                             &process.name,

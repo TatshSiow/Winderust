@@ -2712,7 +2712,7 @@ fn shared_property_precedence_inputs_are_characterized() {
         "pub(super) fn run_adaptive_power_plan_update",
     );
     assert!(workload.contains("priority_efficiency_controller"));
-    assert!(workload.contains("by_running_app_manager.active_process_ids()"));
+    assert!(workload.contains("by_running_app_manager.active_process_id()"));
     assert!(workload
         .contains("explicit_cpu_allocation_paths(settings, alternate_cpu_allocation_profile)"));
 

@@ -1131,7 +1131,6 @@ impl RuntimeCore {
             self.refresh_cpu_usage();
         }
         let foreground_process_id = observations.foreground_process_id();
-        let excluded_process_ids = self.by_running_app_manager.active_process_ids();
         let explicit_cpu_allocation_paths =
             explicit_cpu_allocation_paths(settings, alternate_cpu_allocation_profile);
         self.adaptive_engine_process_manager.update(
@@ -1143,7 +1142,7 @@ impl RuntimeCore {
                     .allow_cross_session_process_control,
                 foreground_process_id,
                 total_cpu_usage_percent: self.cpu_usage.percent,
-                excluded_process_ids: &excluded_process_ids,
+                excluded_process_id: self.by_running_app_manager.active_process_id(),
                 explicit_cpu_allocation_paths: &explicit_cpu_allocation_paths,
                 observations,
             },
