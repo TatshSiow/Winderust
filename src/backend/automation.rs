@@ -1043,6 +1043,7 @@ impl RuntimeHandle {
                     thread_shared,
                     power_source::is_plugged_in,
                     tray::is_hidden_to_tray,
+                    RuntimeCore::run_bottleneck_classifier_update,
                 )
             }));
         }
@@ -1177,6 +1178,7 @@ fn run_background_automation(
     shared: Arc<SharedAutomationState>,
     power_source: impl Fn() -> Option<bool>,
     tray_hidden: impl Fn() -> bool,
+    mut sample_bottleneck: impl FnMut(&mut RuntimeCore) -> BottleneckSnapshot,
 ) -> Result<(), String> {
     let _exit_guard = AutomationWorkerExitGuard { shared: &shared };
     let mut runner = RuntimeCore::for_worker(&shared)?;
@@ -1709,7 +1711,7 @@ fn run_background_automation(
         if bottleneck_classifier_refresh_required
             && scheduler.is_due(RefreshDomain::BottleneckClassifier, now)
         {
-            let status = runner.run_bottleneck_classifier_update();
+            let status = sample_bottleneck(&mut runner);
             update_bottleneck_classifier_status(&shared, status);
             scheduler.schedule_after(
                 RefreshDomain::BottleneckClassifier,

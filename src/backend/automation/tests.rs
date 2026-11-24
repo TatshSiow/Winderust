@@ -2883,7 +2883,7 @@ fn tray_visibility_edges_remain_pending_before_the_worker_waits() {
 
 #[test]
 fn system_bottleneck_sampling_restarts_after_a_tray_restore() {
-    use std::sync::{atomic::AtomicBool, mpsc};
+    use std::sync::mpsc;
 
     let mut settings = Settings::default();
     settings.general.enabled = true;
@@ -2895,43 +2895,44 @@ fn system_bottleneck_sampling_restarts_after_a_tray_restore() {
 
     let shared = Arc::new(shared_automation_state(settings));
     lock_unpoisoned(&shared.state).worker_accepting_work = true;
-    let hidden = Arc::new(AtomicBool::new(true));
-    let (pass, passes) = mpsc::channel();
+    let (entered, passes) = mpsc::channel();
+    let (advance, visibility) = mpsc::channel();
+    let (sampled, samples) = mpsc::channel();
     let worker_shared = Arc::clone(&shared);
-    let worker_hidden = Arc::clone(&hidden);
     let worker = thread::spawn(move || {
         run_background_automation(
             worker_shared,
+            || Some(true),
             || {
-                let _ = pass.send(());
-                Some(true)
+                let _ = entered.send(());
+                visibility.recv().unwrap_or(true)
             },
-            || worker_hidden.load(Ordering::Acquire),
+            |_| {
+                let _ = sampled.send(());
+                BottleneckSnapshot {
+                    enabled: true,
+                    ..BottleneckSnapshot::default()
+                }
+            },
         )
     });
     let timeout = Duration::from_secs(3);
-    let classifier_enabled = || {
-        lock_unpoisoned(&shared.state)
-            .status
-            .feature_status
-            .bottleneck_classifier
-            .enabled
-    };
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         passes.recv_timeout(timeout).unwrap();
-        notify_tray_visibility_changed(&shared);
-        // The second pass cannot start before the first hidden pass finishes.
-        passes.recv_timeout(timeout).unwrap();
-        assert!(!classifier_enabled());
-
-        for hidden_to_tray in [false, true, false] {
-            hidden.store(hidden_to_tray, Ordering::Release);
+        for (hidden, sample_count) in [(true, 0), (false, 1), (true, 0), (false, 1)] {
+            // Queue the next visibility edge before the current pass waits. The next pass
+            // must observe that edge and can only begin after this one has published.
             notify_tray_visibility_changed(&shared);
-            let deadline = Instant::now() + timeout;
-            while classifier_enabled() == hidden_to_tray {
-                assert!(Instant::now() < deadline, "diagnostic did not refresh");
-                thread::sleep(Duration::from_millis(5));
-            }
+            advance.send(hidden).unwrap();
+            passes
+                .recv_timeout(timeout)
+                .expect("worker did not process the tray event");
+            let state = lock_unpoisoned(&shared.state);
+            assert_eq!(
+                state.status.feature_status.bottleneck_classifier.enabled,
+                !hidden
+            );
+            assert_eq!(samples.try_iter().count(), sample_count);
         }
     }));
     {
@@ -2939,6 +2940,7 @@ fn system_bottleneck_sampling_restarts_after_a_tray_restore() {
         state.stop_requested = true;
         shared.changed.notify_one();
     }
+    drop(advance);
     worker.join().unwrap().unwrap();
     if let Err(error) = result {
         std::panic::resume_unwind(error);
@@ -2976,6 +2978,10 @@ fn battery_only_system_bottleneck_detects_source_changes_without_full_event_cove
                 Some(plugged_in)
             },
             || false,
+            |_| BottleneckSnapshot {
+                enabled: true,
+                ..BottleneckSnapshot::default()
+            },
         )
     });
     let timeout = Duration::from_secs(4);
@@ -3300,6 +3306,7 @@ fn idle_battery_worker_survives_source_changes_without_settings_updates() {
                     Some(plugged_in)
                 },
                 || false,
+                RuntimeCore::run_bottleneck_classifier_update,
             )
         });
         let timeout = Duration::from_secs(4);
