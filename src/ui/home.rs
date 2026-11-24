@@ -11,7 +11,7 @@ use crate::backend::power_source::is_plugged_in;
 use crate::config::{PowerSourceProfile, Settings};
 use crate::cpu::{CpuUsageMonitor, CpuUsageSnapshot};
 use crate::cpu_allocation::CpuAllocationSnapshot;
-use crate::features::winderust_features::memory_trim::MemoryTrimStatus;
+use crate::features::watchdog::memory_trim::MemoryTrimStatus;
 use crate::ui::scrolling::scrollable;
 use crate::ui::Page;
 use iced::widget::{canvas, column, container, responsive, row, text};

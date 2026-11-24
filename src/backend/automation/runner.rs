@@ -1,6 +1,6 @@
 use super::*;
-use crate::features::advanced_controls::sleep_prevention::SleepPreventionEnvironment;
-use crate::features::winderust_features::memory_trim::MemoryTrimStatus;
+use crate::features::watchdog::memory_trim::MemoryTrimStatus;
+use crate::features::watchdog::sleep_prevention::SleepPreventionEnvironment;
 use crate::runtime::observations::{CycleObservations, ForegroundCpuHistory};
 use crate::{
     action_log::{ActionLogFeature, ActionLogResult},

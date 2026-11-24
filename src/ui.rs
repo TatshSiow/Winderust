@@ -52,7 +52,6 @@ pub(crate) mod process_rules;
 pub enum Page {
     Home,
     PowerPlanControl,
-    WinderustFeatures,
     Watchdog,
     CpuControl,
     PriorityControl,
@@ -116,17 +115,18 @@ const CPU_CONTROL_PAGES: [Page; 5] = [
     Page::ProcessorAffinityHard,
     Page::InstanceBalancing,
 ];
-const PRIORITY_CONTROL_PAGES: [Page; 6] = [
+const PRIORITY_CONTROL_PAGES: [Page; 7] = [
     Page::ProcessPriority,
+    Page::EfficiencyMode,
     Page::ThreadPriority,
     Page::DynamicPriorityBoost,
     Page::IoPriority,
     Page::GpuPriority,
     Page::MemoryPriority,
 ];
-const WINDERUST_FEATURE_PAGES: [Page; 2] = [Page::EfficiencyMode, Page::MemoryTrim];
-const WATCHDOG_PAGES: [Page; 5] = [
+const WATCHDOG_PAGES: [Page; 6] = [
     Page::ResourceThresholds,
+    Page::MemoryTrim,
     Page::KeepRunning,
     Page::SleepPrevention,
     Page::InstanceLimits,
@@ -140,7 +140,7 @@ const SETTINGS_PAGES: [Page; 3] = [
 ];
 const ABOUT_PAGES: [Page; 1] = [Page::About];
 const ADVANCED_CONTROLS_PAGES: [Page; 2] = [Page::TimerResolution, Page::Win32PrioritySeparation];
-const PAGE_SECTIONS: [PageSection; 11] = [
+const PAGE_SECTIONS: [PageSection; 10] = [
     PageSection {
         landing_page: Page::Home,
         pages: &HOME_PAGES,
@@ -148,10 +148,6 @@ const PAGE_SECTIONS: [PageSection; 11] = [
     PageSection {
         landing_page: Page::ProcessList,
         pages: &PROCESS_LIST_PAGES,
-    },
-    PageSection {
-        landing_page: Page::WinderustFeatures,
-        pages: &WINDERUST_FEATURE_PAGES,
     },
     PageSection {
         landing_page: Page::Watchdog,
@@ -219,7 +215,6 @@ impl Page {
         match self {
             Self::Home => t!("nav.home"),
             Self::PowerPlanControl => t!("nav.power_plan_control"),
-            Self::WinderustFeatures => t!("nav.winderust_features"),
             Self::Watchdog => t!("nav.watchdog"),
             Self::CpuControl => t!("nav.cpu_control"),
             Self::PriorityControl => t!("nav.priority_control"),
@@ -270,11 +265,9 @@ impl Page {
         match self {
             Self::Home => Self::Home,
             Self::ProcessList => Self::ProcessList,
-            Self::WinderustFeatures | Self::EfficiencyMode | Self::MemoryTrim => {
-                Self::WinderustFeatures
-            }
             Self::Watchdog
             | Self::ResourceThresholds
+            | Self::MemoryTrim
             | Self::KeepRunning
             | Self::SleepPrevention
             | Self::InstanceLimits
@@ -295,6 +288,7 @@ impl Page {
             | Self::ProcessorAffinityHard => Self::CpuControl,
             Self::PriorityControl
             | Self::ProcessPriority
+            | Self::EfficiencyMode
             | Self::ThreadPriority
             | Self::DynamicPriorityBoost
             | Self::IoPriority

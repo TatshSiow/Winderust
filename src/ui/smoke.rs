@@ -135,7 +135,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
         if matches!(extra, Some(62..=65)) {
             use crate::{
                 control::instance_limits::CountObservation,
-                features::advanced_controls::instance_limits::{
+                features::watchdog::instance_limits::{
                     InstanceLimitsRuleSnapshot, NotificationStatus,
                 },
             };
@@ -187,7 +187,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             }
         }
         if matches!(extra, Some(60..=61)) {
-            use crate::features::advanced_controls::keep_running::{
+            use crate::features::watchdog::keep_running::{
                 KeepRunningRuleSnapshot, KeepRunningState, PauseReason,
             };
             let paths = [

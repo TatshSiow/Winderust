@@ -28,13 +28,13 @@ use backend::{
     privilege, process_icon, self_power, tray, update_checker, win_util, windows_events,
 };
 use features::{
-    advanced_controls::{app_suspension, sleep_prevention, timer_resolution},
-    cpu_control::{cpu_allocation, cpu_limiter},
+    advanced_controls::timer_resolution,
+    cpu_control::{adaptive_engine_process, cpu_allocation, cpu_limiter},
     priority_control::{
-        dynamic_priority_boost, gpu_priority, io_priority, memory_priority, process_priority,
-        thread_priority,
+        dynamic_priority_boost, efficiency_mode, gpu_priority, io_priority, memory_priority,
+        process_priority, thread_priority,
     },
-    winderust_features::{adaptive_engine_process, efficiency_mode, memory_trim},
+    watchdog::{app_suspension, memory_trim, sleep_prevention},
 };
 use ui::app;
 

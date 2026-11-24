@@ -163,7 +163,7 @@ hover/press; background shading supplies feedback.
 - Keep Stop process and Stop process tree consistent from their initiating action through the confirmation title and button. Tree confirmations name child processes, and both warnings retain the unsaved-work consequence.
 - Report `Efficiency mode` only when the process has both EcoQoS and `IDLE_PRIORITY_CLASS`, matching Task Manager rather than treating EcoQoS alone as full Efficiency mode.
 - Filters, column visibility, and memory value/percentage controls belong in the Settings side panel.
-- Language and Appearance owns the enabled-feature counts toggle. When enabled, the secondary navigation header shows a numeric pill for Winderust Features, Watchdog, Power Plan Control, Priority Control, and CPU Control based on the section's enabled modules. The primary rail stays unbadged.
+- Language and Appearance owns the enabled-feature counts toggle. When enabled, the secondary navigation header shows a numeric pill for Watchdog, Power Plan Control, Priority Control, and CPU Control based on the section's enabled modules. The primary rail stays unbadged.
 - Language and Appearance separately owns the feature-card status toggle. When enabled, landing cards backed by a feature switch show Enabled or Disabled in the theme's normal text color.
 - Editable policy cells should use inline dropdown controls. Avoid modal flows for simple policy edits.
 - Columns are resizable and initially fit their content. Double-click a divider to auto-fit; the last visible column fills remaining width. Preserve the layout tests.
@@ -258,6 +258,7 @@ hover/press; background shading supplies feedback.
 
 ### Efficiency Mode
 
+- Place Efficiency Mode after Process Priority under Priority Control.
 - The master group owns the Background tier default. Foreground Detection and Visible
   Window Detection use the same collapsible toggle-plus-value pattern as Priority Control.
 - Custom rules match an exact executable path. The compact rule table has Active, App Name,
@@ -303,13 +304,13 @@ hover/press; background shading supplies feedback.
 
 ### Watchdog
 
-- Place Watchdog after Winderust Features in the primary navigation. Show Resource
-  Thresholds, Keep Running, Sleep Prevention, Instance Limits, and App Suspension
-  in that order. Reuse the existing landing-page cards and link each one to its
-  own editor. Keep enable controls, rules, and status per feature.
+- Place Watchdog after Process List in the primary navigation. Show Resource
+  Thresholds, Memory Trim, Keep Running, Sleep Prevention, Instance Limits,
+  and App Suspension in that order. Reuse the existing landing-page cards and
+  link each one to its own editor. Keep enable controls, rules, and status per
+  feature.
 - Keep Instance Balancing under CPU Control. Advanced Controls contains Timer
-  Resolution and Win32 Priority Separation. Winderust Features contains
-  Efficiency Mode and Memory Trim.
+  Resolution and Win32 Priority Separation.
 
 ### Resource Thresholds
 

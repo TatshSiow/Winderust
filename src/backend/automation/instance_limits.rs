@@ -2,7 +2,7 @@ use super::*;
 use crate::{
     action_log::{ActionLogFeature, ActionLogResult},
     control::instance_limits::{self, CountObservation},
-    features::advanced_controls::instance_limits::InstanceLimitsRuleSnapshot,
+    features::watchdog::instance_limits::InstanceLimitsRuleSnapshot,
 };
 use rust_i18n::t;
 

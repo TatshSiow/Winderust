@@ -230,7 +230,7 @@ Read the relevant section before changing feature policy, ownership, restoration
   memory counters and Efficiency Mode. It queries priority class only when
   EcoQoS is enabled.
 
-- `src/features/winderust_features/resource_thresholds.rs` owns CPU and memory
+- `src/features/watchdog/resource_thresholds.rs` owns CPU and memory
   sampling, sustained thresholds, escalation, and rearming. Rules are global across
   power sources. Each uses the default sustained duration or its own override
   (1–3,600 seconds), shared by both monitors and severities. Notification settings

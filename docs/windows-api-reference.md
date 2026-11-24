@@ -25,16 +25,16 @@ window rendering and infrastructure calls are not duplicated here.
 | System tray lifecycle | `src/backend/tray.rs`, `src/ui/app.rs` | Independent hidden native host, notification-area icon, popup menu, restore/quit messages, and bounded install failure |
 | Administrator relaunch and single-instance handoff | `src/backend/privilege.rs` and `src/main.rs` | Synchronous UAC process creation plus an explicit mutex handoff from the closing standard instance to its elevated replacement |
 | Crash recovery watchdog | `src/backend/crash_recovery.rs` | Private inherited stdin journal, process/thread identity validation, reversible state replay, retained App Suspension and CPU Limiter freeze jobs, and automatic power-plan recovery |
-| Adaptive Engine | `src/features/winderust_features/adaptive_engine_process.rs`, `adaptive_engine_process/policy.rs`, `adaptive_engine_process/process_control.rs`, and `src/control/priority_efficiency.rs` | CPU scheduling decisions, read-only process sampling, and temporary Process Priority claims; processor placement routes through the CPU allocation coordinator |
+| Adaptive Engine | `src/features/cpu_control/adaptive_engine_process.rs`, `adaptive_engine_process/policy.rs`, `adaptive_engine_process/process_control.rs`, and `src/control/priority_efficiency.rs` | CPU scheduling decisions, read-only process sampling, and temporary Process Priority claims; processor placement routes through the CPU allocation coordinator |
 | Interrupt Timing | `src/platform/windows/interrupt_timing.rs` and `src/platform/windows/interrupt_timing/` | On-demand real-time ETW session, DPC and ISR timing, and kernel image attribution |
-| Efficiency Mode | `src/features/winderust_features/efficiency_mode.rs` and `src/control/priority_efficiency.rs` | Policy-only target selection plus shared compound Process Priority and process Power Throttling ownership |
-| Memory Trim | `src/features/winderust_features/memory_trim.rs`, `src/control/memory_trim.rs`, and `src/platform/windows/memory_trim.rs` | Memory-pressure policy, typed exact-process command, and raw working-set adapter |
+| Efficiency Mode | `src/features/priority_control/efficiency_mode.rs` and `src/control/priority_efficiency.rs` | Policy-only target selection plus shared compound Process Priority and process Power Throttling ownership |
+| Memory Trim | `src/features/watchdog/memory_trim.rs`, `src/control/memory_trim.rs`, and `src/platform/windows/memory_trim.rs` | Memory-pressure policy, typed exact-process command, and raw working-set adapter |
 | Stop Process / Stop Process Tree | `src/foreground/process_list.rs`, `src/control/process_termination.rs`, and `src/platform/windows/process_termination.rs` | Read-side tree capture, typed batch command, and raw termination adapter |
-| Keep Running | `src/features/advanced_controls/keep_running.rs`, `src/backend/automation/keep_running/`, `src/control/keep_running.rs`, and `src/platform/windows/keep_running.rs` | Current shell context, retained process membership, provisional-launch ownership, atomic Job List creation, and one-shot native acceptance |
+| Keep Running | `src/features/watchdog/keep_running.rs`, `src/backend/automation/keep_running/`, `src/control/keep_running.rs`, and `src/platform/windows/keep_running.rs` | Current shell context, retained process membership, provisional-launch ownership, atomic Job List creation, and one-shot native acceptance |
 | CPU Control | `src/features/cpu_control/`, `src/control/cpu_allocation.rs`, `src/control/cpu_limiter.rs`, `src/control/suspension.rs`, and the CPU allocation, CPU Limiter timing, and shared Job Object adapters under `src/platform/windows/` | Policy, shared affinity/CPU Set ownership, wall-clock duty-cycle scheduling, shared freeze/thaw ownership, and narrow raw Windows adapters |
 | Priority Control | `src/features/priority_control/`, `src/control/process.rs`, `src/control/priority_efficiency.rs`, `src/control/thread_priority.rs`, `src/control/dynamic_priority_boost.rs`, `src/control/io_priority.rs`, `src/control/gpu_priority.rs`, `src/control/memory_priority.rs`, and mechanism adapters in `src/platform/windows/` | Policy-only feature routes, typed property ownership/transactions, and narrow raw Windows adapters, including the compound Process Priority / Power Throttling adapter |
 | Shared process-control acquisition | `src/control/process.rs` and `src/platform/windows/process.rs` | Typed exact identity/safety validation plus the sole operation-specific `OpenProcess` adapter for control commands |
-| App Suspension | `src/features/advanced_controls/app_suspension.rs`, `src/control/suspension.rs`, `src/platform/windows/job.rs`, `src/platform/windows/suspension.rs`, and `app_suspension/wake_activity.rs` | Policy, shared App Suspension / CPU Limiter lifecycle controller, named Job Object primitives, compatibility-sensitive freeze information class, and audio/network wake detection |
+| App Suspension | `src/features/watchdog/app_suspension.rs`, `src/control/suspension.rs`, `src/platform/windows/job.rs`, `src/platform/windows/suspension.rs`, and `app_suspension/wake_activity.rs` | Policy, shared App Suspension / CPU Limiter lifecycle controller, named Job Object primitives, compatibility-sensitive freeze information class, and audio/network wake detection |
 | Timer Resolution | `src/features/advanced_controls/timer_resolution.rs`, `src/control/timer_resolution.rs`, and `src/platform/windows/timer_resolution.rs` | Foreground-rule policy, process-lifetime ownership, and the sole raw WinMM adapter |
 | Win32 Priority Separation | `src/application/win32_priority_separation.rs`, `src/backend/win_registry.rs`, and `src/ui/win32_priority_separation.rs` | Typed persistent backup/apply/restore service, narrow registry adapter, and UI presentation for the `Win32PrioritySeparation` value |
 | Update checks | `src/backend/update_checker.rs`, `src/ui/app.rs` | Synchronous HTTPS WinHTTP requests on a background task, bounded response parsing, and typed diagnostic errors |
@@ -436,11 +436,11 @@ baseline and selects a single effective owner for overlapping requests.
 
 Implementation paths:
 
-- `src/features/winderust_features/efficiency_mode.rs` owns Efficiency Mode target
+- `src/features/priority_control/efficiency_mode.rs` owns Efficiency Mode target
   policy, protections, exclusions, suppression, status, and Action Log attribution.
-- `src/features/winderust_features/adaptive_engine_process.rs`: temporary CPU
+- `src/features/cpu_control/adaptive_engine_process.rs`: temporary CPU
   Pressure Restraint priority claims for sustained background CPU use.
-- `src/features/winderust_features/adaptive_engine_process/process_control.rs`: read-only
+- `src/features/cpu_control/adaptive_engine_process/process_control.rs`: read-only
   workload process sampling and identity helpers.
 - `src/features/priority_control/process_priority.rs`: static Process Priority
   policy.
@@ -509,7 +509,7 @@ Important behavior from Microsoft: enabling `PROCESS_POWER_THROTTLING_EXECUTION_
 | `OpenProcess` | `src/platform/windows/process.rs` maps each typed control operation to its minimal access profile and owns raw acquisition for process-control commands. `src/control/process.rs` then validates PID, creation time, absolute executable path, session policy, process name, critical/protected state, and operation-specific capability on that same retained handle. Other read-only discovery and recovery paths keep their independently justified openers. | https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-openprocess |
 | `GetProcessTimes` | Captures creation time in the lightweight shared process snapshot using its existing query handle. Typed controls pair that value with the exact executable path, then revalidate both immediately before mutation so PID reuse fails closed without requiring a full path-enrichment pass. `src/runtime/observations.rs` sums verified foreground descendant CPU counters. When Adaptive Processor Power is the sole consumer, `src/foreground/process_list.rs` supplies an ancestry snapshot using query access only. By Running App also checks the captured creation time before accepting a candidate path. | https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getprocesstimes |
 | `QueryFullProcessImageNameW` | Reads executable paths through `src/foreground/process_list.rs` for process discovery, foreground/cursor identification, and exact executable-path matching. The shared catalog resolver checks creation time on the same handle before reading a missing image. By Running App verifies and reads the image even when the catalog contains a path. Rules in one By Running App evaluation share that read. Process mutation paths also revalidate the expected executable path on the same opened handle immediately before the change. Built-in Windows safety exclusions remain filename-based. | https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-queryfullprocessimagenamew |
-| `CompareStringOrdinal` | Identifies potential Unicode casing aliases in `src/foreground/process_list.rs::same_executable_path` using the Windows ordinal case table. CPU Allocation (`src/features/cpu_control/cpu_allocation.rs`), By Running App (`src/features/power_plan_control/by_running_app.rs`), Sleep Prevention (`src/features/advanced_controls/sleep_prevention.rs`), and Resource Thresholds (`src/features/winderust_features/resource_thresholds.rs`, `src/ui/resource_thresholds/preview.rs`) also use it to select candidates for full executable-path verification. Unicode casing aliases require matching canonical path readbacks before Winderust accepts the match. | https://learn.microsoft.com/en-us/windows/win32/api/stringapiset/nf-stringapiset-comparestringordinal |
+| `CompareStringOrdinal` | Identifies potential Unicode casing aliases in `src/foreground/process_list.rs::same_executable_path` using the Windows ordinal case table. CPU Allocation (`src/features/cpu_control/cpu_allocation.rs`), By Running App (`src/features/power_plan_control/by_running_app.rs`), Sleep Prevention (`src/features/watchdog/sleep_prevention.rs`), and Resource Thresholds (`src/features/watchdog/resource_thresholds.rs`, `src/ui/resource_thresholds/preview.rs`) also use it to select candidates for full executable-path verification. Unicode casing aliases require matching canonical path readbacks before Winderust accepts the match. | https://learn.microsoft.com/en-us/windows/win32/api/stringapiset/nf-stringapiset-comparestringordinal |
 | `GetExitCodeProcess` | After an identity-query failure, `src/control/process.rs` asks `src/platform/windows/process.rs::exit_confirmed` for positive termination evidence on the same handle. Confirmed exits enter existing restoration cleanup; `STILL_ACTIVE` (including explicit exit code 259) and failed queries preserve the original identity error. Existing query rights suffice; no debug privilege or additional access is requested. | https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getexitcodeprocess |
 | Process handles and identifiers | Documents that a process ID is valid only until process termination and can be reused, while an open handle continues to identify that process object. Winderust pairs executable-path checks with creation-time checks wherever sampled state crosses into a later mutation. | https://learn.microsoft.com/en-us/windows/win32/procthread/process-handles-and-identifiers |
 | Process Security and Access Rights | Documents the query-only `PROCESS_QUERY_LIMITED_INFORMATION` right and the `PROCESS_SET_INFORMATION` right required by `SetProcessInformation`. | https://learn.microsoft.com/en-us/windows/win32/procthread/process-security-and-access-rights |
@@ -664,7 +664,7 @@ boundary or supported Windows versions change.
 
 Implementation entry points:
 
-- `src/features/winderust_features/memory_trim.rs`
+- `src/features/watchdog/memory_trim.rs`
 - `src/control/memory_trim.rs`
 - `src/platform/windows/memory_trim.rs`
 
@@ -749,7 +749,7 @@ Implementation paths:
 - `src/features/cpu_control/cpu_allocation.rs`: explicit-rule discovery,
   Focus/Visible Window/Background tier selection, topology policy, failure suppression,
   status, and Action Log reporting.
-- `src/features/winderust_features/adaptive_engine_process.rs`: pressure, candidate,
+- `src/features/cpu_control/adaptive_engine_process.rs`: pressure, candidate,
   topology, saturation, and rebalance policy only.
 - `src/backend/crash_recovery.rs`: independent crash-recovery mirror for
   affinity and CPU Set values.
@@ -899,11 +899,11 @@ Winderust App Suspension is manual Win32 Job Object freezing. It is not the same
 
 Implementation paths:
 
-- `src/features/advanced_controls/app_suspension.rs`: rule, grace, wake, suppression, snapshot, and Action Log policy.
+- `src/features/watchdog/app_suspension.rs`: rule, grace, wake, suppression, snapshot, and Action Log policy.
 - `src/control/suspension.rs`: shared exact-process assignment, owner-phase arbitration, Job Object freeze/thaw transaction, retry, and clean-release boundary.
 - `src/platform/windows/job.rs`: shared named Job Object creation, assignment, membership, and accounting primitives.
 - `src/platform/windows/suspension.rs`: sole normal freeze/thaw writer and freeze-information layout boundary.
-- `src/features/advanced_controls/app_suspension/wake_activity.rs`: audio and IP Helper wake detection.
+- `src/features/watchdog/app_suspension/wake_activity.rs`: audio and IP Helper wake detection.
 - `src/backend/crash_recovery.rs`: independent helper-held recovery mirror.
 
 User-facing behavior:
@@ -926,7 +926,7 @@ User-facing behavior:
 - A failed thaw retains the frozen job for bounded retry. If thaw succeeds but recovery-journal cleanup fails, status changes to thawed while a cleanup-only record remains; later App Suspension passes reconcile both pending states without another user action. The controller does not falsely report the process as frozen or reapply the OS mutation during cleanup retry, and the feature prunes its exact record once compensation removes controller ownership.
 - App-switch shortcuts temporarily thaw suspended processes that own top-level windows. Taskbar and tray shell interaction can temporarily thaw all App Suspension freezes so apps with no enumerated window can restore. Repeated shell interaction keeps the existing thaw window.
 
-Network wake in `src/features/advanced_controls/app_suspension/wake_activity.rs`
+Network wake in `src/features/watchdog/app_suspension/wake_activity.rs`
 enumerates IPv4 and IPv6 TCP connections with their owning PIDs. It compares the
 per-connection payload byte counters between successive observations after
 verifying that each EStats query succeeded and `EnableCollection` is set.
@@ -1143,7 +1143,7 @@ state.
 ## Resource Thresholds notifications and termination
 
 - `src/backend/tray.rs::show_notification` uses [Shell_NotifyIconW](https://learn.microsoft.com/en-us/windows/win32/api/shellapi/nf-shellapi-shell_notifyiconw) with `NIM_MODIFY` and `NIF_INFO` on the existing `(HWND, uID)` registration. [NOTIFYICONDATAW](https://learn.microsoft.com/en-us/windows/win32/api/shellapi/ns-shellapi-notifyicondataw) uses `NIIF_WARNING` for Warning and `NIIF_ERROR` for Critical; these are severity styles, not an alarm or a bypass of Windows notification preferences. Fixed UTF-16 fields stay terminated without splitting surrogate pairs. `NIN_BALLOONUSERCLICK` requests GUI restoration or recreation through the daemon. An atomic published tray-host HWND is cleared on invalidation/drop; Shell failure is returned and logged. No undocumented Windows contract is used.
-- `src/features/winderust_features/resource_thresholds.rs` reuses process resource samples and creation timestamps. Combined by path sums eligible instances separately per executable path. Per instance evaluates each verified PID and creation time independently. Executable name rules use observed paths. CPU uses per-instance deltas. Summed working sets may count shared pages more than once. `src/backend/automation/runner.rs::run_resource_thresholds_update` routes explicitly configured automatic termination for Combined by path rules with an executable path through `src/control/process_termination.rs` and its sole [TerminateProcess](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-terminateprocess) adapter. PID/name/path/creation-time validation, critical/PPL and recovery-helper protection, cross-session settings, and Windows access checks remain authoritative immediately before mutation. Each actionable incident captures a batch of exact matching instances; controller preflight validates every target before any termination. Threshold observation does not authorize a raw process mutation.
+- `src/features/watchdog/resource_thresholds.rs` reuses process resource samples and creation timestamps. Combined by path sums eligible instances separately per executable path. Per instance evaluates each verified PID and creation time independently. Executable name rules use observed paths. CPU uses per-instance deltas. Summed working sets may count shared pages more than once. `src/backend/automation/runner.rs::run_resource_thresholds_update` routes explicitly configured automatic termination for Combined by path rules with an executable path through `src/control/process_termination.rs` and its sole [TerminateProcess](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-terminateprocess) adapter. PID/name/path/creation-time validation, critical/PPL and recovery-helper protection, cross-session settings, and Windows access checks remain authoritative immediately before mutation. Each actionable incident captures a batch of exact matching instances; controller preflight validates every target before any termination. Threshold observation does not authorize a raw process mutation.
 
 ## Resource Thresholds app restart
 
@@ -1211,7 +1211,7 @@ The visible Home sampler in `src/ui/home.rs` uses `src/backend/power_source.rs` 
 
 ### Dynamic Resource Zones allocation contract
 
-`src/features/winderust_features/adaptive_engine_process.rs` and `src/features/cpu_control/cpu_allocation.rs` compose complementary foreground/background CPU Sets (Soft) through the existing coordinator. Zoning declines topology unless `GetActiveProcessorGroupCount` returns exactly one and native topology discovery succeeds; it does not use fallback topology. Existing baseline restoration preserves an empty process-default list as empty, rather than an explicit All list. No new native setter or undocumented contract is introduced.
+`src/features/cpu_control/adaptive_engine_process.rs` and `src/features/cpu_control/cpu_allocation.rs` compose complementary foreground/background CPU Sets (Soft) through the existing coordinator. Zoning declines topology unless `GetActiveProcessorGroupCount` returns exactly one and native topology discovery succeeds; it does not use fallback topology. Existing baseline restoration preserves an empty process-default list as empty, rather than an explicit All list. No new native setter or undocumented contract is introduced.
 
 `src/platform/windows/cpu_allocation/topology.rs` queries `RelationAll` with a
 bounded buffer retry. It advances by each record's declared size, validates
@@ -1323,7 +1323,7 @@ request, undocumented information class, or persistent timeout change is used.
 
 ## Keep Running
 
-Policy lives in `src/features/advanced_controls/keep_running.rs`; the bounded
+Policy lives in `src/features/watchdog/keep_running.rs`; the bounded
 worker and intake ordering live in `src/backend/automation/keep_running.rs`.
 `src/control/keep_running.rs` applies the shared protected-process and exact-target
 acquisition checks. The raw boundary is `src/platform/windows/keep_running.rs`.
@@ -1397,7 +1397,7 @@ distinguishing confirmed exit from a known scope mismatch or unavailable evidenc
 The balancing producer repeats complete catalog/topology/eligibility preparation
 before a group plan and rechecks each retained member before the shared mutation
 preflight. These sampled reads do not make a native group update atomic. Policy lives in
-`src/features/advanced_controls/instance_limits.rs`; runtime intake and notification
+`src/features/watchdog/instance_limits.rs`; runtime intake and notification
 ordering live in `src/backend/automation/instance_limits.rs`.
 
 - [PROCESSENTRY32W](https://learn.microsoft.com/en-us/windows/win32/api/tlhelp32/ns-tlhelp32-processentry32w)

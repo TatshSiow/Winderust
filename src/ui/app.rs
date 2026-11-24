@@ -3897,8 +3897,7 @@ impl WinderustApp {
                 .action_log
                 .view(&self.status.action_log_entries, &self.candidates)
                 .map(Message::ActionLog),
-            Page::WinderustFeatures
-            | Page::Watchdog
+            Page::Watchdog
             | Page::CpuControl
             | Page::PriorityControl
             | Page::SettingsHome

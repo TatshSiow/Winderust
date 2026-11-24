@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use crate::{
     config::{ResourceThresholdsRule, ResourceThresholdsSelector},
-    features::winderust_features::resource_thresholds::{
+    features::watchdog::resource_thresholds::{
         matching_path, observed_path_matches_name, selector_basename_matches,
     },
     foreground::{same_executable_path, ProcessInfo},

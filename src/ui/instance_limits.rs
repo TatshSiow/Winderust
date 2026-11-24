@@ -2,7 +2,7 @@ use super::{app_picker, design, widgets};
 use crate::{
     config::{InstanceLimitsRule, InstanceLimitsSettings},
     control::instance_limits::{paths_equal, validate_path, CountObservation},
-    features::advanced_controls::instance_limits::{
+    features::watchdog::instance_limits::{
         InstanceLimitsRuleSnapshot, InstanceLimitsSnapshot, NotificationStatus, MAX_SAMPLE_AGE,
     },
 };

@@ -120,14 +120,14 @@ Assert-NoSourceMatch `
 Assert-NoSourceMatch `
     -Boundary 'legacy Efficiency Mode mutation or restore owner' `
     -Pattern 'apply_efficiency_mode_once|current_efficiency_mode|struct ThrottledProcess|struct ProcessHandle|impl Drop|GetPriorityClass|SetPriorityClass|GetProcessInformation|SetProcessInformation|record_process_change|ProcessValue' `
-    -Paths @('src/features/winderust_features/efficiency_mode.rs')
+    -Paths @('src/features/priority_control/efficiency_mode.rs')
 
 Assert-NoSourceMatch `
     -Boundary 'legacy Adaptive Engine priority or Power Throttling owner' `
     -Pattern 'struct AdjustedProcess|struct BoostedProcess|previous_priority|applied_priority|restore_adjusted|restore_boosted|GetPriorityClass|SetPriorityClass|GetProcessInformation|SetProcessInformation|record_process_change|ProcessValue::PriorityClass|ProcessValue::power_throttling' `
     -Paths @(
-        'src/features/winderust_features/adaptive_engine_process.rs',
-        'src/features/winderust_features/adaptive_engine_process/process_control.rs'
+        'src/features/cpu_control/adaptive_engine_process.rs',
+        'src/features/cpu_control/adaptive_engine_process/process_control.rs'
     )
 
 Assert-NoSourceMatch `
@@ -163,8 +163,8 @@ Assert-NoSourceMatch `
     -Boundary 'Adaptive Engine does not own a Memory Priority writer' `
     -Pattern 'MEMORY_PRIORITY_INFORMATION|ProcessMemoryPriorityClass|ProcessValue::MemoryPriority' `
     -Paths @(
-        'src/features/winderust_features/adaptive_engine_process.rs',
-        'src/features/winderust_features/adaptive_engine_process/process_control.rs'
+        'src/features/cpu_control/adaptive_engine_process.rs',
+        'src/features/cpu_control/adaptive_engine_process/process_control.rs'
     )
 
 Assert-SourceMatchCount `
@@ -181,7 +181,7 @@ Assert-NoSourceMatch `
 Assert-NoSourceMatch `
     -Boundary 'Memory Trim feature remains policy-only' `
     -Pattern 'SetProcessWorkingSetSize|K32GetProcessMemoryInfo|GetProcessTimes|PROCESS_SET_QUOTA|struct ProcessHandle' `
-    -Paths @('src/features/winderust_features/memory_trim.rs')
+    -Paths @('src/features/watchdog/memory_trim.rs')
 
 Assert-NoSourceMatch `
     -Boundary 'Memory Trim remains irreversible and outside recovery ownership' `
@@ -257,8 +257,8 @@ Assert-NoSourceMatch `
     -Boundary 'legacy Dynamic Priority Boost Adaptive Engine capability' `
     -Pattern 'previous_dynamic_priority_boost_disabled|applied_dynamic_priority_boost_disabled|disable_dynamic_priority_boost|GetProcessPriorityBoost|SetProcessPriorityBoost' `
     -Paths @(
-        'src/features/winderust_features/adaptive_engine_process.rs',
-        'src/features/winderust_features/adaptive_engine_process/process_control.rs'
+        'src/features/cpu_control/adaptive_engine_process.rs',
+        'src/features/cpu_control/adaptive_engine_process/process_control.rs'
     )
 
 Assert-NoUnexpectedWriter `
@@ -291,8 +291,8 @@ Assert-NoSourceMatch `
     -Boundary 'Adaptive Engine does not own an I/O Priority writer' `
     -Pattern 'previous_io_priority|applied_io_priority|set_io_priority|NtSetInformationProcess' `
     -Paths @(
-        'src/features/winderust_features/adaptive_engine_process.rs',
-        'src/features/winderust_features/adaptive_engine_process/process_control.rs'
+        'src/features/cpu_control/adaptive_engine_process.rs',
+        'src/features/cpu_control/adaptive_engine_process/process_control.rs'
     )
 
 Assert-NoUnexpectedWriter `
@@ -325,8 +325,8 @@ Assert-NoSourceMatch `
     -Boundary 'Adaptive Engine does not own a GPU Priority writer' `
     -Pattern 'previous_gpu_priority|applied_gpu_priority|set_gpu_priority|D3DKMTSetProcessSchedulingPriorityClass' `
     -Paths @(
-        'src/features/winderust_features/adaptive_engine_process.rs',
-        'src/features/winderust_features/adaptive_engine_process/process_control.rs'
+        'src/features/cpu_control/adaptive_engine_process.rs',
+        'src/features/cpu_control/adaptive_engine_process/process_control.rs'
     )
 
 Assert-NoUnexpectedWriter `
@@ -377,8 +377,8 @@ Assert-NoSourceMatch `
     -Paths @(
         'src/features/cpu_control/cpu_allocation.rs',
         'src/features/cpu_control/cpu_limiter.rs',
-        'src/features/winderust_features/adaptive_engine_process.rs',
-        'src/features/winderust_features/adaptive_engine_process/process_control.rs'
+        'src/features/cpu_control/adaptive_engine_process.rs',
+        'src/features/cpu_control/adaptive_engine_process/process_control.rs'
     )
 
 Assert-NoUnexpectedWriter `
@@ -458,7 +458,7 @@ Assert-NoSourceMatch `
     -Boundary 'App Suspension feature and UI layers do not own mutation or restoration' `
     -Pattern 'SetInformationJobObject|ProcessFreezer|record_suspended_job|forget_suspended_job|app_suspension_(?:freeze_requests|process_requests)' `
     -Paths @(
-        'src/features/advanced_controls/app_suspension.rs',
+        'src/features/watchdog/app_suspension.rs',
         'src/ui/app_suspension.rs',
         'src/ui/process_list.rs',
         'src/backend/automation.rs',
@@ -874,7 +874,7 @@ Assert-NoSourceMatch `
 Assert-NoSourceMatch `
     -Boundary 'Instance Limits remains observational without process mutation or launch' `
     -Pattern 'TerminateProcess|CreateProcessW|ResumeThread|SuspendThread|AdjustTokenPrivileges|SetProcessInformation|RecoveryIntent|record_process_change' `
-    -Paths @('src/platform/windows/instance_limits.rs', 'src/control/instance_limits.rs', 'src/features/advanced_controls/instance_limits.rs', 'src/backend/automation/instance_limits.rs', 'src/ui/instance_limits.rs')
+    -Paths @('src/platform/windows/instance_limits.rs', 'src/control/instance_limits.rs', 'src/features/watchdog/instance_limits.rs', 'src/backend/automation/instance_limits.rs', 'src/ui/instance_limits.rs')
 
 Assert-NoSourceMatch `
     -Boundary 'Instance Limits Windows adapter imports no policy layer' `
@@ -884,7 +884,7 @@ Assert-NoSourceMatch `
 Assert-NoSourceMatch `
     -Boundary 'Instance Limits incident policy contains no raw Windows calls' `
     -Pattern 'windows_sys|unsafe|crate::platform' `
-    -Paths @('src/features/advanced_controls/instance_limits.rs')
+    -Paths @('src/features/watchdog/instance_limits.rs')
 
 Assert-NoSourceMatch `
     -Boundary 'Instance Balancing planning and qualification remain pure policy' `

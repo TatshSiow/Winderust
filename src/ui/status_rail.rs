@@ -7,13 +7,11 @@ use crate::{
     automation::RuntimeStatusSnapshot,
     config::{PowerSourceProfile, Settings},
     control::instance_limits::CountObservation,
-    features::{
-        advanced_controls::{
-            app_suspension::AppSuspensionStatus,
-            instance_limits::{InstanceLimitsSnapshot, NotificationStatus},
-            sleep_prevention::SleepPreventionSnapshot,
-        },
-        winderust_features::memory_trim::MemoryTrimStatus,
+    features::watchdog::{
+        app_suspension::AppSuspensionStatus,
+        instance_limits::{InstanceLimitsSnapshot, NotificationStatus},
+        memory_trim::MemoryTrimStatus,
+        sleep_prevention::SleepPreventionSnapshot,
     },
     power::PowerPlan,
     ui::Page,
@@ -969,7 +967,7 @@ fn sidebar_state(
         return FeatureRunState::Unknown;
     }
     if page == Page::KeepRunning {
-        use crate::features::advanced_controls::keep_running::KeepRunningState;
+        use crate::features::watchdog::keep_running::KeepRunningState;
         let keep_running = &features.keep_running;
         if !keep_running.observation_known {
             return FeatureRunState::Unknown;
@@ -1432,7 +1430,7 @@ mod tests {
     #[test]
     fn instance_limits_status_ignores_reports_for_superseded_rules() {
         use crate::config::InstanceLimitsRule;
-        use crate::features::advanced_controls::instance_limits::InstanceLimitsRuleSnapshot;
+        use crate::features::watchdog::instance_limits::InstanceLimitsRuleSnapshot;
 
         let mut settings = Settings::default();
         settings.general.enabled = true;
@@ -1468,7 +1466,7 @@ mod tests {
     fn resource_thresholds_counts_require_a_completed_observation() {
         use crate::{
             config::ResourceThresholdsRule,
-            features::winderust_features::resource_thresholds::ResourceThresholdsManager,
+            features::watchdog::resource_thresholds::ResourceThresholdsManager,
         };
 
         let mut settings = Settings::default();

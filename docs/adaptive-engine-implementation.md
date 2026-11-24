@@ -11,7 +11,7 @@ use the shared automation runtime and foreground demand observations.
 - `src/ui/adaptive_processor_power/presets.rs` defines the built-in Adaptive Processor Power presets.
 - `src/backend/automation/runner.rs` collects demand signals, selects the active processor-power
   profile, and coordinates feature policies and controllers.
-- `src/features/winderust_features/adaptive_engine_process.rs` implements pressure
+- `src/features/cpu_control/adaptive_engine_process.rs` implements pressure
   detection, temporary background priority restraint, and placement policy.
 - `src/control/priority_efficiency.rs`, `src/control/cpu_allocation.rs`, and
   `src/control/power_plan.rs` own live mutations, baselines, compensation, and restoration.

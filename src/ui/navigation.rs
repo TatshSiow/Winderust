@@ -455,7 +455,6 @@ pub(super) fn icon_path(page: Page) -> &'static str {
     match page {
         Page::Home => "icons/house.svg",
         Page::PowerPlanControl => "icons/zap.svg",
-        Page::WinderustFeatures => "icons/computer.svg",
         Page::Watchdog => "icons/shield.svg",
         Page::CpuControl => "icons/cpu.svg",
         Page::PriorityControl => "icons/circle-fading-arrow-up.svg",
@@ -563,11 +562,7 @@ pub(super) fn feature_toggle(page: Page) -> Option<fn(&mut Settings) -> &mut boo
 pub(super) fn section_enabled_feature_count(settings: &Settings, page: Page) -> Option<usize> {
     if !matches!(
         page,
-        Page::WinderustFeatures
-            | Page::Watchdog
-            | Page::PowerPlanControl
-            | Page::PriorityControl
-            | Page::CpuControl
+        Page::Watchdog | Page::PowerPlanControl | Page::PriorityControl | Page::CpuControl
     ) {
         return None;
     }
@@ -649,9 +644,6 @@ pub(super) fn dashboard_page_search_text(page: Page) -> String {
             "{label} {section} {} {} power plan automation foreground focused app running app performance mode cpu load activity idle schedule time battery plugged ac dc",
             t!("power_plan_control.restore_previous_plan"),
             t!("power_plan_control.restore_previous_plan_help"),
-        ),
-        Page::WinderustFeatures => format!(
-            "{label} {section} winderust features efficiency mode efficiency_mode memory trim working set memory ram",
         ),
         Page::Watchdog => format!("{label} {section} app automation"),
         Page::CpuControl => format!(
@@ -877,12 +869,13 @@ mod tests {
     fn watchdog_pages_are_discoverable_with_advanced_controls_hidden() {
         assert!(rail_pages(false)
             .windows(2)
-            .any(|pages| pages == [Page::WinderustFeatures, Page::Watchdog]));
+            .any(|pages| pages == [Page::ProcessList, Page::Watchdog]));
         assert_eq!(
             dashboard_search_pages("watchdog", false),
             [
                 Page::Watchdog,
                 Page::ResourceThresholds,
+                Page::MemoryTrim,
                 Page::KeepRunning,
                 Page::SleepPrevention,
                 Page::InstanceLimits,
@@ -890,6 +883,7 @@ mod tests {
             ]
         );
         assert!(feature_toggle(Page::Watchdog).is_none());
+        assert!(dashboard_search_pages("memory trim", false).contains(&Page::MemoryTrim));
     }
 
     #[test]
@@ -932,6 +926,14 @@ mod tests {
             breadcrumb_path(Page::AdaptiveEngine),
             vec![Page::Home, Page::CpuControl, Page::AdaptiveEngine]
         );
+        assert_eq!(
+            breadcrumb_path(Page::MemoryTrim),
+            vec![Page::Home, Page::Watchdog, Page::MemoryTrim]
+        );
+        assert_eq!(
+            breadcrumb_path(Page::EfficiencyMode),
+            vec![Page::Home, Page::PriorityControl, Page::EfficiencyMode]
+        );
     }
 
     #[test]
@@ -960,7 +962,7 @@ mod tests {
             let mut primary = column![].spacing(design::space::TIGHT).width(Fill);
             let mut utilities = column![].spacing(design::space::TIGHT).width(Fill);
             for page in rail_pages(true) {
-                let item = rail_item(page, page == Page::WinderustFeatures, ());
+                let item = rail_item(page, page == Page::Watchdog, ());
                 if is_utility(page) {
                     utilities = utilities.push(item);
                 } else {
@@ -1120,8 +1122,13 @@ mod tests {
             }
         }
         let mut settings = Settings::default();
+        assert_eq!(
+            &Page::PriorityControl.child_pages().unwrap()[..2],
+            &[Page::ProcessPriority, Page::EfficiencyMode]
+        );
         for page in [
             Page::ProcessPriority,
+            Page::EfficiencyMode,
             Page::ThreadPriority,
             Page::DynamicPriorityBoost,
             Page::IoPriority,
@@ -1135,9 +1142,19 @@ mod tests {
             section_enabled_feature_count(&settings, Page::PriorityControl),
             Some(1)
         );
+        settings.efficiency_mode.enabled = true;
+        assert_eq!(
+            section_enabled_feature_count(&settings, Page::PriorityControl),
+            Some(2)
+        );
+        let watchdog_count = section_enabled_feature_count(&settings, Page::Watchdog).unwrap();
+        settings.memory_trim.enabled = true;
+        assert_eq!(
+            section_enabled_feature_count(&settings, Page::Watchdog),
+            Some(watchdog_count + 1)
+        );
         settings.adaptive_engine.enabled = false;
         let cpu_count = section_enabled_feature_count(&settings, Page::CpuControl).unwrap();
-        let feature_count = section_enabled_feature_count(&settings, Page::WinderustFeatures);
         settings.adaptive_engine.enabled = true;
         assert_eq!(
             Page::CpuControl.child_pages().unwrap().first(),
@@ -1147,13 +1164,8 @@ mod tests {
             section_enabled_feature_count(&settings, Page::CpuControl),
             Some(cpu_count + 1)
         );
-        assert_eq!(
-            section_enabled_feature_count(&settings, Page::WinderustFeatures),
-            feature_count
-        );
-        let search_results = dashboard_search_pages("adaptive engine", false);
-        assert!(search_results.contains(&Page::AdaptiveEngine));
-        assert!(!search_results.contains(&Page::WinderustFeatures));
+        assert!(dashboard_search_pages("adaptive engine", false).contains(&Page::AdaptiveEngine));
+        assert!(dashboard_search_pages("efficiency mode", false).contains(&Page::EfficiencyMode));
         assert!(dashboard_search_pages("suspension", false).contains(&Page::AppSuspension));
         assert!(!dashboard_search_pages("timer resolution", false).contains(&Page::TimerResolution));
         assert!(dashboard_search_pages("timer resolution", true).contains(&Page::TimerResolution));

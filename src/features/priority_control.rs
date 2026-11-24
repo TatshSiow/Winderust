@@ -1,4 +1,5 @@
 pub(crate) mod dynamic_priority_boost;
+pub(crate) mod efficiency_mode;
 pub(crate) mod gpu_priority;
 pub(crate) mod io_priority;
 pub(crate) mod memory_priority;

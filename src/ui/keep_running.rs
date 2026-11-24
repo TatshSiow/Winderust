@@ -2,7 +2,7 @@ use super::process_rules::{can_add_exact_process_candidate, exact_path_input, pi
 use super::{app_picker, design, widgets};
 use crate::{
     config::{KeepRunningRule, KeepRunningSettings},
-    features::advanced_controls::keep_running::{KeepRunningSnapshot, KeepRunningState},
+    features::watchdog::keep_running::{KeepRunningSnapshot, KeepRunningState},
     foreground::process_list::normalize_path_slashes,
 };
 use iced::{

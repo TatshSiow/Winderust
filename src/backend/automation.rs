@@ -61,20 +61,18 @@ use crate::{
     dashboard_metrics::{IoUsageMonitor, IoUsageSnapshot},
     dynamic_priority_boost::{DynamicPriorityBoostManager, DynamicPriorityBoostSnapshot},
     efficiency_mode::{EfficiencyModeManager, EfficiencyModeSnapshot},
-    features::advanced_controls::{
+    features::power_plan_control::by_running_app::{ByRunningAppManager, ByRunningAppSnapshot},
+    features::power_plan_control::{
+        current_by_time_decision, next_by_time_change_delay, ByCpuLoadScheduler,
+    },
+    features::watchdog::{
         instance_limits::{InstanceLimitsEvent, InstanceLimitsManager, InstanceLimitsSnapshot},
         keep_running::{
             CommitDisposition, KeepRunningManager, KeepRunningSnapshot, LaunchTicket, Observation,
             PauseReason,
         },
+        resource_thresholds::{ResourceThresholdsManager, ResourceThresholdsSnapshot},
         sleep_prevention::{SleepPreventionManager, SleepPreventionSnapshot},
-    },
-    features::power_plan_control::by_running_app::{ByRunningAppManager, ByRunningAppSnapshot},
-    features::power_plan_control::{
-        current_by_time_decision, next_by_time_change_delay, ByCpuLoadScheduler,
-    },
-    features::winderust_features::resource_thresholds::{
-        ResourceThresholdsManager, ResourceThresholdsSnapshot,
     },
     foreground::{
         cursor_is_shell_window, cursor_process, cursor_process_id, same_executable_path,
@@ -2540,7 +2538,7 @@ mod keep_running_intake_tests {
     use crate::{
         config::KeepRunningRule,
         control::process::ProcessTargetKey,
-        features::advanced_controls::keep_running::{
+        features::watchdog::keep_running::{
             AcceptanceDisposition, CleanupAction, DesktopBindingKey, PrepareDisposition,
             PreparedDisposition,
         },

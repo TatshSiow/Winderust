@@ -11,7 +11,7 @@ use crate::{
     action_log::{ActionLog, ActionLogFeature, ActionLogResult},
     config::{KeepRunningRule, KeepRunningSettings},
     control::process::ProcessTargetKey,
-    features::advanced_controls::keep_running::{
+    features::watchdog::keep_running::{
         CleanupAcknowledgment, CleanupOutcome, CommitDisposition, DesktopBindingKey, FailureKind,
         KeepRunningManager, KeepRunningRuleSnapshot, KeepRunningSnapshot, KeepRunningState,
         LaunchTicket, Observation, PauseReason, PrepareDisposition, PreparedDisposition,

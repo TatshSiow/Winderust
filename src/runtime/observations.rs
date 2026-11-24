@@ -504,7 +504,7 @@ mod tests {
         action_log::ActionLog,
         config::{AppSuspensionRule, AppSuspensionSettings},
         control::suspension::SuspensionController,
-        features::advanced_controls::app_suspension::AppSuspensionManager,
+        features::watchdog::app_suspension::AppSuspensionManager,
     };
 
     static TEST_LOCK: Mutex<()> = Mutex::new(());
@@ -555,7 +555,7 @@ mod tests {
     fn adaptive_engine_requests_the_process_list_only_after_foreground_pressure() {
         use crate::{
             config::AdaptiveEngineProcessSettings,
-            features::winderust_features::adaptive_engine_process::{
+            features::cpu_control::adaptive_engine_process::{
                 AdaptiveEngineProcessManager, AdaptiveEngineProcessUpdate,
             },
         };
