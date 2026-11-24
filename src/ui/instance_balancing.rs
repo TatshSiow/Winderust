@@ -1,10 +1,12 @@
 use super::{app_picker, design, widgets};
 use crate::{
+    action_log::ActionLogResult,
+    automation::{InstanceBalancingDetail, InstanceBalancingSnapshot},
     config::{InstanceBalancingRule, InstanceBalancingSettings},
     control::instance_limits::{paths_equal, validate_path},
 };
 use iced::{
-    widget::{column, row, text},
+    widget::{column, container, row, text, tooltip},
     Element, Fill,
 };
 use rust_i18n::t;
@@ -106,6 +108,8 @@ impl Editor {
     pub(super) fn view<'a>(
         &'a self,
         settings: &'a InstanceBalancingSettings,
+        status: &'a InstanceBalancingSnapshot,
+        master_enabled: bool,
         candidates: &'a [app_picker::Candidate],
     ) -> Element<'a, Message> {
         let rules = settings
@@ -113,6 +117,10 @@ impl Editor {
             .iter()
             .enumerate()
             .map(|(index, rule)| {
+                let cell = status_cell(
+                    rule.enabled && settings.enabled && master_enabled,
+                    status.rule_result(rule),
+                );
                 (
                     widgets::stable_key(&rule.executable_path),
                     column![
@@ -122,7 +130,7 @@ impl Editor {
                             widgets::checkbox(rule.enabled)
                                 .on_toggle(move |value| Message::RuleEnabled(index, value))
                                 .into(),
-                            None,
+                            Some(cell),
                             Vec::new(),
                             widgets::rule_actions(
                                 Some(Message::Edit(index)),
@@ -161,7 +169,7 @@ impl Editor {
                 ),
                 widgets::setting_title("common.rules"),
                 widgets::settings_card(picker),
-                widgets::process_rules_table([], rules, false),
+                widgets::process_rules_table([], rules, true),
             ]
             .spacing(widgets::CARD_GAP),
         )
@@ -208,6 +216,50 @@ impl Editor {
             valid.then_some(Message::SaveRule),
             (760, 460),
         ))
+    }
+}
+
+fn status_cell(
+    enabled: bool,
+    result: Option<(ActionLogResult, &InstanceBalancingDetail)>,
+) -> Element<'_, Message> {
+    let key = rule_status_key(enabled, result);
+    let chip = container(text(t!(key).to_string()))
+        .padding([4, 8])
+        .style(move |theme| widgets::rule_status_chip(theme, key));
+    if let Some((_, detail)) = result.filter(|_| enabled) {
+        widgets::tooltip(
+            chip,
+            text(detail.message(&[]))
+                .width(240)
+                .wrapping(text::Wrapping::WordOrGlyph),
+            tooltip::Position::Top,
+        )
+        .into()
+    } else {
+        chip.into()
+    }
+}
+
+fn rule_status_key(
+    enabled: bool,
+    result: Option<(ActionLogResult, &InstanceBalancingDetail)>,
+) -> &'static str {
+    use InstanceBalancingDetail::{
+        Assigned, Diagnostic, InsufficientCapacity, WaitingForInstances, WaitingForStableCohort,
+    };
+
+    if !enabled {
+        return "common.inactive";
+    }
+    match result {
+        Some((ActionLogResult::Applied, Assigned(_))) => "common.applied",
+        Some((ActionLogResult::Failed, _)) => "common.error",
+        Some((_, WaitingForInstances | WaitingForStableCohort | InsufficientCapacity)) => {
+            "common.waiting"
+        }
+        Some((_, Diagnostic(_))) => "common.unavailable",
+        _ => "common.unknown",
     }
 }
 

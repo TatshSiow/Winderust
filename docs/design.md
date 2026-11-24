@@ -251,8 +251,10 @@ hover/press; background shading supplies feedback.
   tabs, alongside Info in the shared docked panel.
 - Instance Balancing lives under CPU Control and shares one configuration across
   power sources. Use executable-path rules with activation, edit and delete actions;
-  keep configuration editable while disabled. Its Info / Status panel shows the
-  actual assignment or waiting reason without presenting preferences as reserved cores.
+  keep configuration editable while disabled. The rule table shows each rule's latest
+  live result for an exact match to a saved rule, with details on hover. Its Info /
+  Status panel shows the overall assignment or waiting reason without presenting
+  preferences as reserved cores.
   When several cohorts are waiting, the rail prioritizes insufficient core capacity,
   then cohort stability, then missing instances. The Action Log records each rule's result.
 - CPU Sets (Soft) and Processor Affinity (Hard) label their built-in section Core Presets. A preview

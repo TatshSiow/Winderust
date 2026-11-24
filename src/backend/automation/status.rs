@@ -46,6 +46,9 @@ pub(super) fn set_windows_event_watcher_active(shared: &SharedAutomationState, a
     } else {
         *change = Some(WindowsEventWatcherChange::Lost);
     }
+    if instance_balancing::clear_rule_status(&mut state) {
+        bump_status_generation(shared, &mut state);
+    }
     state.change_generation = state.change_generation.wrapping_add(1);
     shared.changed.notify_one();
 }
@@ -66,9 +69,19 @@ pub(super) fn notify_windows_event(shared: &SharedAutomationState, event: Window
         return;
     }
 
-    if event == WindowsAutomationEvent::AppearanceChanged {
+    let appearance_changed = event == WindowsAutomationEvent::AppearanceChanged;
+    if appearance_changed {
         state.status.appearance_change_generation =
             state.status.appearance_change_generation.wrapping_add(1);
+    }
+    let placement_context_changed = matches!(
+        event,
+        WindowsAutomationEvent::SessionChanged | WindowsAutomationEvent::SuspendResume
+    ) || (event == WindowsAutomationEvent::PowerChanged
+        && cpu_allocation_source_difference(&state.settings).is_some());
+    if appearance_changed
+        || (placement_context_changed && instance_balancing::clear_rule_status(&mut state))
+    {
         bump_status_generation(shared, &mut state);
     }
     state.pending_events.insert_windows_event(event);

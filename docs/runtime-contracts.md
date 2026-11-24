@@ -794,6 +794,11 @@ Read the relevant section before changing feature policy, ownership, restoration
   changes that prevent application remain Skipped.
   The live Status panel translates waiting reasons, assignments, and explicit CPU
   selection exclusions in the current UI language from the existing observation.
+  The main table reads each exact saved rule's result from the same published
+  snapshot. An edited executable path waits for its own observation after Save.
+  Relevant settings, session, watcher and placement-context changes clear row
+  results before the next observation. Worker exit also clears these results.
+  The live observation is shared across both editor power profiles.
   Scanned and skipped totals require complete coverage of enabled rules. Verified
   adjustments remain visible when another rule's observation is unavailable.
   Explicit CPU selection exclusions remain visible across rules during assignment.

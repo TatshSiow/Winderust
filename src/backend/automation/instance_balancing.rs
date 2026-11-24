@@ -32,9 +32,43 @@ pub(crate) struct InstanceBalancingSnapshot {
     pub(crate) detail: Option<InstanceBalancingDetail>,
     pub(crate) exclusions: Vec<InstanceBalancingExclusion>,
     pub(crate) last_error: Option<String>,
+    pub(super) rules: Vec<RuleStatusEntry>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct RuleStatusEntry {
+    rule: Arc<InstanceBalancingRule>,
+    result: ActionLogResult,
+    detail: InstanceBalancingDetail,
 }
 
 impl InstanceBalancingSnapshot {
+    pub(crate) fn rule_result(
+        &self,
+        rule: &InstanceBalancingRule,
+    ) -> Option<(ActionLogResult, &InstanceBalancingDetail)> {
+        if !self.enabled || !rule.enabled {
+            return None;
+        }
+        self.rules
+            .iter()
+            .find(|entry| entry.rule.as_ref() == rule)
+            .map(|entry| (entry.result, &entry.detail))
+    }
+
+    pub(crate) fn record_rule(
+        &mut self,
+        rule: Arc<InstanceBalancingRule>,
+        result: ActionLogResult,
+        detail: InstanceBalancingDetail,
+    ) {
+        self.rules.push(RuleStatusEntry {
+            rule,
+            result,
+            detail,
+        });
+    }
+
     fn record_rule_detail(
         &mut self,
         detail: InstanceBalancingDetail,
@@ -88,7 +122,7 @@ impl InstanceBalancingDetail {
         }
     }
 
-    fn message(&self, exclusions: &[InstanceBalancingExclusion]) -> String {
+    pub(crate) fn message(&self, exclusions: &[InstanceBalancingExclusion]) -> String {
         let mut message = match self {
             Self::Disabled => t!("instance_balancing.disabled"),
             Self::WaitingForContext => t!("instance_balancing.waiting_context"),
@@ -140,7 +174,10 @@ pub(super) struct PendingResets {
     pub(super) paths: Vec<String>,
 }
 
-pub(super) fn record_settings_changes(state: &mut AutomationWorkerState, settings: &Settings) {
+pub(super) fn record_settings_changes(
+    state: &mut AutomationWorkerState,
+    settings: &Settings,
+) -> bool {
     let previous = &state.settings;
     let pending = &mut state.pending_instance_balancing_resets;
     pending.all |= previous.general.enabled != settings.general.enabled
@@ -161,10 +198,38 @@ pub(super) fn record_settings_changes(state: &mut AutomationWorkerState, setting
             }
         }
     }
+    let placements_changed = |previous: &Settings, current: &Settings| {
+        previous.cpu_sets_soft != current.cpu_sets_soft
+            || previous.processor_affinity_hard != current.processor_affinity_hard
+    };
+    (pending.all
+        || !pending.paths.is_empty()
+        || previous.general.allow_cross_session_process_control
+            != settings.general.allow_cross_session_process_control
+        || placements_changed(previous, settings)
+        || placements_changed(previous.battery_profile(), settings.battery_profile()))
+        && clear_rule_status(state)
+}
+
+pub(super) fn clear_rule_status(state: &mut AutomationWorkerState) -> bool {
+    if state
+        .status
+        .feature_status
+        .instance_balancing
+        .rules
+        .is_empty()
+    {
+        return false;
+    }
+    Arc::make_mut(&mut state.status.feature_status)
+        .instance_balancing
+        .rules
+        .clear();
+    true
 }
 
 struct Rule {
-    settings: InstanceBalancingRule,
+    settings: Arc<InstanceBalancingRule>,
     generation: Option<u64>,
     policy: Policy,
     retained: BTreeMap<ProcessTargetKey, Member>,
@@ -201,7 +266,7 @@ impl Runtime {
             && self
                 .rules
                 .iter()
-                .map(|rule| &rule.settings)
+                .map(|rule| rule.settings.as_ref())
                 .eq(settings.rules.iter())
         {
             return;
@@ -213,7 +278,9 @@ impl Runtime {
             .iter()
             .map(|settings| {
                 if !reset_all && !resets.paths.contains(&settings.executable_path) {
-                    if let Some(index) = previous.iter().position(|rule| rule.settings == *settings)
+                    if let Some(index) = previous
+                        .iter()
+                        .position(|rule| rule.settings.as_ref() == settings)
                     {
                         return previous.remove(index);
                     }
@@ -223,7 +290,7 @@ impl Runtime {
                     self.next_generation = generation;
                 }
                 Rule {
-                    settings: settings.clone(),
+                    settings: Arc::new(settings.clone()),
                     generation,
                     policy: Policy::default(),
                     retained: BTreeMap::new(),
@@ -790,6 +857,7 @@ impl RuntimeCore {
                 );
                 rule.last_action = Some((outcome, detail.clone(), exclusions.clone()));
             }
+            snapshot.record_rule(Arc::clone(&rule.settings), outcome, detail.clone());
             snapshot.record_rule_detail(detail, exclusions, &mut waiting_exclusions);
             if let Some(error) = release(
                 runtime,

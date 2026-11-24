@@ -358,6 +358,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
         let was_open = app.side_panel_open;
         let navigate = app.update(Message::Page(page));
         if matches!(extra, Some(66..=69)) {
+            use crate::action_log::ActionLogResult;
             use crate::automation::InstanceBalancingDetail;
 
             app.reset_editors();
@@ -366,7 +367,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                 settings.instance_balancing.enabled = true;
                 settings.instance_balancing.rules = [
                     r"C:\Apps\Long Application Name\renderer.exe",
-                    r"C:\Apps\editor.exe",
+                    r"C:\Other\renderer.exe",
                 ]
                 .into_iter()
                 .map(|path| crate::config::InstanceBalancingRule {
@@ -379,14 +380,29 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             app.settings = SettingsEditor::with_settings(app.settings.global().clone());
             app.status.generation = app.status.generation.max(1);
             let status = &mut Arc::make_mut(&mut app.status.feature_status).instance_balancing;
+            *status = Default::default();
             status.enabled = true;
             status.scanned_processes = 4;
-            status.adjusted_processes = if extra == Some(66) { 4 } else { 0 };
-            status.detail = Some(if extra == Some(66) {
-                InstanceBalancingDetail::Assigned(4)
+            let (result, detail) = if matches!(extra, Some(66..=67)) {
+                status.adjusted_processes = 4;
+                (
+                    ActionLogResult::Applied,
+                    InstanceBalancingDetail::Assigned(4),
+                )
             } else {
-                InstanceBalancingDetail::WaitingForStableCohort
-            });
+                (
+                    ActionLogResult::Skipped,
+                    InstanceBalancingDetail::WaitingForStableCohort,
+                )
+            };
+            status.detail = Some(detail.clone());
+            let rules = &app.settings.global().instance_balancing.rules;
+            status.record_rule(Arc::new(rules[0].clone()), result, detail);
+            status.record_rule(
+                Arc::new(rules[1].clone()),
+                ActionLogResult::Skipped,
+                InstanceBalancingDetail::WaitingForInstances,
+            );
             if matches!(extra, Some(68..=69)) {
                 let before = app.settings.global().instance_balancing.clone();
                 let _ = app.update(Message::InstanceBalancing(

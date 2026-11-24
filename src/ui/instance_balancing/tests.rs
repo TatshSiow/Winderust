@@ -1,5 +1,49 @@
 use super::*;
 
+#[test]
+fn row_status_shows_verified_results_and_treats_invalid_observations_as_unavailable() {
+    use ActionLogResult::{Applied, Failed, Skipped};
+    use InstanceBalancingDetail::{
+        Assigned, Diagnostic, InsufficientCapacity, WaitingForInstances, WaitingForStableCohort,
+    };
+
+    assert_eq!(
+        rule_status_key(true, Some((Applied, &Assigned(2)))),
+        "common.applied"
+    );
+    assert_eq!(
+        rule_status_key(false, Some((Applied, &Assigned(2)))),
+        "common.inactive"
+    );
+    assert_eq!(rule_status_key(true, None), "common.unknown");
+    assert_eq!(
+        rule_status_key(true, Some((Skipped, &WaitingForInstances))),
+        "common.waiting"
+    );
+    assert_eq!(
+        rule_status_key(true, Some((Skipped, &WaitingForStableCohort))),
+        "common.waiting"
+    );
+    assert_eq!(
+        rule_status_key(true, Some((Skipped, &InsufficientCapacity))),
+        "common.waiting"
+    );
+
+    let incomplete = Diagnostic("incomplete observation".into());
+    assert_eq!(
+        rule_status_key(true, Some((Skipped, &incomplete))),
+        "common.unavailable"
+    );
+    assert_eq!(
+        rule_status_key(true, Some((Failed, &incomplete))),
+        "common.error"
+    );
+    assert_eq!(
+        rule_status_key(true, Some((Skipped, &Assigned(2)))),
+        "common.unknown"
+    );
+}
+
 fn add(editor: &mut Editor, settings: &mut InstanceBalancingSettings, path: &str) {
     editor.update(settings, Message::Path(path.into()));
     editor.update(settings, Message::Add);

@@ -3698,7 +3698,12 @@ impl WinderustApp {
                 .map(Message::InstanceLimits),
             Page::InstanceBalancing => self
                 .instance_balancing
-                .view(&self.settings.global().instance_balancing, &self.candidates)
+                .view(
+                    &self.settings.global().instance_balancing,
+                    &self.status.feature_status.instance_balancing,
+                    general.enabled,
+                    &self.candidates,
+                )
                 .map(Message::InstanceBalancing),
             Page::KeepRunning => self
                 .keep_running

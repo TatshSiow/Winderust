@@ -991,6 +991,36 @@ fn committed_worker_exit_leaves_newer_commands_for_the_replacement() {
 }
 
 #[test]
+fn worker_exit_clears_the_last_instance_balancing_rule_status() {
+    let shared = shared_automation_state(Settings::default());
+    let rule = crate::config::InstanceBalancingRule {
+        enabled: true,
+        executable_path: r"C:\Apps\example.exe".into(),
+    };
+    {
+        let mut state = lock_unpoisoned(&shared.state);
+        let status = &mut Arc::make_mut(&mut state.status.feature_status).instance_balancing;
+        status.enabled = true;
+        status.record_rule(
+            Arc::new(rule.clone()),
+            ActionLogResult::Applied,
+            InstanceBalancingDetail::Assigned(2),
+        );
+    }
+    drop(AutomationWorkerExitGuard { shared: &shared });
+    let state = lock_unpoisoned(&shared.state);
+    assert_eq!(
+        state
+            .status
+            .feature_status
+            .instance_balancing
+            .rule_result(&rule),
+        None
+    );
+    assert_eq!(shared.status_generation.load(Ordering::Acquire), 1);
+}
+
+#[test]
 fn runtime_handle_shutdown_surfaces_thread_panic() {
     let automation = RuntimeHandle::start(&runtime_settings(Settings::default()));
     {
@@ -2923,16 +2953,30 @@ fn instance_balancing_status_rejects_samples_from_superseded_intake() {
             enabled: true,
             executable_path: r"C:\Apps\original.exe".into(),
         });
+    settings
+        .instance_balancing
+        .rules
+        .push(crate::config::InstanceBalancingRule {
+            enabled: true,
+            executable_path: r"C:\Before\original.exe".into(),
+        });
     let shared = shared_automation_state(settings.clone());
     let old = automation_snapshot(&shared).unwrap();
-    let observed = InstanceBalancingSnapshot {
+    let mut observed = InstanceBalancingSnapshot {
         enabled: true,
-        process_activity_known: true,
-        scanned_processes: 3,
-        detail: Some(InstanceBalancingDetail::WaitingForStableCohort),
+        scanned_processes: 2,
+        adjusted_processes: 2,
+        detail: Some(InstanceBalancingDetail::Assigned(2)),
         ..Default::default()
     };
-    settings.instance_balancing.rules[0].executable_path = r"C:\Apps\new.exe".into();
+    let original_rule = settings.instance_balancing.rules[0].clone();
+    observed.record_rule(
+        Arc::new(original_rule.clone()),
+        ActionLogResult::Applied,
+        InstanceBalancingDetail::Assigned(2),
+    );
+    settings.instance_balancing.rules[1].executable_path = r"C:\Other\original.exe".into();
+    let current_rule = settings.instance_balancing.rules[1].clone();
     {
         let mut state = lock_unpoisoned(&shared.state);
         instance_balancing::record_settings_changes(&mut state, &settings);
@@ -2942,10 +2986,59 @@ fn instance_balancing_status_rejects_samples_from_superseded_intake() {
     assert_eq!(shared.status_generation.load(Ordering::Acquire), 0);
 
     let current = automation_snapshot(&shared).unwrap();
+    let error = "incomplete observation".to_owned();
+    let detail = InstanceBalancingDetail::Diagnostic(error.clone());
+    observed.last_error = Some(error);
+    observed.detail = Some(detail.clone());
+    observed.record_rule(
+        Arc::new(current_rule.clone()),
+        ActionLogResult::Skipped,
+        detail,
+    );
     instance_balancing::publish_status(&shared, &current.settings, true, observed);
     assert_eq!(shared.status_generation.load(Ordering::Acquire), 1);
+    {
+        let state = lock_unpoisoned(&shared.state);
+        let status = &state.status.feature_status.instance_balancing;
+        assert!(!status.process_activity_known);
+        assert_eq!(
+            status.rule_result(&original_rule),
+            Some((
+                ActionLogResult::Applied,
+                &InstanceBalancingDetail::Assigned(2)
+            ))
+        );
+        assert!(matches!(
+            status.rule_result(&current_rule),
+            Some((
+                ActionLogResult::Skipped,
+                InstanceBalancingDetail::Diagnostic(_)
+            ))
+        ));
+        let unsaved = crate::config::InstanceBalancingRule {
+            executable_path: r"C:\Draft\original.exe".into(),
+            ..current_rule.clone()
+        };
+        assert_eq!(status.rule_result(&unsaved), None);
+        let disabled = crate::config::InstanceBalancingRule {
+            enabled: false,
+            ..current_rule.clone()
+        };
+        assert_eq!(status.rule_result(&disabled), None);
+    }
 
     set_windows_event_watcher_active(&shared, false);
+    {
+        let state = lock_unpoisoned(&shared.state);
+        assert_eq!(
+            state
+                .status
+                .feature_status
+                .instance_balancing
+                .rule_result(&original_rule),
+            None
+        );
+    }
     set_windows_event_watcher_active(&shared, true);
     instance_balancing::publish_status(
         &shared,
@@ -2953,7 +3046,7 @@ fn instance_balancing_status_rejects_samples_from_superseded_intake() {
         true,
         InstanceBalancingSnapshot::default(),
     );
-    assert_eq!(shared.status_generation.load(Ordering::Acquire), 1);
+    assert_eq!(shared.status_generation.load(Ordering::Acquire), 2);
 }
 
 #[test]

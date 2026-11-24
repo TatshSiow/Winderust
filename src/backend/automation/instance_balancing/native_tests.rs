@@ -144,11 +144,31 @@ fn tick(
     );
     assert_eq!(status.last_error, None, "{:?}", status.detail);
     assert_eq!(status.failed_processes, 0, "{:?}", status.detail);
-    if status.enabled && status.adjusted_processes == 0 {
+    let rules = &settings.instance_balancing.rules;
+    if status.enabled {
+        let assigned = status.adjusted_processes;
+        let (result, detail) = if assigned == 0 {
+            (
+                ActionLogResult::Skipped,
+                InstanceBalancingDetail::WaitingForStableCohort,
+            )
+        } else {
+            (
+                ActionLogResult::Applied,
+                InstanceBalancingDetail::Assigned(assigned),
+            )
+        };
+        assert_eq!(status.detail.as_ref(), Some(&detail));
+        assert_eq!(status.rule_result(&rules[0]), Some((result, &detail)));
         assert_eq!(
-            status.detail,
-            Some(InstanceBalancingDetail::WaitingForStableCohort)
+            status.rule_result(&rules[1]),
+            Some((
+                ActionLogResult::Skipped,
+                &InstanceBalancingDetail::WaitingForInstances
+            ))
         );
+    } else {
+        assert!(rules.iter().all(|rule| status.rule_result(rule).is_none()));
     }
     status.adjusted_processes
 }
@@ -198,6 +218,9 @@ fn native_producer_replans_complete_cohorts_and_restores_on_disable() {
     std::fs::create_dir(&directory).unwrap();
     let image = Image(directory.join("balancing worker.exe"));
     std::fs::hard_link(std::env::current_exe().unwrap(), &image.0).unwrap();
+    let idle_image = Image(directory.join("unused").join(image.0.file_name().unwrap()));
+    std::fs::create_dir(idle_image.0.parent().unwrap()).unwrap();
+    std::fs::copy(&image.0, &idle_image.0).unwrap();
     let deadline = Instant::now() + Duration::from_secs(24);
     let mut workers = vec![Worker::start(&image), Worker::start(&image)];
     let mut current = members(&image, &workers, deadline);
@@ -209,10 +232,13 @@ fn native_producer_replans_complete_cohorts_and_restores_on_disable() {
     let mut settings = Arc::new(Settings {
         instance_balancing: InstanceBalancingSettings {
             enabled: true,
-            rules: vec![InstanceBalancingRule {
-                enabled: true,
-                executable_path: image.0.to_str().unwrap().into(),
-            }],
+            rules: [&image.0, &idle_image.0]
+                .into_iter()
+                .map(|path| InstanceBalancingRule {
+                    enabled: true,
+                    executable_path: path.to_str().unwrap().into(),
+                })
+                .collect(),
         },
         ..Settings::default()
     });
@@ -271,5 +297,6 @@ fn native_producer_replans_complete_cohorts_and_restores_on_disable() {
     drop(core);
     drop(watcher);
     drop(workers);
+    drop(idle_image);
     drop(image);
 }

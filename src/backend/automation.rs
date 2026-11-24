@@ -113,9 +113,7 @@ mod runner;
 mod status;
 mod wake;
 
-#[cfg(any(test, feature = "render-smoke"))]
-pub(crate) use instance_balancing::InstanceBalancingDetail;
-use instance_balancing::InstanceBalancingSnapshot;
+pub(crate) use instance_balancing::{InstanceBalancingDetail, InstanceBalancingSnapshot};
 use requirements::*;
 use runner::*;
 use status::*;
@@ -605,10 +603,13 @@ impl RuntimeHandle {
                 false
             } else {
                 keep_running::record_settings_changes(&mut state, &settings.value);
-                if instance_limits::record_settings_changes(&mut state, &settings.value) {
+                let limits_changed =
+                    instance_limits::record_settings_changes(&mut state, &settings.value);
+                let balancing_changed =
+                    instance_balancing::record_settings_changes(&mut state, &settings.value);
+                if limits_changed || balancing_changed {
                     bump_status_generation(&self.shared, &mut state);
                 }
-                instance_balancing::record_settings_changes(&mut state, &settings.value);
                 // A later save can restore the option before the worker sees this cancellation.
                 if state.settings.general.restore_previous_power_plan
                     && !settings.value.general.restore_previous_power_plan
@@ -1162,7 +1163,9 @@ impl Drop for AutomationWorkerExitGuard<'_> {
         let mut state = lock_unpoisoned(&self.shared.state);
         let exited_while_accepting_work = state.worker_accepting_work;
         state.worker_accepting_work = false;
-        if state.status.by_activity.take().is_some() {
+        let activity_cleared = state.status.by_activity.take().is_some();
+        let balancing_cleared = instance_balancing::clear_rule_status(&mut state);
+        if activity_cleared || balancing_cleared {
             bump_status_generation(self.shared, &mut state);
         }
         if exited_while_accepting_work {
