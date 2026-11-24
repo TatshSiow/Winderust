@@ -3317,6 +3317,7 @@ impl WinderustApp {
                 | Page::InstanceLimits
                 | Page::InstanceBalancing
                 | Page::ByFocus
+                | Page::ByActivity
                 | Page::ByRunningApp
                 | Page::CpuSetsSoft
                 | Page::ProcessorAffinityHard
