@@ -3318,6 +3318,7 @@ impl WinderustApp {
                 | Page::InstanceBalancing
                 | Page::ByFocus
                 | Page::ByActivity
+                | Page::AdvancedPowerPlanTuning
                 | Page::ByRunningApp
                 | Page::CpuSetsSoft
                 | Page::ProcessorAffinityHard
