@@ -47,6 +47,17 @@ fn observe(
     manager.observe(settings, apps, u32::MAX, Some(1), false);
 }
 
+fn environment(
+    plugged_in: Option<bool>,
+    windows_event_watcher_active: bool,
+) -> SleepPreventionEnvironment<'static> {
+    SleepPreventionEnvironment {
+        plugged_in,
+        windows_event_watcher_active,
+        suspended_instances: &[],
+    }
+}
+
 #[test]
 fn overlapping_rules_combine_requests_until_the_last_matching_app_exits() {
     let settings = settings();
@@ -69,6 +80,50 @@ fn overlapping_rules_combine_requests_until_the_last_matching_app_exits() {
     );
     observe(&mut manager, &settings, &[]);
     assert_eq!(manager.desired_mode(), SleepPreventionMode::Off);
+}
+
+#[test]
+fn app_suspension_withdraws_only_exact_frozen_instances() {
+    let settings = settings();
+    let worker = settings.rules[0].executable_path.as_str();
+    let video = settings.rules[1].executable_path.as_str();
+    let mut apps = [process(7, worker), process(8, video), process(9, video)];
+    let mut manager = SleepPreventionManager::default();
+    observe(&mut manager, &settings, &apps);
+
+    for (frozen, mode, suspended) in [
+        (
+            &[(8, 8)][..],
+            SleepPreventionMode::SystemAndDisplay,
+            &[][..],
+        ),
+        (&[(8, 8), (9, 9)], SleepPreventionMode::System, &[video][..]),
+        (
+            &[(7, 7), (8, 8), (9, 9)],
+            SleepPreventionMode::Off,
+            &[video, worker],
+        ),
+        (
+            &[(7, 7), (8, 8)],
+            SleepPreventionMode::SystemAndDisplay,
+            &[worker],
+        ),
+    ] {
+        manager.update_app_suspension(frozen);
+        assert_eq!(manager.desired_mode(), mode);
+        let snapshot = manager.matching_snapshot();
+        assert_eq!(snapshot.suspended_apps, suspended);
+        assert_eq!(snapshot.matched_processes, 3);
+        assert!(snapshot.suppressed_apps.is_empty());
+    }
+
+    apps[1].creation_time = Some(10);
+    observe(&mut manager, &settings, &apps);
+    manager.update_app_suspension(&[(7, 7), (8, 8), (9, 9)]);
+    assert_eq!(
+        manager.desired_mode(),
+        SleepPreventionMode::SystemAndDisplay
+    );
 }
 
 #[test]
@@ -313,6 +368,7 @@ fn inactive_profiles_and_missing_rules_preserve_sleep_suppression_until_explicit
         &mut controller,
         configured.battery_profile(),
         true,
+        &[],
         &mut CycleObservations::default(),
         &mut log,
     );
@@ -371,6 +427,7 @@ fn suspend_before_first_observation_suppresses_running_apps_and_disabling_rearms
             ..Default::default()
         },
         true,
+        &[],
         &mut CycleObservations::default(),
         &mut log,
     );
@@ -460,8 +517,7 @@ fn simultaneous_profile_switch_and_explicit_disable_rearms_only_withdrawn_paths(
     manager.update(
         &mut controller,
         &configured,
-        Some(false),
-        false,
+        environment(Some(false), false),
         &mut CycleObservations::default(),
         &mut log,
     );
@@ -474,8 +530,7 @@ fn simultaneous_profile_switch_and_explicit_disable_rearms_only_withdrawn_paths(
     manager.update(
         &mut controller,
         &configured,
-        Some(true),
-        false,
+        environment(Some(true), false),
         &mut CycleObservations::default(),
         &mut log,
     );
@@ -564,8 +619,7 @@ fn first_unknown_power_source_blocks_enabled_requests_without_suppressing_apps()
     let snapshot = manager.update(
         &mut controller,
         &configured,
-        None,
-        true,
+        environment(None, true),
         &mut CycleObservations::default(),
         &mut log,
     );
@@ -579,8 +633,7 @@ fn first_unknown_power_source_blocks_enabled_requests_without_suppressing_apps()
     let snapshot = manager.update(
         &mut controller,
         &disabled,
-        None,
-        true,
+        environment(None, true),
         &mut CycleObservations::default(),
         &mut log,
     );
@@ -591,8 +644,7 @@ fn first_unknown_power_source_blocks_enabled_requests_without_suppressing_apps()
     let snapshot = manager.update(
         &mut controller,
         &disabled,
-        None,
-        true,
+        environment(None, true),
         &mut CycleObservations::default(),
         &mut log,
     );
@@ -647,8 +699,7 @@ fn native_running_app_requests_and_releases_system_sleep_prevention() {
     let snapshot = manager.update(
         &mut controller,
         &settings,
-        Some(true),
-        true,
+        environment(Some(true), true),
         &mut CycleObservations::default(),
         &mut log,
     );
@@ -665,8 +716,7 @@ fn native_running_app_requests_and_releases_system_sleep_prevention() {
         let snapshot = manager.update(
             &mut controller,
             &settings,
-            Some(false),
-            watcher_active,
+            environment(Some(false), watcher_active),
             &mut CycleObservations::default(),
             &mut log,
         );
@@ -681,8 +731,7 @@ fn native_running_app_requests_and_releases_system_sleep_prevention() {
     manager.update(
         &mut controller,
         &settings,
-        Some(false),
-        true,
+        environment(Some(false), true),
         &mut CycleObservations::default(),
         &mut log,
     );
@@ -690,8 +739,7 @@ fn native_running_app_requests_and_releases_system_sleep_prevention() {
     let snapshot = manager.update(
         &mut controller,
         &settings,
-        Some(false),
-        true,
+        environment(Some(false), true),
         &mut CycleObservations::default(),
         &mut log,
     );
@@ -701,8 +749,7 @@ fn native_running_app_requests_and_releases_system_sleep_prevention() {
     let snapshot = manager.update(
         &mut controller,
         &settings,
-        Some(true),
-        true,
+        environment(Some(true), true),
         &mut CycleObservations::default(),
         &mut log,
     );

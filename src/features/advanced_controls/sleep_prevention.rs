@@ -21,6 +21,7 @@ pub struct SleepPreventionSnapshot {
     pub matched_processes: usize,
     pub running_apps: Vec<String>,
     pub suppressed_apps: Vec<String>,
+    pub(crate) suspended_apps: Vec<String>,
     pub(crate) requesting_apps: Vec<RequestingApp>,
     pub(crate) observed_rule_paths: Option<Arc<[String]>>,
     pub system_requested: bool,
@@ -38,6 +39,12 @@ pub(crate) struct RequestingApp {
 }
 
 type AppIdentity = (u32, u64);
+
+pub(crate) struct SleepPreventionEnvironment<'a> {
+    pub(crate) plugged_in: Option<bool>,
+    pub(crate) windows_event_watcher_active: bool,
+    pub(crate) suspended_instances: &'a [AppIdentity],
+}
 
 #[derive(Default)]
 pub struct SleepPreventionManager {
@@ -61,6 +68,7 @@ struct MatchedApp {
     path: String,
     display: bool,
     in_current_session: bool,
+    suspended: bool,
 }
 
 impl SleepPreventionManager {
@@ -68,11 +76,15 @@ impl SleepPreventionManager {
         &mut self,
         controller: &mut SleepPreventionController,
         configured_settings: &Settings,
-        plugged_in: Option<bool>,
-        windows_event_watcher_active: bool,
+        environment: SleepPreventionEnvironment<'_>,
         observations: &mut CycleObservations,
         action_log: &mut ActionLog,
     ) -> SleepPreventionSnapshot {
+        let SleepPreventionEnvironment {
+            plugged_in,
+            windows_event_watcher_active,
+            suspended_instances,
+        } = environment;
         // Preserve the accepted cohort before a profile handoff closes its request.
         if !windows_event_watcher_active && controller.requests().system {
             self.suppress_current();
@@ -140,6 +152,7 @@ impl SleepPreventionManager {
             controller,
             profile,
             allow_new_requests,
+            suspended_instances,
             observations,
             action_log,
         )
@@ -231,6 +244,7 @@ impl SleepPreventionManager {
         controller: &mut SleepPreventionController,
         profile: &Settings,
         allow_new_requests: bool,
+        suspended_instances: &[AppIdentity],
         observations: &mut CycleObservations,
         action_log: &mut ActionLog,
     ) -> SleepPreventionSnapshot {
@@ -278,6 +292,7 @@ impl SleepPreventionManager {
                 Some(error)
             }
         };
+        self.update_app_suspension(suspended_instances);
         let mut snapshot = self.matching_snapshot();
         if snapshot.observation_known {
             let paths = settings
@@ -306,6 +321,12 @@ impl SleepPreventionManager {
         self.apply(controller, mode, snapshot, action_log)
     }
 
+    fn update_app_suspension(&mut self, suspended_instances: &[AppIdentity]) {
+        for (identity, app) in &mut self.matches.apps {
+            app.suspended = self.matches.known && suspended_instances.contains(identity);
+        }
+    }
+
     fn matching_snapshot(&self) -> SleepPreventionSnapshot {
         let mut snapshot = SleepPreventionSnapshot {
             enabled: true,
@@ -320,9 +341,16 @@ impl SleepPreventionManager {
             if let Err(index) = snapshot.running_apps.binary_search(path) {
                 snapshot.running_apps.insert(index, path.clone());
             }
-            if self.suppressed.contains_key(identity) {
-                if let Err(index) = snapshot.suppressed_apps.binary_search(path) {
-                    snapshot.suppressed_apps.insert(index, path.clone());
+            let inactive = if self.suppressed.contains_key(identity) {
+                Some(&mut snapshot.suppressed_apps)
+            } else if app.suspended {
+                Some(&mut snapshot.suspended_apps)
+            } else {
+                None
+            };
+            if let Some(paths) = inactive {
+                if let Err(index) = paths.binary_search(path) {
+                    paths.insert(index, path.clone());
                 }
             } else {
                 let requests = &mut snapshot.requesting_apps;
@@ -338,13 +366,14 @@ impl SleepPreventionManager {
                 }
             }
         }
-        // A fresh instance can request sleep prevention while an older instance stays suppressed.
-        snapshot.suppressed_apps.retain(|path| {
-            snapshot
-                .requesting_apps
-                .binary_search_by(|request| request.path.as_ref().cmp(path.as_str()))
-                .is_err()
-        });
+        for paths in [&mut snapshot.suppressed_apps, &mut snapshot.suspended_apps] {
+            paths.retain(|path| {
+                snapshot
+                    .requesting_apps
+                    .binary_search_by(|request| request.path.as_ref().cmp(path.as_str()))
+                    .is_err()
+            });
+        }
         snapshot
     }
 
@@ -537,7 +566,7 @@ impl SleepPreventionManager {
     fn desired_mode(&self) -> SleepPreventionMode {
         let mut mode = SleepPreventionMode::Off;
         for (identity, app) in &self.matches.apps {
-            if !self.suppressed.contains_key(identity) {
+            if !app.suspended && !self.suppressed.contains_key(identity) {
                 if app.display {
                     return SleepPreventionMode::SystemAndDisplay;
                 }
@@ -745,6 +774,7 @@ fn match_rules(
                     display: rule.keep_display_on,
                     in_current_session: current_session.is_some()
                         && process.session_id == current_session,
+                    suspended: false,
                 });
             rule_matched = true;
         }

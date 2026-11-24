@@ -1,4 +1,5 @@
 use super::*;
+use crate::features::advanced_controls::sleep_prevention::SleepPreventionEnvironment;
 use crate::features::winderust_features::memory_trim::MemoryTrimStatus;
 use crate::runtime::observations::{CycleObservations, ForegroundCpuHistory};
 use crate::{
@@ -2058,11 +2059,31 @@ impl RuntimeCore {
         windows_event_watcher_active: bool,
         plugged_in: Option<bool>,
     ) -> SleepPreventionSnapshot {
+        let suspended_instances: Vec<_> = if self.app_suspension_manager.has_tracked_suspensions() {
+            match self.app_suspension_controller.lock() {
+                Ok(controller) => self
+                    .app_suspension_manager
+                    .frozen_instances(&controller)
+                    .collect(),
+                Err(_) => {
+                    return self.sleep_prevention_manager.unavailable(
+                        &mut self.sleep_prevention_controller,
+                        &mut self.action_log,
+                        "Shared suspension state is unavailable.",
+                    );
+                }
+            }
+        } else {
+            Vec::new()
+        };
         self.sleep_prevention_manager.update(
             &mut self.sleep_prevention_controller,
             settings,
-            plugged_in,
-            windows_event_watcher_active,
+            SleepPreventionEnvironment {
+                plugged_in,
+                windows_event_watcher_active,
+                suspended_instances: &suspended_instances,
+            },
             observations,
             &mut self.action_log,
         )

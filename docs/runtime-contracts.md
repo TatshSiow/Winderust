@@ -964,6 +964,10 @@ Read the relevant section before changing feature policy, ownership, restoration
   required request types. Removing one app cannot release another app's request.
   Disable, confirmed last-app exit, profile handoff, and Exit release owned
   requests. Process teardown closes the request object without a crash journal.
+- A confirmed App Suspension freeze withdraws that exact instance's request.
+  Other runnable instances still contribute their system and display requests.
+  The next complete observation after thaw can restore an eligible request.
+  CPU Limiter's duty cycles do not affect Sleep Prevention.
 - Accepted Windows requests are reported separately from app observations and
   do not prove effective inhibition. Missing observations cannot establish new
   requests or renew existing counts; explicit rule removal still releases them.

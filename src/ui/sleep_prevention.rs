@@ -190,6 +190,8 @@ fn indicator(status: Option<&SleepPreventionSnapshot>, rule: &SleepPreventionRul
         }
     } else if contains(&status.suppressed_apps) {
         "sleep_prevention.requests_paused"
+    } else if contains(&status.suspended_apps) {
+        "app_suspension.indicator.suspended"
     } else if contains(&status.running_apps) {
         "common.waiting"
     } else if status.observed_rule_paths.as_deref().is_some_and(contains) {
@@ -299,6 +301,12 @@ mod tests {
         assert_eq!(
             indicator(Some(&status), &rule),
             t!("sleep_prevention.requests_paused")
+        );
+        status.suspended_apps.push(rule.executable_path.clone());
+        status.suppressed_apps.clear();
+        assert_eq!(
+            indicator(Some(&status), &rule),
+            t!("app_suspension.indicator.suspended")
         );
         rule.enabled = false;
         assert_eq!(indicator(None, &rule), t!("common.off"));

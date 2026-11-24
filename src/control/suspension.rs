@@ -539,10 +539,10 @@ where
                 .get(&key)
                 .and_then(|managed| managed.cpu_limiter_phase);
             if cpu_limiter_phase.is_some() {
+                self.thaw_keep_key(&key, force)?;
                 if let Some(managed) = self.managed.get_mut(&key) {
                     managed.app_suspension_phase = None;
                 }
-                self.thaw_keep_key(&key, force)?;
             } else {
                 self.release_key(&key, force)?;
             }
@@ -1380,19 +1380,27 @@ mod tests {
 
     #[test]
     fn failed_thaw_retains_frozen_state_for_retry() {
-        let (mut controller, state) = controller();
-        controller.freeze(&target(7), true).unwrap();
-        state
-            .borrow_mut()
-            .freeze_results
-            .push_back(Err(SuspensionError::Failed("thaw failed".to_owned())));
+        for shared_job in [false, true] {
+            let (mut controller, state) = controller();
+            let target = target(7);
+            if shared_job {
+                controller
+                    .set_cpu_limiter_phase(&target, false, true)
+                    .unwrap();
+            }
+            controller.freeze(&target, true).unwrap();
+            state
+                .borrow_mut()
+                .freeze_results
+                .push_back(Err(SuspensionError::Failed("thaw failed".to_owned())));
 
-        assert!(controller.release_process(42, true).is_err());
-        assert!(controller.contains_process(42));
-        assert!(controller.is_frozen_process(42));
+            assert!(controller.release_process(42, true).is_err());
+            assert!(controller.is_frozen_process(42));
 
-        controller.release_process(42, true).unwrap();
-        assert!(!controller.contains_process(42));
+            controller.release_process(42, true).unwrap();
+            assert!(!controller.contains_process(42));
+            assert!(!controller.is_frozen_target(&target.key()));
+        }
     }
 
     #[test]

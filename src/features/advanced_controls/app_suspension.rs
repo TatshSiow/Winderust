@@ -249,6 +249,22 @@ impl SuspensionLifecycleState {
 }
 
 impl AppSuspensionManager {
+    pub(crate) fn has_tracked_suspensions(&self) -> bool {
+        !self.suspended.is_empty()
+    }
+
+    pub(crate) fn frozen_instances<'a>(
+        &'a self,
+        controller: &'a SuspensionController,
+    ) -> impl Iterator<Item = (u32, u64)> + 'a {
+        self.suspended.iter().filter_map(|(&pid, process)| {
+            let key = ProcessTargetKey::new(pid, process.creation_time, &process.executable_path);
+            controller
+                .is_frozen_target(&key)
+                .then_some((pid, process.creation_time))
+        })
+    }
+
     pub fn apply_manual_process_action(
         &mut self,
         controller: &mut SuspensionController,
