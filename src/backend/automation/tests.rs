@@ -19,24 +19,26 @@ fn runtime_settings(snapshot: Settings) -> RuntimeSettingsSnapshot {
 }
 
 #[test]
-fn watchdog_alone_keeps_automation_alive_without_power_plan_rules() {
+fn resource_thresholds_alone_keeps_automation_alive_without_power_plan_rules() {
     let mut settings = Settings::default();
     settings.general.enabled = true;
     assert!(!automation_worker_required(&settings));
-    settings.watchdog.enabled = true;
+    settings.resource_thresholds.enabled = true;
     settings
-        .watchdog
+        .resource_thresholds
         .rules
-        .push(crate::config::WatchdogRule::new(r"C:\Apps\test.exe".into()));
+        .push(crate::config::ResourceThresholdsRule::new(
+            r"C:\Apps\test.exe".into(),
+        ));
     assert!(automation_worker_required(&settings));
     assert!(windows_event_wake_required(
         &settings,
         WindowsAutomationEvent::PowerChanged
     ));
     assert!(!power_plan_checks_required(&settings));
-    settings.watchdog.rules[0].enabled = false;
+    settings.resource_thresholds.rules[0].enabled = false;
     assert!(!automation_worker_required(&settings));
-    settings.watchdog.rules[0].enabled = true;
+    settings.resource_thresholds.rules[0].enabled = true;
     settings.general.enabled = false;
     assert!(!automation_worker_required(&settings));
 }
@@ -3118,16 +3120,18 @@ fn battery_only_system_bottleneck_detects_source_changes_without_full_event_cove
 }
 
 #[test]
-fn watchdog_actions_require_current_policy_and_no_shutdown_or_session_transition() {
+fn resource_thresholds_actions_require_current_policy_and_no_shutdown_or_session_transition() {
     let mut settings = Settings::default();
     settings.general.enabled = true;
-    settings.watchdog.enabled = true;
+    settings.resource_thresholds.enabled = true;
     settings
-        .watchdog
+        .resource_thresholds
         .rules
-        .push(crate::config::WatchdogRule::new(r"C:\Apps\test.exe".into()));
+        .push(crate::config::ResourceThresholdsRule::new(
+            r"C:\Apps\test.exe".into(),
+        ));
     let shared = shared_automation_state(settings.clone());
-    assert!(watchdog_action_is_current(&shared, &settings));
+    assert!(resource_thresholds_action_is_current(&shared, &settings));
 
     {
         let mut state = lock_unpoisoned(&shared.state);
@@ -3138,16 +3142,16 @@ fn watchdog_actions_require_current_policy_and_no_shutdown_or_session_transition
         let current = Arc::make_mut(&mut state.settings);
         current.memory_trim.enabled = !current.memory_trim.enabled;
     }
-    assert!(watchdog_action_is_current(&shared, &settings));
+    assert!(resource_thresholds_action_is_current(&shared, &settings));
 
     type Change<T> = (&'static str, fn(&mut T));
     let settings_changes: [Change<Settings>; 4] = [
         ("master disabled", |current| current.general.enabled = false),
-        ("Watchdog disabled", |current| {
-            current.watchdog.enabled = false
+        ("Resource Thresholds disabled", |current| {
+            current.resource_thresholds.enabled = false
         }),
         ("rule disabled", |current| {
-            current.watchdog.rules[0].enabled = false
+            current.resource_thresholds.rules[0].enabled = false
         }),
         ("cross-session permission changed", |current| {
             current.general.allow_cross_session_process_control =
@@ -3158,7 +3162,10 @@ fn watchdog_actions_require_current_policy_and_no_shutdown_or_session_transition
         let mut current = settings.clone();
         change(&mut current);
         let shared = shared_automation_state(current);
-        assert!(!watchdog_action_is_current(&shared, &settings), "{name}");
+        assert!(
+            !resource_thresholds_action_is_current(&shared, &settings),
+            "{name}"
+        );
     }
 
     let intents: [Change<AutomationWorkerState>; 3] = [
@@ -3173,7 +3180,10 @@ fn watchdog_actions_require_current_policy_and_no_shutdown_or_session_transition
     for (name, queue) in intents {
         let shared = shared_automation_state(settings.clone());
         queue(&mut lock_unpoisoned(&shared.state));
-        assert!(!watchdog_action_is_current(&shared, &settings), "{name}");
+        assert!(
+            !resource_thresholds_action_is_current(&shared, &settings),
+            "{name}"
+        );
     }
 }
 

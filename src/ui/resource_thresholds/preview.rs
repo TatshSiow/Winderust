@@ -1,8 +1,8 @@
 use std::path::{Path, PathBuf};
 
 use crate::{
-    config::{WatchdogRule, WatchdogSelector},
-    features::winderust_features::watchdog::{
+    config::{ResourceThresholdsRule, ResourceThresholdsSelector},
+    features::winderust_features::resource_thresholds::{
         matching_path, observed_path_matches_name, selector_basename_matches,
     },
     foreground::{same_executable_path, ProcessInfo},
@@ -29,12 +29,12 @@ pub(crate) enum UnavailableReason {
 impl UnavailableReason {
     pub(super) fn label_key(self) -> &'static str {
         match self {
-            Self::PathUnavailable => "watchdog.preview_path_unavailable",
-            Self::NameUnverified => "watchdog.preview_name_unverified",
-            Self::StartTimeUnavailable => "watchdog.preview_start_time_unavailable",
-            Self::CriticalityUnknown => "watchdog.preview_criticality_unknown",
-            Self::CriticalProcess => "watchdog.preview_critical_process",
-            Self::WinderustProcess => "watchdog.preview_self_skipped",
+            Self::PathUnavailable => "resource_thresholds.preview_path_unavailable",
+            Self::NameUnverified => "resource_thresholds.preview_name_unverified",
+            Self::StartTimeUnavailable => "resource_thresholds.preview_start_time_unavailable",
+            Self::CriticalityUnknown => "resource_thresholds.preview_criticality_unknown",
+            Self::CriticalProcess => "resource_thresholds.preview_critical_process",
+            Self::WinderustProcess => "resource_thresholds.preview_self_skipped",
         }
     }
 }
@@ -48,9 +48,9 @@ pub(crate) struct MatchRow {
 }
 
 pub(super) fn other_enabled_rules(
-    rules: &[WatchdogRule],
+    rules: &[ResourceThresholdsRule],
     edited: Option<usize>,
-) -> Vec<(usize, WatchdogSelector)> {
+) -> Vec<(usize, ResourceThresholdsSelector)> {
     rules
         .iter()
         .enumerate()
@@ -60,8 +60,8 @@ pub(super) fn other_enabled_rules(
 }
 
 pub(super) fn load(
-    selector: &WatchdogSelector,
-    other_rules: &[(usize, WatchdogSelector)],
+    selector: &ResourceThresholdsSelector,
+    other_rules: &[(usize, ResourceThresholdsSelector)],
 ) -> Result<Vec<MatchRow>, String> {
     let mut observations = CycleObservations::default();
     let processes = observations.processes_for_path_matching(|process| {
@@ -76,8 +76,8 @@ pub(super) fn load(
 }
 
 fn classify(
-    selector: &WatchdogSelector,
-    other_rules: &[(usize, WatchdogSelector)],
+    selector: &ResourceThresholdsSelector,
+    other_rules: &[(usize, ResourceThresholdsSelector)],
     processes: &[ProcessInfo],
     current_pid: u32,
 ) -> Vec<MatchRow> {
@@ -167,17 +167,18 @@ mod tests {
         processes[4].creation_time = None;
         processes[8].is_critical = None;
 
-        let selector = WatchdogSelector::ExactPath {
+        let selector = ResourceThresholdsSelector::ExactPath {
             executable_path: path.into(),
         };
-        let enabled = WatchdogRule::with_selector(WatchdogSelector::ExactName {
-            executable_name: "worker.exe".into(),
-        });
-        let mut disabled = WatchdogRule::with_selector(selector.clone());
+        let enabled =
+            ResourceThresholdsRule::with_selector(ResourceThresholdsSelector::ExactName {
+                executable_name: "worker.exe".into(),
+            });
+        let mut disabled = ResourceThresholdsRule::with_selector(selector.clone());
         disabled.enabled = false;
-        let edited = WatchdogRule::with_selector(selector.clone());
-        let elsewhere = WatchdogRule::new(other_path.into());
-        let overlapping = WatchdogRule::new(path.into());
+        let edited = ResourceThresholdsRule::with_selector(selector.clone());
+        let elsewhere = ResourceThresholdsRule::new(other_path.into());
+        let overlapping = ResourceThresholdsRule::new(path.into());
         let others = other_enabled_rules(
             &[enabled, disabled, edited, elsewhere, overlapping],
             Some(2),
@@ -221,11 +222,11 @@ mod tests {
             process(5, "worker.exe", Some("worker.exe")),
             process(6, "different.exe", Some(path)),
         ];
-        let selector = WatchdogSelector::ExactName {
+        let selector = ResourceThresholdsSelector::ExactName {
             executable_name: "worker.exe".into(),
         };
 
-        let others = other_enabled_rules(&[WatchdogRule::new(path.into())], None);
+        let others = other_enabled_rules(&[ResourceThresholdsRule::new(path.into())], None);
         let rows = classify(&selector, &others, &processes, 0);
         assert_eq!(
             rows.iter()

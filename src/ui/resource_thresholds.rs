@@ -6,8 +6,10 @@ use super::{
     widgets,
 };
 use crate::config::{
-    WatchdogAction, WatchdogComparison, WatchdogMemoryUnit, WatchdogMetric, WatchdogResource,
-    WatchdogRule, WatchdogScope, WatchdogSelector, WatchdogSettings, WATCHDOG_DURATION_RANGE,
+    ResourceThresholdsAction, ResourceThresholdsComparison, ResourceThresholdsMemoryUnit,
+    ResourceThresholdsMetric, ResourceThresholdsResource, ResourceThresholdsRule,
+    ResourceThresholdsScope, ResourceThresholdsSelector, ResourceThresholdsSettings,
+    RESOURCE_THRESHOLDS_DURATION_RANGE,
 };
 use crate::foreground::{
     process_list::{normalize_path_slashes, same_executable_name},
@@ -21,41 +23,41 @@ use rust_i18n::t;
 
 mod preview;
 
-impl std::fmt::Display for WatchdogMetric {
+impl std::fmt::Display for ResourceThresholdsMetric {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&t!(self.label_key()))
     }
 }
-impl std::fmt::Display for WatchdogMemoryUnit {
+impl std::fmt::Display for ResourceThresholdsMemoryUnit {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         std::fmt::Display::fmt(&self.metric(), f)
     }
 }
 
-impl std::fmt::Display for WatchdogAction {
+impl std::fmt::Display for ResourceThresholdsAction {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&t!(match self {
-            Self::None => "watchdog.no_action",
-            Self::Terminate => "watchdog.terminate",
-            Self::Restart => "watchdog.restart",
+            Self::None => "resource_thresholds.no_action",
+            Self::Terminate => "resource_thresholds.terminate",
+            Self::Restart => "resource_thresholds.restart",
         }))
     }
 }
 
-impl std::fmt::Display for WatchdogComparison {
+impl std::fmt::Display for ResourceThresholdsComparison {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&t!(match self {
-            Self::AtOrAbove => "watchdog.at_or_above",
-            Self::AtOrBelow => "watchdog.at_or_below",
+            Self::AtOrAbove => "resource_thresholds.at_or_above",
+            Self::AtOrBelow => "resource_thresholds.at_or_below",
         }))
     }
 }
 
-impl std::fmt::Display for WatchdogScope {
+impl std::fmt::Display for ResourceThresholdsScope {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&t!(match self {
-            Self::Combined => "watchdog.scope_combined",
-            Self::PerInstance => "watchdog.scope_per_instance",
+            Self::Combined => "resource_thresholds.scope_combined",
+            Self::PerInstance => "resource_thresholds.scope_per_instance",
         }))
     }
 }
@@ -71,7 +73,7 @@ pub(super) struct Editor {
 
 struct Draft {
     index: Option<usize>,
-    rule: WatchdogRule,
+    rule: ResourceThresholdsRule,
     duration: String,
     tab: DraftTab,
     monitors: [ThresholdInputs; 2],
@@ -80,7 +82,7 @@ struct Draft {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum DraftTab {
-    Monitor(WatchdogResource),
+    Monitor(ResourceThresholdsResource),
     MatchPreview,
 }
 
@@ -105,18 +107,18 @@ struct ThresholdInputs {
 }
 
 impl Draft {
-    fn new(index: Option<usize>, rule: WatchdogRule) -> Self {
+    fn new(index: Option<usize>, rule: ResourceThresholdsRule) -> Self {
         Self {
             index,
             duration: rule
                 .sustained_seconds
                 .map_or_else(String::new, |seconds| seconds.to_string()),
             tab: DraftTab::Monitor(if rule.cpu.enabled {
-                WatchdogResource::Cpu
+                ResourceThresholdsResource::Cpu
             } else {
-                WatchdogResource::Memory
+                ResourceThresholdsResource::Memory
             }),
-            monitors: WatchdogResource::ALL.map(|resource| {
+            monitors: ResourceThresholdsResource::ALL.map(|resource| {
                 let monitor = rule.monitor(resource);
                 ThresholdInputs {
                     warning: monitor.warning.threshold.to_string(),
@@ -136,10 +138,13 @@ impl Draft {
         }
     }
 
-    fn validated_rule(&self) -> Option<WatchdogRule> {
+    fn validated_rule(&self) -> Option<ResourceThresholdsRule> {
         let mut rule = self.rule.clone();
         rule.sustained_seconds = self.parsed_duration()?;
-        for (resource, raw) in WatchdogResource::ALL.into_iter().zip(&self.monitors) {
+        for (resource, raw) in ResourceThresholdsResource::ALL
+            .into_iter()
+            .zip(&self.monitors)
+        {
             let metric = rule.metric(resource);
             let monitor = rule.monitor_mut(resource);
             if let (Ok(warning), Ok(critical)) = (raw.warning.parse(), raw.critical.parse()) {
@@ -157,11 +162,11 @@ impl Draft {
         Some(rule)
     }
 
-    fn clear_unavailable_actions(&mut self, resource: WatchdogResource) {
+    fn clear_unavailable_actions(&mut self, resource: ResourceThresholdsResource) {
         if !self.rule.allows_actions(resource) {
             let monitor = self.rule.monitor_mut(resource);
-            monitor.warning.action = WatchdogAction::None;
-            monitor.critical.action = WatchdogAction::None;
+            monitor.warning.action = ResourceThresholdsAction::None;
+            monitor.critical.action = ResourceThresholdsAction::None;
         }
     }
 }
@@ -179,29 +184,29 @@ pub(super) enum Message {
     SaveRule,
     CancelRule,
     RuleEnabled(usize, bool),
-    Tab(WatchdogResource),
+    Tab(ResourceThresholdsResource),
     PreviewMatches,
     MatchPreviewLoaded(Arc<()>, Result<Vec<preview::MatchRow>, String>),
-    Scope(WatchdogScope),
-    MonitorEnabled(WatchdogResource, bool),
-    Comparison(WatchdogResource, WatchdogComparison),
-    MemoryUnit(WatchdogMemoryUnit),
+    Scope(ResourceThresholdsScope),
+    MonitorEnabled(ResourceThresholdsResource, bool),
+    Comparison(ResourceThresholdsResource, ResourceThresholdsComparison),
+    MemoryUnit(ResourceThresholdsMemoryUnit),
     Duration(String),
     RuleDuration(String),
-    Threshold(WatchdogResource, bool, String),
+    Threshold(ResourceThresholdsResource, bool, String),
     Notify(bool),
-    Action(WatchdogResource, bool, WatchdogAction),
+    Action(ResourceThresholdsResource, bool, ResourceThresholdsAction),
 }
 
 impl Editor {
-    fn can_add_path(settings: &WatchdogSettings, path: &str) -> bool {
+    fn can_add_path(settings: &ResourceThresholdsSettings, path: &str) -> bool {
         super::process_rules::can_add_exact_process_candidate(
             path,
             |path| {
                 settings.rules.iter().any(|rule| {
                     matches!(
                         &rule.selector,
-                        WatchdogSelector::ExactPath { executable_path }
+                        ResourceThresholdsSelector::ExactPath { executable_path }
                             if same_executable_path(Path::new(executable_path), Path::new(path))
                     )
                 })
@@ -210,36 +215,39 @@ impl Editor {
         )
     }
 
-    fn new_name_selector(&self, settings: &WatchdogSettings) -> Option<WatchdogSelector> {
+    fn new_name_selector(
+        &self,
+        settings: &ResourceThresholdsSettings,
+    ) -> Option<ResourceThresholdsSelector> {
         let name = self.name.trim();
         if name.eq_ignore_ascii_case("winderust.exe")
             || settings.rules.iter().any(|rule| {
                 matches!(
                     &rule.selector,
-                    WatchdogSelector::ExactName { executable_name }
+                    ResourceThresholdsSelector::ExactName { executable_name }
                         if same_executable_name(executable_name, name)
                 )
             })
         {
             return None;
         }
-        let selector = WatchdogSelector::ExactName {
+        let selector = ResourceThresholdsSelector::ExactName {
             executable_name: name.into(),
         };
         selector.validate().ok()?;
         Some(selector)
     }
 
-    fn new_rule(&self, settings: &WatchdogSettings) -> Option<WatchdogRule> {
+    fn new_rule(&self, settings: &ResourceThresholdsSettings) -> Option<ResourceThresholdsRule> {
         match self.match_by {
             MatchBy::ExecutablePath => {
                 let path = exact_path_input(&self.path);
                 Self::can_add_path(settings, path)
-                    .then(|| WatchdogRule::new(normalize_path_slashes(path).into_owned()))
+                    .then(|| ResourceThresholdsRule::new(normalize_path_slashes(path).into_owned()))
             }
             MatchBy::ExecutableName => self
                 .new_name_selector(settings)
-                .map(WatchdogRule::with_selector),
+                .map(ResourceThresholdsRule::with_selector),
         }
     }
 
@@ -253,13 +261,16 @@ impl Editor {
             .is_some_and(|value| parse_duration(value).is_none())
     }
 
-    pub(super) fn select_tab(&mut self, resource: WatchdogResource) {
+    pub(super) fn select_tab(&mut self, resource: ResourceThresholdsResource) {
         if let Some(draft) = &mut self.draft {
             draft.tab = DraftTab::Monitor(resource);
         }
     }
 
-    pub(super) fn preview_matches(&mut self, settings: &WatchdogSettings) -> iced::Task<Message> {
+    pub(super) fn preview_matches(
+        &mut self,
+        settings: &ResourceThresholdsSettings,
+    ) -> iced::Task<Message> {
         let Some(draft) = &mut self.draft else {
             return iced::Task::none();
         };
@@ -290,7 +301,7 @@ impl Editor {
         }
     }
 
-    pub(super) fn update(&mut self, settings: &mut WatchdogSettings, message: Message) {
+    pub(super) fn update(&mut self, settings: &mut ResourceThresholdsSettings, message: Message) {
         match message {
             Message::Enabled(value) => settings.enabled = value,
             Message::MatchBy(value) => self.match_by = value,
@@ -317,8 +328,8 @@ impl Editor {
                             }
                         } else {
                             match &rule.selector {
-                                WatchdogSelector::ExactPath { .. } => self.path.clear(),
-                                WatchdogSelector::ExactName { .. } => self.name.clear(),
+                                ResourceThresholdsSelector::ExactPath { .. } => self.path.clear(),
+                                ResourceThresholdsSelector::ExactName { .. } => self.name.clear(),
                             }
                             settings.rules.push(rule);
                         }
@@ -340,7 +351,7 @@ impl Editor {
             Message::Scope(scope) => {
                 if let Some(draft) = &mut self.draft {
                     draft.rule.scope = scope;
-                    for resource in WatchdogResource::ALL {
+                    for resource in ResourceThresholdsResource::ALL {
                         draft.clear_unavailable_actions(resource);
                     }
                 }
@@ -372,22 +383,22 @@ impl Editor {
                     if draft.rule.memory_unit != unit {
                         draft.rule.memory_unit = unit;
                         let (warning, critical) = match unit {
-                            WatchdogMemoryUnit::Percent => (70, 90),
-                            WatchdogMemoryUnit::Megabytes | WatchdogMemoryUnit::PrivateCommitMb => {
-                                (1000, 2000)
-                            }
+                            ResourceThresholdsMemoryUnit::Percent => (70, 90),
+                            ResourceThresholdsMemoryUnit::Megabytes
+                            | ResourceThresholdsMemoryUnit::PrivateCommitMb => (1000, 2000),
                         };
                         let memory = &mut draft.rule.memory;
                         let (warning, critical) = match memory.comparison {
-                            WatchdogComparison::AtOrAbove => (warning, critical),
-                            WatchdogComparison::AtOrBelow => (critical, warning),
+                            ResourceThresholdsComparison::AtOrAbove => (warning, critical),
+                            ResourceThresholdsComparison::AtOrBelow => (critical, warning),
                         };
                         memory.warning.threshold = warning;
                         memory.critical.threshold = critical;
-                        draft.monitors[WatchdogResource::Memory as usize] = ThresholdInputs {
-                            warning: warning.to_string(),
-                            critical: critical.to_string(),
-                        };
+                        draft.monitors[ResourceThresholdsResource::Memory as usize] =
+                            ThresholdInputs {
+                                warning: warning.to_string(),
+                                critical: critical.to_string(),
+                            };
                     }
                 }
             }
@@ -430,7 +441,7 @@ impl Editor {
 
     pub(super) fn view<'a>(
         &'a self,
-        settings: &'a WatchdogSettings,
+        settings: &'a ResourceThresholdsSettings,
         candidates: &'a [app_picker::Candidate],
     ) -> Element<'a, Message> {
         let rules = settings
@@ -442,8 +453,8 @@ impl Editor {
                 let (app, target) = widgets::process_rule_target(&rule.selector, candidates);
                 let label = t!("common.rule", number = index + 1);
                 let label = match rule.scope {
-                    WatchdogScope::Combined => label.into_owned(),
-                    WatchdogScope::PerInstance => format!("{label} · {}", rule.scope),
+                    ResourceThresholdsScope::Combined => label.into_owned(),
+                    ResourceThresholdsScope::PerInstance => format!("{label} · {}", rule.scope),
                 };
                 (
                     widgets::stable_key(&format!("{index}:{value}")),
@@ -462,19 +473,19 @@ impl Editor {
                                 .on_toggle(move |value| Message::RuleEnabled(index, value))
                                 .into(),
                             None,
-                            WatchdogResource::ALL
+                            ResourceThresholdsResource::ALL
                                 .into_iter()
                                 .map(|resource| {
                                     let monitor = rule.monitor(resource);
                                     let warning = monitor.warning.threshold;
                                     let critical = monitor.critical.threshold;
                                     let comparison = match monitor.comparison {
-                                        WatchdogComparison::AtOrAbove => "",
-                                        WatchdogComparison::AtOrBelow => monitor.comparison.symbol(),
+                                        ResourceThresholdsComparison::AtOrAbove => "",
+                                        ResourceThresholdsComparison::AtOrBelow => monitor.comparison.symbol(),
                                     };
                                     text(if !monitor.enabled {
                                         t!("common.off").to_string()
-                                    } else if resource == WatchdogResource::Memory {
+                                    } else if resource == ResourceThresholdsResource::Memory {
                                         let metric = rule.metric(resource);
                                         format!("{metric}\n{comparison}{warning} / {comparison}{critical}")
                                     } else {
@@ -496,7 +507,7 @@ impl Editor {
             })
             .collect();
         let mut duration = column![widgets::setting_row_with_unit(
-            "watchdog.duration",
+            "resource_thresholds.duration",
             "s",
             widgets::text_input(
                 "",
@@ -509,17 +520,25 @@ impl Editor {
         )]
         .spacing(design::space::SMALL);
         if self.has_invalid_inputs() {
-            duration = duration
-                .push(text(t!("watchdog.invalid_duration").to_string()).style(text::danger));
+            duration = duration.push(
+                text(t!("resource_thresholds.invalid_duration").to_string()).style(text::danger),
+            );
         }
         super::scrolling::scrollable(
             column![
-                widgets::toggle_card("watchdog.enable", settings.enabled, Some(Message::Enabled)),
-                widgets::heading(t!("watchdog.shared").to_string(), design::typography::BODY),
+                widgets::toggle_card(
+                    "resource_thresholds.enable",
+                    settings.enabled,
+                    Some(Message::Enabled)
+                ),
+                widgets::heading(
+                    t!("resource_thresholds.shared").to_string(),
+                    design::typography::BODY
+                ),
                 widgets::settings_card(widgets::settings_rows([
                     duration.into(),
                     widgets::setting_row(
-                        "watchdog.notify",
+                        "resource_thresholds.notify",
                         widgets::switch(settings.notify, Some(Message::Notify)),
                     )
                     .into(),
@@ -527,7 +546,11 @@ impl Editor {
                 widgets::setting_title("common.rules"),
                 self.add_rule_card(settings, candidates),
                 widgets::process_rules_table(
-                    ["watchdog.cpu_tab", "watchdog.memory_tab"].map(|key| t!(key).to_string()),
+                    [
+                        "resource_thresholds.cpu_tab",
+                        "resource_thresholds.memory_tab"
+                    ]
+                    .map(|key| t!(key).to_string()),
                     rules,
                     false,
                 ),
@@ -540,7 +563,7 @@ impl Editor {
 
     fn add_rule_card<'a>(
         &self,
-        settings: &WatchdogSettings,
+        settings: &ResourceThresholdsSettings,
         candidates: &'a [app_picker::Candidate],
     ) -> Element<'a, Message> {
         let target = match self.match_by {
@@ -587,13 +610,13 @@ impl Editor {
         .into()
     }
 
-    fn monitor_details(draft: &Draft, resource: WatchdogResource) -> Column<'_, Message> {
+    fn monitor_details(draft: &Draft, resource: ResourceThresholdsResource) -> Column<'_, Message> {
         let rule = &draft.rule;
         let monitor = rule.monitor(resource);
         let mut details = column![widgets::toggle_card(
             match resource {
-                WatchdogResource::Cpu => "watchdog.monitor_cpu",
-                WatchdogResource::Memory => "watchdog.monitor_memory",
+                ResourceThresholdsResource::Cpu => "resource_thresholds.monitor_cpu",
+                ResourceThresholdsResource::Memory => "resource_thresholds.monitor_memory",
             },
             monitor.enabled,
             Some(move |enabled| Message::MonitorEnabled(resource, enabled)),
@@ -602,16 +625,16 @@ impl Editor {
         if !monitor.enabled {
             return details;
         }
-        if resource == WatchdogResource::Memory {
+        if resource == ResourceThresholdsResource::Memory {
             details = details
                 .push(widgets::heading(
-                    t!("watchdog.measurement").to_string(),
+                    t!("resource_thresholds.measurement").to_string(),
                     design::typography::BODY,
                 ))
                 .push(widgets::settings_card(widgets::setting_row(
-                    "watchdog.memory_metric",
+                    "resource_thresholds.memory_metric",
                     widgets::pick_list(
-                        WatchdogMemoryUnit::ALL,
+                        ResourceThresholdsMemoryUnit::ALL,
                         Some(rule.memory_unit),
                         Message::MemoryUnit,
                     )
@@ -625,7 +648,7 @@ impl Editor {
             (true, &monitor.critical, &raw.critical),
         ] {
             let threshold = widgets::setting_row_with_unit(
-                "watchdog.threshold",
+                "resource_thresholds.threshold",
                 metric.unit(),
                 widgets::text_input("", threshold)
                     .on_input(move |value| Message::Threshold(resource, critical, value))
@@ -635,12 +658,12 @@ impl Editor {
             .into();
             let action = rule.allows_actions(resource).then(|| {
                 widgets::setting_row(
-                    "watchdog.action",
+                    "resource_thresholds.action",
                     widgets::pick_list(
                         [
-                            WatchdogAction::None,
-                            WatchdogAction::Terminate,
-                            WatchdogAction::Restart,
+                            ResourceThresholdsAction::None,
+                            ResourceThresholdsAction::Terminate,
+                            ResourceThresholdsAction::Restart,
                         ],
                         Some(response.action),
                         move |value| Message::Action(resource, critical, value),
@@ -655,9 +678,9 @@ impl Editor {
                         "{} · {}",
                         metric,
                         t!(if critical {
-                            "watchdog.critical"
+                            "resource_thresholds.critical"
                         } else {
-                            "watchdog.warning"
+                            "resource_thresholds.warning"
                         })
                     ),
                     design::typography::BODY,
@@ -682,11 +705,11 @@ impl Editor {
         let matches = match &draft.match_preview {
             MatchPreview::Unrequested => return details,
             MatchPreview::Loading(_) => {
-                return details.push(text(t!("watchdog.preview_loading").to_string()));
+                return details.push(text(t!("resource_thresholds.preview_loading").to_string()));
             }
             MatchPreview::Loaded(Err(error)) => {
                 return details.push(
-                    text(t!("watchdog.preview_failed", error = error).to_string())
+                    text(t!("resource_thresholds.preview_failed", error = error).to_string())
                         .style(text::danger)
                         .wrapping(text::Wrapping::WordOrGlyph),
                 );
@@ -722,7 +745,7 @@ impl Editor {
                         .collect::<Vec<_>>()
                         .join(", ");
                     Some(t!(
-                        "watchdog.preview_other_enabled_rules",
+                        "resource_thresholds.preview_other_enabled_rules",
                         numbers = numbers
                     ))
                 }
@@ -738,7 +761,8 @@ impl Editor {
             }
             rows.push(
                 row![
-                    text(t!("watchdog.preview_pid", pid = entry.pid).to_string()).width(112),
+                    text(t!("resource_thresholds.preview_pid", pid = entry.pid).to_string())
+                        .width(112),
                     metadata,
                 ]
                 .spacing(design::space::MEDIUM)
@@ -747,13 +771,15 @@ impl Editor {
             );
         }
         if matched.is_empty() {
-            details = details
-                .push(text(t!("watchdog.preview_no_matches").to_string()).style(text::secondary));
+            details = details.push(
+                text(t!("resource_thresholds.preview_no_matches").to_string())
+                    .style(text::secondary),
+            );
         }
         for (rows, heading) in [
-            (matched, "watchdog.preview_matches"),
-            (same_name, "watchdog.preview_same_name"),
-            (unavailable, "watchdog.preview_unavailable"),
+            (matched, "resource_thresholds.preview_matches"),
+            (same_name, "resource_thresholds.preview_same_name"),
+            (unavailable, "resource_thresholds.preview_unavailable"),
         ] {
             if rows.is_empty() {
                 continue;
@@ -776,13 +802,15 @@ impl Editor {
         let draft = self.draft.as_ref()?;
         let rule = &draft.rule;
         let target = match &rule.selector {
-            WatchdogSelector::ExactPath { executable_path } => executable_path.clone(),
-            WatchdogSelector::ExactName { .. } => t!("watchdog.name_rule_mode").to_string(),
+            ResourceThresholdsSelector::ExactPath { executable_path } => executable_path.clone(),
+            ResourceThresholdsSelector::ExactName { .. } => {
+                t!("resource_thresholds.name_rule_mode").to_string()
+            }
         };
         let duration_valid = draft.parsed_duration().is_some();
         let valid = duration_valid && draft.validated_rule().is_some();
         let mut duration = column![widgets::setting_row_with_unit(
-            "watchdog.rule_duration",
+            "resource_thresholds.rule_duration",
             "s",
             widgets::text_input(&t!("common.default"), &draft.duration)
                 .on_input(Message::RuleDuration)
@@ -792,33 +820,39 @@ impl Editor {
         .spacing(design::space::SMALL)
         .width(280);
         if !duration_valid {
-            duration = duration
-                .push(text(t!("watchdog.invalid_duration").to_string()).style(text::danger));
+            duration = duration.push(
+                text(t!("resource_thresholds.invalid_duration").to_string()).style(text::danger),
+            );
         }
         let validation = (duration_valid && !valid).then(|| {
-            text(t!("watchdog.invalid").to_string())
+            text(t!("resource_thresholds.invalid").to_string())
                 .style(text::danger)
                 .into()
         });
         let (details, scroll_id) = match draft.tab {
             DraftTab::Monitor(resource) => (
                 Self::monitor_details(draft, resource),
-                "watchdog-rule-details",
+                "resource-thresholds-rule-details",
             ),
-            DraftTab::MatchPreview => {
-                (Self::match_preview_details(draft), "watchdog-match-preview")
-            }
+            DraftTab::MatchPreview => (
+                Self::match_preview_details(draft),
+                "resource-thresholds-match-preview",
+            ),
         };
         let comparison = match draft.tab {
             DraftTab::Monitor(resource) if rule.monitor(resource).enabled => Some(
                 row![
                     widgets::tooltip(
-                        text(t!("watchdog.comparison").to_string()).style(text::secondary),
-                        text(t!("watchdog.comparison_help").to_string()).width(280),
+                        text(t!("resource_thresholds.comparison").to_string())
+                            .style(text::secondary),
+                        text(t!("resource_thresholds.comparison_help").to_string()).width(280),
                         iced::widget::tooltip::Position::Top,
                     ),
                     widgets::pick_list(
-                        [WatchdogComparison::AtOrAbove, WatchdogComparison::AtOrBelow],
+                        [
+                            ResourceThresholdsComparison::AtOrAbove,
+                            ResourceThresholdsComparison::AtOrBelow
+                        ],
                         Some(rule.monitor(resource).comparison),
                         move |value| Message::Comparison(resource, value),
                     )
@@ -831,9 +865,9 @@ impl Editor {
         };
         let frame = widgets::rule_dialog(
             t!(if draft.index.is_some() {
-                "watchdog.edit_rule"
+                "resource_thresholds.edit_rule"
             } else {
-                "watchdog.add_rule"
+                "resource_thresholds.add_rule"
             })
             .to_string(),
             column![
@@ -851,9 +885,12 @@ impl Editor {
                 .spacing(design::space::MEDIUM)
                 .align_y(iced::Center),
                 widgets::settings_card(widgets::setting_row(
-                    "watchdog.scope",
+                    "resource_thresholds.scope",
                     widgets::pick_list(
-                        [WatchdogScope::Combined, WatchdogScope::PerInstance],
+                        [
+                            ResourceThresholdsScope::Combined,
+                            ResourceThresholdsScope::PerInstance
+                        ],
                         Some(rule.scope),
                         Message::Scope,
                     )
@@ -862,17 +899,17 @@ impl Editor {
                 row![
                     iced::widget::container(row![
                         widgets::panel_tab(
-                            t!("watchdog.cpu_tab").to_string(),
-                            draft.tab == DraftTab::Monitor(WatchdogResource::Cpu),
-                            Message::Tab(WatchdogResource::Cpu)
+                            t!("resource_thresholds.cpu_tab").to_string(),
+                            draft.tab == DraftTab::Monitor(ResourceThresholdsResource::Cpu),
+                            Message::Tab(ResourceThresholdsResource::Cpu)
                         ),
                         widgets::panel_tab(
-                            t!("watchdog.memory_tab").to_string(),
-                            draft.tab == DraftTab::Monitor(WatchdogResource::Memory),
-                            Message::Tab(WatchdogResource::Memory)
+                            t!("resource_thresholds.memory_tab").to_string(),
+                            draft.tab == DraftTab::Monitor(ResourceThresholdsResource::Memory),
+                            Message::Tab(ResourceThresholdsResource::Memory)
                         ),
                         widgets::panel_tab(
-                            t!("watchdog.match_preview").to_string(),
+                            t!("resource_thresholds.match_preview").to_string(),
                             draft.tab == DraftTab::MatchPreview,
                             Message::PreviewMatches
                         ),
@@ -906,13 +943,13 @@ fn parse_duration(value: &str) -> Option<u64> {
     value
         .parse()
         .ok()
-        .filter(|value| WATCHDOG_DURATION_RANGE.contains(value))
+        .filter(|value| RESOURCE_THRESHOLDS_DURATION_RANGE.contains(value))
 }
 
 fn response(
-    rule: &mut crate::config::WatchdogMonitor,
+    rule: &mut crate::config::ResourceThresholdsMonitor,
     critical: bool,
-) -> &mut crate::config::WatchdogResponse {
+) -> &mut crate::config::ResourceThresholdsResponse {
     if critical {
         &mut rule.critical
     } else {
@@ -927,7 +964,7 @@ mod tests {
     #[test]
     fn name_rules_reject_automatic_actions_and_can_coexist_with_exact_path_rules() {
         let mut editor = Editor::default();
-        let mut settings = WatchdogSettings::default();
+        let mut settings = ResourceThresholdsSettings::default();
         editor.update(&mut settings, Message::MatchBy(MatchBy::ExecutableName));
         for invalid in ["*.exe", r"C:\Apps\worker.exe"] {
             editor.update(&mut settings, Message::Name(invalid.into()));
@@ -940,17 +977,25 @@ mod tests {
         assert!(settings.rules.is_empty());
         editor.update(
             &mut settings,
-            Message::Action(WatchdogResource::Cpu, false, WatchdogAction::Terminate),
+            Message::Action(
+                ResourceThresholdsResource::Cpu,
+                false,
+                ResourceThresholdsAction::Terminate,
+            ),
         );
         editor.update(
             &mut settings,
-            Message::Action(WatchdogResource::Cpu, true, WatchdogAction::Restart),
+            Message::Action(
+                ResourceThresholdsResource::Cpu,
+                true,
+                ResourceThresholdsAction::Restart,
+            ),
         );
         editor.update(&mut settings, Message::SaveRule);
         assert!(!editor.has_pending_editor());
         assert_eq!(
             settings.rules[0],
-            WatchdogRule::with_selector(WatchdogSelector::ExactName {
+            ResourceThresholdsRule::with_selector(ResourceThresholdsSelector::ExactName {
                 executable_name: "worker.exe".into(),
             })
         );
@@ -963,7 +1008,7 @@ mod tests {
         editor.update(&mut settings, Message::Path(path.into()));
         editor.update(&mut settings, Message::Add);
         editor.update(&mut settings, Message::SaveRule);
-        assert_eq!(settings.rules[1], WatchdogRule::new(path.into()));
+        assert_eq!(settings.rules[1], ResourceThresholdsRule::new(path.into()));
         for (input, expected) in [
             (picked_path_input(format!("{path} ")), format!("{path} ")),
             (format!("{path}\u{3000}"), format!("{path}\u{3000}")),
@@ -971,62 +1016,74 @@ mod tests {
             editor.update(&mut settings, Message::Path(input));
             editor.update(&mut settings, Message::Add);
             editor.update(&mut settings, Message::SaveRule);
-            assert_eq!(settings.rules.last(), Some(&WatchdogRule::new(expected)));
+            assert_eq!(
+                settings.rules.last(),
+                Some(&ResourceThresholdsRule::new(expected))
+            );
         }
     }
 
     #[test]
     fn per_instance_scope_clears_draft_actions_and_rejects_action_messages() {
-        let mut rule = WatchdogRule::new(r"C:\Apps\worker.exe".into());
-        for resource in WatchdogResource::ALL {
+        let mut rule = ResourceThresholdsRule::new(r"C:\Apps\worker.exe".into());
+        for resource in ResourceThresholdsResource::ALL {
             let monitor = rule.monitor_mut(resource);
-            monitor.warning.action = WatchdogAction::Terminate;
-            monitor.critical.action = WatchdogAction::Restart;
+            monitor.warning.action = ResourceThresholdsAction::Terminate;
+            monitor.critical.action = ResourceThresholdsAction::Restart;
         }
-        let mut settings = WatchdogSettings {
+        let mut settings = ResourceThresholdsSettings {
             rules: vec![rule.clone()],
             ..Default::default()
         };
         let mut editor = Editor::default();
         editor.update(&mut settings, Message::Edit(0));
-        editor.update(&mut settings, Message::Scope(WatchdogScope::PerInstance));
+        editor.update(
+            &mut settings,
+            Message::Scope(ResourceThresholdsScope::PerInstance),
+        );
         assert_eq!(settings.rules[0], rule);
 
         editor.update(&mut settings, Message::CancelRule);
         assert_eq!(settings.rules[0], rule);
         editor.update(&mut settings, Message::Edit(0));
-        editor.update(&mut settings, Message::Scope(WatchdogScope::PerInstance));
-        for resource in WatchdogResource::ALL {
+        editor.update(
+            &mut settings,
+            Message::Scope(ResourceThresholdsScope::PerInstance),
+        );
+        for resource in ResourceThresholdsResource::ALL {
             editor.update(
                 &mut settings,
-                Message::Action(resource, true, WatchdogAction::Restart),
+                Message::Action(resource, true, ResourceThresholdsAction::Restart),
             );
         }
         editor.update(&mut settings, Message::SaveRule);
         assert!(!editor.has_pending_editor());
-        assert_eq!(settings.rules[0].scope, WatchdogScope::PerInstance);
-        for resource in WatchdogResource::ALL {
+        assert_eq!(
+            settings.rules[0].scope,
+            ResourceThresholdsScope::PerInstance
+        );
+        for resource in ResourceThresholdsResource::ALL {
             let monitor = settings.rules[0].monitor(resource);
-            assert_eq!(monitor.warning.action, WatchdogAction::None);
-            assert_eq!(monitor.critical.action, WatchdogAction::None);
+            assert_eq!(monitor.warning.action, ResourceThresholdsAction::None);
+            assert_eq!(monitor.critical.action, ResourceThresholdsAction::None);
         }
     }
 
     #[test]
     fn low_usage_comparison_edits_only_its_monitor() {
-        let mut rule = WatchdogRule::new(r"C:\Apps\test.exe".into());
+        let mut rule = ResourceThresholdsRule::new(r"C:\Apps\test.exe".into());
         rule.memory.enabled = true;
-        rule.cpu.critical.action = WatchdogAction::Restart;
-        rule.memory.warning.action = WatchdogAction::Terminate;
+        rule.cpu.critical.action = ResourceThresholdsAction::Restart;
+        rule.memory.warning.action = ResourceThresholdsAction::Terminate;
         let cpu = rule.cpu.clone();
-        let mut settings = WatchdogSettings {
+        let mut settings = ResourceThresholdsSettings {
             rules: vec![rule],
             ..Default::default()
         };
         let saved = settings.clone();
         let mut editor = Editor::default();
-        let memory = WatchdogResource::Memory;
-        let low = Message::Comparison(memory, WatchdogComparison::AtOrBelow);
+        let memory = ResourceThresholdsResource::Memory;
+        let low = Message::Comparison(memory, ResourceThresholdsComparison::AtOrBelow);
 
         editor.update(&mut settings, Message::Edit(0));
         editor.update(&mut settings, low.clone());
@@ -1041,22 +1098,25 @@ mod tests {
         editor.update(&mut settings, low);
         editor.update(
             &mut settings,
-            Message::Action(memory, true, WatchdogAction::Restart),
+            Message::Action(memory, true, ResourceThresholdsAction::Restart),
         );
         editor.update(&mut settings, Message::SaveRule);
         assert!(!editor.has_pending_editor());
         let rule = &settings.rules[0];
         assert_eq!(rule.cpu, cpu);
-        assert_eq!(rule.memory.comparison, WatchdogComparison::AtOrBelow);
+        assert_eq!(
+            rule.memory.comparison,
+            ResourceThresholdsComparison::AtOrBelow
+        );
         assert_eq!(rule.memory.warning.threshold, 90);
         assert_eq!(rule.memory.critical.threshold, 60);
-        assert_eq!(rule.memory.warning.action, WatchdogAction::None);
-        assert_eq!(rule.memory.critical.action, WatchdogAction::None);
+        assert_eq!(rule.memory.warning.action, ResourceThresholdsAction::None);
+        assert_eq!(rule.memory.critical.action, ResourceThresholdsAction::None);
 
         editor.update(&mut settings, Message::Edit(0));
         editor.update(
             &mut settings,
-            Message::MemoryUnit(WatchdogMemoryUnit::PrivateCommitMb),
+            Message::MemoryUnit(ResourceThresholdsMemoryUnit::PrivateCommitMb),
         );
         editor.update(&mut settings, Message::MonitorEnabled(memory, false));
         editor.update(&mut settings, Message::SaveRule);
@@ -1066,21 +1126,27 @@ mod tests {
         assert!(!editor.has_pending_editor());
         let rule = &settings.rules[0];
         assert_eq!(rule.cpu, cpu);
-        assert_eq!(rule.memory_unit, WatchdogMemoryUnit::PrivateCommitMb);
+        assert_eq!(
+            rule.memory_unit,
+            ResourceThresholdsMemoryUnit::PrivateCommitMb
+        );
         assert!(rule.memory.enabled);
-        assert_eq!(rule.memory.comparison, WatchdogComparison::AtOrBelow);
+        assert_eq!(
+            rule.memory.comparison,
+            ResourceThresholdsComparison::AtOrBelow
+        );
         assert_eq!(rule.memory.warning.threshold, 2000);
         assert_eq!(rule.memory.critical.threshold, 1000);
     }
 
     #[test]
     fn disabled_monitor_keeps_valid_thresholds_and_ignores_incomplete_pairs() {
-        let mut rule = WatchdogRule::new(r"C:\Apps\worker.exe".into());
+        let mut rule = ResourceThresholdsRule::new(r"C:\Apps\worker.exe".into());
         rule.cpu.enabled = false;
         rule.memory.enabled = true;
         let mut draft = Draft::new(None, rule);
         for (warning, expected) in [("65", 65), ("", 70), ("90", 70)] {
-            draft.monitors[WatchdogResource::Cpu as usize].warning = warning.into();
+            draft.monitors[ResourceThresholdsResource::Cpu as usize].warning = warning.into();
             let saved = draft
                 .validated_rule()
                 .expect("memory monitor remains valid");
@@ -1093,8 +1159,8 @@ mod tests {
     #[test]
     fn closing_and_reopening_a_rule_discards_its_pending_match_preview() {
         let mut editor = Editor::default();
-        let mut settings = WatchdogSettings {
-            rules: vec![WatchdogRule::new(r"C:\Apps\test.exe".into())],
+        let mut settings = ResourceThresholdsSettings {
+            rules: vec![ResourceThresholdsRule::new(r"C:\Apps\test.exe".into())],
             ..Default::default()
         };
         let saved = settings.clone();
@@ -1123,7 +1189,7 @@ mod tests {
     #[test]
     fn duration_keeps_temporary_text_and_only_updates_settings_when_valid() {
         let mut editor = Editor::default();
-        let mut settings = WatchdogSettings::default();
+        let mut settings = ResourceThresholdsSettings::default();
         assert!(!editor.has_invalid_inputs());
         for value in ["", "0", "3601", "invalid", "18446744073709551616"] {
             editor.update(&mut settings, Message::Duration(value.into()));
@@ -1148,8 +1214,8 @@ mod tests {
     #[test]
     fn rule_duration_stays_in_the_draft_until_saved_and_can_inherit_again() {
         let mut editor = Editor::default();
-        let mut settings = WatchdogSettings {
-            rules: vec![WatchdogRule::new(r"C:\Apps\test.exe".into())],
+        let mut settings = ResourceThresholdsSettings {
+            rules: vec![ResourceThresholdsRule::new(r"C:\Apps\test.exe".into())],
             ..Default::default()
         };
         editor.update(&mut settings, Message::Edit(0));
@@ -1160,7 +1226,10 @@ mod tests {
             assert_eq!(settings.rules[0].sustained_seconds, None);
         }
         editor.update(&mut settings, Message::RuleDuration("10".into()));
-        editor.update(&mut settings, Message::Tab(WatchdogResource::Memory));
+        editor.update(
+            &mut settings,
+            Message::Tab(ResourceThresholdsResource::Memory),
+        );
         assert_eq!(settings.rules[0].sustained_seconds, None);
         editor.update(&mut settings, Message::SaveRule);
         assert_eq!(settings.rules[0].sustained_seconds, Some(10));
@@ -1185,10 +1254,10 @@ mod tests {
         use iced::{mouse, Rectangle, Size};
         use std::time::Instant;
 
-        let mut rule = WatchdogRule::new(r"C:\Apps\test.exe".into());
+        let mut rule = ResourceThresholdsRule::new(r"C:\Apps\test.exe".into());
         rule.memory.enabled = true;
-        rule.memory_unit = WatchdogMemoryUnit::PrivateCommitMb;
-        let mut settings = WatchdogSettings {
+        rule.memory_unit = ResourceThresholdsMemoryUnit::PrivateCommitMb;
+        let mut settings = ResourceThresholdsSettings {
             rules: vec![rule],
             ..Default::default()
         };
@@ -1206,7 +1275,7 @@ mod tests {
             let start = Instant::now();
             editor.update(
                 &mut settings,
-                Message::Tab(WatchdogResource::ALL[frame % 2]),
+                Message::Tab(ResourceThresholdsResource::ALL[frame % 2]),
             );
             let mut view: Element<'_, Message> = iced::widget::stack![
                 editor.view(&settings, &[]),
@@ -1268,7 +1337,7 @@ mod tests {
                 &damage,
                 iced::Color::WHITE,
             );
-            eprintln!("Watchdog tab {frame}: layout={laid_out:?}, draw={:?}, raster={:?}, total={:?}, regions={}",
+            eprintln!("ResourceThresholds tab {frame}: layout={laid_out:?}, draw={:?}, raster={:?}, total={:?}, regions={}",
                 recorded-laid_out, start.elapsed()-recorded, start.elapsed(), damage.len());
             let mut expected = tiny_skia::Pixmap::new(physical.width, physical.height).unwrap();
             renderer.draw(
@@ -1317,7 +1386,7 @@ mod tests {
     #[test]
     fn both_resources_edit_independently_and_dialog_remains_transactional() {
         let mut editor = Editor::default();
-        let mut settings = WatchdogSettings::default();
+        let mut settings = ResourceThresholdsSettings::default();
         editor.update(&mut settings, Message::Path(r"C:\Apps\test.exe".into()));
         editor.update(&mut settings, Message::Add);
         assert!(editor.has_pending_editor());
@@ -1327,42 +1396,52 @@ mod tests {
         editor.update(&mut settings, Message::Add);
         editor.update(
             &mut settings,
-            Message::MonitorEnabled(WatchdogResource::Memory, true),
-        );
-        editor.update(&mut settings, Message::Tab(WatchdogResource::Memory));
-        editor.update(
-            &mut settings,
-            Message::MemoryUnit(WatchdogMemoryUnit::PrivateCommitMb),
+            Message::MonitorEnabled(ResourceThresholdsResource::Memory, true),
         );
         editor.update(
             &mut settings,
-            Message::Threshold(WatchdogResource::Cpu, false, "65".into()),
+            Message::Tab(ResourceThresholdsResource::Memory),
         );
         editor.update(
             &mut settings,
-            Message::Action(WatchdogResource::Memory, true, WatchdogAction::Restart),
+            Message::MemoryUnit(ResourceThresholdsMemoryUnit::PrivateCommitMb),
         );
-        editor.update(&mut settings, Message::Tab(WatchdogResource::Cpu));
+        editor.update(
+            &mut settings,
+            Message::Threshold(ResourceThresholdsResource::Cpu, false, "65".into()),
+        );
+        editor.update(
+            &mut settings,
+            Message::Action(
+                ResourceThresholdsResource::Memory,
+                true,
+                ResourceThresholdsAction::Restart,
+            ),
+        );
+        editor.update(&mut settings, Message::Tab(ResourceThresholdsResource::Cpu));
         editor.update(&mut settings, Message::SaveRule);
         assert!(!editor.has_pending_editor());
         assert!(settings.rules[0].cpu.enabled && settings.rules[0].memory.enabled);
         assert_eq!(
             settings.rules[0].memory_unit,
-            WatchdogMemoryUnit::PrivateCommitMb
+            ResourceThresholdsMemoryUnit::PrivateCommitMb
         );
         assert_eq!(settings.rules[0].cpu.warning.threshold, 65);
         assert_eq!(settings.rules[0].memory.warning.threshold, 1000);
         assert_eq!(settings.rules[0].memory.critical.threshold, 2000);
-        assert_eq!(settings.rules[0].cpu.critical.action, WatchdogAction::None);
+        assert_eq!(
+            settings.rules[0].cpu.critical.action,
+            ResourceThresholdsAction::None
+        );
         assert_eq!(
             settings.rules[0].memory.critical.action,
-            WatchdogAction::Restart
+            ResourceThresholdsAction::Restart
         );
         let saved = settings.clone();
         editor.update(&mut settings, Message::Edit(0));
         editor.update(
             &mut settings,
-            Message::Threshold(WatchdogResource::Memory, true, "".into()),
+            Message::Threshold(ResourceThresholdsResource::Memory, true, "".into()),
         );
         editor.update(&mut settings, Message::SaveRule);
         assert!(editor.has_pending_editor());
@@ -1372,7 +1451,7 @@ mod tests {
         editor.update(&mut settings, Message::Edit(0));
         editor.update(
             &mut settings,
-            Message::MemoryUnit(WatchdogMemoryUnit::Percent),
+            Message::MemoryUnit(ResourceThresholdsMemoryUnit::Percent),
         );
         editor.update(&mut settings, Message::SaveRule);
         assert_eq!(settings.rules[0].cpu.warning.threshold, 65);
@@ -1381,11 +1460,11 @@ mod tests {
         editor.update(&mut settings, Message::Edit(0));
         editor.update(
             &mut settings,
-            Message::MonitorEnabled(WatchdogResource::Cpu, false),
+            Message::MonitorEnabled(ResourceThresholdsResource::Cpu, false),
         );
         editor.update(
             &mut settings,
-            Message::MonitorEnabled(WatchdogResource::Memory, false),
+            Message::MonitorEnabled(ResourceThresholdsResource::Memory, false),
         );
         editor.update(&mut settings, Message::SaveRule);
         assert!(editor.has_pending_editor());

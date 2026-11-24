@@ -585,7 +585,7 @@ pub(super) fn action_log_feature_label(feature: ActionLogFeature) -> String {
         ActionLogFeature::GpuPriority => super::Page::GpuPriority,
         ActionLogFeature::MemoryPriority => super::Page::MemoryPriority,
         ActionLogFeature::MemoryTrim => super::Page::MemoryTrim,
-        ActionLogFeature::Watchdog => super::Page::Watchdog,
+        ActionLogFeature::ResourceThresholds => super::Page::ResourceThresholds,
         ActionLogFeature::TimerResolution => super::Page::TimerResolution,
     };
     page.label()
@@ -670,7 +670,7 @@ const FEATURES: [ActionLogFeature; 24] = [
     ActionLogFeature::GpuPriority,
     ActionLogFeature::MemoryPriority,
     ActionLogFeature::MemoryTrim,
-    ActionLogFeature::Watchdog,
+    ActionLogFeature::ResourceThresholds,
     ActionLogFeature::TimerResolution,
 ];
 

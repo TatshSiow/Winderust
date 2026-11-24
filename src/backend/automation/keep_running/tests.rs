@@ -723,7 +723,10 @@ fn stop_pauses_a_pinned_alias_only_from_verified_action_identity() {
     let reason = PauseReason::IntentionalStop;
     let paused = KeepRunningState::Paused(reason);
     ACTION_READS.set((0, 0));
-    coordinator.pause_targets(std::slice::from_ref(&alias), PauseReason::Watchdog);
+    coordinator.pause_targets(
+        std::slice::from_ref(&alias),
+        PauseReason::ResourceThresholds,
+    );
     assert_eq!(ACTION_READS.get(), (0, 0));
     assert!(matches!(
         coordinator.owners[0].policy.state(),

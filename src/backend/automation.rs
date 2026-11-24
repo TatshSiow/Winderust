@@ -73,7 +73,9 @@ use crate::{
     features::power_plan_control::{
         current_by_time_decision, next_by_time_change_delay, ByCpuLoadScheduler,
     },
-    features::winderust_features::watchdog::{WatchdogManager, WatchdogSnapshot},
+    features::winderust_features::resource_thresholds::{
+        ResourceThresholdsManager, ResourceThresholdsSnapshot,
+    },
     foreground::{
         cursor_is_shell_window, cursor_process, cursor_process_id, same_executable_path,
         shell_window_mouse_pressed, ProcessActionTarget, ProcessActionTargetError,
@@ -351,7 +353,7 @@ pub struct RuntimeFeatureStatus {
     pub gpu_priority: GpuPrioritySnapshot,
     pub memory_priority: MemoryPrioritySnapshot,
     pub memory_trim: MemoryTrimSnapshot,
-    pub watchdog: WatchdogSnapshot,
+    pub resource_thresholds: ResourceThresholdsSnapshot,
     pub timer_resolution: TimerResolutionSnapshot,
     pub sleep_prevention: SleepPreventionSnapshot,
     pub(crate) keep_running: KeepRunningSnapshot,
@@ -1589,10 +1591,10 @@ fn run_background_automation(
             priority_or_efficiency_active,
             adaptive_engine_process_active,
         );
-        let watchdog_refresh_required = settings_changed
+        let resource_thresholds_refresh_required = settings_changed
             || feature_refresh_required(
                 configured_settings.as_ref(),
-                watchdog_required(configured_settings.as_ref()),
+                resource_thresholds_required(configured_settings.as_ref()),
             );
         let keep_running_configured = keep_running_required(configured_settings.as_ref());
         let keep_running_sampling_required =
@@ -2030,8 +2032,10 @@ fn run_background_automation(
             }
             scheduler.schedule_after(RefreshDomain::MemoryTrim, scheduled_at, interval);
         }
-        if watchdog_refresh_required && scheduler.is_due(RefreshDomain::Watchdog, now) {
-            let status = runner.run_watchdog_update(
+        if resource_thresholds_refresh_required
+            && scheduler.is_due(RefreshDomain::ResourceThresholds, now)
+        {
+            let status = runner.run_resource_thresholds_update(
                 &shared,
                 configured_settings.as_ref(),
                 &mut observations,
@@ -2039,10 +2043,14 @@ fn run_background_automation(
             update_feature_status(
                 &shared,
                 status,
-                |status| &status.watchdog,
-                |status| &mut status.watchdog,
+                |status| &status.resource_thresholds,
+                |status| &mut status.resource_thresholds,
             );
-            scheduler.schedule_after(RefreshDomain::Watchdog, now, Duration::from_secs(1));
+            scheduler.schedule_after(
+                RefreshDomain::ResourceThresholds,
+                now,
+                Duration::from_secs(1),
+            );
         }
         if keep_running_refresh_required && scheduler.is_due(RefreshDomain::KeepRunning, now) {
             let status = runner.keep_running.update(
@@ -2206,8 +2214,8 @@ fn run_background_automation(
             wait_now,
             [
                 (
-                    watchdog_refresh_required,
-                    RefreshDomain::Watchdog,
+                    resource_thresholds_refresh_required,
+                    RefreshDomain::ResourceThresholds,
                     Duration::from_secs(1),
                 ),
                 (
@@ -2412,14 +2420,17 @@ fn run_background_automation(
     runner.shutdown()
 }
 
-fn watchdog_action_is_current(shared: &SharedAutomationState, expected: &Settings) -> bool {
+fn resource_thresholds_action_is_current(
+    shared: &SharedAutomationState,
+    expected: &Settings,
+) -> bool {
     let state = lock_unpoisoned(&shared.state);
     !state.stop_requested
         && !state.pending_events.suspend_resume
         && !state.pending_events.session_changed
         && state.settings.general.enabled
-        && state.settings.watchdog.enabled
-        && state.settings.watchdog == expected.watchdog
+        && state.settings.resource_thresholds.enabled
+        && state.settings.resource_thresholds == expected.resource_thresholds
         && state.settings.general.allow_cross_session_process_control
             == expected.general.allow_cross_session_process_control
 }

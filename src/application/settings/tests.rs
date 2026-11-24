@@ -86,36 +86,42 @@ impl StartupRegistration for FakeStartupRegistration {
 }
 
 #[test]
-fn watchdog_is_global_when_editing_or_toggling_from_battery() {
+fn resource_thresholds_is_global_when_editing_or_toggling_from_battery() {
     let mut settings = Settings::default();
     settings.battery_profile_mut();
     let storage = FakeStorage::new(settings, Ok(Settings::default()), Ok(()), Ok(()));
     let (mut editor, _, _) = editor_with_fixtures(storage, FakeStartupRegistration::new(Ok(())));
     editor.select_power_source(PowerSourceProfile::OnBattery);
     editor.edit_global(|settings| {
-        let mut rule = crate::config::WatchdogRule::new(r"C:\Apps\test.exe".into());
+        let mut rule = crate::config::ResourceThresholdsRule::new(r"C:\Apps\test.exe".into());
         rule.memory.enabled = true;
-        settings.watchdog.rules.push(rule);
+        settings.resource_thresholds.rules.push(rule);
     });
-    assert_eq!(editor.global().watchdog, editor.watchdog);
-    assert!(editor.global().watchdog.rules[0].memory.enabled);
-    editor.save().unwrap();
-    editor.set_watchdog_enabled(true).unwrap();
-    let runtime = editor.runtime_settings_snapshot();
-    assert!(runtime.value.watchdog.enabled);
     assert_eq!(
-        runtime.value.watchdog,
-        runtime.value.battery_profile().watchdog
+        editor.global().resource_thresholds,
+        editor.resource_thresholds
+    );
+    assert!(editor.global().resource_thresholds.rules[0].memory.enabled);
+    editor.save().unwrap();
+    editor.set_resource_thresholds_enabled(true).unwrap();
+    let runtime = editor.runtime_settings_snapshot();
+    assert!(runtime.value.resource_thresholds.enabled);
+    assert_eq!(
+        runtime.value.resource_thresholds,
+        runtime.value.battery_profile().resource_thresholds
     );
     editor.select_power_source(PowerSourceProfile::PluggedIn);
-    assert_eq!(editor.global().watchdog, editor.watchdog);
-    editor.set_watchdog_enabled(false).unwrap();
+    assert_eq!(
+        editor.global().resource_thresholds,
+        editor.resource_thresholds
+    );
+    editor.set_resource_thresholds_enabled(false).unwrap();
     assert!(
         !editor
             .runtime_settings_snapshot()
             .value
             .battery_profile()
-            .watchdog
+            .resource_thresholds
             .enabled
     );
 }

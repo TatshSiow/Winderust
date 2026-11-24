@@ -27,7 +27,7 @@ Read the relevant section before changing feature policy, ownership, restoration
 
 ## Keep Running
 
-- Keep Running is a global, opt-in Advanced Controls feature. Each rule names one
+- Keep Running is a global, opt-in Watchdog feature. Each rule names one
   executable, literal argument tail, and absolute working directory. Arguments are
   stored as plain text in the portable settings file. Enabling a rule with no
   existing eligible app never launches it. First observe an ordinary app with the
@@ -48,7 +48,7 @@ Read the relevant section before changing feature policy, ownership, restoration
   worker status. Editing a rule resets its retry state and preserves the state
   of unchanged rules. Rapid edits and reverts still reset affected rules.
 - This is a fresh launch, not crash diagnosis, saved-session recovery, or the
-  Watchdog's restart operation. Winderust never reads another app's arguments or
+  Restart in Resource Thresholds. Winderust never reads another app's arguments or
   copies its environment. Unsupported/elevated/service/restricted app contexts
   pause the rule. File-identity aliases and overlapping live membership pause
   conflicting rules instead of selecting arguments by rule order.
@@ -72,7 +72,7 @@ Read the relevant section before changing feature policy, ownership, restoration
   before the worker processes the loss. Native calls run after unlocking. Later
   intents pause subsequent retries; they cannot roll back a committed launch.
   Manual Stop/Stop Process Tree
-  and Watchdog Terminate/Restart attempts pause affected rules before acting, even
+  and Resource Thresholds Terminate or Restart attempts pause affected rules before acting, even
   when the attempt fails. Confirmation of Stop Process Tree submits the captured
   roots for pausing before the fresh tree scan. Verified descendants are paused
   before termination is attempted.
@@ -204,9 +204,9 @@ Read the relevant section before changing feature policy, ownership, restoration
 - The barrier covers automation managers, Process List quick actions, and
   automatic power-plan switches. Clean shutdown restores through feature
   ownership; crash or forced-termination recovery is handed to Winderust's
-  external watchdog before each mutation. Process termination, memory trimming,
-  watchdog termination, Windows shutdown, and power loss remain outside this
-  guarantee.
+  external watchdog before each mutation. Manual and automatic process
+  termination, memory trimming, Windows shutdown, and power loss remain outside
+  this guarantee.
 - Cross-session process control is owned by Winderust Behaviour and defaults on. Disabling it restores same-session-only acquisition/targeting; it never blocks restoration of exact state Winderust already owns. Windows access checks and existing protected-process safeguards always remain active for new mutations.
 - `src/control/process.rs` owns typed process targets, stable identity keys, and safety validation;
   `src/platform/windows/process.rs` alone translates operation-specific minimal access into
@@ -222,23 +222,24 @@ Read the relevant section before changing feature policy, ownership, restoration
   or shutdown restore path. Stop Tree retains exact root identities across its confirmation prompt
   and rejects reused roots or known-stale numeric parent links before submitting the command.
 
-## Watchdog
+## Resource Thresholds
 
 - Resource sampling in `src/foreground/process_list.rs` reads CPU and verifies
-  creation time for Watchdog. When an enabled rule monitors Memory, one query
-  returns both working set and private commit. Process List always requests
+  creation time for Resource Thresholds. When an enabled rule monitors Memory,
+  one query returns both working set and private commit. Process List always requests
   memory counters and Efficiency Mode. It queries priority class only when
   EcoQoS is enabled.
 
-- `src/features/winderust_features/watchdog.rs` owns CPU and memory sampling,
-  sustained thresholds, escalation, and rearming. Rules are global across
+- `src/features/winderust_features/resource_thresholds.rs` owns CPU and memory
+  sampling, sustained thresholds, escalation, and rearming. Rules are global across
   power sources. Each uses the default sustained duration or its own override
   (1–3,600 seconds), shared by both monitors and severities. Notification settings
   apply to all rules. Sampling runs once a second in visible and tray modes.
+  Portable settings use the existing `watchdog` TOML key for these rules.
 - Each rule selects one absolute `executable_path` or one exact `executable_name`.
   Executable name rules resolve known absolute image paths from current process
-  observations. Watchdog enriches enabled selector candidates and exact prior
-  incident members when the cycle has no full path catalog to reuse. Combined by
+  observations. Resource Thresholds enriches enabled selector candidates and exact
+  prior incident members when the cycle has no full path catalog to reuse. Combined by
   path is the default scope and keeps a separate usage total and incident for
   each path. Per instance evaluates each verified PID and
   creation time independently and includes the PID in notifications. A failed
@@ -270,11 +271,11 @@ Read the relevant section before changing feature policy, ownership, restoration
   an exact prior member makes its group incomplete. Already-fired responses stay latched
   through observation gaps when the next sample confirms an exact member
   survives. New or unsampled members require a fresh CPU baseline. Power-source
-  changes leave Watchdog rules and incident state unchanged.
+  changes leave Resource Thresholds rules and incident state unchanged.
 - Before each automatic Terminate or Restart, the runtime checks the latest
-  Watchdog settings, automation enablement, and cross-session policy. A changed
-  policy or pending shutdown, suspend/resume, or session change cancels that
-  incident's response before Keep Running is paused or a restart cooldown starts.
+  Resource Thresholds settings, automation enablement, and cross-session policy.
+  A changed policy or pending shutdown, suspend/resume, or session change cancels
+  that incident's response before Keep Running is paused or a restart cooldown starts.
 - `RuntimeCore` executes automatic termination through `ProcessTerminationController`,
   preserving exact identity, protected-process and helper exclusions, current
   cross-session policy, and Windows access checks. The controller preflights
@@ -301,8 +302,8 @@ Read the relevant section before changing feature policy, ownership, restoration
   failures. Restart events run before simultaneous termination events and share
   accepted termination requests and confirmed exits with them for deduplication.
   Restart is irreversible and has no recovery or restore path.
-- Watchdog starts a 60-second cooldown per exact executable path when a Restart
-  attempt begins, including attempts that fail. The cooldown survives PID changes
+- Resource Thresholds starts a 60-second cooldown per exact executable path when
+  a Restart attempt begins, including attempts that fail. The cooldown survives PID changes
   within the same automation worker. A Restart suppressed by the cooldown counts
   as that incident's response. The Skipped result follows the Action Log recording
   level, and enabled notifications include the reason. Restart becomes eligible on
@@ -953,7 +954,7 @@ Read the relevant section before changing feature policy, ownership, restoration
 
 ## Sleep Prevention
 
-- Sleep Prevention is an explicit running-app rule under Advanced Controls. It
+- Sleep Prevention is an explicit running-app rule under Watchdog. It
   starts disabled, follows the existing Plugged In/On Battery profile selection,
   and never changes power-plan timeouts. A matching eligible executable requests
   idle system sleep prevention; keeping the display on is a separate opt-in that

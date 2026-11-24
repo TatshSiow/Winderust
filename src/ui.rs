@@ -31,6 +31,7 @@ mod power_rules;
 mod priority_control;
 mod process_list;
 mod process_power_plans;
+mod resource_thresholds;
 mod scrolling;
 mod select;
 mod settings_pages;
@@ -38,7 +39,6 @@ mod sleep_prevention;
 mod status_rail;
 mod tasks;
 mod timer_resolution;
-mod watchdog;
 mod widgets;
 mod win32_priority_separation;
 mod window_frame;
@@ -53,6 +53,7 @@ pub enum Page {
     Home,
     PowerPlanControl,
     WinderustFeatures,
+    Watchdog,
     CpuControl,
     PriorityControl,
     SettingsHome,
@@ -78,7 +79,7 @@ pub enum Page {
     GpuPriority,
     MemoryPriority,
     MemoryTrim,
-    Watchdog,
+    ResourceThresholds,
     ProcessorAffinityHard,
     InstanceBalancing,
     ByFocus,
@@ -123,7 +124,14 @@ const PRIORITY_CONTROL_PAGES: [Page; 6] = [
     Page::GpuPriority,
     Page::MemoryPriority,
 ];
-const WINDERUST_FEATURE_PAGES: [Page; 3] = [Page::EfficiencyMode, Page::MemoryTrim, Page::Watchdog];
+const WINDERUST_FEATURE_PAGES: [Page; 2] = [Page::EfficiencyMode, Page::MemoryTrim];
+const WATCHDOG_PAGES: [Page; 5] = [
+    Page::ResourceThresholds,
+    Page::KeepRunning,
+    Page::SleepPrevention,
+    Page::InstanceLimits,
+    Page::AppSuspension,
+];
 const ACTION_LOG_PAGES: [Page; 1] = [Page::ActionLog];
 const SETTINGS_PAGES: [Page; 3] = [
     Page::WinderustBehaviour,
@@ -131,15 +139,8 @@ const SETTINGS_PAGES: [Page; 3] = [
     Page::ExperimentalFeatures,
 ];
 const ABOUT_PAGES: [Page; 1] = [Page::About];
-const ADVANCED_CONTROLS_PAGES: [Page; 6] = [
-    Page::AppSuspension,
-    Page::SleepPrevention,
-    Page::KeepRunning,
-    Page::InstanceLimits,
-    Page::TimerResolution,
-    Page::Win32PrioritySeparation,
-];
-const PAGE_SECTIONS: [PageSection; 10] = [
+const ADVANCED_CONTROLS_PAGES: [Page; 2] = [Page::TimerResolution, Page::Win32PrioritySeparation];
+const PAGE_SECTIONS: [PageSection; 11] = [
     PageSection {
         landing_page: Page::Home,
         pages: &HOME_PAGES,
@@ -151,6 +152,10 @@ const PAGE_SECTIONS: [PageSection; 10] = [
     PageSection {
         landing_page: Page::WinderustFeatures,
         pages: &WINDERUST_FEATURE_PAGES,
+    },
+    PageSection {
+        landing_page: Page::Watchdog,
+        pages: &WATCHDOG_PAGES,
     },
     PageSection {
         landing_page: Page::PowerPlanControl,
@@ -215,6 +220,7 @@ impl Page {
             Self::Home => t!("nav.home"),
             Self::PowerPlanControl => t!("nav.power_plan_control"),
             Self::WinderustFeatures => t!("nav.winderust_features"),
+            Self::Watchdog => t!("nav.watchdog"),
             Self::CpuControl => t!("nav.cpu_control"),
             Self::PriorityControl => t!("nav.priority_control"),
             Self::SettingsHome => t!("nav.settings"),
@@ -240,7 +246,7 @@ impl Page {
             Self::GpuPriority => t!("nav.gpu_priority"),
             Self::MemoryPriority => t!("nav.memory_priority"),
             Self::MemoryTrim => t!("nav.memory_trim"),
-            Self::Watchdog => t!("nav.watchdog"),
+            Self::ResourceThresholds => t!("nav.resource_thresholds"),
             Self::ProcessorAffinityHard => t!("nav.processor_affinity_hard"),
             Self::InstanceBalancing => t!("nav.instance_balancing"),
             Self::ByFocus => t!("nav.by_focus"),
@@ -264,9 +270,15 @@ impl Page {
         match self {
             Self::Home => Self::Home,
             Self::ProcessList => Self::ProcessList,
-            Self::WinderustFeatures | Self::EfficiencyMode | Self::Watchdog | Self::MemoryTrim => {
+            Self::WinderustFeatures | Self::EfficiencyMode | Self::MemoryTrim => {
                 Self::WinderustFeatures
             }
+            Self::Watchdog
+            | Self::ResourceThresholds
+            | Self::KeepRunning
+            | Self::SleepPrevention
+            | Self::InstanceLimits
+            | Self::AppSuspension => Self::Watchdog,
             Self::PowerPlanControl
             | Self::ByActivity
             | Self::ByTime
@@ -294,13 +306,9 @@ impl Page {
             | Self::LanguageAndAppearance
             | Self::ExperimentalFeatures => Self::SettingsHome,
             Self::About => Self::About,
-            Self::AdvancedControls
-            | Self::AppSuspension
-            | Self::SleepPrevention
-            | Self::KeepRunning
-            | Self::InstanceLimits
-            | Self::TimerResolution
-            | Self::Win32PrioritySeparation => Self::AdvancedControls,
+            Self::AdvancedControls | Self::TimerResolution | Self::Win32PrioritySeparation => {
+                Self::AdvancedControls
+            }
         }
     }
 
@@ -343,6 +351,7 @@ mod tests {
         assert!(Page::TimerResolution.supports_power_source_profiles());
         assert!(!Page::Home.supports_power_source_profiles());
         assert!(!Page::Watchdog.supports_power_source_profiles());
+        assert!(!Page::ResourceThresholds.supports_power_source_profiles());
         assert!(!Page::KeepRunning.supports_power_source_profiles());
         assert!(!Page::InstanceLimits.supports_power_source_profiles());
         assert!(!Page::InstanceBalancing.supports_power_source_profiles());

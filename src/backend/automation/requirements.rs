@@ -430,7 +430,7 @@ pub(super) fn automation_worker_required(settings: &Settings) -> bool {
 
 fn automation_worker_required_for_profile(settings: &Settings) -> bool {
     settings.general.enabled
-        && (watchdog_required(settings)
+        && (resource_thresholds_required(settings)
             || power_plan_checks_required(settings)
             || adaptive_power_plan_required(settings)
             || bottleneck_classifier_required(settings)
@@ -444,8 +444,13 @@ pub(super) fn bottleneck_classifier_required(settings: &Settings) -> bool {
     settings.general.enabled && settings.adaptive_engine.enabled
 }
 
-pub(super) fn watchdog_required(settings: &Settings) -> bool {
-    settings.watchdog.enabled && settings.watchdog.rules.iter().any(|rule| rule.enabled)
+pub(super) fn resource_thresholds_required(settings: &Settings) -> bool {
+    settings.resource_thresholds.enabled
+        && settings
+            .resource_thresholds
+            .rules
+            .iter()
+            .any(|rule| rule.enabled)
 }
 
 pub(super) fn keep_running_required(settings: &Settings) -> bool {

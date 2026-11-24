@@ -309,7 +309,7 @@ fn first_run_rule_modules_are_disabled() {
         settings.gpu_priority.enabled,
         settings.memory_priority.enabled,
         settings.memory_trim.enabled,
-        settings.watchdog.enabled,
+        settings.resource_thresholds.enabled,
         settings.timer_resolution.enabled,
     ]
     .into_iter()

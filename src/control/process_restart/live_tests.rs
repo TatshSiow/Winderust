@@ -20,10 +20,13 @@ fn live_restart_preserves_context_and_rejects_stale_identity() -> Result<(), Str
     let directory = std::env::current_dir()
         .map_err(|e| e.to_string())?
         .join("target")
-        .join(format!("watchdog-restart-{}", std::process::id()));
+        .join(format!(
+            "resource-thresholds-restart-{}",
+            std::process::id()
+        ));
     fs::create_dir_all(&directory).map_err(|e| e.to_string())?;
     let source = directory.join("fixture.rs");
-    let executable = directory.join("watchdog-restart-fixture.exe");
+    let executable = directory.join("resource-thresholds-restart-fixture.exe");
     let log = executable.with_extension("pids");
     fs::write(&source, r##"
 #![windows_subsystem = "windows"]
@@ -36,7 +39,11 @@ fn main() {
 }
 "##).map_err(|e| e.to_string())?;
     let compiled = Command::new("rustc")
-        .args(["--crate-name", "watchdog_restart_fixture", "--edition=2021"])
+        .args([
+            "--crate-name",
+            "resource_thresholds_restart_fixture",
+            "--edition=2021",
+        ])
         .arg(&source)
         .arg("-o")
         .arg(&executable)

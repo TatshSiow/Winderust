@@ -429,12 +429,15 @@ impl SettingsEditor {
         )
     }
 
-    pub(crate) fn set_watchdog_enabled(&mut self, enabled: bool) -> SettingsResult<bool> {
+    pub(crate) fn set_resource_thresholds_enabled(
+        &mut self,
+        enabled: bool,
+    ) -> SettingsResult<bool> {
         self.coordinator.apply_runtime_patch(
             &mut self.draft,
             self.coordinator.persisted_revision,
             |settings| {
-                let changed = set_enabled_value(&mut settings.watchdog.enabled, enabled);
+                let changed = set_enabled_value(&mut settings.resource_thresholds.enabled, enabled);
                 settings.sync_shared_settings_to_battery();
                 changed
             },

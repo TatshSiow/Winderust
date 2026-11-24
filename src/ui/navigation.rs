@@ -339,7 +339,7 @@ pub(super) fn page_feature_info_intro(page: Page) -> Option<(&'static str, u8)> 
         Page::AdaptiveProcessorPower => ("adaptive_processor_power", 2),
         Page::EfficiencyMode => ("efficiency_mode", 3),
         Page::MemoryTrim => ("memory_trim", 3),
-        Page::Watchdog => ("watchdog", 3),
+        Page::ResourceThresholds => ("resource_thresholds", 3),
         Page::AppSuspension => ("app_suspension", 3),
         Page::SleepPrevention => ("sleep_prevention", 4),
         Page::KeepRunning => ("keep_running", 3),
@@ -456,6 +456,7 @@ pub(super) fn icon_path(page: Page) -> &'static str {
         Page::Home => "icons/house.svg",
         Page::PowerPlanControl => "icons/zap.svg",
         Page::WinderustFeatures => "icons/computer.svg",
+        Page::Watchdog => "icons/shield.svg",
         Page::CpuControl => "icons/cpu.svg",
         Page::PriorityControl => "icons/circle-fading-arrow-up.svg",
         Page::SettingsHome => "icons/settings.svg",
@@ -482,7 +483,7 @@ pub(super) fn icon_path(page: Page) -> &'static str {
         Page::GpuPriority => "icons/gpu.svg",
         Page::MemoryPriority => "icons/memory-stick.svg",
         Page::MemoryTrim => "icons/scissors.svg",
-        Page::Watchdog => "icons/square-activity.svg",
+        Page::ResourceThresholds => "icons/square-activity.svg",
         Page::ProcessorAffinityHard => "icons/monitor-x.svg",
         Page::ByFocus => "icons/bring-to-front.svg",
         Page::ByTime => "icons/calendar-days.svg",
@@ -501,7 +502,7 @@ pub(super) fn feature_page_enabled(settings: &Settings, page: Page) -> Option<bo
         Page::AdaptiveProcessorPower => settings.adaptive_engine.adaptive_processor_power_enabled,
         Page::EfficiencyMode => settings.efficiency_mode.enabled,
         Page::MemoryTrim => settings.memory_trim.enabled,
-        Page::Watchdog => settings.watchdog.enabled,
+        Page::ResourceThresholds => settings.resource_thresholds.enabled,
         Page::KeepRunning => settings.keep_running.enabled,
         Page::InstanceLimits => settings.instance_limits.enabled,
         Page::InstanceBalancing => settings.instance_balancing.enabled,
@@ -534,7 +535,7 @@ pub(super) fn feature_toggle(page: Page) -> Option<fn(&mut Settings) -> &mut boo
         }
         Page::EfficiencyMode => |settings| &mut settings.efficiency_mode.enabled,
         Page::MemoryTrim => |settings| &mut settings.memory_trim.enabled,
-        Page::Watchdog => |settings| &mut settings.watchdog.enabled,
+        Page::ResourceThresholds => |settings| &mut settings.resource_thresholds.enabled,
         Page::KeepRunning => |settings| &mut settings.keep_running.enabled,
         Page::InstanceLimits => |settings| &mut settings.instance_limits.enabled,
         Page::InstanceBalancing => |settings| &mut settings.instance_balancing.enabled,
@@ -562,7 +563,11 @@ pub(super) fn feature_toggle(page: Page) -> Option<fn(&mut Settings) -> &mut boo
 pub(super) fn section_enabled_feature_count(settings: &Settings, page: Page) -> Option<usize> {
     if !matches!(
         page,
-        Page::WinderustFeatures | Page::PowerPlanControl | Page::PriorityControl | Page::CpuControl
+        Page::WinderustFeatures
+            | Page::Watchdog
+            | Page::PowerPlanControl
+            | Page::PriorityControl
+            | Page::CpuControl
     ) {
         return None;
     }
@@ -648,6 +653,7 @@ pub(super) fn dashboard_page_search_text(page: Page) -> String {
         Page::WinderustFeatures => format!(
             "{label} {section} winderust features efficiency mode efficiency_mode memory trim working set memory ram",
         ),
+        Page::Watchdog => format!("{label} {section} app automation"),
         Page::CpuControl => format!(
             "{label} {section} processor cpu controls limiter background restriction affinity steering e cores p cores",
         ),
@@ -663,7 +669,7 @@ pub(super) fn dashboard_page_search_text(page: Page) -> String {
             "{label} {section} settings winderust behaviour startup tray toggles action log detail fail suppression appearance language theme accent color palette",
         ),
         Page::AdvancedControls => format!(
-            "{label} {section} advanced sleep prevention awake display app suspension windows scheduler win32 priority separation quantum foreground boost registry",
+            "{label} {section} advanced windows scheduler win32 priority separation quantum foreground boost registry",
         ),
         Page::ByActivity => format!(
             "{label} {section} {} {} {} idle active input keyboard mouse controller gamepad activity power plan battery plugged",
@@ -796,9 +802,9 @@ pub(super) fn dashboard_page_search_text(page: Page) -> String {
             t!("memory_priority.foreground_detection"),
             t!("memory_priority.exclusions_help"),
         ),
-        Page::Watchdog => format!(
-            "{label} {section} {} watchdog monitor cpu memory ram threshold warning critical toast notification terminate kill process",
-            t!("watchdog.intro_1"),
+        Page::ResourceThresholds => format!(
+            "{label} {section} {} monitor cpu memory ram threshold warning critical toast notification terminate kill process",
+            t!("resource_thresholds.intro_1"),
         ),
         Page::InstanceLimits => format!(
             "{label} {section} {} instance limits count maximum processes monitor notifications full path",
@@ -867,6 +873,25 @@ pub(super) fn nav_section_in_footer(page: Page) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn watchdog_pages_are_discoverable_with_advanced_controls_hidden() {
+        assert!(rail_pages(false)
+            .windows(2)
+            .any(|pages| pages == [Page::WinderustFeatures, Page::Watchdog]));
+        assert_eq!(
+            dashboard_search_pages("watchdog", false),
+            [
+                Page::Watchdog,
+                Page::ResourceThresholds,
+                Page::KeepRunning,
+                Page::SleepPrevention,
+                Page::InstanceLimits,
+                Page::AppSuspension,
+            ]
+        );
+        assert!(feature_toggle(Page::Watchdog).is_none());
+    }
+
     #[test]
     fn feature_toggle_fields_match_navigation_indicators() {
         for page in Page::sections().iter().flat_map(|section| section.pages) {
@@ -1129,7 +1154,8 @@ mod tests {
         let search_results = dashboard_search_pages("adaptive engine", false);
         assert!(search_results.contains(&Page::AdaptiveEngine));
         assert!(!search_results.contains(&Page::WinderustFeatures));
-        assert!(!dashboard_search_pages("suspension", false).contains(&Page::AppSuspension));
-        assert!(dashboard_search_pages("suspension", true).contains(&Page::AppSuspension));
+        assert!(dashboard_search_pages("suspension", false).contains(&Page::AppSuspension));
+        assert!(!dashboard_search_pages("timer resolution", false).contains(&Page::TimerResolution));
+        assert!(dashboard_search_pages("timer resolution", true).contains(&Page::TimerResolution));
     }
 }

@@ -1629,9 +1629,13 @@ fn enabled_features(
         )
     );
     feature!(
-        Watchdog,
-        watchdog,
-        t!("common.rule_count", count = settings.watchdog.rules.len()).to_string()
+        ResourceThresholds,
+        resource_thresholds,
+        t!(
+            "common.rule_count",
+            count = settings.resource_thresholds.rules.len()
+        )
+        .to_string()
     );
     let memory_trim = &status.memory_trim;
     feature!(
@@ -1762,7 +1766,7 @@ mod tests {
             Page::IoPriority,
             Page::GpuPriority,
             Page::MemoryPriority,
-            Page::Watchdog,
+            Page::ResourceThresholds,
             Page::MemoryTrim,
             Page::SleepPrevention,
             Page::KeepRunning,

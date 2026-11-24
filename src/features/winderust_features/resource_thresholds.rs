@@ -6,8 +6,9 @@ use std::{
 
 use crate::{
     config::{
-        WatchdogAction, WatchdogComparison, WatchdogMetric, WatchdogResource, WatchdogResponse,
-        WatchdogScope, WatchdogSelector, WatchdogSettings,
+        ResourceThresholdsAction, ResourceThresholdsComparison, ResourceThresholdsMetric,
+        ResourceThresholdsResource, ResourceThresholdsResponse, ResourceThresholdsScope,
+        ResourceThresholdsSelector, ResourceThresholdsSettings,
     },
     cpu::{process_cpu_usage_batch, ProcessCpuSample},
     foreground::{
@@ -21,7 +22,7 @@ use crate::{
 };
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) struct WatchdogSnapshot {
+pub(crate) struct ResourceThresholdsSnapshot {
     pub observation_known: bool,
     pub monitored_processes: usize,
     pub alerting_processes: usize,
@@ -36,17 +37,17 @@ struct BatchActivity {
     skipped: bool,
 }
 
-pub(crate) struct WatchdogEvent {
+pub(crate) struct ResourceThresholdsEvent {
     pub name: String,
     pub process_count: usize,
     pub process_id: Option<u32>,
-    pub scope: WatchdogScope,
+    pub scope: ResourceThresholdsScope,
     pub targets: Vec<ProcessActionTarget>,
     pub critical: bool,
-    pub metric: WatchdogMetric,
-    pub comparison: WatchdogComparison,
+    pub metric: ResourceThresholdsMetric,
+    pub comparison: ResourceThresholdsComparison,
     pub value: f64,
-    pub response: WatchdogResponse,
+    pub response: ResourceThresholdsResponse,
     pub notify: bool,
 }
 
@@ -61,22 +62,22 @@ impl ThresholdState {
         &mut self,
         value: f64,
         threshold: u64,
-        comparison: WatchdogComparison,
-        metric: WatchdogMetric,
+        comparison: ResourceThresholdsComparison,
+        metric: ResourceThresholdsMetric,
         delay: Duration,
         now: Instant,
     ) -> bool {
         let threshold = threshold as f64;
         let qualifies = match comparison {
-            WatchdogComparison::AtOrAbove => value >= threshold,
-            WatchdogComparison::AtOrBelow => value <= threshold,
+            ResourceThresholdsComparison::AtOrAbove => value >= threshold,
+            ResourceThresholdsComparison::AtOrBelow => value <= threshold,
         };
         if !qualifies {
             self.since = None;
             // A small recovery margin prevents repeated alerts around the threshold.
             let recovered = match comparison {
-                WatchdogComparison::AtOrAbove => value < threshold * 0.95,
-                WatchdogComparison::AtOrBelow => {
+                ResourceThresholdsComparison::AtOrAbove => value < threshold * 0.95,
+                ResourceThresholdsComparison::AtOrBelow => {
                     value >= (threshold * 1.05).min(metric.maximum() as f64)
                 }
             };
@@ -127,18 +128,21 @@ impl AppState {
 }
 
 #[derive(Default)]
-pub(crate) struct WatchdogManager {
-    settings: WatchdogSettings,
+pub(crate) struct ResourceThresholdsManager {
+    settings: ResourceThresholdsSettings,
     states: BTreeMap<StateKey, AppState>,
 }
 
-pub(crate) fn selector_basename_matches(selector: &WatchdogSelector, process_name: &str) -> bool {
+pub(crate) fn selector_basename_matches(
+    selector: &ResourceThresholdsSelector,
+    process_name: &str,
+) -> bool {
     match selector {
-        WatchdogSelector::ExactPath { executable_path } => Path::new(executable_path)
+        ResourceThresholdsSelector::ExactPath { executable_path } => Path::new(executable_path)
             .file_name()
             .and_then(|name| name.to_str())
             .is_some_and(|name| executable_basename_may_match(process_name, name)),
-        WatchdogSelector::ExactName { executable_name } => {
+        ResourceThresholdsSelector::ExactName { executable_name } => {
             same_executable_name(process_name, executable_name)
         }
     }
@@ -146,7 +150,7 @@ pub(crate) fn selector_basename_matches(selector: &WatchdogSelector, process_nam
 
 fn needs_path_observation(
     process: &ProcessInfo,
-    settings: &WatchdogSettings,
+    settings: &ResourceThresholdsSettings,
     prior_members: &BTreeSet<ProcessIdentity>,
 ) -> bool {
     // Missing paths on prior members still interrupt their incident's observation.
@@ -169,11 +173,11 @@ pub(crate) fn observed_path_matches_name(process: &ProcessInfo, executable_name:
 }
 
 pub(crate) fn matching_path<'a>(
-    selector: &'a WatchdogSelector,
+    selector: &'a ResourceThresholdsSelector,
     process: &'a ProcessInfo,
 ) -> Option<&'a Path> {
     match selector {
-        WatchdogSelector::ExactPath { executable_path } => {
+        ResourceThresholdsSelector::ExactPath { executable_path } => {
             let selected_path = Path::new(executable_path);
             let matches = if process.creation_time.is_some() {
                 process_matches_executable_path(process, executable_path)
@@ -189,7 +193,7 @@ pub(crate) fn matching_path<'a>(
             };
             matches.then_some(selected_path)
         }
-        WatchdogSelector::ExactName { executable_name }
+        ResourceThresholdsSelector::ExactName { executable_name }
             if observed_path_matches_name(process, executable_name) =>
         {
             process.image_path.as_deref()
@@ -199,8 +203,8 @@ pub(crate) fn matching_path<'a>(
 }
 
 fn group_matches<'a>(
-    selector: &'a WatchdogSelector,
-    scope: WatchdogScope,
+    selector: &'a ResourceThresholdsSelector,
+    scope: ResourceThresholdsScope,
     processes: &'a [ProcessInfo],
 ) -> BTreeMap<GroupKey<'a>, Vec<&'a ProcessInfo>> {
     let mut groups = BTreeMap::<_, Vec<_>>::new();
@@ -209,8 +213,10 @@ fn group_matches<'a>(
             continue;
         };
         let identity = match scope {
-            WatchdogScope::Combined => None,
-            WatchdogScope::PerInstance => process.creation_time.map(|time| (process.id, time)),
+            ResourceThresholdsScope::Combined => None,
+            ResourceThresholdsScope::PerInstance => {
+                process.creation_time.map(|time| (process.id, time))
+            }
         };
         let key = (identity, path);
         if let Some(group) = groups.get_mut(&key) {
@@ -228,21 +234,21 @@ fn group_matches<'a>(
     groups
 }
 
-impl WatchdogManager {
+impl ResourceThresholdsManager {
     pub(crate) fn update(
         &mut self,
-        settings: &WatchdogSettings,
+        settings: &ResourceThresholdsSettings,
         enabled: bool,
         observations: &mut CycleObservations,
-    ) -> (WatchdogSnapshot, Vec<WatchdogEvent>) {
+    ) -> (ResourceThresholdsSnapshot, Vec<ResourceThresholdsEvent>) {
         if !enabled || !settings.enabled {
             self.states.clear();
-            return (WatchdogSnapshot::default(), Vec::new());
+            return (ResourceThresholdsSnapshot::default(), Vec::new());
         }
         if let Err(error) = settings.validate() {
             self.states.clear();
             return (
-                WatchdogSnapshot {
+                ResourceThresholdsSnapshot {
                     last_error: Some(error),
                     ..Default::default()
                 },
@@ -264,7 +270,7 @@ impl WatchdogManager {
                     state.interrupt_observation();
                 }
                 return (
-                    WatchdogSnapshot {
+                    ResourceThresholdsSnapshot {
                         last_error: Some(error),
                         ..Default::default()
                     },
@@ -309,7 +315,7 @@ impl WatchdogManager {
             && settings.rules.iter().any(|rule| {
                 rule.enabled
                     && rule.memory.enabled
-                    && rule.memory_unit.metric() == WatchdogMetric::MemoryPercent
+                    && rule.memory_unit.metric() == ResourceThresholdsMetric::MemoryPercent
             });
         let total_memory = total_memory_required
             .then(|| crate::backend::dashboard_metrics::sample_memory_usage().total_physical_bytes)
@@ -324,7 +330,7 @@ impl WatchdogManager {
         )
     }
 
-    fn note_settings(&mut self, settings: &WatchdogSettings) {
+    fn note_settings(&mut self, settings: &ResourceThresholdsSettings) {
         if self.settings != *settings {
             self.states.clear();
             self.settings.clone_from(settings);
@@ -333,16 +339,16 @@ impl WatchdogManager {
 
     fn evaluate_catalog(
         &mut self,
-        settings: &WatchdogSettings,
+        settings: &ResourceThresholdsSettings,
         processes: &[ProcessInfo],
         path_gaps: &BTreeMap<ProcessIdentity, Option<&Path>>,
         samples: &BTreeMap<u32, ProcessResourceSample>,
         total_memory: Option<u64>,
         now: Instant,
-    ) -> (WatchdogSnapshot, Vec<WatchdogEvent>) {
+    ) -> (ResourceThresholdsSnapshot, Vec<ResourceThresholdsEvent>) {
         self.note_settings(settings);
         let mut states = BTreeMap::new();
-        let mut snapshot = WatchdogSnapshot {
+        let mut snapshot = ResourceThresholdsSnapshot {
             observation_known: true,
             ..Default::default()
         };
@@ -451,8 +457,9 @@ impl WatchdogManager {
                 Duration::from_secs(rule.sustained_seconds.unwrap_or(settings.sustained_seconds));
             let mut alerting = false;
             let mut skipped = false;
-            for (resource, thresholds) in
-                WatchdogResource::ALL.into_iter().zip(&mut state.resources)
+            for (resource, thresholds) in ResourceThresholdsResource::ALL
+                .into_iter()
+                .zip(&mut state.resources)
             {
                 let monitor = rule.monitor(resource);
                 if !monitor.enabled {
@@ -461,8 +468,9 @@ impl WatchdogManager {
                 let metric = rule.metric(resource);
                 let comparison = monitor.comparison;
                 let allows_actions = rule.allows_actions(resource);
-                let responds = |response: &WatchdogResponse| {
-                    settings.notify || (allows_actions && response.action != WatchdogAction::None)
+                let responds = |response: &ResourceThresholdsResponse| {
+                    settings.notify
+                        || (allows_actions && response.action != ResourceThresholdsAction::None)
                 };
                 // Every member needs a valid sample; never evaluate a partial app total.
                 let value = matched.iter().try_fold(0.0, |total, (process, sample)| {
@@ -481,7 +489,7 @@ impl WatchdogManager {
                     .map(|value| total + value)
                 });
                 if let Some(value) = value.filter(|value| value.is_finite() && *value >= 0.0) {
-                    let value = if metric == WatchdogMetric::CpuPercent {
+                    let value = if metric == ResourceThresholdsMetric::CpuPercent {
                         value.min(100.0)
                     } else {
                         value
@@ -529,7 +537,7 @@ impl WatchdogManager {
                         } else {
                             &monitor.warning
                         };
-                        events.push(WatchdogEvent {
+                        events.push(ResourceThresholdsEvent {
                             name: if allows_actions {
                                 first.name.clone()
                             } else {
@@ -544,12 +552,12 @@ impl WatchdogManager {
                             comparison,
                             value,
                             notify: settings.notify,
-                            response: WatchdogResponse {
+                            response: ResourceThresholdsResponse {
                                 threshold: response.threshold,
                                 action: if allows_actions {
                                     response.action
                                 } else {
-                                    WatchdogAction::None
+                                    ResourceThresholdsAction::None
                                 },
                             },
                         });
@@ -592,7 +600,7 @@ impl WatchdogManager {
     }
 }
 
-fn sampling_mode(settings: &WatchdogSettings) -> ProcessResourceSampling {
+fn sampling_mode(settings: &ResourceThresholdsSettings) -> ProcessResourceSampling {
     if settings
         .rules
         .iter()
@@ -605,21 +613,21 @@ fn sampling_mode(settings: &WatchdogSettings) -> ProcessResourceSampling {
 }
 
 fn metric_value(
-    metric: WatchdogMetric,
+    metric: ResourceThresholdsMetric,
     cpu_usage: impl FnOnce() -> Option<f32>,
     current: &ProcessResourceSample,
     total_memory: Option<u64>,
 ) -> Option<f64> {
     match metric {
-        WatchdogMetric::CpuPercent => cpu_usage().map(f64::from),
-        WatchdogMetric::MemoryPercent => current
+        ResourceThresholdsMetric::CpuPercent => cpu_usage().map(f64::from),
+        ResourceThresholdsMetric::MemoryPercent => current
             .working_set_bytes
             .zip(total_memory.filter(|total| *total > 0))
             .map(|(bytes, total)| bytes as f64 / total as f64 * 100.0),
-        WatchdogMetric::MemoryMb => current
+        ResourceThresholdsMetric::MemoryMb => current
             .working_set_bytes
             .map(|bytes| bytes as f64 / 1_000_000.0),
-        WatchdogMetric::PrivateCommitMb => current
+        ResourceThresholdsMetric::PrivateCommitMb => current
             .private_commit_bytes
             .map(|bytes| bytes as f64 / 1_000_000.0),
     }
@@ -628,17 +636,17 @@ fn metric_value(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{WatchdogMemoryUnit, WatchdogRule};
+    use crate::config::{ResourceThresholdsMemoryUnit, ResourceThresholdsRule};
 
-    impl WatchdogManager {
+    impl ResourceThresholdsManager {
         fn evaluate(
             &mut self,
-            settings: &WatchdogSettings,
+            settings: &ResourceThresholdsSettings,
             processes: &[ProcessInfo],
             samples: &BTreeMap<u32, ProcessResourceSample>,
             total_memory: Option<u64>,
             now: Instant,
-        ) -> (WatchdogSnapshot, Vec<WatchdogEvent>) {
+        ) -> (ResourceThresholdsSnapshot, Vec<ResourceThresholdsEvent>) {
             self.evaluate_catalog(
                 settings,
                 processes,
@@ -665,11 +673,11 @@ mod tests {
         }
     }
 
-    fn settings() -> WatchdogSettings {
-        let mut rule = WatchdogRule::new(r"C:\Apps\test.exe".into());
+    fn settings() -> ResourceThresholdsSettings {
+        let mut rule = ResourceThresholdsRule::new(r"C:\Apps\test.exe".into());
         rule.cpu.enabled = false;
         rule.memory.enabled = true;
-        WatchdogSettings {
+        ResourceThresholdsSettings {
             enabled: true,
             sustained_seconds: 2,
             rules: vec![rule],
@@ -679,12 +687,12 @@ mod tests {
 
     #[test]
     fn path_observation_keeps_selector_candidates_and_exact_prior_members() {
-        let mut disabled = WatchdogRule::new(r"C:\Apps\disabled.exe".into());
+        let mut disabled = ResourceThresholdsRule::new(r"C:\Apps\disabled.exe".into());
         disabled.enabled = false;
-        let settings = WatchdogSettings {
+        let settings = ResourceThresholdsSettings {
             rules: vec![
-                WatchdogRule::new(r"C:\Apps\Éditor.exe".into()),
-                WatchdogRule::with_selector(WatchdogSelector::ExactName {
+                ResourceThresholdsRule::new(r"C:\Apps\Éditor.exe".into()),
+                ResourceThresholdsRule::with_selector(ResourceThresholdsSelector::ExactName {
                     executable_name: "Player.exe".into(),
                 }),
                 disabled,
@@ -719,7 +727,7 @@ mod tests {
         memory_rule.enabled = false;
         settings
             .rules
-            .push(WatchdogRule::new(r"C:\Apps\cpu.exe".into()));
+            .push(ResourceThresholdsRule::new(r"C:\Apps\cpu.exe".into()));
         assert!(matches!(
             sampling_mode(&settings),
             ProcessResourceSampling::CpuOnly
@@ -764,13 +772,13 @@ mod tests {
     }
 
     fn tick(
-        manager: &mut WatchdogManager,
-        settings: &WatchdogSettings,
+        manager: &mut ResourceThresholdsManager,
+        settings: &ResourceThresholdsSettings,
         process: &ProcessInfo,
         start: Instant,
         seconds: u64,
         memory: Option<u64>,
-    ) -> Vec<WatchdogEvent> {
+    ) -> Vec<ResourceThresholdsEvent> {
         let now = start + Duration::from_secs(seconds);
         manager
             .evaluate(
@@ -785,10 +793,10 @@ mod tests {
 
     #[test]
     fn restart_without_notifications_waits_for_sustained_usage_and_a_fresh_app_incident() {
-        let mut manager = WatchdogManager::default();
+        let mut manager = ResourceThresholdsManager::default();
         let mut settings = settings();
         settings.notify = false;
-        settings.rules[0].memory.critical.action = WatchdogAction::Restart;
+        settings.rules[0].memory.critical.action = ResourceThresholdsAction::Restart;
         let mut process = process();
         let start = Instant::now();
         for second in 0..2 {
@@ -798,7 +806,7 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert!(events[0].critical);
         assert!(!events[0].notify);
-        assert_eq!(events[0].response.action, WatchdogAction::Restart);
+        assert_eq!(events[0].response.action, ResourceThresholdsAction::Restart);
         assert!(tick(&mut manager, &settings, &process, start, 3, Some(950)).is_empty());
         process.creation_time = Some(20);
         for second in 4..6 {
@@ -807,15 +815,15 @@ mod tests {
         let events = tick(&mut manager, &settings, &process, start, 6, Some(950));
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].targets[0].creation_time, 20);
-        assert_eq!(events[0].response.action, WatchdogAction::Restart);
+        assert_eq!(events[0].response.action, ResourceThresholdsAction::Restart);
     }
 
     #[test]
     fn critical_only_response_clears_alerting_and_rearms_after_recovery() {
-        let mut manager = WatchdogManager::default();
+        let mut manager = ResourceThresholdsManager::default();
         let mut settings = settings();
         settings.notify = false;
-        settings.rules[0].memory.critical.action = WatchdogAction::Terminate;
+        settings.rules[0].memory.critical.action = ResourceThresholdsAction::Terminate;
         let process = process();
         let start = Instant::now();
         let mut evaluate = |seconds, bytes| {
@@ -845,9 +853,9 @@ mod tests {
 
     #[test]
     fn sustained_warning_escalates_once_and_rearms_only_after_recovery() {
-        let mut manager = WatchdogManager::default();
+        let mut manager = ResourceThresholdsManager::default();
         let mut settings = settings();
-        settings.rules[0].memory.critical.action = WatchdogAction::Terminate;
+        settings.rules[0].memory.critical.action = ResourceThresholdsAction::Terminate;
         let process = process();
         let start = Instant::now();
         assert!(tick(&mut manager, &settings, &process, start, 0, Some(750)).is_empty());
@@ -855,7 +863,7 @@ mod tests {
         let warning = tick(&mut manager, &settings, &process, start, 2, Some(750));
         assert_eq!(warning.len(), 1);
         assert!(!warning[0].critical);
-        assert_eq!(warning[0].response.action, WatchdogAction::None);
+        assert_eq!(warning[0].response.action, ResourceThresholdsAction::None);
         assert!(warning[0].notify);
         assert!(tick(&mut manager, &settings, &process, start, 3, Some(950)).is_empty());
         assert!(tick(&mut manager, &settings, &process, start, 4, Some(950)).is_empty());
@@ -863,7 +871,10 @@ mod tests {
         assert_eq!(critical.len(), 1);
         assert!(critical[0].critical);
         assert_eq!(critical[0].targets[0].creation_time, 10);
-        assert_eq!(critical[0].response.action, WatchdogAction::Terminate);
+        assert_eq!(
+            critical[0].response.action,
+            ResourceThresholdsAction::Terminate
+        );
         assert!(tick(&mut manager, &settings, &process, start, 6, Some(950)).is_empty());
         assert!(tick(&mut manager, &settings, &process, start, 7, Some(690)).is_empty());
         for second in 8..=10 {
@@ -886,8 +897,8 @@ mod tests {
             threshold.observe(
                 value,
                 99,
-                WatchdogComparison::AtOrBelow,
-                WatchdogMetric::CpuPercent,
+                ResourceThresholdsComparison::AtOrBelow,
+                ResourceThresholdsMetric::CpuPercent,
                 Duration::from_secs(1),
                 start + Duration::from_secs(second),
             )
@@ -905,14 +916,14 @@ mod tests {
 
     #[test]
     fn low_usage_requires_measured_zero_and_never_captures_action_targets() {
-        let mut manager = WatchdogManager::default();
+        let mut manager = ResourceThresholdsManager::default();
         let mut settings = settings();
         let monitor = &mut settings.rules[0].memory;
-        monitor.comparison = WatchdogComparison::AtOrBelow;
+        monitor.comparison = ResourceThresholdsComparison::AtOrBelow;
         monitor.warning.threshold = 1;
         monitor.critical.threshold = 0;
         // Guard the runtime even if invalid settings bypass config validation.
-        monitor.critical.action = WatchdogAction::Restart;
+        monitor.critical.action = ResourceThresholdsAction::Restart;
         let process = process();
         let start = Instant::now();
         let mut observe =
@@ -925,9 +936,9 @@ mod tests {
         assert_eq!(events.len(), 1);
         let event = &events[0];
         assert!(event.critical && event.notify);
-        assert_eq!(event.comparison, WatchdogComparison::AtOrBelow);
+        assert_eq!(event.comparison, ResourceThresholdsComparison::AtOrBelow);
         assert_eq!(event.response.threshold, 0);
-        assert_eq!(event.response.action, WatchdogAction::None);
+        assert_eq!(event.response.action, ResourceThresholdsAction::None);
         assert!(event.targets.is_empty());
 
         // Any positive reading rearms a zero threshold, even while warning qualifies.
@@ -944,7 +955,7 @@ mod tests {
 
     #[test]
     fn missing_samples_restarts_duration_and_replaced_or_protected_processes_cannot_inherit_it() {
-        let mut manager = WatchdogManager::default();
+        let mut manager = ResourceThresholdsManager::default();
         let settings = settings();
         let mut process = process();
         let start = Instant::now();
@@ -971,7 +982,7 @@ mod tests {
 
     #[test]
     fn gaps_settings_changes_and_disabling_reset_observation_without_actions() {
-        let mut manager = WatchdogManager::default();
+        let mut manager = ResourceThresholdsManager::default();
         let mut settings = settings();
         let process = process();
         let start = Instant::now();
@@ -989,7 +1000,7 @@ mod tests {
         assert!(tick(&mut manager, &settings, &process, start, 23, Some(950)).is_empty());
         let mut observations = CycleObservations::default();
         let (status, events) = manager.update(&settings, false, &mut observations);
-        assert_eq!(status, WatchdogSnapshot::default());
+        assert_eq!(status, ResourceThresholdsSnapshot::default());
         assert!(events.is_empty());
         assert!(manager.states.is_empty());
         assert!(tick(&mut manager, &settings, &process, start, 25, Some(950)).is_empty());
@@ -1005,8 +1016,8 @@ mod tests {
     fn cpu_and_memory_fire_together_and_missing_memory_does_not_reset_cpu() {
         let mut settings = settings();
         settings.rules[0].cpu.enabled = true;
-        settings.rules[0].memory.critical.action = WatchdogAction::Terminate;
-        let mut manager = WatchdogManager::default();
+        settings.rules[0].memory.critical.action = ResourceThresholdsAction::Terminate;
+        let mut manager = ResourceThresholdsManager::default();
         let process = process();
         let start = Instant::now();
         let capacity = std::thread::available_parallelism()
@@ -1032,19 +1043,22 @@ mod tests {
         let (status, events) = tick_both(3, Some(950), 80);
         assert_eq!(status.monitored_processes, 1);
         assert_eq!(events.len(), 2);
-        assert_eq!(events[0].metric, WatchdogMetric::CpuPercent);
+        assert_eq!(events[0].metric, ResourceThresholdsMetric::CpuPercent);
         assert!(!events[0].critical);
-        assert_eq!(events[0].response.action, WatchdogAction::None);
-        assert_eq!(events[1].metric, WatchdogMetric::MemoryPercent);
+        assert_eq!(events[0].response.action, ResourceThresholdsAction::None);
+        assert_eq!(events[1].metric, ResourceThresholdsMetric::MemoryPercent);
         assert!(events[1].critical);
-        assert_eq!(events[1].response.action, WatchdogAction::Terminate);
+        assert_eq!(
+            events[1].response.action,
+            ResourceThresholdsAction::Terminate
+        );
         assert!(tick_both(4, None, 95).1.is_empty());
         assert!(tick_both(5, None, 95).1.is_empty());
         let events = tick_both(6, None, 95).1;
         assert_eq!(events.len(), 1);
-        assert_eq!(events[0].metric, WatchdogMetric::CpuPercent);
+        assert_eq!(events[0].metric, ResourceThresholdsMetric::CpuPercent);
         assert!(events[0].critical);
-        assert_eq!(events[0].response.action, WatchdogAction::None);
+        assert_eq!(events[0].response.action, ResourceThresholdsAction::None);
     }
 
     #[test]
@@ -1053,21 +1067,31 @@ mod tests {
         let process = process();
         let mut sample = sample(&process, now, Some(512 * 1_000_000))[&process.id];
         assert_eq!(
-            metric_value(WatchdogMetric::MemoryMb, || None, &sample, None),
+            metric_value(ResourceThresholdsMetric::MemoryMb, || None, &sample, None),
             Some(512.0)
         );
         assert_eq!(
-            metric_value(WatchdogMetric::PrivateCommitMb, || None, &sample, None),
+            metric_value(
+                ResourceThresholdsMetric::PrivateCommitMb,
+                || None,
+                &sample,
+                None
+            ),
             None
         );
         sample.private_commit_bytes = Some(384_500_000);
         assert_eq!(
-            metric_value(WatchdogMetric::PrivateCommitMb, || None, &sample, None),
+            metric_value(
+                ResourceThresholdsMetric::PrivateCommitMb,
+                || None,
+                &sample,
+                None
+            ),
             Some(384.5)
         );
         assert_eq!(
             metric_value(
-                WatchdogMetric::MemoryPercent,
+                ResourceThresholdsMetric::MemoryPercent,
                 || None,
                 &sample,
                 Some(1024 * 1_000_000)
@@ -1075,11 +1099,16 @@ mod tests {
             Some(50.0)
         );
         assert_eq!(
-            metric_value(WatchdogMetric::MemoryPercent, || None, &sample, Some(0)),
+            metric_value(
+                ResourceThresholdsMetric::MemoryPercent,
+                || None,
+                &sample,
+                Some(0)
+            ),
             None
         );
         assert_eq!(
-            metric_value(WatchdogMetric::CpuPercent, || None, &sample, None),
+            metric_value(ResourceThresholdsMetric::CpuPercent, || None, &sample, None),
             None
         );
         let previous = sample.cpu;
@@ -1090,7 +1119,7 @@ mod tests {
             .unwrap_or(1);
         let mut cpu_usage = process_cpu_usage_batch();
         let actual = metric_value(
-            WatchdogMetric::CpuPercent,
+            ResourceThresholdsMetric::CpuPercent,
             || cpu_usage(previous, sample.cpu),
             &sample,
             None,
@@ -1100,7 +1129,7 @@ mod tests {
         sample.cpu.cpu_time_100ns = 0;
         assert_eq!(
             metric_value(
-                WatchdogMetric::CpuPercent,
+                ResourceThresholdsMetric::CpuPercent,
                 || cpu_usage(previous, sample.cpu),
                 &sample,
                 None,
@@ -1111,10 +1140,10 @@ mod tests {
 
     #[test]
     fn disabled_critical_response_does_not_mask_an_enabled_warning() {
-        let mut manager = WatchdogManager::default();
+        let mut manager = ResourceThresholdsManager::default();
         let mut settings = settings();
         settings.notify = false;
-        settings.rules[0].memory.warning.action = WatchdogAction::Terminate;
+        settings.rules[0].memory.warning.action = ResourceThresholdsAction::Terminate;
         let process = process();
         let start = Instant::now();
         for second in 0..2 {
@@ -1124,8 +1153,11 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert!(!events[0].critical);
         assert!(!events[0].notify);
-        assert_eq!(events[0].response.action, WatchdogAction::Terminate);
-        settings.rules[0].memory.warning.action = WatchdogAction::None;
+        assert_eq!(
+            events[0].response.action,
+            ResourceThresholdsAction::Terminate
+        );
+        settings.rules[0].memory.warning.action = ResourceThresholdsAction::None;
         for second in 3..7 {
             assert!(tick(&mut manager, &settings, &process, start, second, Some(950)).is_empty());
         }
@@ -1134,20 +1166,20 @@ mod tests {
     #[test]
     fn rule_duration_overrides_the_default_and_settings_changes_restart_observation() {
         let mut settings = settings();
-        settings.rules[0].memory.critical.action = WatchdogAction::Terminate;
+        settings.rules[0].memory.critical.action = ResourceThresholdsAction::Terminate;
         let mut other = process();
         other.id += 1;
         other.name = "other.exe".into();
         other.image_path = Some(r"C:\Apps\other.exe".into());
         let mut rule = settings.rules[0].clone();
-        rule.selector = WatchdogSelector::ExactPath {
+        rule.selector = ResourceThresholdsSelector::ExactPath {
             executable_path: r"C:\Apps\other.exe".into(),
         };
         settings.rules.push(rule);
         let processes = [process(), other];
-        let mut manager = WatchdogManager::default();
+        let mut manager = ResourceThresholdsManager::default();
         let start = Instant::now();
-        let mut observe = |settings: &WatchdogSettings, second| {
+        let mut observe = |settings: &ResourceThresholdsSettings, second| {
             let now = start + Duration::from_secs(second);
             let samples = processes
                 .iter()
@@ -1182,15 +1214,16 @@ mod tests {
         assert_eq!(events.len(), 2);
         assert!(events
             .iter()
-            .all(|event| !event.notify && event.response.action == WatchdogAction::Terminate));
+            .all(|event| !event.notify
+                && event.response.action == ResourceThresholdsAction::Terminate));
     }
 
     #[test]
     fn memory_thresholds_use_one_combined_app_total_and_capture_only_matching_members() {
-        for unit in crate::config::WatchdogMemoryUnit::ALL {
+        for unit in crate::config::ResourceThresholdsMemoryUnit::ALL {
             let mut settings = settings();
             settings.rules[0].memory_unit = unit;
-            settings.rules[0].memory.critical.action = WatchdogAction::Terminate;
+            settings.rules[0].memory.critical.action = ResourceThresholdsAction::Terminate;
             let mut second = process();
             second.id += 1;
             second.creation_time = Some(20);
@@ -1198,7 +1231,7 @@ mod tests {
             unrelated.id += 2;
             unrelated.image_path = Some(r"C:\Other\test.exe".into());
             let processes = [process(), second, unrelated];
-            let mut manager = WatchdogManager::default();
+            let mut manager = ResourceThresholdsManager::default();
             let start = Instant::now();
             let mut observe = |second, memory: u64| {
                 let now = start + Duration::from_secs(second);
@@ -1206,7 +1239,7 @@ mod tests {
                     .iter()
                     .flat_map(|p| sample(p, now, Some(memory * 1_000_000)))
                     .collect();
-                if unit == crate::config::WatchdogMemoryUnit::PrivateCommitMb {
+                if unit == crate::config::ResourceThresholdsMemoryUnit::PrivateCommitMb {
                     for sample in samples.values_mut() {
                         sample.private_commit_bytes = sample.working_set_bytes.take();
                     }
@@ -1235,7 +1268,10 @@ mod tests {
             assert_eq!(events.len(), 1);
             assert!(events[0].critical);
             assert_eq!(events[0].value, 96.0);
-            assert_eq!(events[0].response.action, WatchdogAction::Terminate);
+            assert_eq!(
+                events[0].response.action,
+                ResourceThresholdsAction::Terminate
+            );
             assert!(observe(6, 48).1.is_empty());
         }
     }
@@ -1243,10 +1279,10 @@ mod tests {
     #[test]
     fn exact_name_alerts_track_separate_paths_and_require_complete_group_samples() {
         let mut settings = settings();
-        settings.rules[0].selector = WatchdogSelector::ExactName {
+        settings.rules[0].selector = ResourceThresholdsSelector::ExactName {
             executable_name: "TEST.EXE".into(),
         };
-        settings.rules[0].memory_unit = WatchdogMemoryUnit::Megabytes;
+        settings.rules[0].memory_unit = ResourceThresholdsMemoryUnit::Megabytes;
         let mut second = process();
         second.id += 1;
         let mut other = process();
@@ -1259,7 +1295,7 @@ mod tests {
         different_filename.id += 4;
         different_filename.image_path = Some(r"C:\Apps\ test.exe".into());
         let processes = [process(), second, other, unverified, different_filename];
-        let mut manager = WatchdogManager::default();
+        let mut manager = ResourceThresholdsManager::default();
         let start = Instant::now();
         let mut observe = |second, first_mb, other_mb| {
             let now = start + Duration::from_secs(second);
@@ -1305,14 +1341,14 @@ mod tests {
     #[test]
     fn per_instance_thresholds_survive_sibling_gaps_but_not_pid_reuse() {
         let mut settings = settings();
-        settings.rules[0].scope = WatchdogScope::PerInstance;
-        settings.rules[0].selector = WatchdogSelector::ExactName {
+        settings.rules[0].scope = ResourceThresholdsScope::PerInstance;
+        settings.rules[0].selector = ResourceThresholdsSelector::ExactName {
             executable_name: "test.exe".into(),
         };
         let mut processes = [process(), process()];
         processes[1].id += 1;
         let start = Instant::now();
-        let mut manager = WatchdogManager::default();
+        let mut manager = ResourceThresholdsManager::default();
         let mut observe = |processes: &[ProcessInfo], second, memory: [Option<u64>; 2]| {
             let now = start + Duration::from_secs(second);
             let mut samples = BTreeMap::new();
@@ -1323,10 +1359,10 @@ mod tests {
             }
             manager.evaluate(&settings, processes, &samples, Some(1_000), now)
         };
-        let assert_instance = |events: Vec<WatchdogEvent>, process: &ProcessInfo| {
+        let assert_instance = |events: Vec<ResourceThresholdsEvent>, process: &ProcessInfo| {
             assert_eq!(events.len(), 1);
             let event = &events[0];
-            assert_eq!(event.scope, WatchdogScope::PerInstance);
+            assert_eq!(event.scope, ResourceThresholdsScope::PerInstance);
             assert_eq!(event.process_id, Some(process.id));
             assert_eq!(event.process_count, 1);
             assert_eq!(
@@ -1335,7 +1371,7 @@ mod tests {
             );
             assert_eq!(event.value, 95.0);
             assert!(event.notify && event.critical);
-            assert_eq!(event.response.action, WatchdogAction::None);
+            assert_eq!(event.response.action, ResourceThresholdsAction::None);
             assert!(event.targets.is_empty());
         };
 
@@ -1372,23 +1408,23 @@ mod tests {
     fn notification_only_rules_cannot_dispatch_process_actions() {
         for (selector, scope) in [
             (
-                WatchdogSelector::ExactName {
+                ResourceThresholdsSelector::ExactName {
                     executable_name: "test.exe".into(),
                 },
-                WatchdogScope::Combined,
+                ResourceThresholdsScope::Combined,
             ),
             (
-                WatchdogSelector::ExactPath {
+                ResourceThresholdsSelector::ExactPath {
                     executable_path: r"C:\Apps\test.exe".into(),
                 },
-                WatchdogScope::PerInstance,
+                ResourceThresholdsScope::PerInstance,
             ),
         ] {
             let mut settings = settings();
             settings.rules[0].selector = selector;
             settings.rules[0].scope = scope;
-            settings.rules[0].memory.critical.action = WatchdogAction::Restart;
-            let mut manager = WatchdogManager::default();
+            settings.rules[0].memory.critical.action = ResourceThresholdsAction::Restart;
+            let mut manager = ResourceThresholdsManager::default();
             let process = process();
             let start = Instant::now();
             assert!(tick(&mut manager, &settings, &process, start, 0, Some(950)).is_empty());
@@ -1396,7 +1432,7 @@ mod tests {
             let events = tick(&mut manager, &settings, &process, start, 2, Some(950));
             assert_eq!(events.len(), 1);
             assert!(events[0].notify && events[0].critical);
-            assert_eq!(events[0].response.action, WatchdogAction::None);
+            assert_eq!(events[0].response.action, ResourceThresholdsAction::None);
             assert!(events[0].targets.is_empty());
 
             settings.notify = false;
@@ -1416,26 +1452,27 @@ mod tests {
         let mut second = process();
         second.id += 1;
         let mut processes = vec![process(), second];
-        let mut manager = WatchdogManager::default();
+        let mut manager = ResourceThresholdsManager::default();
         let start = Instant::now();
         let capacity = std::thread::available_parallelism()
             .map(usize::from)
             .unwrap_or(1) as u64;
-        let observe = |manager: &mut WatchdogManager, processes: &[ProcessInfo], second| {
-            let now = start + Duration::from_secs(second);
-            let samples = processes
-                .iter()
-                .flat_map(|p| {
-                    let mut samples = sample(p, now, Some(0));
-                    samples.get_mut(&p.id).unwrap().cpu.cpu_time_100ns =
-                        1 + second * capacity * 40 * 100_000;
-                    samples
-                })
-                .collect();
-            manager
-                .evaluate(&settings, processes, &samples, None, now)
-                .1
-        };
+        let observe =
+            |manager: &mut ResourceThresholdsManager, processes: &[ProcessInfo], second| {
+                let now = start + Duration::from_secs(second);
+                let samples = processes
+                    .iter()
+                    .flat_map(|p| {
+                        let mut samples = sample(p, now, Some(0));
+                        samples.get_mut(&p.id).unwrap().cpu.cpu_time_100ns =
+                            1 + second * capacity * 40 * 100_000;
+                        samples
+                    })
+                    .collect();
+                manager
+                    .evaluate(&settings, processes, &samples, None, now)
+                    .1
+            };
         for second in 0..3 {
             assert!(observe(&mut manager, &processes, second).is_empty());
         }
@@ -1477,7 +1514,7 @@ mod tests {
             let complete = [process(), second];
             let mut missing_creation = complete.clone();
             missing_creation[1].creation_time = None;
-            let mut manager = WatchdogManager::default();
+            let mut manager = ResourceThresholdsManager::default();
             let start = Instant::now();
             for second in 0..5 {
                 let now = start + Duration::from_secs(second);
@@ -1517,12 +1554,12 @@ mod tests {
     fn unknown_criticality_breaks_the_combined_low_usage_interval() {
         let mut settings = settings();
         let monitor = &mut settings.rules[0].memory;
-        monitor.comparison = WatchdogComparison::AtOrBelow;
+        monitor.comparison = ResourceThresholdsComparison::AtOrBelow;
         monitor.warning.threshold = 30;
         monitor.critical.threshold = 20;
         let mut processes = [process(), process()];
         processes[1].id += 1;
-        let mut manager = WatchdogManager::default();
+        let mut manager = ResourceThresholdsManager::default();
         let start = Instant::now();
         for second in 0..5 {
             processes[1].is_critical = (second != 1).then_some(false);
@@ -1542,14 +1579,17 @@ mod tests {
 
     #[test]
     fn missing_samples_preserve_fired_incidents_for_observed_exact_identities() {
-        for scope in [WatchdogScope::Combined, WatchdogScope::PerInstance] {
+        for scope in [
+            ResourceThresholdsScope::Combined,
+            ResourceThresholdsScope::PerInstance,
+        ] {
             let mut settings = settings();
             let rule = &mut settings.rules[0];
             rule.scope = scope;
-            if scope == WatchdogScope::Combined {
-                rule.memory.critical.action = WatchdogAction::Terminate;
+            if scope == ResourceThresholdsScope::Combined {
+                rule.memory.critical.action = ResourceThresholdsAction::Terminate;
             }
-            let mut manager = WatchdogManager::default();
+            let mut manager = ResourceThresholdsManager::default();
             let mut process = process();
             let start = Instant::now();
             for second in 0..10 {
@@ -1578,16 +1618,16 @@ mod tests {
     fn unreadable_path_interrupts_an_exact_members_combined_interval() {
         let mut settings = settings();
         let rule = &mut settings.rules[0];
-        rule.selector = WatchdogSelector::ExactName {
+        rule.selector = ResourceThresholdsSelector::ExactName {
             executable_name: "test.exe".into(),
         };
-        rule.memory.comparison = WatchdogComparison::AtOrBelow;
+        rule.memory.comparison = ResourceThresholdsComparison::AtOrBelow;
         rule.memory.warning.threshold = 30;
         rule.memory.critical.threshold = 5;
         let mut processes = [process(), process()];
         processes[1].id += 1;
         let start = Instant::now();
-        let mut manager = WatchdogManager::default();
+        let mut manager = ResourceThresholdsManager::default();
 
         for second in 0..5 {
             let now = start + Duration::from_secs(second);
@@ -1639,7 +1679,7 @@ mod tests {
             .map(|_| {
                 ChildGuard(
                     Command::new("cmd.exe")
-                        .args(["/d", "/q", "/c", "set /p watchdog_wait="])
+                        .args(["/d", "/q", "/c", "set /p resource_thresholds_wait="])
                         .creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW)
                         .stdin(Stdio::piped())
                         .stdout(Stdio::null())
@@ -1659,7 +1699,7 @@ mod tests {
             .collect();
         assert_eq!(processes.len(), 2);
         let process = &processes[0];
-        let mut rule = WatchdogRule::new(
+        let mut rule = ResourceThresholdsRule::new(
             process
                 .image_path
                 .as_ref()
@@ -1669,17 +1709,17 @@ mod tests {
         );
         rule.cpu.enabled = false;
         rule.memory.enabled = true;
-        rule.memory_unit = crate::config::WatchdogMemoryUnit::Megabytes;
+        rule.memory_unit = crate::config::ResourceThresholdsMemoryUnit::Megabytes;
         rule.memory.warning.threshold = 1;
         rule.memory.critical.threshold = 2;
-        rule.memory.critical.action = WatchdogAction::Terminate;
-        let settings = WatchdogSettings {
+        rule.memory.critical.action = ResourceThresholdsAction::Terminate;
+        let settings = ResourceThresholdsSettings {
             enabled: true,
             sustained_seconds: 1,
             notify: false,
             rules: vec![rule],
         };
-        let mut manager = WatchdogManager::default();
+        let mut manager = ResourceThresholdsManager::default();
         let samples = sample_process_resources(&processes, ProcessResourceSampling::CpuAndMemory);
         let now = Instant::now();
         assert!(manager
@@ -1693,7 +1733,7 @@ mod tests {
         let event = events.into_iter().next().unwrap();
         assert!(event.critical);
         assert!(!event.notify);
-        assert_eq!(event.response.action, WatchdogAction::Terminate);
+        assert_eq!(event.response.action, ResourceThresholdsAction::Terminate);
         assert_eq!(event.targets.len(), 2);
         assert!(event
             .targets

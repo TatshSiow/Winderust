@@ -24,7 +24,7 @@ Process Lasso is a useful comparison point, not the target to clone. Prefer smal
 - Priority Control through Process Priority, Thread Priority, Dynamic Priority
   Boost, I/O Priority, GPU Priority, and Memory Priority.
 - Memory Trim.
-- Watchdog with sustained CPU and memory thresholds and Windows notifications by
+- Resource Thresholds with sustained CPU and memory thresholds and Windows notifications by
   path or process instance. Terminate and Restart require Combined by path, an
   exact executable path, and an At or above threshold.
 - Timer Resolution rules tied to foreground apps.

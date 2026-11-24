@@ -452,7 +452,7 @@ mod tests {
                 true,
             ),
             (
-                widgets::toggle_card("watchdog.enable", false, Some(|value| value)),
+                widgets::toggle_card("resource_thresholds.enable", false, Some(|value| value)),
                 true,
             ),
             (widgets::action_button("Disabled").into(), false),

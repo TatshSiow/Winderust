@@ -226,7 +226,7 @@ Follow the Graphify rules in [AGENTS.md](../AGENTS.md).
 - Implement custom code only when existing options do not reasonably fit; briefly record the concrete gap or tradeoff. Finding a crate does not automatically justify adding it.
 - Reuse findings while they remain applicable. Routine edits to an established implementation do not require repeating the same crate search.
 
-The native tray integration retains Watchdog balloon notifications and
+The native tray integration retains Resource Thresholds balloon notifications and
 click-to-restore. The evaluated [`tray-icon` API](https://docs.rs/tray-icon/0.26.1/tray_icon/struct.TrayIcon.html)
 does not expose those operations, so adopting it would still require custom
 Win32 integration. Keep the current tray owner until a replacement covers these

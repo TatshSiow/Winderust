@@ -235,7 +235,9 @@ Pages are grouped in `src/ui.rs`:
 
 - Home: dashboard.
 - Process List: process table and per-process policy surface.
-- Winderust Features: Efficiency Mode, Memory Trim, Watchdog.
+- Winderust Features includes Efficiency Mode and Memory Trim.
+- Watchdog includes Resource Thresholds, Keep Running, Sleep Prevention,
+  Instance Limits, and App Suspension.
 - Power Plan Control includes By Focus, By Running App, By CPU Load, By Activity, By Time, Adaptive Processor Power, and Advanced Power Plan Tuning.
 - Priority Control: Process Priority, Thread Priority, Dynamic Priority Boost,
   IO Priority, GPU Priority, Memory Priority.
@@ -244,8 +246,7 @@ Pages are grouped in `src/ui.rs`:
 - Settings: Winderust Behaviour, Language and Appearance, Experimental
   Features.
 - About.
-- Advanced Controls: App Suspension, Sleep Prevention, Keep Running, Instance
-  Limits, Timer Resolution, Win32 Priority Separation.
+- Advanced Controls includes Timer Resolution and Win32 Priority Separation.
 
 Keep navigation changes in `Page`, `PAGE_SECTIONS`, labels, locale files, and
 `WinderustApp::page_view` in `src/ui/app.rs` together.

@@ -3,19 +3,19 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use super::is_valid_executable_name;
-pub use super::ExecutableSelector as WatchdogSelector;
+pub use super::ExecutableSelector as ResourceThresholdsSelector;
 
-pub(crate) const WATCHDOG_DURATION_RANGE: std::ops::RangeInclusive<u64> = 1..=3600;
+pub(crate) const RESOURCE_THRESHOLDS_DURATION_RANGE: std::ops::RangeInclusive<u64> = 1..=3600;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WatchdogSettings {
+pub struct ResourceThresholdsSettings {
     pub enabled: bool,
     pub sustained_seconds: u64,
     pub notify: bool,
-    pub rules: Vec<WatchdogRule>,
+    pub rules: Vec<ResourceThresholdsRule>,
 }
 
-impl Default for WatchdogSettings {
+impl Default for ResourceThresholdsSettings {
     fn default() -> Self {
         Self {
             enabled: false,
@@ -28,14 +28,14 @@ impl Default for WatchdogSettings {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum WatchdogMetric {
+pub enum ResourceThresholdsMetric {
     CpuPercent,
     MemoryPercent,
     MemoryMb,
     PrivateCommitMb,
 }
 
-impl WatchdogMetric {
+impl ResourceThresholdsMetric {
     pub fn maximum(self) -> u64 {
         match self {
             Self::CpuPercent | Self::MemoryPercent => 100,
@@ -45,10 +45,10 @@ impl WatchdogMetric {
 
     pub(crate) fn label_key(self) -> &'static str {
         match self {
-            Self::CpuPercent => "watchdog.cpu",
-            Self::MemoryPercent => "watchdog.memory_percent",
-            Self::MemoryMb => "watchdog.memory_mb",
-            Self::PrivateCommitMb => "watchdog.private_commit_mb",
+            Self::CpuPercent => "resource_thresholds.cpu",
+            Self::MemoryPercent => "resource_thresholds.memory_percent",
+            Self::MemoryMb => "resource_thresholds.memory_mb",
+            Self::PrivateCommitMb => "resource_thresholds.private_commit_mb",
         }
     }
 
@@ -62,57 +62,57 @@ impl WatchdogMetric {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum WatchdogAction {
+pub enum ResourceThresholdsAction {
     None,
     Terminate,
     Restart,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WatchdogResponse {
+pub struct ResourceThresholdsResponse {
     pub threshold: u64,
-    pub action: WatchdogAction,
+    pub action: ResourceThresholdsAction,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WatchdogResource {
+pub enum ResourceThresholdsResource {
     Cpu,
     Memory,
 }
 
-impl WatchdogResource {
+impl ResourceThresholdsResource {
     pub const ALL: [Self; 2] = [Self::Cpu, Self::Memory];
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum WatchdogMemoryUnit {
+pub enum ResourceThresholdsMemoryUnit {
     Percent,
     Megabytes,
     PrivateCommitMb,
 }
 
-impl WatchdogMemoryUnit {
+impl ResourceThresholdsMemoryUnit {
     pub const ALL: [Self; 3] = [Self::Percent, Self::Megabytes, Self::PrivateCommitMb];
 
-    pub fn metric(self) -> WatchdogMetric {
+    pub fn metric(self) -> ResourceThresholdsMetric {
         match self {
-            Self::Percent => WatchdogMetric::MemoryPercent,
-            Self::Megabytes => WatchdogMetric::MemoryMb,
-            Self::PrivateCommitMb => WatchdogMetric::PrivateCommitMb,
+            Self::Percent => ResourceThresholdsMetric::MemoryPercent,
+            Self::Megabytes => ResourceThresholdsMetric::MemoryMb,
+            Self::PrivateCommitMb => ResourceThresholdsMetric::PrivateCommitMb,
         }
     }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum WatchdogComparison {
+pub enum ResourceThresholdsComparison {
     #[default]
     AtOrAbove,
     AtOrBelow,
 }
 
-impl WatchdogComparison {
+impl ResourceThresholdsComparison {
     fn is_at_or_above(&self) -> bool {
         *self == Self::AtOrAbove
     }
@@ -126,161 +126,181 @@ impl WatchdogComparison {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WatchdogMonitor {
+pub struct ResourceThresholdsMonitor {
     pub enabled: bool,
-    #[serde(default, skip_serializing_if = "WatchdogComparison::is_at_or_above")]
-    pub comparison: WatchdogComparison,
-    pub warning: WatchdogResponse,
-    pub critical: WatchdogResponse,
+    #[serde(
+        default,
+        skip_serializing_if = "ResourceThresholdsComparison::is_at_or_above"
+    )]
+    pub comparison: ResourceThresholdsComparison,
+    pub warning: ResourceThresholdsResponse,
+    pub critical: ResourceThresholdsResponse,
 }
 
-impl WatchdogMonitor {
+impl ResourceThresholdsMonitor {
     fn new(enabled: bool) -> Self {
         Self {
             enabled,
-            comparison: WatchdogComparison::default(),
-            warning: WatchdogResponse {
+            comparison: ResourceThresholdsComparison::default(),
+            warning: ResourceThresholdsResponse {
                 threshold: 70,
-                action: WatchdogAction::None,
+                action: ResourceThresholdsAction::None,
             },
-            critical: WatchdogResponse {
+            critical: ResourceThresholdsResponse {
                 threshold: 90,
-                action: WatchdogAction::None,
+                action: ResourceThresholdsAction::None,
             },
         }
     }
 
-    pub(crate) fn thresholds_valid(&self, metric: WatchdogMetric) -> bool {
+    pub(crate) fn thresholds_valid(&self, metric: ResourceThresholdsMetric) -> bool {
         let warning = self.warning.threshold;
         let critical = self.critical.threshold;
         match self.comparison {
-            WatchdogComparison::AtOrAbove => {
+            ResourceThresholdsComparison::AtOrAbove => {
                 0 < warning && warning < critical && critical <= metric.maximum()
             }
-            WatchdogComparison::AtOrBelow => critical < warning && warning < metric.maximum(),
+            ResourceThresholdsComparison::AtOrBelow => {
+                critical < warning && warning < metric.maximum()
+            }
         }
     }
 }
 
-impl WatchdogSelector {
+impl ResourceThresholdsSelector {
     pub fn validate(&self) -> Result<(), String> {
         match self {
             Self::ExactPath { executable_path } if Path::new(executable_path).is_absolute() => {
                 Ok(())
             }
-            Self::ExactPath { .. } => Err("Watchdog requires an absolute executable path.".into()),
+            Self::ExactPath { .. } => {
+                Err("Resource Thresholds requires an absolute executable path.".into())
+            }
             Self::ExactName { executable_name } if is_valid_executable_name(executable_name) => {
                 Ok(())
             }
-            Self::ExactName { .. } => Err("Watchdog requires an exact executable filename.".into()),
+            Self::ExactName { .. } => {
+                Err("Resource Thresholds requires an exact executable filename.".into())
+            }
         }
     }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum WatchdogScope {
+pub enum ResourceThresholdsScope {
     #[default]
     Combined,
     PerInstance,
 }
 
-impl WatchdogScope {
+impl ResourceThresholdsScope {
     fn is_combined(&self) -> bool {
         *self == Self::Combined
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WatchdogRule {
+pub struct ResourceThresholdsRule {
     pub enabled: bool,
     #[serde(flatten)]
-    pub selector: WatchdogSelector,
-    #[serde(default, skip_serializing_if = "WatchdogScope::is_combined")]
-    pub scope: WatchdogScope,
+    pub selector: ResourceThresholdsSelector,
+    #[serde(default, skip_serializing_if = "ResourceThresholdsScope::is_combined")]
+    pub scope: ResourceThresholdsScope,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sustained_seconds: Option<u64>,
-    pub cpu: WatchdogMonitor,
-    pub memory: WatchdogMonitor,
-    pub memory_unit: WatchdogMemoryUnit,
+    pub cpu: ResourceThresholdsMonitor,
+    pub memory: ResourceThresholdsMonitor,
+    pub memory_unit: ResourceThresholdsMemoryUnit,
 }
 
-impl WatchdogRule {
+impl ResourceThresholdsRule {
     pub fn new(executable_path: String) -> Self {
-        Self::with_selector(WatchdogSelector::ExactPath { executable_path })
+        Self::with_selector(ResourceThresholdsSelector::ExactPath { executable_path })
     }
 
-    pub fn with_selector(selector: WatchdogSelector) -> Self {
+    pub fn with_selector(selector: ResourceThresholdsSelector) -> Self {
         Self {
             enabled: true,
             selector,
-            scope: WatchdogScope::default(),
+            scope: ResourceThresholdsScope::default(),
             sustained_seconds: None,
-            cpu: WatchdogMonitor::new(true),
-            memory: WatchdogMonitor::new(false),
-            memory_unit: WatchdogMemoryUnit::Percent,
+            cpu: ResourceThresholdsMonitor::new(true),
+            memory: ResourceThresholdsMonitor::new(false),
+            memory_unit: ResourceThresholdsMemoryUnit::Percent,
         }
     }
 
-    pub fn monitor(&self, resource: WatchdogResource) -> &WatchdogMonitor {
+    pub fn monitor(&self, resource: ResourceThresholdsResource) -> &ResourceThresholdsMonitor {
         match resource {
-            WatchdogResource::Cpu => &self.cpu,
-            WatchdogResource::Memory => &self.memory,
+            ResourceThresholdsResource::Cpu => &self.cpu,
+            ResourceThresholdsResource::Memory => &self.memory,
         }
     }
 
-    pub fn monitor_mut(&mut self, resource: WatchdogResource) -> &mut WatchdogMonitor {
+    pub fn monitor_mut(
+        &mut self,
+        resource: ResourceThresholdsResource,
+    ) -> &mut ResourceThresholdsMonitor {
         match resource {
-            WatchdogResource::Cpu => &mut self.cpu,
-            WatchdogResource::Memory => &mut self.memory,
+            ResourceThresholdsResource::Cpu => &mut self.cpu,
+            ResourceThresholdsResource::Memory => &mut self.memory,
         }
     }
 
-    pub fn metric(&self, resource: WatchdogResource) -> WatchdogMetric {
+    pub fn metric(&self, resource: ResourceThresholdsResource) -> ResourceThresholdsMetric {
         match resource {
-            WatchdogResource::Cpu => WatchdogMetric::CpuPercent,
-            WatchdogResource::Memory => self.memory_unit.metric(),
+            ResourceThresholdsResource::Cpu => ResourceThresholdsMetric::CpuPercent,
+            ResourceThresholdsResource::Memory => self.memory_unit.metric(),
         }
     }
 
-    pub fn allows_actions(&self, resource: WatchdogResource) -> bool {
+    pub fn allows_actions(&self, resource: ResourceThresholdsResource) -> bool {
         self.scope.is_combined()
-            && matches!(self.selector, WatchdogSelector::ExactPath { .. })
+            && matches!(self.selector, ResourceThresholdsSelector::ExactPath { .. })
             && self.monitor(resource).comparison.is_at_or_above()
     }
 
     pub fn validate(&self) -> Result<(), String> {
         self.selector.validate()?;
-        if WatchdogResource::ALL.into_iter().any(|resource| {
+        if ResourceThresholdsResource::ALL.into_iter().any(|resource| {
             let monitor = self.monitor(resource);
             !self.allows_actions(resource)
-                && (monitor.warning.action != WatchdogAction::None
-                    || monitor.critical.action != WatchdogAction::None)
+                && (monitor.warning.action != ResourceThresholdsAction::None
+                    || monitor.critical.action != ResourceThresholdsAction::None)
         }) {
             return Err(
-                "Watchdog requires At or above, Combined by path, and an exact executable path for Terminate or Restart.".into(),
+                "Resource Thresholds requires At or above, Combined by path, and an exact executable path for Terminate or Restart.".into(),
             );
         }
         if self
             .sustained_seconds
-            .is_some_and(|seconds| !WATCHDOG_DURATION_RANGE.contains(&seconds))
+            .is_some_and(|seconds| !RESOURCE_THRESHOLDS_DURATION_RANGE.contains(&seconds))
         {
-            return Err("Watchdog rule sustained usage must be between 1 and 3600 seconds.".into());
+            return Err(
+                "Resource Thresholds rule sustained usage must be between 1 and 3600 seconds."
+                    .into(),
+            );
         }
         if (!self.cpu.enabled && !self.memory.enabled)
-            || (self.cpu.enabled && !self.cpu.thresholds_valid(WatchdogMetric::CpuPercent))
+            || (self.cpu.enabled
+                && !self
+                    .cpu
+                    .thresholds_valid(ResourceThresholdsMetric::CpuPercent))
             || (self.memory.enabled && !self.memory.thresholds_valid(self.memory_unit.metric()))
         {
-            return Err("Watchdog requires an enabled monitor and valid thresholds. At or above requires 0 < warning < critical up to the metric maximum. At or below requires critical < warning below the maximum.".into());
+            return Err("Resource Thresholds requires an enabled monitor and valid thresholds. At or above requires 0 < warning < critical up to the metric maximum. At or below requires critical < warning below the maximum.".into());
         }
         Ok(())
     }
 }
 
-impl WatchdogSettings {
+impl ResourceThresholdsSettings {
     pub fn validate(&self) -> Result<(), String> {
-        if !WATCHDOG_DURATION_RANGE.contains(&self.sustained_seconds) {
-            return Err("Watchdog sustained usage must be between 1 and 3600 seconds.".into());
+        if !RESOURCE_THRESHOLDS_DURATION_RANGE.contains(&self.sustained_seconds) {
+            return Err(
+                "Resource Thresholds sustained usage must be between 1 and 3600 seconds.".into(),
+            );
         }
         for rule in &self.rules {
             rule.validate()?;
@@ -293,7 +313,7 @@ impl WatchdogSettings {
             && self.notify
             && self.rules.iter().any(|rule| {
                 rule.enabled
-                    && WatchdogResource::ALL.into_iter().any(|resource| {
+                    && ResourceThresholdsResource::ALL.into_iter().any(|resource| {
                         let monitor = rule.monitor(resource);
                         monitor.enabled
                     })
@@ -307,26 +327,29 @@ mod tests {
 
     #[test]
     fn both_resources_round_trip_with_independent_thresholds_and_actions() {
-        let mut rule = WatchdogRule::new(r"C:\Apps\test.exe".into());
-        assert_eq!(rule.cpu.warning.action, WatchdogAction::None);
-        assert_eq!(rule.memory.critical.action, WatchdogAction::None);
+        let mut rule = ResourceThresholdsRule::new(r"C:\Apps\test.exe".into());
+        assert_eq!(rule.cpu.warning.action, ResourceThresholdsAction::None);
+        assert_eq!(rule.memory.critical.action, ResourceThresholdsAction::None);
         rule.memory.enabled = true;
-        rule.memory_unit = WatchdogMemoryUnit::Megabytes;
+        rule.memory_unit = ResourceThresholdsMemoryUnit::Megabytes;
         rule.memory.warning.threshold = 1000;
         rule.memory.critical.threshold = 2000;
-        rule.cpu.warning.action = WatchdogAction::Restart;
-        rule.memory.critical.action = WatchdogAction::Terminate;
+        rule.cpu.warning.action = ResourceThresholdsAction::Restart;
+        rule.memory.critical.action = ResourceThresholdsAction::Terminate;
         assert!(rule.validate().is_ok());
         let raw = toml::to_string(&rule).unwrap();
         assert!(raw.contains("executable_path = "));
         assert!(!raw.contains("scope = "));
         assert!(!raw.contains("comparison = "));
         assert!(raw.contains("memory_unit = \"megabytes\""));
-        assert_eq!(toml::from_str::<WatchdogRule>(&raw).unwrap(), rule);
+        assert_eq!(
+            toml::from_str::<ResourceThresholdsRule>(&raw).unwrap(),
+            rule
+        );
         rule.cpu.warning.threshold = 90;
         assert!(rule.validate().is_err());
         rule.cpu.warning.threshold = 70;
-        rule.memory_unit = WatchdogMemoryUnit::Percent;
+        rule.memory_unit = ResourceThresholdsMemoryUnit::Percent;
         assert!(rule.validate().is_err());
         rule.memory.warning.threshold = 70;
         rule.memory.critical.threshold = 90;
@@ -334,7 +357,7 @@ mod tests {
         rule.memory.enabled = false;
         assert!(rule.validate().is_err());
         rule.memory.enabled = true;
-        let mut settings = WatchdogSettings {
+        let mut settings = ResourceThresholdsSettings {
             enabled: true,
             rules: vec![rule],
             ..Default::default()
@@ -343,30 +366,41 @@ mod tests {
         settings.notify = false;
         assert!(!settings.notifications_required());
         let raw = toml::to_string(&settings).unwrap();
-        assert_eq!(toml::from_str::<WatchdogSettings>(&raw).unwrap(), settings);
+        assert_eq!(
+            toml::from_str::<ResourceThresholdsSettings>(&raw).unwrap(),
+            settings
+        );
         settings.sustained_seconds = 0;
         assert!(settings.validate().is_err());
     }
 
     #[test]
     fn name_rule_round_trip_requires_one_flat_selector_and_notification_only() {
-        let mut rule = WatchdogRule::with_selector(WatchdogSelector::ExactName {
-            executable_name: "Worker Tool.EXE".to_owned(),
-        });
+        let mut rule =
+            ResourceThresholdsRule::with_selector(ResourceThresholdsSelector::ExactName {
+                executable_name: "Worker Tool.EXE".to_owned(),
+            });
         assert!(rule.validate().is_ok());
         let raw = toml::to_string(&rule).unwrap();
         let name_field = "executable_name = \"Worker Tool.EXE\"\n";
         assert!(raw.contains(name_field));
         assert!(!raw.contains("executable_path"));
-        assert_eq!(toml::from_str::<WatchdogRule>(&raw).unwrap(), rule);
+        assert_eq!(
+            toml::from_str::<ResourceThresholdsRule>(&raw).unwrap(),
+            rule
+        );
         let both = format!("executable_path = 'C:\\Apps\\worker.exe'\n{raw}");
-        assert!(toml::from_str::<WatchdogRule>(&both).is_err());
+        assert!(toml::from_str::<ResourceThresholdsRule>(&both).is_err());
         let neither = raw.replace(name_field, "");
-        assert!(toml::from_str::<WatchdogRule>(&neither).is_err());
+        assert!(toml::from_str::<ResourceThresholdsRule>(&neither).is_err());
 
-        for action in [WatchdogAction::Terminate, WatchdogAction::Restart] {
+        for action in [
+            ResourceThresholdsAction::Terminate,
+            ResourceThresholdsAction::Restart,
+        ] {
             rule.memory.warning.action = action;
-            let imported: WatchdogRule = toml::from_str(&toml::to_string(&rule).unwrap()).unwrap();
+            let imported: ResourceThresholdsRule =
+                toml::from_str(&toml::to_string(&rule).unwrap()).unwrap();
             assert!(!imported.memory.enabled);
             assert!(imported.validate().is_err());
         }
@@ -374,17 +408,29 @@ mod tests {
 
     #[test]
     fn per_instance_scope_round_trips_and_rejects_automatic_actions() {
-        let mut rule = WatchdogRule::new(r"C:\Apps\test.exe".into());
-        rule.scope = WatchdogScope::PerInstance;
+        let mut rule = ResourceThresholdsRule::new(r"C:\Apps\test.exe".into());
+        rule.scope = ResourceThresholdsScope::PerInstance;
         assert!(rule.validate().is_ok());
         let raw = toml::to_string(&rule).unwrap();
         assert!(raw.contains("scope = \"per_instance\""));
-        assert_eq!(toml::from_str::<WatchdogRule>(&raw).unwrap(), rule);
-        assert!(toml::from_str::<WatchdogRule>(&raw.replace("per_instance", "unknown")).is_err());
+        assert_eq!(
+            toml::from_str::<ResourceThresholdsRule>(&raw).unwrap(),
+            rule
+        );
+        assert!(
+            toml::from_str::<ResourceThresholdsRule>(&raw.replace("per_instance", "unknown"))
+                .is_err()
+        );
 
         for (resource, action) in [
-            (WatchdogResource::Cpu, WatchdogAction::Terminate),
-            (WatchdogResource::Memory, WatchdogAction::Restart),
+            (
+                ResourceThresholdsResource::Cpu,
+                ResourceThresholdsAction::Terminate,
+            ),
+            (
+                ResourceThresholdsResource::Memory,
+                ResourceThresholdsAction::Restart,
+            ),
         ] {
             let mut invalid = rule.clone();
             invalid.monitor_mut(resource).warning.action = action;
@@ -394,17 +440,23 @@ mod tests {
 
     #[test]
     fn low_thresholds_round_trip_and_disable_only_their_own_actions() {
-        let mut rule = WatchdogRule::new(r"C:\Apps\worker.exe".into());
-        rule.cpu.comparison = WatchdogComparison::AtOrBelow;
+        let mut rule = ResourceThresholdsRule::new(r"C:\Apps\worker.exe".into());
+        rule.cpu.comparison = ResourceThresholdsComparison::AtOrBelow;
         rule.cpu.warning.threshold = 99;
         rule.cpu.critical.threshold = 0;
         rule.memory.enabled = true;
-        rule.memory.warning.action = WatchdogAction::Restart;
+        rule.memory.warning.action = ResourceThresholdsAction::Restart;
         assert!(rule.validate().is_ok());
         let raw = toml::to_string(&rule).unwrap();
         assert!(raw.contains("comparison = \"at_or_below\""));
-        assert_eq!(toml::from_str::<WatchdogRule>(&raw).unwrap(), rule);
-        assert!(toml::from_str::<WatchdogRule>(&raw.replace("at_or_below", "unknown")).is_err());
+        assert_eq!(
+            toml::from_str::<ResourceThresholdsRule>(&raw).unwrap(),
+            rule
+        );
+        assert!(
+            toml::from_str::<ResourceThresholdsRule>(&raw.replace("at_or_below", "unknown"))
+                .is_err()
+        );
 
         for (warning, critical) in [(100, 0), (0, 0), (50, 50), (50, 90)] {
             let mut invalid = rule.clone();
@@ -413,7 +465,7 @@ mod tests {
             assert!(invalid.validate().is_err(), "{warning}, {critical}");
         }
         rule.cpu.enabled = false;
-        rule.cpu.critical.action = WatchdogAction::Terminate;
+        rule.cpu.critical.action = ResourceThresholdsAction::Terminate;
         assert!(rule.validate().is_err());
     }
 
@@ -432,7 +484,7 @@ mod tests {
             "work\0er.exe",
         ] {
             assert!(
-                WatchdogSelector::ExactName {
+                ResourceThresholdsSelector::ExactName {
                     executable_name: invalid.to_owned(),
                 }
                 .validate()
@@ -440,7 +492,7 @@ mod tests {
                 "accepted {invalid:?}"
             );
         }
-        assert!(WatchdogSelector::ExactName {
+        assert!(ResourceThresholdsSelector::ExactName {
             executable_name: "worker.scr".into(),
         }
         .validate()

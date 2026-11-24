@@ -72,8 +72,9 @@ pub struct Settings {
     pub memory_priority: MemoryPrioritySettings,
     #[serde(default)]
     pub memory_trim: MemoryTrimSettings,
-    #[serde(default)]
-    pub watchdog: super::WatchdogSettings,
+    // Use the established settings table for existing Resource Thresholds rules.
+    #[serde(default, rename = "watchdog")]
+    pub resource_thresholds: super::ResourceThresholdsSettings,
     #[serde(default)]
     pub keep_running: super::KeepRunningSettings,
     #[serde(default)]
@@ -136,7 +137,7 @@ impl Settings {
         };
         battery.general = self.general.clone();
         battery.advanced = self.advanced.clone();
-        battery.watchdog = self.watchdog.clone();
+        battery.resource_thresholds = self.resource_thresholds.clone();
         battery.keep_running = self.keep_running.clone();
         battery.instance_limits = self.instance_limits.clone();
         battery.instance_balancing = self.instance_balancing.clone();
@@ -2001,7 +2002,7 @@ impl Default for Settings {
             gpu_priority: GpuPrioritySettings::default(),
             memory_priority: MemoryPrioritySettings::default(),
             memory_trim: MemoryTrimSettings::default(),
-            watchdog: super::WatchdogSettings::default(),
+            resource_thresholds: super::ResourceThresholdsSettings::default(),
             keep_running: super::KeepRunningSettings::default(),
             instance_limits: super::InstanceLimitsSettings::default(),
             timer_resolution: TimerResolutionSettings::default(),

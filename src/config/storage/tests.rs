@@ -237,68 +237,82 @@ fn nested_battery_profiles_fail_load_import_and_export_without_rewriting() {
 }
 
 #[test]
-fn watchdog_settings_persist_optional_durations_and_reject_invalid_rules() {
+fn resource_thresholds_settings_persist_optional_durations_and_reject_invalid_rules() {
     let mut settings = Settings::default();
-    let mut rule = crate::config::WatchdogRule::new(r"C:\Apps\test.exe".into());
+    let mut rule = crate::config::ResourceThresholdsRule::new(r"C:\Apps\test.exe".into());
     rule.memory.enabled = true;
     rule.memory.critical.threshold = 50;
-    settings.watchdog.rules.push(rule);
+    settings.resource_thresholds.rules.push(rule);
     let raw = toml::to_string(&settings).unwrap();
     assert!(parse_toml_settings(Path::new("test.toml"), &raw).is_err());
-    assert!(settings.validate_watchdog().is_err());
-    settings.watchdog.rules[0].memory.critical.threshold = 90;
+    assert!(settings.validate_resource_thresholds().is_err());
+    settings.resource_thresholds.rules[0]
+        .memory
+        .critical
+        .threshold = 90;
     settings
-        .watchdog
+        .resource_thresholds
         .rules
-        .push(crate::config::WatchdogRule::with_selector(
-            crate::config::WatchdogSelector::ExactName {
+        .push(crate::config::ResourceThresholdsRule::with_selector(
+            crate::config::ResourceThresholdsSelector::ExactName {
                 executable_name: "test.exe".into(),
             },
         ));
     settings.battery_profile_mut();
     settings.sync_shared_settings_to_battery();
     let raw = toml::to_string(&settings).unwrap();
+    assert!(raw.contains("[[watchdog.rules]]"));
+    assert!(raw.contains("[[on_battery.watchdog.rules]]"));
     assert_eq!(
         parse_toml_settings(Path::new("test.toml"), &raw).unwrap(),
         settings
     );
 
-    let path = std::env::temp_dir().join(format!("winderust-watchdog-{}.toml", std::process::id()));
-    settings.watchdog.rules[0].memory_unit = crate::config::WatchdogMemoryUnit::PrivateCommitMb;
-    let rule = &mut settings.watchdog.rules[0];
-    rule.scope = crate::config::WatchdogScope::PerInstance;
-    rule.memory.comparison = crate::config::WatchdogComparison::AtOrBelow;
+    let path = std::env::temp_dir().join(format!(
+        "winderust-resource-thresholds-{}.toml",
+        std::process::id()
+    ));
+    settings.resource_thresholds.rules[0].memory_unit =
+        crate::config::ResourceThresholdsMemoryUnit::PrivateCommitMb;
+    let rule = &mut settings.resource_thresholds.rules[0];
+    rule.scope = crate::config::ResourceThresholdsScope::PerInstance;
+    rule.memory.comparison = crate::config::ResourceThresholdsComparison::AtOrBelow;
     rule.memory.critical.threshold = 1;
     for duration in [Some(1), Some(3600), None] {
-        settings.watchdog.rules[0].sustained_seconds = duration;
+        settings.resource_thresholds.rules[0].sustained_seconds = duration;
         settings.sync_shared_settings_to_battery();
         write_toml_settings(&path, &settings).unwrap();
         assert_eq!(load_from_path(&path).unwrap(), settings);
     }
     for seconds in [0, 3601] {
-        settings.watchdog.rules[0].sustained_seconds = Some(seconds);
+        settings.resource_thresholds.rules[0].sustained_seconds = Some(seconds);
         let raw = toml::to_string(&settings).unwrap();
         assert!(parse_toml_settings(&path, &raw).is_err());
         assert!(write_toml_settings(&path, &settings).is_err());
     }
-    settings.watchdog.rules[0].sustained_seconds = None;
-    settings.watchdog.rules[1].cpu.critical.action = crate::config::WatchdogAction::Restart;
+    settings.resource_thresholds.rules[0].sustained_seconds = None;
+    settings.resource_thresholds.rules[1].cpu.critical.action =
+        crate::config::ResourceThresholdsAction::Restart;
     settings.sync_shared_settings_to_battery();
     let raw = toml::to_string(&settings).unwrap();
     assert!(parse_toml_settings(&path, &raw).is_err());
     assert!(write_toml_settings(&path, &settings).is_err());
-    settings.watchdog.rules[1].cpu.critical.action = crate::config::WatchdogAction::None;
+    settings.resource_thresholds.rules[1].cpu.critical.action =
+        crate::config::ResourceThresholdsAction::None;
     let saved = load_from_path(&path).unwrap();
     settings.sync_shared_settings_to_battery();
     assert_eq!(saved, settings);
-    settings.watchdog.rules[0].cpu.critical.action = crate::config::WatchdogAction::Terminate;
+    settings.resource_thresholds.rules[0].cpu.critical.action =
+        crate::config::ResourceThresholdsAction::Terminate;
     settings.sync_shared_settings_to_battery();
     let raw = toml::to_string(&settings).unwrap();
     assert!(parse_toml_settings(&path, &raw).is_err());
     assert!(write_toml_settings(&path, &settings).is_err());
-    settings.watchdog.rules[0].cpu.critical.action = crate::config::WatchdogAction::None;
-    settings.watchdog.rules[0].scope = crate::config::WatchdogScope::Combined;
-    settings.watchdog.rules[0].memory.critical.action = crate::config::WatchdogAction::Terminate;
+    settings.resource_thresholds.rules[0].cpu.critical.action =
+        crate::config::ResourceThresholdsAction::None;
+    settings.resource_thresholds.rules[0].scope = crate::config::ResourceThresholdsScope::Combined;
+    settings.resource_thresholds.rules[0].memory.critical.action =
+        crate::config::ResourceThresholdsAction::Terminate;
     settings.sync_shared_settings_to_battery();
     let raw = toml::to_string(&settings).unwrap();
     assert!(parse_toml_settings(&path, &raw).is_err());
@@ -1348,7 +1362,7 @@ fn toml_round_trip_preserves_settings() {
                 keep_display_on: true,
             }],
         },
-        watchdog: crate::config::WatchdogSettings::default(),
+        resource_thresholds: crate::config::ResourceThresholdsSettings::default(),
         keep_running: crate::config::KeepRunningSettings {
             enabled: true,
             rules: vec![crate::config::KeepRunningRule {

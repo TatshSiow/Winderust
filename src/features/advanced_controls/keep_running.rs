@@ -40,7 +40,7 @@ impl Eq for LaunchTicket {}
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PauseReason {
     IntentionalStop,
-    Watchdog,
+    ResourceThresholds,
     Suspend,
     SessionChanged,
     UnsupportedContext,
@@ -69,7 +69,7 @@ impl KeepRunningState {
             Self::Starting => "keep_running.starting",
             Self::Paused(reason) => match reason {
                 PauseReason::IntentionalStop => "keep_running.paused_stop",
-                PauseReason::Watchdog => "keep_running.paused_watchdog",
+                PauseReason::ResourceThresholds => "keep_running.paused_resource_thresholds",
                 PauseReason::Suspend => "keep_running.paused_suspend",
                 PauseReason::SessionChanged => "keep_running.paused_session",
                 PauseReason::UnsupportedContext => "keep_running.paused_context",

@@ -8,7 +8,7 @@ use std::collections::HashSet;
 impl Settings {
     pub fn validate(&self) -> Result<(), String> {
         self.validate_power_source_profiles()?;
-        self.validate_watchdog()?;
+        self.validate_resource_thresholds()?;
         self.validate_keep_running()?;
         self.validate_instance_limits()?;
         self.validate_instance_balancing()?;
@@ -73,9 +73,9 @@ impl Settings {
         Ok(())
     }
 
-    pub fn validate_watchdog(&self) -> Result<(), String> {
+    pub fn validate_resource_thresholds(&self) -> Result<(), String> {
         for profile in self.profiles() {
-            profile.watchdog.validate()?;
+            profile.resource_thresholds.validate()?;
         }
         Ok(())
     }

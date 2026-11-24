@@ -42,7 +42,7 @@ pub enum ActionLogFeature {
     GpuPriority,
     MemoryPriority,
     MemoryTrim,
-    Watchdog,
+    ResourceThresholds,
     TimerResolution,
     SleepPrevention,
     KeepRunning,

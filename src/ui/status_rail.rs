@@ -374,16 +374,16 @@ pub(super) fn view<'a>(
             "common.process_activity",
             column![
                 metric(
-                    if page == Page::Watchdog {
-                        "watchdog.monitored"
+                    if page == Page::ResourceThresholds {
+                        "resource_thresholds.monitored"
                     } else {
                         "common.scanned_processes"
                     },
                     count(activity_available.then_some(summary.scanned).flatten())
                 ),
                 metric(
-                    if page == Page::Watchdog {
-                        "watchdog.alerting"
+                    if page == Page::ResourceThresholds {
+                        "resource_thresholds.alerting"
                     } else {
                         "common.adjusted_processes"
                     },
@@ -953,9 +953,13 @@ fn sidebar_state(
         };
     }
     let features = &runtime.feature_status;
-    if page == Page::Watchdog
-        && !features.watchdog.observation_known
-        && settings.watchdog.rules.iter().any(|rule| rule.enabled)
+    if page == Page::ResourceThresholds
+        && !features.resource_thresholds.observation_known
+        && settings
+            .resource_thresholds
+            .rules
+            .iter()
+            .any(|rule| rule.enabled)
     {
         return FeatureRunState::Unknown;
     }
@@ -1061,7 +1065,8 @@ fn sidebar_state(
             _ => {}
         }
     }
-    let active = (page == Page::Watchdog && summary.scanned.is_some_and(|count| count > 0))
+    let active = (page == Page::ResourceThresholds
+        && summary.scanned.is_some_and(|count| count > 0))
         || summary.adjusted.is_some_and(|count| count > 0)
         || (page == Page::TimerResolution && features.timer_resolution.requested_100ns.is_some());
     if active {
@@ -1146,8 +1151,8 @@ fn feature_status_summary(
                 action_log_feature: ActionLogFeature::EfficiencyMode,
             }
         }
-        Page::Watchdog => {
-            let status = &runtime.feature_status.watchdog;
+        Page::ResourceThresholds => {
+            let status = &runtime.feature_status.resource_thresholds;
             let observed = status.observation_known;
             FeatureStatusSummary {
                 scanned: observed.then_some(status.monitored_processes),
@@ -1155,7 +1160,7 @@ fn feature_status_summary(
                 protected_or_denied: None,
                 skipped: observed.then_some(status.skipped_processes),
                 last_error: status.last_error.as_deref(),
-                action_log_feature: ActionLogFeature::Watchdog,
+                action_log_feature: ActionLogFeature::ResourceThresholds,
             }
         }
         Page::KeepRunning => FeatureStatusSummary {
@@ -1460,36 +1465,38 @@ mod tests {
     }
 
     #[test]
-    fn watchdog_counts_require_a_completed_observation() {
+    fn resource_thresholds_counts_require_a_completed_observation() {
         use crate::{
-            config::WatchdogRule, features::winderust_features::watchdog::WatchdogManager,
+            config::ResourceThresholdsRule,
+            features::winderust_features::resource_thresholds::ResourceThresholdsManager,
         };
 
         let mut settings = Settings::default();
         settings.general.enabled = true;
-        settings.watchdog.enabled = true;
-        settings.watchdog.rules = vec![WatchdogRule::new(r"C:\Apps\worker.exe".into())];
+        settings.resource_thresholds.enabled = true;
+        settings.resource_thresholds.rules =
+            vec![ResourceThresholdsRule::new(r"C:\Apps\worker.exe".into())];
         let mut runtime = RuntimeStatusSnapshot {
             generation: 1,
             ..Default::default()
         };
         let status = |runtime: &RuntimeStatusSnapshot| {
-            let summary = feature_status_summary(Page::Watchdog, runtime).unwrap();
+            let summary = feature_status_summary(Page::ResourceThresholds, runtime).unwrap();
             (
-                sidebar_state(Page::Watchdog, &settings, runtime, &summary, None),
+                sidebar_state(Page::ResourceThresholds, &settings, runtime, &summary, None),
                 [summary.scanned, summary.adjusted, summary.skipped],
             )
         };
         assert_eq!(status(&runtime), (FeatureRunState::Unknown, [None; 3]));
 
-        let (sample, events) = WatchdogManager::default().update(
-            &settings.watchdog,
+        let (sample, events) = ResourceThresholdsManager::default().update(
+            &settings.resource_thresholds,
             true,
             &mut crate::runtime::observations::CycleObservations::with_processes(Vec::new()),
         );
         assert!(events.is_empty());
         assert_ne!(sample, Default::default());
-        std::sync::Arc::make_mut(&mut runtime.feature_status).watchdog = sample;
+        std::sync::Arc::make_mut(&mut runtime.feature_status).resource_thresholds = sample;
         assert_eq!(status(&runtime), (FeatureRunState::Waiting, [Some(0); 3]));
     }
 

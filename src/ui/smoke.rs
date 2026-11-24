@@ -95,7 +95,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             Some(48) => Page::ProcessList,
             Some(49) => Page::ActionLog,
             Some(50) => Page::WinderustBehaviour,
-            Some(51..=53) => Page::Watchdog,
+            Some(51..=53) => Page::ResourceThresholds,
             Some(54..=57) => Page::ByCpuLoad,
             Some(58..=59) => Page::SleepPrevention,
             Some(60..=61) => Page::KeepRunning,
@@ -248,21 +248,25 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
         }
         if matches!(extra, Some(51..=53)) {
             app.settings.edit_global(|settings| {
-                let rule = &mut settings.watchdog.rules[0];
+                let rule = &mut settings.resource_thresholds.rules[0];
                 rule.memory.enabled = true;
-                rule.memory_unit = crate::config::WatchdogMemoryUnit::Megabytes;
+                rule.memory_unit = crate::config::ResourceThresholdsMemoryUnit::Megabytes;
                 rule.memory.warning.threshold = 1000;
                 rule.memory.critical.threshold = 2000;
-                rule.memory.critical.action = crate::config::WatchdogAction::Terminate;
+                rule.memory.critical.action = crate::config::ResourceThresholdsAction::Terminate;
             });
-            app.watchdog = watchdog::Editor::default();
-            let _ = app.update(Message::Watchdog(watchdog::Message::Edit(0)));
+            app.resource_thresholds = resource_thresholds::Editor::default();
+            let _ = app.update(Message::ResourceThresholds(
+                resource_thresholds::Message::Edit(0),
+            ));
         }
         if matches!(extra, Some(54..=57)) {
             use crate::config::{
                 ByCpuLoadRule, ByCpuLoadStability, CpuLoadPercent, CpuUsageComparison,
             };
-            let _ = app.update(Message::Watchdog(watchdog::Message::CancelRule));
+            let _ = app.update(Message::ResourceThresholds(
+                resource_thresholds::Message::CancelRule,
+            ));
             let _ = app.update(Message::PowerRules(
                 power_rules::Kind::CpuLoad,
                 power_rules::Message::Cancel,
@@ -397,13 +401,15 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             assert!(!app.settings.general.enabled);
         }
         if matches!(extra, Some(51..=53)) {
-            let before = app.settings.global().watchdog.clone();
+            let before = app.settings.global().resource_thresholds.clone();
             assert!(app.pending_editor());
-            let _ = app.update(Message::Watchdog(watchdog::Message::Threshold(
-                crate::config::WatchdogResource::Cpu,
-                false,
-                String::new(),
-            )));
+            let _ = app.update(Message::ResourceThresholds(
+                resource_thresholds::Message::Threshold(
+                    crate::config::ResourceThresholdsResource::Cpu,
+                    false,
+                    String::new(),
+                ),
+            ));
             let _ = app.search_keyboard(
                 iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape),
                 iced::keyboard::Modifiers::empty(),
@@ -411,19 +417,27 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                 iced::event::Status::Ignored,
             );
             assert!(!app.pending_editor());
-            assert_eq!(app.settings.global().watchdog, before);
-            let _ = app.update(Message::Watchdog(watchdog::Message::Edit(0)));
+            assert_eq!(app.settings.global().resource_thresholds, before);
+            let _ = app.update(Message::ResourceThresholds(
+                resource_thresholds::Message::Edit(0),
+            ));
             if extra == Some(51) {
-                let _ = app.update(Message::Watchdog(watchdog::Message::CancelRule));
+                let _ = app.update(Message::ResourceThresholds(
+                    resource_thresholds::Message::CancelRule,
+                ));
             } else if extra == Some(52) {
-                let _ = app.update(Message::Watchdog(watchdog::Message::MonitorEnabled(
-                    crate::config::WatchdogResource::Cpu,
-                    false,
-                )));
+                let _ = app.update(Message::ResourceThresholds(
+                    resource_thresholds::Message::MonitorEnabled(
+                        crate::config::ResourceThresholdsResource::Cpu,
+                        false,
+                    ),
+                ));
             } else if extra == Some(53) {
-                let _ = app.update(Message::Watchdog(watchdog::Message::Tab(
-                    crate::config::WatchdogResource::Memory,
-                )));
+                let _ = app.update(Message::ResourceThresholds(
+                    resource_thresholds::Message::Tab(
+                        crate::config::ResourceThresholdsResource::Memory,
+                    ),
+                ));
             }
         }
         assert_eq!(app.side_panel_tab, SidePanelTab::for_page(page)[0]);
@@ -813,7 +827,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
     run.ticks += 1;
     if extra == Some(53) && run.ticks == 3 {
         return Some(iced::widget::operation::snap_to(
-            "watchdog-rule-details",
+            "resource-thresholds-rule-details",
             iced::widget::scrollable::RelativeOffset { x: 0.0, y: 1.0 },
         ));
     }
@@ -945,7 +959,8 @@ pub(super) fn captured(app: &mut WinderustApp, shot: iced::window::Screenshot) -
 
 pub(crate) fn render_all_pages() {
     use crate::config::{
-        ByFocusRule, ByRunningAppRule, ExecutableSelector, WatchdogRule, WatchdogScope,
+        ByFocusRule, ByRunningAppRule, ExecutableSelector, ResourceThresholdsRule,
+        ResourceThresholdsScope,
     };
 
     std::fs::create_dir_all("target/iced-smoke").expect("create smoke output");
@@ -986,11 +1001,11 @@ pub(crate) fn render_all_pages() {
         })
         .collect();
     let [path_selector, name_selector] = selectors;
-    settings.watchdog.rules = vec![
-        WatchdogRule::with_selector(path_selector),
-        WatchdogRule {
-            scope: WatchdogScope::PerInstance,
-            ..WatchdogRule::with_selector(name_selector)
+    settings.resource_thresholds.rules = vec![
+        ResourceThresholdsRule::with_selector(path_selector),
+        ResourceThresholdsRule {
+            scope: ResourceThresholdsScope::PerInstance,
+            ..ResourceThresholdsRule::with_selector(name_selector)
         },
     ];
     let mut editor = SettingsEditor::with_settings(settings);
@@ -1007,6 +1022,6 @@ pub(crate) fn render_all_pages() {
             .filter_map(Result::ok)
             .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "png"))
             .count(),
-        152
+        154
     );
 }

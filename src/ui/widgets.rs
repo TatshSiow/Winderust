@@ -1443,7 +1443,7 @@ mod card_hitbox_tests {
 
     fn group(expanded: bool) -> Element<'static, Message> {
         setting_group(
-            "watchdog.enable".into(),
+            "resource_thresholds.enable".into(),
             expanded,
             Message::Card,
             action_button("Header").width(120).on_press(Message::Header),
@@ -1572,8 +1572,11 @@ mod card_hitbox_tests {
                 Point::new(799.0, 1.0),
                 Point::new(760.0, 30.0),
             ] {
-                let card =
-                    toggle_card("watchdog.enable", false, enabled.then_some(Message::Toggle));
+                let card = toggle_card(
+                    "resource_thresholds.enable",
+                    false,
+                    enabled.then_some(Message::Toggle),
+                );
                 let (messages, _) = interact(card, |_| point, false);
                 assert_eq!(
                     messages,

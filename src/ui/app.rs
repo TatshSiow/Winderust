@@ -3,8 +3,8 @@ use super::{
     app_suspension, by_activity, cpu_allocation, cpu_limiter, design, efficiency_mode, home,
     instance_balancing, instance_limits, interrupt_timing, keep_running, memory_trim, navigation,
     power_plan_control, power_rules, priority_control, process_list, process_power_plans,
-    settings_pages, sleep_prevention, status_rail, tasks, timer_resolution, watchdog, widgets,
-    win32_priority_separation, window_frame,
+    resource_thresholds, settings_pages, sleep_prevention, status_rail, tasks, timer_resolution,
+    widgets, win32_priority_separation, window_frame,
 };
 use crate::ui::scrolling::scrollable;
 use std::{
@@ -266,7 +266,7 @@ pub(crate) fn run(
                 sleep_prevention: sleep_prevention::Editor::default(),
                 trim: memory_trim::Editor::default(),
                 manual_trim_pending: false,
-                watchdog: watchdog::Editor::default(),
+                resource_thresholds: resource_thresholds::Editor::default(),
                 keep_running: keep_running::Editor::default(),
                 instance_limits: instance_limits::Editor::default(),
                 instance_balancing: instance_balancing::Editor::default(),
@@ -579,7 +579,7 @@ struct WinderustApp {
     sleep_prevention: sleep_prevention::Editor,
     trim: memory_trim::Editor,
     manual_trim_pending: bool,
-    watchdog: watchdog::Editor,
+    resource_thresholds: resource_thresholds::Editor,
     keep_running: keep_running::Editor,
     instance_limits: instance_limits::Editor,
     instance_balancing: instance_balancing::Editor,
@@ -665,7 +665,7 @@ enum Message {
     SleepPrevention(sleep_prevention::Message),
     Trim(memory_trim::Message),
     TrimFinished(Result<crate::memory_trim::MemoryTrimSnapshot, String>),
-    Watchdog(watchdog::Message),
+    ResourceThresholds(resource_thresholds::Message),
     KeepRunning(keep_running::Message),
     InstanceLimits(instance_limits::Message),
     InstanceBalancing(instance_balancing::Message),
@@ -868,9 +868,9 @@ impl WinderustApp {
                     )
                 })
             }
-            Page::Watchdog if self.watchdog.has_pending_editor() => {
-                Some(Message::Watchdog(watchdog::Message::CancelRule))
-            }
+            Page::ResourceThresholds if self.resource_thresholds.has_pending_editor() => Some(
+                Message::ResourceThresholds(resource_thresholds::Message::CancelRule),
+            ),
             Page::InstanceLimits if self.instance_limits.has_pending_editor() => Some(
                 Message::InstanceLimits(instance_limits::Message::CancelRule),
             ),
@@ -1449,7 +1449,9 @@ impl WinderustApp {
                 }
             }
             Message::Trim(message) => self.trim.update(&mut self.settings, message),
-            Message::Watchdog(watchdog::Message::Browse) => return self.browse(Page::Watchdog),
+            Message::ResourceThresholds(resource_thresholds::Message::Browse) => {
+                return self.browse(Page::ResourceThresholds)
+            }
             Message::InstanceBalancing(instance_balancing::Message::Browse) => {
                 let request = self.instance_balancing.begin_browse();
                 return Task::perform(self.choose_executable_file(), move |path| {
@@ -1502,21 +1504,27 @@ impl WinderustApp {
                         .update(&mut settings.keep_running, message)
                 });
             }
-            Message::Watchdog(watchdog::Message::Tab(resource)) => {
-                self.watchdog.select_tab(resource);
+            Message::ResourceThresholds(resource_thresholds::Message::Tab(resource)) => {
+                self.resource_thresholds.select_tab(resource);
             }
-            Message::Watchdog(watchdog::Message::PreviewMatches) => {
+            Message::ResourceThresholds(resource_thresholds::Message::PreviewMatches) => {
                 return self
-                    .watchdog
-                    .preview_matches(&self.settings.global().watchdog)
-                    .map(Message::Watchdog);
+                    .resource_thresholds
+                    .preview_matches(&self.settings.global().resource_thresholds)
+                    .map(Message::ResourceThresholds);
             }
-            Message::Watchdog(watchdog::Message::MatchPreviewLoaded(request, result)) => {
-                self.watchdog.complete_match_preview(request, result);
+            Message::ResourceThresholds(resource_thresholds::Message::MatchPreviewLoaded(
+                request,
+                result,
+            )) => {
+                self.resource_thresholds
+                    .complete_match_preview(request, result);
             }
-            Message::Watchdog(message) => {
-                self.settings
-                    .edit_global(|settings| self.watchdog.update(&mut settings.watchdog, message));
+            Message::ResourceThresholds(message) => {
+                self.settings.edit_global(|settings| {
+                    self.resource_thresholds
+                        .update(&mut settings.resource_thresholds, message)
+                });
             }
             Message::SleepPrevention(sleep_prevention::Message::Browse) => {
                 return self.browse(Page::SleepPrevention);
@@ -1971,9 +1979,9 @@ impl WinderustApp {
                             self.settings.set_master_enabled(enabled)
                         }
                         tray::MenuAction::Feature { id, enabled, .. }
-                            if id == Page::Watchdog as usize =>
+                            if id == Page::ResourceThresholds as usize =>
                         {
-                            self.settings.set_watchdog_enabled(enabled)
+                            self.settings.set_resource_thresholds_enabled(enabled)
                         }
                         tray::MenuAction::Feature { id, enabled, .. }
                             if id == Page::InstanceLimits as usize =>
@@ -2143,8 +2151,8 @@ impl WinderustApp {
             Message::Save if self.pending_editor() => {
                 self.error_message = t!("unsaved.message").to_string();
             }
-            Message::Save if self.settings.validate_watchdog().is_err() => {
-                self.error_message = t!("watchdog.invalid").to_string();
+            Message::Save if self.settings.validate_resource_thresholds().is_err() => {
+                self.error_message = t!("resource_thresholds.invalid").to_string();
             }
             Message::Save if self.settings.validate_instance_limits().is_err() => {
                 self.error_message = t!("instance_limits.invalid").to_string();
@@ -2155,8 +2163,8 @@ impl WinderustApp {
             Message::Save if self.settings.validate_keep_running().is_err() => {
                 self.error_message = t!("keep_running.invalid").to_string();
             }
-            Message::Save if self.watchdog.has_invalid_inputs() => {
-                self.error_message = t!("watchdog.invalid_duration").to_string();
+            Message::Save if self.resource_thresholds.has_invalid_inputs() => {
+                self.error_message = t!("resource_thresholds.invalid_duration").to_string();
             }
             Message::Save if self.adaptive_validation_error().is_some() => {
                 self.error_message = self.adaptive_validation_error().unwrap_or_default();
@@ -2419,11 +2427,11 @@ impl WinderustApp {
     }
 
     fn invalid_inputs(&self) -> bool {
-        self.settings.validate_watchdog().is_err()
+        self.settings.validate_resource_thresholds().is_err()
             || self.settings.validate_keep_running().is_err()
             || self.settings.validate_instance_limits().is_err()
             || self.settings.validate_instance_balancing().is_err()
-            || self.watchdog.has_invalid_inputs()
+            || self.resource_thresholds.has_invalid_inputs()
             || self.cpu_limiter.has_invalid_inputs()
             || self.power_tuning.has_invalid_inputs()
             || self.suspension.invalid_delay().is_some()
@@ -2505,7 +2513,7 @@ impl WinderustApp {
             || self.soft_allocation.has_pending_editor()
             || self.hard_allocation.has_pending_editor()
             || self.cpu_limiter.has_pending_editor()
-            || self.watchdog.has_pending_editor()
+            || self.resource_thresholds.has_pending_editor()
             || self.keep_running.has_pending_editor()
             || self.instance_limits.has_pending_editor()
             || self.instance_balancing.has_pending_editor()
@@ -2601,7 +2609,7 @@ impl WinderustApp {
         self.suspension = Default::default();
         self.sleep_prevention = Default::default();
         self.trim = Default::default();
-        self.watchdog = Default::default();
+        self.resource_thresholds = Default::default();
         self.keep_running = Default::default();
         self.instance_limits = Default::default();
         self.instance_balancing = Default::default();
@@ -2693,7 +2701,7 @@ impl WinderustApp {
                             navigation::feature_page_enabled(
                                 if matches!(
                                     *page,
-                                    Page::Watchdog
+                                    Page::ResourceThresholds
                                         | Page::KeepRunning
                                         | Page::InstanceLimits
                                         | Page::InstanceBalancing
@@ -3308,7 +3316,7 @@ impl WinderustApp {
                 | Page::ByRunningApp
                 | Page::CpuSetsSoft
                 | Page::ProcessorAffinityHard
-                | Page::Watchdog
+                | Page::ResourceThresholds
         ) || priority_kind(self.page).is_some()
             || (self.page == Page::AdaptiveEngine && self.adaptive.shows_custom_rules());
         let save_card =
@@ -3480,10 +3488,10 @@ impl WinderustApp {
                 .keep_running
                 .modal(&self.candidates)
                 .map(|modal| modal.map(Message::KeepRunning)),
-            Page::Watchdog => self
-                .watchdog
+            Page::ResourceThresholds => self
+                .resource_thresholds
                 .modal(&self.candidates)
-                .map(|modal| modal.map(Message::Watchdog)),
+                .map(|modal| modal.map(Message::ResourceThresholds)),
             Page::CpuSetsSoft => self
                 .soft_allocation
                 .modal(&self.settings, cpu_allocation::Kind::Soft)
@@ -3639,10 +3647,13 @@ impl WinderustApp {
                     read_power_source(),
                 )
                 .map(Message::Suspension),
-            Page::Watchdog => self
-                .watchdog
-                .view(&self.settings.global().watchdog, &self.candidates)
-                .map(Message::Watchdog),
+            Page::ResourceThresholds => self
+                .resource_thresholds
+                .view(
+                    &self.settings.global().resource_thresholds,
+                    &self.candidates,
+                )
+                .map(Message::ResourceThresholds),
             Page::InstanceLimits => self
                 .instance_limits
                 .view(
@@ -3887,6 +3898,7 @@ impl WinderustApp {
                 .view(&self.status.action_log_entries, &self.candidates)
                 .map(Message::ActionLog),
             Page::WinderustFeatures
+            | Page::Watchdog
             | Page::CpuControl
             | Page::PriorityControl
             | Page::SettingsHome
@@ -3985,7 +3997,9 @@ fn picked_executable_message(page: Page, path: String) -> Message {
     match page {
         Page::SleepPrevention => Message::SleepPrevention(sleep_prevention::Message::Path(path)),
         Page::AppSuspension => Message::Suspension(app_suspension::Message::Path(path)),
-        Page::Watchdog => Message::Watchdog(watchdog::Message::Path(path)),
+        Page::ResourceThresholds => {
+            Message::ResourceThresholds(resource_thresholds::Message::Path(path))
+        }
         Page::KeepRunning => Message::KeepRunning(keep_running::Message::Path(path)),
         Page::MemoryTrim => Message::Trim(memory_trim::Message::Path(path)),
         Page::TimerResolution => Message::Timer(timer_resolution::Message::Path(path)),
@@ -4014,7 +4028,7 @@ fn picked_executable_message(page: Page, path: String) -> Message {
 
 fn notifications_required(settings: &crate::config::Settings) -> bool {
     settings.general.enabled
-        && (settings.watchdog.notifications_required()
+        && (settings.resource_thresholds.notifications_required()
             || settings.instance_limits.notifications_required())
 }
 
@@ -4057,7 +4071,7 @@ fn page_needs_app_catalog(page: Page) -> bool {
             | Page::SleepPrevention
             | Page::ThreadPriority
             | Page::TimerResolution
-            | Page::Watchdog
+            | Page::ResourceThresholds
     )
 }
 

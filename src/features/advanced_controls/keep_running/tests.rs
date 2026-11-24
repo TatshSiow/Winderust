@@ -521,7 +521,7 @@ fn destructive_intents_dispose_ready_work_before_commit_and_do_not_rearm_on_enab
     let context = context("desktop-a");
     for reason in [
         PauseReason::IntentionalStop,
-        PauseReason::Watchdog,
+        PauseReason::ResourceThresholds,
         PauseReason::Suspend,
     ] {
         let mut manager = retrying(now, &context);
@@ -694,7 +694,7 @@ fn native_failure_after_commit_still_requires_cleanup_even_after_pause_and_resum
     let mut manager = retrying(now, &context);
     let ticket = prepare(&mut manager, at(now, 1), &context);
     commit(&mut manager, at(now, 1), &context, &ticket);
-    manager.pause(PauseReason::Watchdog);
+    manager.pause(PauseReason::ResourceThresholds);
     assert_eq!(
         manager.failed(at(now, 2), &ticket, FailureKind::Retryable),
         CleanupAction::DisposeProvisional(ticket.clone())

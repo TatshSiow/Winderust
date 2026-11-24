@@ -173,8 +173,8 @@ pub(super) struct RuntimeCore {
     memory_priority_controller: MemoryPriorityController,
     memory_trim_manager: MemoryTrimManager,
     memory_trim_controller: MemoryTrimController,
-    watchdog_manager: WatchdogManager,
-    watchdog_restart_cooldowns: Vec<(PathBuf, Instant)>,
+    resource_thresholds_manager: ResourceThresholdsManager,
+    resource_thresholds_restart_cooldowns: Vec<(PathBuf, Instant)>,
     process_termination_controller: ProcessTerminationController,
     timer_resolution_manager: TimerResolutionManager,
     timer_resolution_controller: TimerResolutionController,
@@ -192,22 +192,25 @@ pub(super) struct ProcessControlCommandStatuses {
     pub(super) app_suspension: Option<AppSuspensionSnapshot>,
 }
 
-const WATCHDOG_RESTART_COOLDOWN: Duration = Duration::from_secs(60);
+const RESOURCE_THRESHOLDS_RESTART_COOLDOWN: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum WatchdogRestartOutcome {
+enum ResourceThresholdsRestartOutcome {
     Applied,
     AlreadyRestarted,
     CoolingDown,
 }
 
 #[derive(Default)]
-struct WatchdogActionCycle {
+struct ResourceThresholdsActionCycle {
     termination_handled: BTreeSet<(u32, u64)>,
-    restarts: std::collections::BTreeMap<Vec<(u32, u64)>, Result<WatchdogRestartOutcome, String>>,
+    restarts: std::collections::BTreeMap<
+        Vec<(u32, u64)>,
+        Result<ResourceThresholdsRestartOutcome, String>,
+    >,
 }
 
-impl WatchdogActionCycle {
+impl ResourceThresholdsActionCycle {
     fn skipped_termination_reason(
         &self,
         targets: &[crate::foreground::ProcessActionTarget],
@@ -227,8 +230,10 @@ impl WatchdogActionCycle {
             .collect();
         key.sort_unstable();
         Some(match self.restarts.get(&key) {
-            Some(Ok(WatchdogRestartOutcome::Applied)) => "watchdog.already_restarted",
-            _ => "watchdog.termination_already_handled",
+            Some(Ok(ResourceThresholdsRestartOutcome::Applied)) => {
+                "resource_thresholds.already_restarted"
+            }
+            _ => "resource_thresholds.termination_already_handled",
         })
     }
 
@@ -238,7 +243,7 @@ impl WatchdogActionCycle {
         cooldowns: &mut Vec<(PathBuf, Instant)>,
         now: Instant,
         restart: impl FnOnce() -> crate::control::process_restart::RestartResult,
-    ) -> Result<WatchdogRestartOutcome, String> {
+    ) -> Result<ResourceThresholdsRestartOutcome, String> {
         let mut key: Vec<_> = targets
             .iter()
             .map(|target| (target.id, target.creation_time))
@@ -247,8 +252,8 @@ impl WatchdogActionCycle {
         let entry = match self.restarts.entry(key) {
             Entry::Occupied(entry) => {
                 return match entry.get() {
-                    Ok(WatchdogRestartOutcome::Applied) => {
-                        Ok(WatchdogRestartOutcome::AlreadyRestarted)
+                    Ok(ResourceThresholdsRestartOutcome::Applied) => {
+                        Ok(ResourceThresholdsRestartOutcome::AlreadyRestarted)
                     }
                     outcome => outcome.clone(),
                 };
@@ -262,13 +267,15 @@ impl WatchdogActionCycle {
                     .iter()
                     .any(|(active_path, _)| same_executable_path(active_path, path))
                 {
-                    return Ok(WatchdogRestartOutcome::CoolingDown);
+                    return Ok(ResourceThresholdsRestartOutcome::CoolingDown);
                 }
-                cooldowns.push((path.clone(), now + WATCHDOG_RESTART_COOLDOWN));
+                cooldowns.push((path.clone(), now + RESOURCE_THRESHOLDS_RESTART_COOLDOWN));
             }
             let outcome = restart();
             self.termination_handled.extend(outcome.termination_handled);
-            outcome.result.map(|()| WatchdogRestartOutcome::Applied)
+            outcome
+                .result
+                .map(|()| ResourceThresholdsRestartOutcome::Applied)
         })();
         entry.insert(outcome).clone()
     }
@@ -287,36 +294,36 @@ impl RuntimeCore {
         Ok(runner)
     }
 
-    pub(super) fn run_watchdog_update(
+    pub(super) fn run_resource_thresholds_update(
         &mut self,
         shared: &SharedAutomationState,
         settings: &Settings,
         observations: &mut CycleObservations,
-    ) -> WatchdogSnapshot {
-        use crate::config::{WatchdogAction, WatchdogScope};
+    ) -> ResourceThresholdsSnapshot {
+        use crate::config::{ResourceThresholdsAction, ResourceThresholdsScope};
         use rust_i18n::t;
-        let (mut snapshot, mut events) = self.watchdog_manager.update(
-            &settings.watchdog,
+        let (mut snapshot, mut events) = self.resource_thresholds_manager.update(
+            &settings.resource_thresholds,
             settings.general.enabled,
             observations,
         );
         // Prepare replacements before a simultaneous termination can stop the same app.
-        events.sort_by_key(|event| event.response.action != WatchdogAction::Restart);
-        let mut actions = WatchdogActionCycle::default();
+        events.sort_by_key(|event| event.response.action != ResourceThresholdsAction::Restart);
+        let mut actions = ResourceThresholdsActionCycle::default();
         let mut notification_error = None;
         for event in events {
             let level = t!(if event.critical {
-                "watchdog.critical"
+                "resource_thresholds.critical"
             } else {
-                "watchdog.warning"
+                "resource_thresholds.warning"
             });
             let metric = t!(event.metric.label_key());
             let process_id = event.process_id;
             let value = format!("{:.1}", event.value);
             let comparison = event.comparison.symbol();
             let detail = match (event.scope, process_id) {
-                (WatchdogScope::PerInstance, Some(pid)) => t!(
-                    "watchdog.instance_trigger_detail",
+                (ResourceThresholdsScope::PerInstance, Some(pid)) => t!(
+                    "resource_thresholds.instance_trigger_detail",
                     level = level,
                     app = &event.name,
                     pid = pid,
@@ -325,13 +332,13 @@ impl RuntimeCore {
                     comparison = comparison,
                     threshold = event.response.threshold
                 ),
-                (WatchdogScope::PerInstance, None) => {
+                (ResourceThresholdsScope::PerInstance, None) => {
                     snapshot.last_error =
-                        Some("Watchdog per-instance event has no process ID.".into());
+                        Some("Resource Thresholds per-instance event has no process ID.".into());
                     continue;
                 }
-                (WatchdogScope::Combined, _) => t!(
-                    "watchdog.trigger_detail",
+                (ResourceThresholdsScope::Combined, _) => t!(
+                    "resource_thresholds.trigger_detail",
                     level = level,
                     app = &event.name,
                     count = event.process_count,
@@ -342,21 +349,21 @@ impl RuntimeCore {
                 ),
             }
             .into_owned();
-            let mut action_detail = t!("watchdog.no_action").to_string();
-            if event.response.action != WatchdogAction::None {
-                if !watchdog_action_is_current(shared, settings) {
+            let mut action_detail = t!("resource_thresholds.no_action").to_string();
+            if event.response.action != ResourceThresholdsAction::None {
+                if !resource_thresholds_action_is_current(shared, settings) {
                     continue;
                 }
-                let restarting = event.response.action == WatchdogAction::Restart;
+                let restarting = event.response.action == ResourceThresholdsAction::Restart;
                 let result = if restarting {
                     actions
                         .restart_once(
                             &event.targets,
-                            &mut self.watchdog_restart_cooldowns,
+                            &mut self.resource_thresholds_restart_cooldowns,
                             Instant::now(),
                             || {
                                 self.keep_running
-                                    .pause_targets(&event.targets, PauseReason::Watchdog);
+                                    .pause_targets(&event.targets, PauseReason::ResourceThresholds);
                                 crate::control::process_restart::restart_app(
                                     event.targets.clone(),
                                     settings.general.allow_cross_session_process_control,
@@ -364,19 +371,19 @@ impl RuntimeCore {
                             },
                         )
                         .map(|outcome| match outcome {
-                            WatchdogRestartOutcome::Applied => (
+                            ResourceThresholdsRestartOutcome::Applied => (
                                 ActionLogResult::Applied,
-                                t!("watchdog.restarted", count = event.targets.len()),
+                                t!("resource_thresholds.restarted", count = event.targets.len()),
                             ),
-                            WatchdogRestartOutcome::AlreadyRestarted => (
+                            ResourceThresholdsRestartOutcome::AlreadyRestarted => (
                                 ActionLogResult::Skipped,
-                                t!("watchdog.restart_already_restarted"),
+                                t!("resource_thresholds.restart_already_restarted"),
                             ),
-                            WatchdogRestartOutcome::CoolingDown => (
+                            ResourceThresholdsRestartOutcome::CoolingDown => (
                                 ActionLogResult::Skipped,
                                 t!(
-                                    "watchdog.restart_cooldown",
-                                    seconds = WATCHDOG_RESTART_COOLDOWN.as_secs()
+                                    "resource_thresholds.restart_cooldown",
+                                    seconds = RESOURCE_THRESHOLDS_RESTART_COOLDOWN.as_secs()
                                 ),
                             ),
                         })
@@ -384,7 +391,7 @@ impl RuntimeCore {
                     Ok((ActionLogResult::Skipped, t!(reason)))
                 } else {
                     self.keep_running
-                        .pause_targets(&event.targets, PauseReason::Watchdog);
+                        .pause_targets(&event.targets, PauseReason::ResourceThresholds);
                     let targets = event
                         .targets
                         .iter()
@@ -407,7 +414,7 @@ impl RuntimeCore {
                     batch.into_termination_result().map(|count| {
                         (
                             ActionLogResult::Applied,
-                            t!("watchdog.termination_requested", count = count),
+                            t!("resource_thresholds.termination_requested", count = count),
                         )
                     })
                 };
@@ -420,9 +427,9 @@ impl RuntimeCore {
                         snapshot.last_error = Some(error.clone());
                         action_detail = t!(
                             if restarting {
-                                "watchdog.restart_failed"
+                                "resource_thresholds.restart_failed"
                             } else {
-                                "watchdog.termination_failed"
+                                "resource_thresholds.termination_failed"
                             },
                             error = error
                         )
@@ -431,7 +438,7 @@ impl RuntimeCore {
                     }
                 };
                 self.action_log.record(
-                    ActionLogFeature::Watchdog,
+                    ActionLogFeature::ResourceThresholds,
                     process_id,
                     &event.name,
                     outcome,
@@ -440,9 +447,9 @@ impl RuntimeCore {
             }
             if event.notify {
                 let result = tray::show_notification(
-                    &format!("Winderust Watchdog · {level}"),
+                    &format!("Winderust {} · {level}", t!("nav.resource_thresholds")),
                     &t!(
-                        "watchdog.notification_body",
+                        "resource_thresholds.notification_body",
                         action = action_detail,
                         detail = detail
                     ),
@@ -451,7 +458,7 @@ impl RuntimeCore {
                 let (outcome, reason) = match result {
                     Ok(()) => (
                         ActionLogResult::Applied,
-                        format!("{detail}. {}", t!("watchdog.notification_sent")),
+                        format!("{detail}. {}", t!("resource_thresholds.notification_sent")),
                     ),
                     Err(error) => {
                         let error = error.localized();
@@ -460,7 +467,7 @@ impl RuntimeCore {
                     }
                 };
                 self.action_log.record(
-                    ActionLogFeature::Watchdog,
+                    ActionLogFeature::ResourceThresholds,
                     process_id,
                     &event.name,
                     outcome,
@@ -3403,7 +3410,7 @@ mod settings_tests {
 }
 
 #[cfg(test)]
-mod watchdog_action_tests {
+mod resource_thresholds_action_tests {
     use super::*;
     use crate::{control::process_restart::RestartResult, foreground::ProcessActionTarget};
 
@@ -3420,12 +3427,12 @@ mod watchdog_action_tests {
         let targets = [target(1), target(2)];
         let now = Instant::now();
         for result in [Ok(()), Err("Replacement could not start.".to_owned())] {
-            let mut cycle = WatchdogActionCycle::default();
+            let mut cycle = ResourceThresholdsActionCycle::default();
             assert_eq!(cycle.skipped_termination_reason(&targets), None);
             let expected = if result.is_ok() {
-                "watchdog.already_restarted"
+                "resource_thresholds.already_restarted"
             } else {
-                "watchdog.termination_already_handled"
+                "resource_thresholds.termination_already_handled"
             };
             let _ = cycle.restart_once(&targets, &mut Vec::new(), now, || RestartResult {
                 termination_handled: vec![(1, 1), (2, 2)],
@@ -3440,7 +3447,7 @@ mod watchdog_action_tests {
             replacement.creation_time += 1;
             assert_eq!(cycle.skipped_termination_reason(&[replacement]), None);
         }
-        let mut cycle = WatchdogActionCycle::default();
+        let mut cycle = ResourceThresholdsActionCycle::default();
         let _ = cycle.restart_once(&[target(3)], &mut Vec::new(), now, || RestartResult {
             termination_handled: vec![(3, 3)],
             result: Ok(()),
@@ -3450,7 +3457,7 @@ mod watchdog_action_tests {
         cycle.termination_handled.insert((2, 2));
         assert_eq!(
             cycle.skipped_termination_reason(&targets),
-            Some("watchdog.termination_already_handled")
+            Some("resource_thresholds.termination_already_handled")
         );
         assert_eq!(cycle.skipped_termination_reason(&[]), None);
     }
@@ -3461,7 +3468,7 @@ mod watchdog_action_tests {
             Ok(()),
             Err("Stopped one process; another was denied.".to_owned()),
         ] {
-            let mut cycle = WatchdogActionCycle::default();
+            let mut cycle = ResourceThresholdsActionCycle::default();
             let target = |id| ProcessActionTarget {
                 id,
                 name: "app.exe".into(),
@@ -3475,10 +3482,10 @@ mod watchdog_action_tests {
             let mut cooldowns = Vec::new();
             let mut launches = 0;
             for (batch, success) in [
-                (targets.to_vec(), WatchdogRestartOutcome::Applied),
+                (targets.to_vec(), ResourceThresholdsRestartOutcome::Applied),
                 (
                     targets.into_iter().rev().collect(),
-                    WatchdogRestartOutcome::AlreadyRestarted,
+                    ResourceThresholdsRestartOutcome::AlreadyRestarted,
                 ),
             ] {
                 assert_eq!(
@@ -3496,8 +3503,9 @@ mod watchdog_action_tests {
             assert_eq!(cycle.termination_handled, BTreeSet::from([(1, 1)]));
             let mut replacement = target(3);
             replacement.executable_path = "c:/apps/APP.exe".into();
-            let mut next_cycle = WatchdogActionCycle::default();
-            let just_before_expiry = start + WATCHDOG_RESTART_COOLDOWN - Duration::from_millis(1);
+            let mut next_cycle = ResourceThresholdsActionCycle::default();
+            let just_before_expiry =
+                start + RESOURCE_THRESHOLDS_RESTART_COOLDOWN - Duration::from_millis(1);
             assert_eq!(
                 next_cycle.restart_once(
                     std::slice::from_ref(&replacement),
@@ -3505,7 +3513,7 @@ mod watchdog_action_tests {
                     just_before_expiry,
                     || panic!("Cooldown must not attempt a restart"),
                 ),
-                Ok(WatchdogRestartOutcome::CoolingDown)
+                Ok(ResourceThresholdsRestartOutcome::CoolingDown)
             );
             assert_eq!(
                 next_cycle.skipped_termination_reason(std::slice::from_ref(&replacement)),
@@ -3521,19 +3529,19 @@ mod watchdog_action_tests {
                         result: Ok(()),
                     }
                 },),
-                Ok(WatchdogRestartOutcome::Applied)
+                Ok(ResourceThresholdsRestartOutcome::Applied)
             );
             assert_eq!(
-                WatchdogActionCycle::default().restart_once(
+                ResourceThresholdsActionCycle::default().restart_once(
                     &[replacement],
                     &mut cooldowns,
-                    start + WATCHDOG_RESTART_COOLDOWN,
+                    start + RESOURCE_THRESHOLDS_RESTART_COOLDOWN,
                     || RestartResult {
                         termination_handled: vec![(3, 3)],
                         result: Ok(())
                     },
                 ),
-                Ok(WatchdogRestartOutcome::Applied)
+                Ok(ResourceThresholdsRestartOutcome::Applied)
             );
         }
     }

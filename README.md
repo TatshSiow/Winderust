@@ -42,11 +42,13 @@
 - CPU Control - CPU Limiter, CPU Sets (Soft), Processor Affinity (Hard), and Cache Domain presets.
 - Priority Control - Process Priority, Thread Priority, Dynamic Priority Boost, I/O Priority, GPU Priority, and Memory Priority.
 - Memory Trim - trim background process working sets.
-- Watchdog - CPU and memory alerts for combined usage by path or for individual process instances. Terminate and Restart require Combined by path, an exact executable path, and an At or above threshold.
-- App Suspension and Timer Resolution for selected apps.
-- Sleep Prevention - ask Windows to stay awake while selected apps run, with an option to keep the display on.
-- Keep Running - relaunch selected desktop apps after their last instance exits. Start the app yourself once to arm its rule.
-- Instance Limits - get notified when an app exceeds your chosen instance count in your Windows session. Launches still proceed.
+- Watchdog groups five app automation features.
+  - Resource Thresholds - CPU and memory alerts for combined usage by path or for individual process instances. Terminate and Restart require Combined by path, an exact executable path, and an At or above threshold.
+  - Keep Running - relaunch selected desktop apps after their last instance exits. Start the app yourself once to arm its rule.
+  - Sleep Prevention - ask Windows to stay awake while selected apps run, with an option to keep the display on.
+  - Instance Limits - get notified when an app exceeds your chosen instance count in your Windows session. Launches still proceed.
+  - App Suspension - pause selected apps when inactive.
+- Timer Resolution for selected apps.
 - Instance Balancing - distribute whole-core CPU Sets (Soft) preferences across eligible app instances in your Windows session.
 - Process List - inspect running processes, apply controls, and edit per-app rules.
 - Action Log - review action history and export it to CSV.

@@ -163,7 +163,7 @@ hover/press; background shading supplies feedback.
 - Keep Stop process and Stop process tree consistent from their initiating action through the confirmation title and button. Tree confirmations name child processes, and both warnings retain the unsaved-work consequence.
 - Report `Efficiency mode` only when the process has both EcoQoS and `IDLE_PRIORITY_CLASS`, matching Task Manager rather than treating EcoQoS alone as full Efficiency mode.
 - Filters, column visibility, and memory value/percentage controls belong in the Settings side panel.
-- Language and Appearance owns the enabled-feature counts toggle. When enabled, the secondary navigation header shows a numeric pill for Winderust Features, Power Plan Control, Priority Control, and CPU Control based on the section's enabled modules; the primary rail stays unbadged.
+- Language and Appearance owns the enabled-feature counts toggle. When enabled, the secondary navigation header shows a numeric pill for Winderust Features, Watchdog, Power Plan Control, Priority Control, and CPU Control based on the section's enabled modules. The primary rail stays unbadged.
 - Language and Appearance separately owns the feature-card status toggle. When enabled, shared landing and search-result cards show Enabled or Disabled pills only for pages backed by a top-level feature switch; pages without a single enabled state remain unbadged.
 - Editable policy cells should use inline dropdown controls. Avoid modal flows for simple policy edits.
 - Columns are resizable and initially fit their content. Double-click a divider to auto-fit; the last visible column fills remaining width. Preserve the layout tests.
@@ -303,8 +303,18 @@ hover/press; background shading supplies feedback.
 
 ### Watchdog
 
-- Keep Watchdog under Winderust Features, global across power sources, with the shared
-  app picker, rule table, and Info / Status tabs. CPU and Memory columns show warning
+- Place Watchdog after Winderust Features in the primary navigation. Show Resource
+  Thresholds, Keep Running, Sleep Prevention, Instance Limits, and App Suspension
+  in that order. Reuse the existing landing-page cards and link each one to its
+  own editor. Keep enable controls, rules, and status per feature.
+- Keep Instance Balancing under CPU Control. Advanced Controls contains Timer
+  Resolution and Win32 Priority Separation. Winderust Features contains
+  Efficiency Mode and Memory Trim.
+
+### Resource Thresholds
+
+- Keep Resource Thresholds global across power sources, with the shared app
+  picker, rule table, and Info / Status tabs. CPU and Memory columns show warning
   and critical thresholds, and the Memory column identifies the selected metric.
   Pencil dialogs show app identity and an optional sustained duration shared by
   the CPU / Memory tabs. A blank duration inherits the page default. Drafts apply
@@ -318,9 +328,9 @@ hover/press; background shading supplies feedback.
 - Match Preview reads a fresh process snapshot when opened or refreshed. It
   lists matches by PID and full path, and identifies unavailable instances.
   Matching rows identify other enabled rules by their position in the current
-  Watchdog rule list.
+  Resource Thresholds rule list.
   For an Executable path rule, it also lists same-named executables elsewhere.
-- Each resource tab starts with its Enable CPU Watchdog or Enable Memory Watchdog
+- Each resource tab starts with its Enable CPU monitoring or Enable memory monitoring
   toggle. When enabled, the comparison appears by the tabs and the thresholds
   appear below the toggle. At or below
   clears the draft actions for that resource and uses notifications. For monitors
@@ -335,7 +345,7 @@ hover/press; background shading supplies feedback.
 - Notifications lead with the action result, including cooldown skips, then trigger
   details. Keep the registered tray icon for enabled notifications independently of
   hide-on-close and respect Windows notification suppression. Runtime sequencing
-  belongs in the [Watchdog contract](runtime-contracts.md#watchdog).
+  belongs in the [Resource Thresholds contract](runtime-contracts.md#resource-thresholds).
 
 ### Appearance, About, and Adaptive priority details
 
