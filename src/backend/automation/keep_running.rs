@@ -259,6 +259,23 @@ impl<P: Platform> Default for Coordinator<P> {
 
 impl<P: Platform> Coordinator<P> {
     pub(super) fn sync_settings(&mut self, settings: &KeepRunningSettings, general_enabled: bool) {
+        let enabled = general_enabled && settings.enabled;
+        if enabled
+            && self.owners.len() == settings.rules.len()
+            && self
+                .owners
+                .iter()
+                .zip(&settings.rules)
+                .all(|(owner, rule)| {
+                    owner.active
+                        && rule.enabled
+                        && owner.rule.as_ref() == rule
+                        && owner.policy.state() != KeepRunningState::Disabled
+                })
+        {
+            return;
+        }
+
         let flight_owner = self.flight.as_ref().map(|flight| &flight.owner);
         for owner in &mut self.owners {
             owner.active = false;
@@ -312,7 +329,7 @@ impl<P: Platform> Coordinator<P> {
                 owner.replacement_identity = None;
                 owner.retry_error = None;
             }
-            if general_enabled && settings.enabled && rule.enabled {
+            if enabled && rule.enabled {
                 owner.policy.enable();
             } else {
                 owner.policy.disable();
