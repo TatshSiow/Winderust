@@ -429,8 +429,16 @@ impl Editor {
         live: &'a Settings,
         candidates: &'a [super::app_picker::Candidate],
         interrupt_timing: &'a super::interrupt_timing::State,
+        shell_height: f32,
     ) -> Element<'a, Message> {
-        self.tuning_view(live, candidates, Some(interrupt_timing))
+        // Use the shell height so the Save notice can appear without remounting focused fields.
+        const PINNED_HEADER_MIN_HEIGHT: f32 = 750.0;
+        self.tuning_view(
+            live,
+            candidates,
+            Some(interrupt_timing),
+            shell_height < PINNED_HEADER_MIN_HEIGHT,
+        )
     }
 
     pub(super) fn preset_modal<'a>(
@@ -509,7 +517,7 @@ impl Editor {
                 .spacing(design::space::SMALL),
             ));
         }
-        body = body.push(self.tuning_view(live, candidates, None));
+        body = body.push(self.tuning_view(live, candidates, None, false));
         if !self.error.is_empty() {
             body = body.push(text(self.error.clone()).style(text::danger));
         }
@@ -526,6 +534,7 @@ impl Editor {
         live: &'a Settings,
         candidates: &'a [super::app_picker::Candidate],
         interrupt_timing: Option<&'a super::interrupt_timing::State>,
+        scroll_live_header: bool,
     ) -> Element<'a, Message> {
         let preset = interrupt_timing.is_none();
         let s = if preset {
@@ -892,22 +901,27 @@ impl Editor {
         if !preset && !self.error.is_empty() {
             body = body.push(text(self.error.clone()).style(text::danger));
         }
-        header
-            .push(
-                scrollable(super::motion::wrap(
-                    body,
-                    true,
-                    super::motion::Effect::Content(tab as u64),
-                ))
-                .id(if preset {
-                    "adaptive-engine-preset-content"
-                } else {
-                    "adaptive-engine-content"
-                })
+        let body = super::motion::wrap(body, true, super::motion::Effect::Content(tab as u64));
+        if scroll_live_header {
+            scrollable(header.push(body))
+                .id("adaptive-engine-content")
                 .width(Fill)
-                .height(Fill),
-            )
-            .into()
+                .height(Fill)
+                .into()
+        } else {
+            header
+                .push(
+                    scrollable(body)
+                        .id(if preset {
+                            "adaptive-engine-preset-content"
+                        } else {
+                            "adaptive-engine-content"
+                        })
+                        .width(Fill)
+                        .height(Fill),
+                )
+                .into()
+        }
     }
     pub(super) fn presets_panel<'a>(&'a self, live: &'a SettingsEditor) -> Element<'a, Message> {
         let mut rail = preset_list().push(super::widgets::heading(
@@ -1246,7 +1260,7 @@ mod tests {
                 settings
                     .adaptive_engine_process
                     .cpu_pressure_restraint_enabled = frame % 2 == 0;
-                let mut view = editor.view(&settings, &[], &interrupt_timing);
+                let mut view = editor.view(&settings, &[], &interrupt_timing, 860.0);
                 tree.diff(view.as_widget());
                 let node = view.as_widget_mut().layout(
                     &mut tree,
@@ -1295,9 +1309,114 @@ mod tests {
             editor.expanded[0].fill(expanded);
             for width in [430.0, 1040.0] {
                 super::super::scrolling::check_scroll_damage(
-                    editor.view(&settings, &[], &interrupt_timing),
+                    editor.view(&settings, &[], &interrupt_timing, 860.0),
                     iced::Rectangle::with_size(iced::Size::new(width, 700.0)),
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn live_tabs_have_room_to_scroll_at_minimum_height() {
+        use iced::advanced::{
+            layout,
+            widget::{
+                operation::{Focusable, Scrollable, TextInput},
+                Id, Operation, Tree,
+            },
+            Layout,
+        };
+        use iced::{Rectangle, Size, Vector};
+
+        #[derive(Default)]
+        struct EditorScroll {
+            bounds: Option<(Rectangle, Rectangle)>,
+            focus_first_field: bool,
+            next_is_first_field: bool,
+            first_field_focused: Option<bool>,
+        }
+        impl Operation for EditorScroll {
+            fn traverse(&mut self, visit: &mut dyn FnMut(&mut dyn Operation)) {
+                visit(self);
+            }
+
+            fn scrollable(
+                &mut self,
+                id: Option<&Id>,
+                bounds: Rectangle,
+                content_bounds: Rectangle,
+                _: Vector,
+                _: &mut dyn Scrollable,
+            ) {
+                if id == Some(&Id::from("adaptive-engine-content")) {
+                    self.bounds = Some((bounds, content_bounds));
+                }
+            }
+
+            fn text_input(&mut self, _: Option<&Id>, _: Rectangle, _: &mut dyn TextInput) {
+                self.next_is_first_field = self.first_field_focused.is_none();
+            }
+
+            fn focusable(&mut self, _: Option<&Id>, _: Rectangle, state: &mut dyn Focusable) {
+                if std::mem::take(&mut self.next_is_first_field) {
+                    if self.focus_first_field {
+                        state.focus();
+                    }
+                    self.first_field_focused = Some(state.is_focused());
+                }
+            }
+        }
+
+        let mut settings = Settings::default();
+        settings.adaptive_engine_process.custom_rules = (0..8)
+            .map(|index| ProcessExclusionRule {
+                executable_path: format!(r"C:\Apps\app-{index}.exe"),
+                ..Default::default()
+            })
+            .collect();
+        let settings = SettingsEditor::with_settings(settings);
+        let interrupt_timing = super::super::interrupt_timing::State::default();
+        let renderer = iced::Renderer::new(design::typography::FONT, iced::Pixels(14.0));
+        for tab in TuningTab::ALL {
+            let mut editor = Editor {
+                tuning_tabs: [tab, TuningTab::default()],
+                ..Editor::default()
+            };
+            let mut tree = Tree::empty();
+            for (shell_height, editor_height) in [
+                (583.0, 320.0), // Minimum window with Info and Save visible.
+                (683.0, 527.0), // Before an edit.
+                (683.0, 421.0), // The same window after Save appears.
+                (749.0, 593.0), // Just below the layout breakpoint.
+            ] {
+                let checking_focus = matches!(editor_height, 527.0 | 421.0);
+                editor.expanded[0][TuningGroup::SharedDetection as usize] = checking_focus;
+                let workspace = Rectangle::with_size(Size::new(466.0, editor_height));
+                let mut view = editor.view(&settings, &[], &interrupt_timing, shell_height);
+                tree.diff(view.as_widget());
+                let node = view.as_widget_mut().layout(
+                    &mut tree,
+                    &renderer,
+                    &layout::Limits::new(Size::ZERO, workspace.size()),
+                );
+                let mut scroll = EditorScroll {
+                    focus_first_field: editor_height == 527.0,
+                    ..EditorScroll::default()
+                };
+                view.as_widget_mut()
+                    .operate(&mut tree, Layout::new(&node), &renderer, &mut scroll);
+                let (viewport, content) = scroll.bounds.expect("live editor scroll area");
+                assert_eq!(viewport, workspace, "{tab:?}");
+                if editor_height == 320.0 {
+                    assert!(
+                        content.height > viewport.height,
+                        "{tab:?} fits without scrolling"
+                    );
+                }
+                if tab == TuningTab::CpuBehaviour && checking_focus {
+                    assert_eq!(scroll.first_field_focused, Some(true));
+                }
+                super::super::scrolling::check_scroll_damage(view, workspace);
             }
         }
     }

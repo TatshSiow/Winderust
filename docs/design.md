@@ -182,6 +182,9 @@ hover/press; background shading supplies feedback.
 - Within Adaptive Engine, CPU Behaviour has no separate master switch;
   CPU Pressure Restraint, Limit Background Processors, and Dynamic Resource Zones own independent switches and retain their
   configuration while Adaptive Engine is off.
+- In short Adaptive Engine workspaces, the feature toggle, preset picker, and
+  editor tabs scroll with the selected tab. Keep the power-source toolbar and
+  Save footer outside this scroll area.
 - Adaptive Engine uses the right-rail Info / Status / Presets tabs. Built-in presets are read-only. Custom presets can be added, renamed, refreshed from the current CPU Behaviour tuning, and deleted. The live page also exposes Custom Rules. The preset editor spans the available modal width and keeps its own draft.
 - Priority Control uses Focus / Visible Window / Background dropdown columns and expandable detail cards. Turning a row off does not lock its configuration. Runtime precedence and protection rules live in [Runtime contracts](runtime-contracts.md).
 - Adaptive Processor Power lives under Power Plan Control. Its Plugged In and On Battery editors each have an enable switch, off by default, with a Preset dropdown below it. Both editors share the preset library. The dropdown stages tuning for the selected source. The Presets tab opens a read-only preview of the base policy and demand values for that source. Use preset stages the preview, and closing it preserves existing edits. Add preset names a copy of the selected source's tuning. List edits and tuning use the shared Save and Discard flow. Configuration remains editable while the feature is off.

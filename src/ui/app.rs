@@ -3145,10 +3145,10 @@ impl WinderustApp {
     }
 
     fn view_content(&self) -> Element<'_, Message> {
-        iced::widget::responsive(|size| self.view_content_at_width(size.width)).into()
+        iced::widget::responsive(|size| self.view_content_at_size(size)).into()
     }
 
-    fn view_content_at_width(&self, width: f32) -> Element<'_, Message> {
+    fn view_content_at_size(&self, size: iced::Size) -> Element<'_, Message> {
         let observed_power_source = std::cell::OnceCell::new();
         let read_power_source =
             || *observed_power_source.get_or_init(crate::backend::power_source::is_plugged_in);
@@ -3159,7 +3159,7 @@ impl WinderustApp {
                 content
             }
         };
-        let (navigation_width, side_panel_width, page_padding) = shell_widths(width);
+        let (navigation_width, side_panel_width, page_padding) = shell_widths(size.width);
         let mut primary = column![].spacing(design::space::TIGHT).width(Fill);
         let mut utilities = column![].spacing(design::space::TIGHT).width(Fill);
         for page in navigation::rail_pages(self.settings.global().advanced.show_advanced_controls) {
@@ -3354,9 +3354,11 @@ impl WinderustApp {
             || widgets::settings_card(self.save_notice(settings_are_pending)).width(360);
         let content = container(super::motion::wrap(
             super::motion::wrap(
-                super::scrolling::repaint_group(
-                    self.page_view(settings_are_pending, read_power_source),
-                ),
+                super::scrolling::repaint_group(self.page_view(
+                    settings_are_pending,
+                    read_power_source,
+                    size.height,
+                )),
                 true,
                 super::motion::Effect::Content(self.power_source as u64),
             ),
@@ -3647,6 +3649,7 @@ impl WinderustApp {
         &self,
         settings_are_pending: bool,
         read_power_source: impl FnOnce() -> Option<bool>,
+        shell_height: f32,
     ) -> Element<'_, Message> {
         let general = &self.settings.global().general;
         let runtime_power_rules = || {
@@ -3772,7 +3775,12 @@ impl WinderustApp {
                 .map(|m| Message::Allocation(cpu_allocation::Kind::Hard, m)),
             Page::AdaptiveEngine => self
                 .adaptive
-                .view(&self.settings, &self.candidates, &self.interrupt_timing)
+                .view(
+                    &self.settings,
+                    &self.candidates,
+                    &self.interrupt_timing,
+                    shell_height,
+                )
                 .map(Message::Adaptive),
             Page::ProcessPriority => self
                 .priority
