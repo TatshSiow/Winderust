@@ -20,7 +20,9 @@ const DOCK_FOCUS_WIDE: usize = 106;
 const DOCK_FOCUS_COMPACT: usize = 107;
 const MEMORY_TRIM_PARTIAL: usize = 108;
 const MEMORY_TRIM_UNKNOWN: usize = 109;
-const EXTRA_STATES: usize = 110;
+const RAIL_RESIZE_TALL: usize = 110;
+const RAIL_RESIZE_COMPACT: usize = 111;
+const EXTRA_STATES: usize = 112;
 pub(super) struct Run {
     pages: Vec<Page>,
     index: usize,
@@ -56,6 +58,11 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
     let extra = run.index.checked_sub(run.pages.len() * 2);
     if extra == Some(EXTRA_STATES) {
         return Some(app.shutdown());
+    }
+    if extra == Some(RAIL_RESIZE_COMPACT) && run.ticks == 0 {
+        // Exercise the native resize without navigating or changing keyboard focus.
+        run.ticks = 1;
+        return Some(iced::window::resize(window, iced::Size::new(900.0, 620.0)));
     }
     if run.ticks == 0 {
         let chinese = extra.map_or(run.index >= run.pages.len(), |index| {
@@ -112,6 +119,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             Some(4 | 6..=10) => Page::AdaptiveEngine,
             Some(5 | 70 | 71) => Page::AdaptiveProcessorPower,
             Some(11 | MEMORY_TRIM_PARTIAL | MEMORY_TRIM_UNKNOWN) => Page::MemoryTrim,
+            Some(RAIL_RESIZE_TALL) => Page::AdvancedControls,
             Some(12 | 82) => Page::ByFocus,
             Some(13) => Page::Home,
             Some(14) => Page::ProcessList,
@@ -179,6 +187,10 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
         };
         rust_i18n::set_locale(app.settings.general.language.locale());
         app.appearance = settings_pages::theme(&app.settings.general);
+        if extra == Some(RAIL_RESIZE_TALL) {
+            app.settings
+                .edit_global(|settings| settings.advanced.show_advanced_controls = true);
+        }
         if matches!(
             extra,
             Some(CONTRAST_DARK_APPEARANCE | CONTRAST_LIGHT_PROCESS_LIST)
@@ -1332,7 +1344,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             Some(30) => iced::Size::new(1280.0, 720.0),
             Some(31) => iced::Size::new(1440.0, 900.0),
             Some(32) => iced::Size::new(1920.0, 720.0),
-            Some(33) => iced::Size::new(900.0, 1000.0),
+            Some(33 | RAIL_RESIZE_TALL) => iced::Size::new(900.0, 1000.0),
             Some(34) => iced::Size::new(1536.0, 960.0),
             Some(70) => iced::Size::new(1120.0, 920.0),
             _ => iced::Size::new(
@@ -1449,6 +1461,16 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             4
         }
     {
+        if matches!(extra, Some(RAIL_RESIZE_TALL | RAIL_RESIZE_COMPACT)) {
+            assert_eq!(app.page, Page::AdvancedControls);
+            assert!(app.settings.global().advanced.show_advanced_controls);
+            let height = if extra == Some(RAIL_RESIZE_TALL) {
+                1000.0
+            } else {
+                620.0
+            };
+            assert!((app.window_settings.size.height - height).abs() <= 1.0);
+        }
         if matches!(extra, Some(62..=65)) {
             for rule in &mut Arc::make_mut(&mut app.status.feature_status)
                 .instance_limits

@@ -28,6 +28,14 @@ pub(super) fn reveal<M: Send + 'static>(target: Option<Id>) -> iced::Task<M> {
     })
 }
 
+pub(super) fn reveal_within<M: Send + 'static>(scope: Id, fallback: Option<Id>) -> iced::Task<M> {
+    iced::advanced::widget::operate(Reveal {
+        target: fallback,
+        focus_scope: Some(scope),
+        ..Reveal::default()
+    })
+}
+
 struct FocusAt {
     target: Option<usize>,
     ordinal: usize,
@@ -69,11 +77,14 @@ struct Scroll {
     bounds: Rectangle,
     content: Rectangle,
     translation: Vector,
+    is_focus_scope: bool,
 }
 
 #[derive(Default)]
 struct Reveal {
     target: Option<Id>,
+    focus_scope: Option<Id>,
+    found_scoped_focus: bool,
     ordinal: usize,
     pending: Option<Scroll>,
     ancestors: Vec<Scroll>,
@@ -96,7 +107,7 @@ impl<T: Send + 'static> Operation<T> for Reveal {
 
     fn scrollable(
         &mut self,
-        _: Option<&Id>,
+        id: Option<&Id>,
         bounds: Rectangle,
         content: Rectangle,
         translation: Vector,
@@ -121,16 +132,27 @@ impl<T: Send + 'static> Operation<T> for Reveal {
                 bounds,
                 content,
                 translation,
+                is_focus_scope: self
+                    .focus_scope
+                    .as_ref()
+                    .is_some_and(|scope| id == Some(scope)),
             });
         }
     }
 
     fn focusable(&mut self, id: Option<&Id>, mut target: Rectangle, state: &mut dyn Focusable) {
-        if self.apply
-            || !self
-                .target
-                .as_ref()
-                .map_or_else(|| state.is_focused(), |target| id == Some(target))
+        if self.apply {
+            return;
+        }
+        let focused = state.is_focused();
+        if focused && self.ancestors.iter().any(|scroll| scroll.is_focus_scope) {
+            self.found_scoped_focus = true;
+            self.changes.clear();
+        } else if self.found_scoped_focus
+            || !self.target.as_ref().map_or_else(
+                || self.focus_scope.is_none() && focused,
+                |target| id == Some(target),
+            )
         {
             return;
         }
@@ -319,6 +341,8 @@ mod tests {
     fn reveals_nested_controls_by_focus_or_id_without_scrolling_siblings() {
         use crate::ui::{navigation, navigation_flyout, Page};
 
+        const FOCUS_SCOPE: &str = "test-focus-scope";
+
         #[derive(Default)]
         struct Snapshot {
             count: usize,
@@ -347,7 +371,7 @@ mod tests {
                 translation: Vector,
                 _: &mut dyn operation::Scrollable,
             ) {
-                assert!(id.is_none(), "reveal must work without widget IDs");
+                assert!(id.is_none() || id == Some(&Id::from(FOCUS_SCOPE)));
                 self.scrolls.push((bounds, translation));
             }
         }
@@ -415,6 +439,7 @@ mod tests {
                 inner,
                 iced::widget::Space::new().height(100),
             ])
+            .id(FOCUS_SCOPE)
             .width(180)
             .height(iced::Fill);
             let mut view: Element<'_, ()> = iced::widget::row![sibling, parent].into();
@@ -480,6 +505,7 @@ mod tests {
                 &renderer,
                 Box::new(Reveal {
                     target: Some(navigation::rail_id(Some(Page::About))),
+                    focus_scope: Some(FOCUS_SCOPE.into()),
                     ..Reveal::default()
                 }),
             );
@@ -494,6 +520,31 @@ mod tests {
             let visible = outer.intersection(&inner).unwrap();
             assert!(target.y >= visible.y);
             assert!(target.y + target.height <= visible.y + visible.height);
+
+            run(
+                &mut view,
+                &mut tree,
+                &node,
+                &renderer,
+                Box::new(operation::focusable::focus_next::<()>()),
+            );
+            let before = snapshot(&mut view, &mut tree, &node, &renderer);
+            run(
+                &mut view,
+                &mut tree,
+                &node,
+                &renderer,
+                Box::new(Reveal {
+                    target: Some(navigation::rail_id(Some(Page::About))),
+                    focus_scope: Some(FOCUS_SCOPE.into()),
+                    ..Reveal::default()
+                }),
+            );
+            let after = snapshot(&mut view, &mut tree, &node, &renderer);
+            assert_eq!(after.focused, before.focused);
+            assert_eq!(after.focused.unwrap().0, 1);
+            assert_eq!(after.scrolls[0], before.scrolls[0]);
+            assert_eq!(after.scrolls[2].1.y, 0.0);
         }
     }
 

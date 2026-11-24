@@ -1915,6 +1915,7 @@ impl WinderustApp {
             }
             Message::WindowResized(window, size) => {
                 if self.window == Some(window) {
+                    let shrank = self.maximized || size.height < self.window_settings.size.height;
                     if let Some(hwnd) = self.hwnd {
                         self.maximized = crate::platform::windows::window_dpi::is_maximized(
                             hwnd as windows_sys::Win32::Foundation::HWND,
@@ -1922,6 +1923,11 @@ impl WinderustApp {
                     }
                     if self.window_is_restored() && size.width > 0.0 && size.height > 0.0 {
                         self.window_settings.size = size;
+                        if shrank {
+                            return navigation::reveal_after_resize(
+                                self.page.section_landing_page(),
+                            );
+                        }
                     }
                 }
             }

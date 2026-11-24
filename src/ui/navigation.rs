@@ -157,6 +157,15 @@ pub(super) fn rail_id(page: Option<Page>) -> iced::advanced::widget::Id {
     format!("navigation-{page:?}").into()
 }
 
+const PRIMARY_RAIL_ID: &str = "navigation-primary";
+
+pub(super) fn reveal_after_resize<M: Send + 'static>(section: Page) -> iced::Task<M> {
+    super::keyboard_focus::reveal_within(
+        PRIMARY_RAIL_ID.into(),
+        (!is_utility(section)).then(|| rail_id(Some(section))),
+    )
+}
+
 pub(super) fn item_style(
     theme: &Theme,
     status: iced::widget::button::Status,
@@ -272,7 +281,9 @@ pub(super) fn rail<'a, Message: 'a>(
     container(
         column![
             container(search).padding([0, inset]),
-            super::scrolling::navigation_scrollable(primary).height(iced::Fill),
+            super::scrolling::navigation_scrollable(primary)
+                .id(PRIMARY_RAIL_ID)
+                .height(iced::Fill),
             container(rule::horizontal(1)).padding([0, inset]),
             container(utilities).padding([0, inset]),
         ]
