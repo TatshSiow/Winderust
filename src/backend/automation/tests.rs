@@ -1294,6 +1294,36 @@ fn explicit_cpu_allocation_paths_exclude_only_active_usable_rules() {
 }
 
 #[test]
+fn priority_source_schedule_preserves_verified_and_common_policy_cadence() {
+    let mut settings = Settings::default();
+    settings.general.enabled = true;
+    settings.battery_profile_mut().process_priority.enabled = true;
+    let schedule = |settings: &Settings, source, watcher, changed| {
+        priority_source_schedule(
+            settings,
+            active_power_source_settings(settings, source),
+            source,
+            watcher,
+            changed,
+            |profile| (&profile.process_priority, profile.process_priority.enabled),
+        )
+    };
+    assert!(!schedule(&settings, Some(true), true, false).source_recheck);
+    assert!(schedule(&settings, Some(true), false, false).source_recheck);
+    assert!(schedule(&settings, Some(false), false, false).refresh_required);
+    assert!(!schedule(&settings, Some(false), false, false).source_recheck);
+
+    let entering = schedule(&settings, None, true, true);
+    assert!(entering.refresh_required && entering.waiting_for_source && entering.source_recheck);
+    let stable = schedule(&settings, None, false, false);
+    assert!(!stable.refresh_required && stable.waiting_for_source && stable.source_recheck);
+
+    settings.process_priority = settings.battery_profile().process_priority.clone();
+    let common = schedule(&settings, None, false, false);
+    assert!(common.refresh_required && !common.waiting_for_source && !common.source_recheck);
+}
+
+#[test]
 fn background_efficiency_source_difference_needs_an_enabled_policy() {
     let mut settings = Settings::default();
     settings.general.theme_mode = AppThemeMode::Dark;

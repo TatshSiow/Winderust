@@ -555,7 +555,7 @@ impl RuntimeCore {
         if let Err(error) = self.memory_priority_controller.shutdown() {
             errors.push(format!("Memory Priority restoration failed: {error}"));
         }
-        self.run_gpu_priority_update(&settings, &mut observations);
+        self.run_gpu_priority_update(&settings, false, &mut observations);
         if let Err(error) = self.gpu_priority_controller.shutdown() {
             errors.push(format!("GPU Priority restoration failed: {error}"));
         }
@@ -569,7 +569,7 @@ impl RuntimeCore {
         if let Err(error) = self.thread_priority_controller.shutdown() {
             errors.push(format!("Thread Priority restoration failed: {error}"));
         }
-        self.run_process_priority_update(&settings, &mut observations);
+        self.run_process_priority_update(&settings, false, &mut observations);
         self.run_io_priority_update(&settings, &mut observations);
         if let Err(error) = self.io_priority_controller.shutdown() {
             errors.push(format!("I/O Priority restoration failed: {error}"));
@@ -1315,8 +1315,15 @@ impl RuntimeCore {
     pub(super) fn run_process_priority_update(
         &mut self,
         settings: &Settings,
+        waiting_for_power_source: bool,
         observations: &mut CycleObservations,
     ) -> ProcessPrioritySnapshot {
+        if waiting_for_power_source {
+            return self.process_priority_manager.pause_for_power_source(
+                &mut self.priority_efficiency_controller,
+                &mut self.action_log,
+            );
+        }
         self.process_priority_manager.update(
             &mut self.priority_efficiency_controller,
             &settings.process_priority,
@@ -1907,8 +1914,14 @@ impl RuntimeCore {
     pub(super) fn run_gpu_priority_update(
         &mut self,
         settings: &Settings,
+        waiting_for_power_source: bool,
         observations: &mut CycleObservations,
     ) -> GpuPrioritySnapshot {
+        if waiting_for_power_source {
+            return self
+                .gpu_priority_manager
+                .pause_for_power_source(&mut self.gpu_priority_controller, &mut self.action_log);
+        }
         self.gpu_priority_manager.update(
             &mut self.gpu_priority_controller,
             &settings.gpu_priority,

@@ -39,6 +39,7 @@ pub struct GpuPrioritySnapshot {
     pub failed_processes: usize,
     pub auto_excluded_processes: Vec<String>,
     pub(crate) observation_paused: bool,
+    pub(crate) waiting_for_power_source: bool,
     pub last_error: Option<String>,
 }
 
@@ -328,7 +329,20 @@ impl GpuPriorityManager {
             failed_processes: failures.count,
             auto_excluded_processes: auto_excluded_processes.into_iter().collect(),
             observation_paused: false,
+            waiting_for_power_source: false,
             last_error: failures.last_error,
+        }
+    }
+
+    pub(crate) fn pause_for_power_source(
+        &mut self,
+        controller: &mut GpuPriorityController,
+        action_log: &mut ActionLog,
+    ) -> GpuPrioritySnapshot {
+        self.non_release_failures = GpuPriorityFailures::default();
+        GpuPrioritySnapshot {
+            waiting_for_power_source: true,
+            ..self.paused_snapshot(controller, action_log, "power source is unknown", None)
         }
     }
 

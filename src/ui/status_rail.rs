@@ -753,6 +753,13 @@ fn sleep_prevention_state(sleep: Option<&SleepPreventionSnapshot>) -> FeatureRun
 
 fn waiting_for_power_source(page: Page, runtime: &RuntimeStatusSnapshot) -> bool {
     match page {
+        Page::ProcessPriority => {
+            runtime
+                .feature_status
+                .process_priority
+                .waiting_for_power_source
+        }
+        Page::GpuPriority => runtime.feature_status.gpu_priority.waiting_for_power_source,
         Page::BackgroundEfficiency => {
             runtime
                 .feature_status
@@ -1962,6 +1969,35 @@ mod tests {
         let waiting = labels(&runtime);
         assert_eq!(waiting[0], t!("sidebar_status.paused"));
         assert_eq!(waiting[1], t!("cpu_limiter.waiting_for_power_source"));
+    }
+
+    #[test]
+    fn priority_control_rail_shows_source_wait_and_restore_failure() {
+        let settings = Settings::default();
+        let mut runtime = RuntimeStatusSnapshot {
+            generation: 1,
+            ..Default::default()
+        };
+        let features = std::sync::Arc::make_mut(&mut runtime.feature_status);
+        features.process_priority.waiting_for_power_source = true;
+        features.gpu_priority.waiting_for_power_source = true;
+        for page in [Page::ProcessPriority, Page::GpuPriority] {
+            let paused = rail_text(view(page, &settings, &runtime, &[], None).unwrap());
+            assert_eq!(paused[0], t!("sidebar_status.paused"));
+            assert_eq!(paused[1], t!("home.power_source_unavailable"));
+        }
+
+        let features = std::sync::Arc::make_mut(&mut runtime.feature_status);
+        features.process_priority.last_error = Some("priority restore failed".into());
+        features.gpu_priority.last_error = Some("GPU restore failed".into());
+        for (page, reason) in [
+            (Page::ProcessPriority, "priority restore failed"),
+            (Page::GpuPriority, "GPU restore failed"),
+        ] {
+            let error = rail_text(view(page, &settings, &runtime, &[], None).unwrap());
+            assert_eq!(error[0], t!("common.error"));
+            assert!(error.iter().any(|text| text == reason));
+        }
     }
 
     #[test]

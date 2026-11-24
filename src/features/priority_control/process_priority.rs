@@ -36,6 +36,7 @@ pub struct ProcessPrioritySnapshot {
     pub failed_processes: usize,
     pub auto_excluded_processes: Vec<String>,
     pub(crate) observation_paused: bool,
+    pub(crate) waiting_for_power_source: bool,
     pub last_error: Option<String>,
 }
 
@@ -365,6 +366,18 @@ impl ProcessPriorityManager {
         action_log: &mut ActionLog,
     ) -> ProcessPrioritySnapshot {
         self.paused_snapshot(controller, action_log, "foreground app is unknown", None)
+    }
+
+    pub(crate) fn pause_for_power_source(
+        &mut self,
+        controller: &mut PriorityEfficiencyController,
+        action_log: &mut ActionLog,
+    ) -> ProcessPrioritySnapshot {
+        self.non_release_failures = ProcessPriorityFailures::default();
+        ProcessPrioritySnapshot {
+            waiting_for_power_source: true,
+            ..self.paused_snapshot(controller, action_log, "power source is unknown", None)
+        }
     }
 
     fn paused_snapshot(

@@ -1507,16 +1507,28 @@ fn run_background_automation(
             || settings_changed
             || feature_refresh_required(settings, adaptive_power_plan_required(settings))
             || runner.adaptive_power_plan_managed();
-        let process_priority_refresh_required = settings_changed
-            || feature_refresh_required(settings, settings.process_priority.enabled);
+        let process_priority_schedule = priority_source_schedule(
+            &configured_settings,
+            settings,
+            plugged_in,
+            windows_event_watcher_active,
+            settings_changed,
+            |profile| (&profile.process_priority, profile.process_priority.enabled),
+        );
         let thread_priority_refresh_required = settings_changed
             || feature_refresh_required(settings, settings.thread_priority.enabled);
         let dynamic_priority_boost_refresh_required = settings_changed
             || feature_refresh_required(settings, settings.dynamic_priority_boost.enabled);
         let io_priority_refresh_required =
             settings_changed || feature_refresh_required(settings, settings.io_priority.enabled);
-        let gpu_priority_refresh_required =
-            settings_changed || feature_refresh_required(settings, settings.gpu_priority.enabled);
+        let gpu_priority_schedule = priority_source_schedule(
+            &configured_settings,
+            settings,
+            plugged_in,
+            windows_event_watcher_active,
+            settings_changed,
+            |profile| (&profile.gpu_priority, profile.gpu_priority.enabled),
+        );
         let memory_priority_refresh_required = settings_changed
             || feature_refresh_required(settings, settings.memory_priority.enabled);
         let watchdog_refresh_required = settings_changed
@@ -1627,11 +1639,14 @@ fn run_background_automation(
                 background_efficiency_refresh_interval,
             );
         }
-        if process_priority_refresh_required
+        if process_priority_schedule.refresh_required
             && scheduler.is_due(RefreshDomain::ProcessPriority, now)
         {
-            let process_priority_status =
-                runner.run_process_priority_update(settings, &mut observations);
+            let process_priority_status = runner.run_process_priority_update(
+                settings,
+                process_priority_schedule.waiting_for_source,
+                &mut observations,
+            );
             update_process_priority_status(&shared, process_priority_status);
             scheduler.schedule_after(
                 RefreshDomain::ProcessPriority,
@@ -1701,8 +1716,14 @@ fn run_background_automation(
                 dynamic_priority_boost_refresh_interval,
             );
         }
-        if gpu_priority_refresh_required && scheduler.is_due(RefreshDomain::GpuPriority, now) {
-            let gpu_priority_status = runner.run_gpu_priority_update(settings, &mut observations);
+        if gpu_priority_schedule.refresh_required
+            && scheduler.is_due(RefreshDomain::GpuPriority, now)
+        {
+            let gpu_priority_status = runner.run_gpu_priority_update(
+                settings,
+                gpu_priority_schedule.waiting_for_source,
+                &mut observations,
+            );
             update_gpu_priority_status(&shared, gpu_priority_status);
             scheduler.schedule_after(
                 RefreshDomain::GpuPriority,
@@ -2145,7 +2166,7 @@ fn run_background_automation(
                     adaptive_power_plan_refresh_interval,
                 ),
                 (
-                    process_priority_refresh_required,
+                    process_priority_schedule.refresh_required,
                     RefreshDomain::ProcessPriority,
                     process_priority_refresh_interval,
                 ),
@@ -2165,7 +2186,7 @@ fn run_background_automation(
                     io_priority_refresh_interval,
                 ),
                 (
-                    gpu_priority_refresh_required,
+                    gpu_priority_schedule.refresh_required,
                     RefreshDomain::GpuPriority,
                     gpu_priority_refresh_interval,
                 ),
@@ -2244,7 +2265,9 @@ fn run_background_automation(
         if let Some(delay) = runner.control_release_retry_delay(sleep_now) {
             wait_for = Some(min_worker_wait(wait_for, delay));
         }
-        if background_efficiency_waits_for_source
+        if process_priority_schedule.source_recheck
+            || gpu_priority_schedule.source_recheck
+            || background_efficiency_waits_for_source
             || timer_resolution_waits_for_source
             || (!timer_resolution_active
                 && !windows_event_watcher_active

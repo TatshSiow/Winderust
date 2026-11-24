@@ -62,6 +62,43 @@ pub(super) fn feature_refresh_required(settings: &Settings, feature_enabled: boo
     settings.general.enabled && feature_enabled
 }
 
+pub(super) struct PrioritySourceSchedule {
+    pub(super) refresh_required: bool,
+    pub(super) waiting_for_source: bool,
+    pub(super) source_recheck: bool,
+}
+
+pub(super) fn priority_source_schedule<T: Eq>(
+    configured: &Settings,
+    settings: &Settings,
+    plugged_in: Option<bool>,
+    windows_event_watcher_active: bool,
+    settings_changed: bool,
+    policy: impl Fn(&Settings) -> (&T, bool),
+) -> PrioritySourceSchedule {
+    let active_policy = |settings| {
+        let (policy, enabled) = policy(settings);
+        feature_refresh_required(settings, enabled).then_some(policy)
+    };
+    let current = active_policy(settings);
+    let source_recheck = (plugged_in.is_none()
+        || (!windows_event_watcher_active && current.is_none()))
+        && configured.on_battery.as_deref().is_some_and(|battery| {
+            let other = if plugged_in == Some(false) {
+                configured
+            } else {
+                battery
+            };
+            current != active_policy(other)
+        });
+    let waiting_for_source = plugged_in.is_none() && source_recheck;
+    PrioritySourceSchedule {
+        refresh_required: settings_changed || (current.is_some() && !waiting_for_source),
+        waiting_for_source,
+        source_recheck,
+    }
+}
+
 fn enabled_executable_path_rule(enabled: bool, executable_path: &str) -> bool {
     enabled && std::path::Path::new(executable_path.trim()).is_absolute()
 }
