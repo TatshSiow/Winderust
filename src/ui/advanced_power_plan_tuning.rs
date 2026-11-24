@@ -11,15 +11,18 @@ use crate::config::AdvancedPowerPlanTuningPreset;
 use crate::control::power_plan::PowerPlanStatus;
 use crate::power::{
     AdvancedPowerPlanTuningReadback, AdvancedPowerPlanTuningSourceValues,
-    AdvancedPowerPlanTuningValues, EditableTuningValues, EffectivePowerMode, PowerPlan,
-    PowerPlanPersonality, PowerSettingReadback, ProcessorBoostMode, ProcessorPowerApplyError,
-    ProcessorPowerPreset, ProcessorPowerValues, ProcessorSchedulingPolicy, ADAPTIVE_PLAN_NAME,
+    AdvancedPowerPlanTuningValues, EditableTuningValues, EffectivePowerMode,
+    EnergyPerformancePreference, PowerPlan, PowerPlanPersonality, PowerSettingReadback,
+    ProcessorBoostMode, ProcessorPowerApplyError, ProcessorPowerPreset, ProcessorPowerValues,
+    ProcessorSchedulingPolicy, ADAPTIVE_PLAN_NAME,
 };
 use crate::ui::scrolling::scrollable;
 use iced::widget::{column, row, text};
 use iced::{Element, Fill};
 use rust_i18n::t;
 use std::{borrow::Cow, collections::BTreeMap, rc::Rc};
+
+const ENERGY_PREFERENCE_LABEL: &str = "processor_power.energy_performance_preference";
 
 fn tuning_plans(plans: &[PowerPlan]) -> impl Iterator<Item = &PowerPlan> {
     plans.iter().filter(|plan| !plan.managed_adaptive)
@@ -81,10 +84,11 @@ pub(super) enum Field {
     Minimum,
     Maximum,
     Boost,
+    EnergyPreference,
 }
 
 #[derive(Default)]
-struct InvalidPercentages([Option<String>; 4]);
+struct InvalidPercentages([Option<String>; 5]);
 
 impl InvalidPercentages {
     fn edit(&mut self, field: Field, raw: String) -> Option<u32> {
@@ -190,6 +194,10 @@ impl RestorePoint {
             .into_iter()
             .all(|(before, after)| {
                 can_restore(before.processor.boost_mode, after.processor.boost_mode)
+                    && can_restore(
+                        before.energy_performance_preference,
+                        after.energy_performance_preference,
+                    )
                     && can_restore(before.scheduling_policy, after.scheduling_policy)
                     && can_restore(
                         before.short_scheduling_policy,
@@ -825,10 +833,16 @@ impl Editor {
                 let Some(values) = self.values.as_mut() else {
                     return;
                 };
+                let values = source_values(values, source);
+                if matches!(field, Field::EnergyPreference)
+                    && values.energy_performance_preference.is_none()
+                {
+                    return;
+                }
                 let Some(value) = self.invalid_percentages[source as usize].edit(field, raw) else {
                     return;
                 };
-                set_field(source_values(values, source), field, value);
+                set_field(values, field, value);
                 self.update_dirty();
             }
             Message::Boost(source, value) => {
@@ -911,7 +925,10 @@ impl Editor {
                     .as_mut()
                     .filter(|p| matches!(p.target, PresetTarget::Custom(_)))
                 {
-                    if let Some(value) = p.invalid_percentages.edit(field, raw) {
+                    if matches!(field, Field::EnergyPreference) && raw.is_empty() {
+                        p.invalid_percentages.0[field as usize] = None;
+                        p.values.energy_performance_preference = None;
+                    } else if let Some(value) = p.invalid_percentages.edit(field, raw) {
                         set_field(&mut p.values, field, value);
                     }
                 }
@@ -1067,7 +1084,15 @@ impl Editor {
                 });
                 let invalid = &self.invalid_percentages[source as usize];
                 let mut controls = Vec::new();
-                for (field, label, value) in fields(values.processor) {
+                for (field, label, value) in fields(values.processor).into_iter().chain(
+                    values.energy_performance_preference.map(|value| {
+                        (
+                            Field::EnergyPreference,
+                            ENERGY_PREFERENCE_LABEL,
+                            u32::from(value),
+                        )
+                    }),
+                ) {
                     controls.push(
                         column![
                             super::widgets::setting_title_with_unit(label, "%"),
@@ -1081,6 +1106,20 @@ impl Editor {
                         ]
                         .spacing(design::space::SMALL)
                         .extend(invalid.feedback(field).map(Element::from))
+                        .into(),
+                    );
+                }
+                if values.energy_performance_preference.is_none() {
+                    let status = show_setting_readback(
+                        readback.energy_performance_preference,
+                        |value| format!("{}%", u32::from(value)),
+                        std::convert::identity,
+                    );
+                    controls.push(
+                        super::widgets::setting_row(
+                            ENERGY_PREFERENCE_LABEL,
+                            text(status).style(text::secondary),
+                        )
                         .into(),
                     );
                 }
@@ -1303,6 +1342,31 @@ impl Editor {
                 .into(),
             );
         }
+        let field = Field::EnergyPreference;
+        let preference = p.values.energy_performance_preference.map(u32::from);
+        let keep = t!("processor_power.keep_plan_value");
+        let input: Element<'_, Message> = if editable {
+            let input = p.invalid_percentages.0[field as usize]
+                .clone()
+                .or_else(|| preference.map(|value| value.to_string()))
+                .unwrap_or_default();
+            text_input(&keep, &input)
+                .width(design::SELECT_WIDTH)
+                .on_input(move |raw| Message::PresetValueText(field, raw))
+                .into()
+        } else {
+            text(preference.map_or_else(|| keep.to_string(), |value| format!("{value}%"))).into()
+        };
+        values.push(
+            column![widgets::setting_row_with_unit(
+                ENERGY_PREFERENCE_LABEL,
+                "%",
+                input
+            )]
+            .spacing(design::space::SMALL)
+            .extend(p.feedback(field).map(Element::from))
+            .into(),
+        );
         let boost: Element<'_, Message> = if editable {
             pick_list(
                 ProcessorBoostMode::ALL.map(BoostChoice),
@@ -1476,6 +1540,8 @@ fn tuning_stage_error_message(error: &ProcessorPowerApplyError) -> String {
         BatteryPerformanceMinimum => (Source::Battery, "processor_power.processor_min"),
         AcPerformanceMaximum => (Source::Ac, "processor_power.processor_max"),
         BatteryPerformanceMaximum => (Source::Battery, "processor_power.processor_max"),
+        AcEnergyPerformancePreference => (Source::Ac, ENERGY_PREFERENCE_LABEL),
+        BatteryEnergyPerformancePreference => (Source::Battery, ENERGY_PREFERENCE_LABEL),
         AcBoostPolicy => (Source::Ac, "processor_power.boost_policy"),
         BatteryBoostPolicy => (Source::Battery, "processor_power.boost_policy"),
         AcBoostMode => (Source::Ac, "processor_power.boost_mode"),
@@ -1528,6 +1594,9 @@ fn with_supported_settings(
         .processor
         .boost_mode
         .map(|mode| draft.processor.boost_mode.unwrap_or(mode));
+    draft.energy_performance_preference = current
+        .energy_performance_preference
+        .map(|value| draft.energy_performance_preference.unwrap_or(value));
     draft.scheduling_policy = current
         .scheduling_policy
         .map(|value| draft.scheduling_policy.unwrap_or(value));
@@ -1563,6 +1632,11 @@ fn recover_tuning_edits(
         original.processor.boost_mode,
         requested.processor.boost_mode,
         current.processor.boost_mode,
+    );
+    draft.energy_performance_preference = retain_edit(
+        original.energy_performance_preference,
+        requested.energy_performance_preference,
+        current.energy_performance_preference,
     );
     draft.scheduling_policy = retain_edit(
         original.scheduling_policy,
@@ -1697,6 +1771,12 @@ fn readback_changes(
     percentages.chain(
         [
             readback_setting_change(
+                ENERGY_PREFERENCE_LABEL,
+                before.energy_performance_preference,
+                after.energy_performance_preference,
+                |value| format!("{}%", u32::from(value)),
+            ),
+            readback_setting_change(
                 "processor_power.boost_mode",
                 before.processor.boost_mode,
                 after.processor.boost_mode,
@@ -1751,13 +1831,17 @@ fn append_readback_differences(
     }
 }
 fn set_field<B>(values: &mut AdvancedPowerPlanTuningValues<B>, field: Field, value: u32) {
-    let values = &mut values.processor;
-    *match field {
-        Field::Parking => &mut values.core_parking_min,
-        Field::Minimum => &mut values.performance_min,
-        Field::Maximum => &mut values.performance_max,
-        Field::Boost => &mut values.boost_policy,
-    } = value.min(100);
+    let value = value.min(100);
+    match field {
+        Field::Parking => values.processor.core_parking_min = value,
+        Field::Minimum => values.processor.performance_min = value,
+        Field::Maximum => values.processor.performance_max = value,
+        Field::Boost => values.processor.boost_policy = value,
+        Field::EnergyPreference => {
+            values.energy_performance_preference =
+                EnergyPerformancePreference::try_from(value).ok();
+        }
+    }
 }
 fn valid_name(presets: &[AdvancedPowerPlanTuningPreset], index: Option<usize>, name: &str) -> bool {
     !name.trim().is_empty()
@@ -1817,6 +1901,61 @@ mod tests {
 
     fn saved_presets(settings: &SettingsEditor) -> &[AdvancedPowerPlanTuningPreset] {
         &settings.global().advanced_power_plan_tuning_presets
+    }
+
+    #[test]
+    fn energy_preference_is_reviewed_per_source_and_preset_can_keep_current() {
+        let preset = AdvancedPowerPlanTuningValues::for_preset(ProcessorPowerPreset::Balanced);
+        let mut readback = AdvancedPowerPlanTuningReadback::from(
+            AdvancedPowerPlanTuningSourceValues::same(preset),
+        );
+        let initial = 45.try_into().unwrap();
+        readback.ac.energy_performance_preference = PowerSettingReadback::Known(initial);
+        readback.battery.energy_performance_preference = PowerSettingReadback::Missing;
+        let mut editor = Editor::default();
+        editor.set_readback(Some(readback));
+        let mut settings = test_settings();
+
+        editor.update(
+            &mut settings,
+            &[],
+            Message::ValueText(Source::Battery, Field::EnergyPreference, "65".into()),
+        );
+        assert_eq!(editor.values, Some(readback.writable()));
+        editor.update(
+            &mut settings,
+            &[],
+            Message::ValueText(Source::Ac, Field::EnergyPreference, "65".into()),
+        );
+        assert!(editor.dirty);
+        let staged = editor.values.unwrap().ac;
+        assert_eq!(preset_values(preset, staged), staged);
+        let requested = ApplyReview::request(readback, editor.values.unwrap());
+        let actual = readback.with_requested(requested);
+        assert_eq!(
+            readback_changes(readback, actual, Source::Ac).collect::<Vec<_>>(),
+            [(ENERGY_PREFERENCE_LABEL, "45%".into(), "65%".into())]
+        );
+        assert_eq!(actual.battery, readback.battery);
+        assert!(RestorePoint::capture(readback, actual).is_some());
+
+        editor.update(
+            &mut settings,
+            &[],
+            Message::OpenPreset(PresetTarget::Custom(None)),
+        );
+        editor.update(
+            &mut settings,
+            &[],
+            Message::PresetValueText(Field::EnergyPreference, String::new()),
+        );
+        assert!(editor
+            .preset
+            .as_ref()
+            .unwrap()
+            .values
+            .energy_performance_preference
+            .is_none());
     }
 
     #[test]

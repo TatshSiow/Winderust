@@ -532,7 +532,10 @@ Positive matches still require an observed absolute executable path.
 
 ## Advanced Power Plan Tuning
 
-Winderust can apply separate AC and battery processor-power percentages, processor boost modes, and long/short-running thread scheduling policies to a selected Windows power plan, with presets available as quick-fill values. This is system-wide power-plan tuning, not per-process CPU allocation.
+Winderust can apply separate AC and battery processor-power percentages, energy
+performance preference, processor boost modes, and long/short-running thread
+scheduling policies to a selected Windows power plan. Presets can supply values
+for this system-wide tuning.
 
 Implementation paths:
 
@@ -554,8 +557,8 @@ requested fields with the verified pre-apply values. Adaptive Processor Power
 uses the same stage order to write its full profile. Persistent tuning retains
 the exact failing stage and re-reads the selected plan after every attempt,
 including a partial failure. Success requires readback to match the requested
-values on both power sources. Unavailable boost modes and unselected or
-unavailable scheduling policies stay untouched. Unavailable or out-of-range
+values on both power sources. Unavailable settings and optional fields omitted
+from a preset stay untouched. Unavailable or out-of-range required processor
 percentages fail the plan read. Persistent tuning stays outside the automatic
 power-plan recovery journal and claim ledger.
 
@@ -573,13 +576,14 @@ Apply retry, Restore previous values uses the original pre-write snapshot.
 | Processor power management options | Defines the processor settings and profiles used by Windows. | https://learn.microsoft.com/en-us/windows-hardware/customize/power-settings/configure-processor-power-management-options |
 | Core parking minimum cores | Sets the percentage of logical processors that must remain unparked. | https://learn.microsoft.com/en-us/windows-hardware/customize/power-settings/options-for-core-parking-cpmincores |
 | Processor performance min/max | Sets minimum and maximum processor performance percentages. | [Minimum](https://learn.microsoft.com/en-us/windows-hardware/customize/power-settings/options-for-perf-state-engine-minperformance) / [Maximum](https://learn.microsoft.com/en-us/windows-hardware/customize/power-settings/options-for-perf-state-engine-maxperformance) |
+| `PerfEnergyPreference` (`PERFEPP`) | Reads and writes the optional 0–100 scheme value through `src/platform/windows/power_plan.rs`. The SDK's `GUID_PROCESSOR_PERF_ENERGY_PERFORMANCE_PREFERENCE` (`36687f9e-e3a5-4dbf-b1dc-15eb381c6863`) identifies this setting in the processor subgroup. Windows uses it on systems with CPPC v2 and autonomous mode enabled. Readback verifies the stored policy only. Winderust leaves the separate efficiency-class override (`PERFEPP1`) alone. | [PerfEnergyPreference](https://learn.microsoft.com/en-us/windows-hardware/customize/power-settings/options-for-perf-state-engine-perfenergypreference) |
 | Processor performance boost mode | Controls Windows processor boost policy values such as disabled, enabled, aggressive, and efficient modes. | https://learn.microsoft.com/en-us/windows-hardware/customize/power-settings/options-for-perf-state-engine-perfboostmode |
 
-Boost mode and scheduling-policy details:
+Optional setting details:
 
 - `src/power/plan.rs` maps documented indices 0–5 to `ProcessorSchedulingPolicy`.
   Explicit tuning and preset values contain optional scheduling overrides.
-  Adaptive processor profiles supply no scheduling overrides.
+  Adaptive processor profiles supply no scheduling or energy preference overrides.
 - `src/platform/windows/power_plan.rs` reads SDK `GUID_PROCESSOR_PERFORMANCE_BOOST_MODE`
   (`be337238-0d82-4146-a960-4f3749d470c7`), `GUID_PROCESSOR_THREAD_SCHEDULING_POLICY`
   (`93b8b6dc-0698-4d1c-9ee4-0644e900c85d`) and `GUID_PROCESSOR_SHORT_THREAD_SCHEDULING_POLICY`

@@ -157,6 +157,8 @@ impl AdvancedPowerPlanTuningService {
         .into_iter()
         .any(|(requested, current)| {
             (requested.processor.boost_mode.is_some() && current.processor.boost_mode.is_none())
+                || (requested.energy_performance_preference.is_some()
+                    && current.energy_performance_preference.is_none())
                 || (requested.scheduling_policy.is_some() && current.scheduling_policy.is_none())
                 || (requested.short_scheduling_policy.is_some()
                     && current.short_scheduling_policy.is_none())

@@ -14,7 +14,7 @@ Process Lasso is a useful comparison point, not the target to clone. Prefer smal
   CPU Load, By Activity, and By Time rules.
 - Adaptive Processor Power with demand profiles and processor tuning presets.
 - Advanced Power Plan Tuning for core parking, processor performance and boost,
-  and long- and short-running thread scheduling policies.
+  energy performance preference, and thread scheduling policies.
 - Adaptive Engine CPU scheduling for foreground responsiveness and background restraint.
 - CPU Control through CPU Limiter, CPU Sets (Soft), Processor Affinity (Hard),
   and Cache Domain presets.

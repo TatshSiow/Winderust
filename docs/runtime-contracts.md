@@ -500,7 +500,8 @@ Read the relevant section before changing feature policy, ownership, restoration
   processor-setting, and effective-power-mode APIs live only in
   `src/platform/windows/power_plan.rs`. Persistent Advanced Power Plan Tuning remains a separate
   explicit application service and never enters the automatic recovery journal. Its optional
-  long/short-running thread scheduling policies stay outside Adaptive Processor Power.
+  energy preference and long/short-running thread scheduling policies stay outside
+  Adaptive Processor Power.
   Tuning presets and Adaptive Processor Power profiles store concrete boost modes.
 - Advanced Power Plan Tuning captures the target plan's GUID, live values, and
   normalized draft in the review. The same review gates page Apply and any save
@@ -509,11 +510,11 @@ Read the relevant section before changing feature policy, ownership, restoration
   Save and Save and Exit also verify the review before saving portable settings.
   If the recheck after that save fails, feedback reports the settings already
   saved and the remaining tuning error.
-  These checks include boost mode and scheduling availability and raw unknown
+  These checks include optional setting availability and raw unknown
   indices for each power source. Selection, confirmation, and the
   Windows write preflight exclude the temporary Winderust Adaptive plan. Apply
   and Restore write only changed fields and skip missing, unreadable, and
-  unknown boost modes and scheduling policies.
+  unknown optional settings.
   A stale review or failed preflight read preserves the draft. After a plan
   value changes externally, Refresh values reloads the plan for a new edit and
   review. A failed read or a missing plan during refresh keeps pending edits
@@ -531,7 +532,7 @@ Read the relevant section before changing feature policy, ownership, restoration
 - Restore previous tuning values keeps one in-memory restore point per plan GUID
   after a verified Apply that changed values. It captures the pre-apply values
   only when the writer can reproduce the editable values exactly and preserve
-  the unavailable boost mode and scheduling states. Restore requires a
+  unavailable optional settings. Restore requires a
   clean editor, an unmanaged plan, and live values that match the verified Apply
   readback. It uses the same explicit confirmation and consumes the point after
   exact readback of the previous values, including unavailable settings and raw

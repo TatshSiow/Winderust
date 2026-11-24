@@ -199,6 +199,10 @@ hover/press; background shading supplies feedback.
 - Multi-setting cards use subtle 1px neutral, theme-aware dividers between complete settings, with even inset spacing. Keep labels, descriptions, and associated controls together. Expanded groups separate their header and body with the same divider; single-setting cards have no extra leading/trailing rules. Use shared widgets helpers and preserve dense table styling.
 - Show concise setting descriptions directly beneath their labels in readable 13px secondary text, with controls aligned on the right. Let rows and group headers grow when labels or descriptions wrap; never clip help with a fixed height. Use the shared setting-title layout for live pages and preset dialogs. Keep essential consequences inline and longer page-level reference in the right sidebar's Feature info section. Preserve icon-action and truncated-data tooltips, localization, units, and dense process/log table geometry.
 - Settings that affect Windows behavior should show conservative defaults and explicit enable controls.
+- Advanced Power Plan Tuning shows Energy performance preference separately
+  for each power source. Plan readback controls availability, and applying
+  edits goes through the existing review. Built-in presets preserve the plan
+  value. Custom presets can leave the field blank to preserve it.
 
 ### CPU Allocation
 

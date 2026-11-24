@@ -149,10 +149,34 @@ impl<T> PowerSettingReadback<T> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "u32", into = "u32")]
+pub struct EnergyPerformancePreference(u8);
+
+impl TryFrom<u32> for EnergyPerformancePreference {
+    type Error = &'static str;
+
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
+        if value <= 100 {
+            Ok(Self(value as u8))
+        } else {
+            Err("Energy performance preference must be between 0 and 100")
+        }
+    }
+}
+
+impl From<EnergyPerformancePreference> for u32 {
+    fn from(value: EnergyPerformancePreference) -> Self {
+        u32::from(value.0)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AdvancedPowerPlanTuningValues<B = ProcessorBoostMode> {
     #[serde(flatten)]
     pub processor: ProcessorPowerValues<B>,
-    // None leaves the selected plan's scheduling policy unchanged.
+    // Optional settings omitted from a preset leave the selected plan values alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub energy_performance_preference: Option<EnergyPerformancePreference>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scheduling_policy: Option<ProcessorSchedulingPolicy>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -163,6 +187,7 @@ impl<B> From<ProcessorPowerValues<B>> for AdvancedPowerPlanTuningValues<B> {
     fn from(processor: ProcessorPowerValues<B>) -> Self {
         Self {
             processor,
+            energy_performance_preference: None,
             scheduling_policy: None,
             short_scheduling_policy: None,
         }
@@ -186,6 +211,7 @@ impl<B> AdvancedPowerPlanTuningValues<B> {
     pub(crate) fn with_boost_mode<C>(self, mode: C) -> AdvancedPowerPlanTuningValues<C> {
         AdvancedPowerPlanTuningValues {
             processor: self.processor.with_boost_mode(mode),
+            energy_performance_preference: self.energy_performance_preference,
             scheduling_policy: self.scheduling_policy,
             short_scheduling_policy: self.short_scheduling_policy,
         }
@@ -230,6 +256,7 @@ impl AdvancedPowerPlanTuningSourceValues {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct AdvancedPowerPlanTuningSourceReadback {
     pub processor: ProcessorPowerValues<PowerSettingReadback<ProcessorBoostMode>>,
+    pub energy_performance_preference: PowerSettingReadback<EnergyPerformancePreference>,
     pub scheduling_policy: PowerSettingReadback<ProcessorSchedulingPolicy>,
     pub short_scheduling_policy: PowerSettingReadback<ProcessorSchedulingPolicy>,
 }
@@ -239,6 +266,7 @@ impl AdvancedPowerPlanTuningSourceReadback {
         let processor = self.processor;
         AdvancedPowerPlanTuningValues {
             processor: processor.with_boost_mode(processor.boost_mode.known()),
+            energy_performance_preference: self.energy_performance_preference.known(),
             scheduling_policy: self.scheduling_policy.known(),
             short_scheduling_policy: self.short_scheduling_policy.known(),
         }
@@ -251,6 +279,10 @@ impl AdvancedPowerPlanTuningSourceReadback {
                     .processor
                     .boost_mode
                     .map_or(self.processor.boost_mode, PowerSettingReadback::Known),
+            ),
+            energy_performance_preference: requested.energy_performance_preference.map_or(
+                self.energy_performance_preference,
+                PowerSettingReadback::Known,
             ),
             scheduling_policy: requested
                 .scheduling_policy
@@ -294,6 +326,9 @@ impl From<AdvancedPowerPlanTuningSourceValues> for AdvancedPowerPlanTuningReadba
                     .boost_mode
                     .map_or(PowerSettingReadback::Missing, PowerSettingReadback::Known),
             ),
+            energy_performance_preference: values
+                .energy_performance_preference
+                .map_or(PowerSettingReadback::Missing, PowerSettingReadback::Known),
             scheduling_policy: values
                 .scheduling_policy
                 .map_or(PowerSettingReadback::Missing, PowerSettingReadback::Known),
@@ -728,6 +763,7 @@ mod adaptive_tests {
         let mut tuning = AdvancedPowerPlanTuningValues::from(processor);
         let saved = toml::to_string(&tuning).unwrap();
         assert!(!saved.contains("scheduling_policy"));
+        assert!(!saved.contains("energy_performance_preference"));
         assert!(saved.contains("boost_mode = \"enabled\""));
         assert_eq!(
             toml::from_str::<AdvancedPowerPlanTuningValues>(&saved).unwrap(),
@@ -767,7 +803,27 @@ mod adaptive_tests {
             );
             assert_eq!(source.scheduling_policy, None);
             assert_eq!(source.short_scheduling_policy, None);
+            assert_eq!(source.energy_performance_preference, None);
         }
+    }
+
+    #[test]
+    fn advanced_power_preset_parses_only_valid_energy_preferences() {
+        let mut preset = AdvancedPowerPlanTuningValues::for_preset(ProcessorPowerPreset::Balanced);
+        for value in [0, 100] {
+            preset.energy_performance_preference = Some(value.try_into().unwrap());
+            let saved = toml::to_string(&preset).unwrap();
+            assert_eq!(
+                toml::from_str::<AdvancedPowerPlanTuningValues>(&saved).unwrap(),
+                preset
+            );
+        }
+        let preset = toml::to_string(&preset).unwrap();
+        let invalid = preset.replace(
+            "energy_performance_preference = 100",
+            "energy_performance_preference = 101",
+        );
+        assert!(toml::from_str::<AdvancedPowerPlanTuningValues>(&invalid).is_err());
     }
 
     #[test]

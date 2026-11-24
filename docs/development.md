@@ -79,6 +79,19 @@ These checks do not suspend Windows or change saved settings or power plans.
 They establish accepted requests and clean release, not actual idle sleep,
 Modern Standby expiry, lid behavior, or resume after a real sleep transition.
 
+## Energy performance preference check
+
+The ignored native test changes the AC and battery values on a copy of a regular
+active plan with readable energy preferences. It verifies exact readback and
+restoration, then deletes the copy. It requires permission to create and write
+an inactive power plan. The active plan stays in use throughout.
+
+```powershell
+cargo test --locked native_energy_preference_round_trip_on_inactive_plan -- --ignored --nocapture
+```
+
+The test verifies stored settings. Hardware response requires a workload test.
+
 ## Instance Limits checks
 
 The ignored native check exercises the production read-only collector with bounded

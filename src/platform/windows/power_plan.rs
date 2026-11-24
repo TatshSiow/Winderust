@@ -22,6 +22,7 @@ use windows_sys::{
             PowerWriteFriendlyName, ACCESS_SCHEME, EFFECTIVE_POWER_MODE, EFFECTIVE_POWER_MODE_V2,
         },
         System::SystemServices::{
+            GUID_PROCESSOR_PERF_ENERGY_PERFORMANCE_PREFERENCE,
             GUID_PROCESSOR_SHORT_THREAD_SCHEDULING_POLICY, GUID_PROCESSOR_THREAD_SCHEDULING_POLICY,
         },
     },
@@ -35,6 +36,7 @@ pub(crate) enum PowerSetting {
     CoreParkingMinimum,
     PerformanceMinimum,
     PerformanceMaximum,
+    EnergyPerformancePreference,
     BoostPolicy,
     BoostMode,
     SchedulingPolicy,
@@ -465,6 +467,10 @@ fn setting_guids(setting: PowerSetting) -> (GUID, GUID) {
         PowerSetting::PerformanceMaximum => (
             GUID_PROCESSOR_SETTINGS_SUBGROUP,
             GUID_PROCESSOR_PERFORMANCE_MAX,
+        ),
+        PowerSetting::EnergyPerformancePreference => (
+            GUID_PROCESSOR_SETTINGS_SUBGROUP,
+            GUID_PROCESSOR_PERF_ENERGY_PERFORMANCE_PREFERENCE,
         ),
         PowerSetting::BoostPolicy => (
             GUID_PROCESSOR_SETTINGS_SUBGROUP,

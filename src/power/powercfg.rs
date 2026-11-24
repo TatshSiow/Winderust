@@ -2,9 +2,10 @@ use crate::platform::windows::power_plan::{self as windows_power, PowerSetting};
 
 use super::{
     AdvancedPowerPlanTuningReadback, AdvancedPowerPlanTuningSourceReadback,
-    AdvancedPowerPlanTuningSourceValues, EditableTuningValues, EffectivePowerMode, PowerPlan,
-    PowerPlanPersonality, PowerSettingReadback, ProcessorBoostMode, ProcessorPowerSourceValues,
-    ProcessorPowerValues, ProcessorSchedulingPolicy,
+    AdvancedPowerPlanTuningSourceValues, EditableTuningValues, EffectivePowerMode,
+    EnergyPerformancePreference, PowerPlan, PowerPlanPersonality, PowerSettingReadback,
+    ProcessorBoostMode, ProcessorPowerSourceValues, ProcessorPowerValues,
+    ProcessorSchedulingPolicy,
 };
 
 pub(crate) const ADAPTIVE_PLAN_NAME: &str = "Winderust Adaptive";
@@ -194,6 +195,8 @@ pub(crate) enum ProcessorPowerApplyStage {
     BatteryPerformanceMinimum,
     AcPerformanceMaximum,
     BatteryPerformanceMaximum,
+    AcEnergyPerformancePreference,
+    BatteryEnergyPerformancePreference,
     AcBoostPolicy,
     BatteryBoostPolicy,
     AcBoostMode,
@@ -216,6 +219,10 @@ impl std::fmt::Display for ProcessorPowerApplyStage {
             Self::BatteryPerformanceMinimum => "write battery processor minimum",
             Self::AcPerformanceMaximum => "write A/C processor maximum",
             Self::BatteryPerformanceMaximum => "write battery processor maximum",
+            Self::AcEnergyPerformancePreference => "write A/C energy performance preference",
+            Self::BatteryEnergyPerformancePreference => {
+                "write battery energy performance preference"
+            }
             Self::AcBoostPolicy => "write A/C boost policy",
             Self::BatteryBoostPolicy => "write battery boost policy",
             Self::AcBoostMode => "write A/C boost mode",
@@ -371,6 +378,10 @@ fn read_tuning_source(
     };
     Ok(AdvancedPowerPlanTuningSourceReadback {
         processor,
+        energy_performance_preference: PowerSettingReadback::from_optional_read(
+            read_optional(PowerSetting::EnergyPerformancePreference),
+            |value| EnergyPerformancePreference::try_from(value).ok(),
+        ),
         scheduling_policy: scheduling(PowerSetting::SchedulingPolicy),
         short_scheduling_policy: scheduling(PowerSetting::ShortSchedulingPolicy),
     })
@@ -421,6 +432,12 @@ fn write_tuning_values(
         |values| Some(values.processor.performance_max),
         ProcessorPowerApplyStage::AcPerformanceMaximum,
         ProcessorPowerApplyStage::BatteryPerformanceMaximum,
+    )?;
+    write_setting(
+        PowerSetting::EnergyPerformancePreference,
+        |values| values.energy_performance_preference.map(u32::from),
+        ProcessorPowerApplyStage::AcEnergyPerformancePreference,
+        ProcessorPowerApplyStage::BatteryEnergyPerformancePreference,
     )?;
     write_setting(
         PowerSetting::BoostPolicy,

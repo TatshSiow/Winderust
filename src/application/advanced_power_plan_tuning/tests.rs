@@ -161,7 +161,7 @@ fn reviewed_apply_rejects_stale_values_and_rechecks_before_writing() {
 fn apply_requires_matching_values_for_both_power_sources() {
     let requested = values(75);
     for battery in [false, true] {
-        for field in 0..7 {
+        for field in 0..8 {
             let mut expected = requested;
             let mut actual = requested;
             let expected_source = if battery {
@@ -185,9 +185,13 @@ fn apply_requires_matching_values_for_both_power_sources() {
                     actual_source.scheduling_policy =
                         Some(ProcessorSchedulingPolicy::EfficiencyProcessors);
                 }
-                _ => {
+                6 => {
                     expected_source.short_scheduling_policy =
                         Some(ProcessorSchedulingPolicy::Automatic)
+                }
+                _ => {
+                    expected_source.energy_performance_preference = Some(25.try_into().unwrap());
+                    actual_source.energy_performance_preference = Some(40.try_into().unwrap());
                 }
             }
             let service =
@@ -201,6 +205,73 @@ fn apply_requires_matching_values_for_both_power_sources() {
             ));
         }
     }
+}
+
+#[test]
+fn reviewed_apply_cannot_write_unavailable_energy_preference() {
+    let mut current = AdvancedPowerPlanTuningReadback::from(values(75));
+    current.ac.energy_performance_preference = PowerSettingReadback::Unknown(101);
+    let store = FakeStore::new(current);
+    let service = AdvancedPowerPlanTuningService::with_store(Box::new(store.clone()));
+    let mut draft = current.writable();
+    draft.ac.energy_performance_preference = Some(25.try_into().unwrap());
+
+    assert_eq!(
+        service.apply_reviewed_values("plan", current, draft),
+        Err(AdvancedPowerPlanTuningError::SettingUnavailable)
+    );
+    assert!(store.requests().is_empty());
+}
+
+#[test]
+#[ignore = "creates and deletes an inactive Windows power plan copy"]
+fn native_energy_preference_round_trip_on_inactive_plan() {
+    use crate::platform::windows::power_plan as windows_power;
+
+    struct TemporaryPlan(String);
+    impl Drop for TemporaryPlan {
+        fn drop(&mut self) {
+            if let Err(error) = windows_power::delete_scheme(&self.0) {
+                eprintln!("Could not delete test plan {}: {error}", self.0);
+            }
+        }
+    }
+
+    let service = AdvancedPowerPlanTuningService::default();
+    let active = windows_power::active_scheme_guid().unwrap();
+    let source = service.read_values(&active).unwrap();
+    let fixture = TemporaryPlan(windows_power::duplicate_scheme(&active).unwrap());
+    let guid = fixture.0.clone();
+    assert_ne!(guid, active);
+    windows_power::write_scheme_name(&guid, "Winderust Energy Preference Test").unwrap();
+    let baseline = service.read_values(&guid).unwrap();
+    let mut requested = baseline.writable();
+    for source in [&mut requested.ac, &mut requested.battery] {
+        let old = u32::from(
+            source
+                .energy_performance_preference
+                .expect("test requires stored PERFEPP values"),
+        );
+        source.energy_performance_preference = Some(((old + 1) % 101).try_into().unwrap());
+    }
+    let outcome = service
+        .apply_reviewed_values(&guid, baseline, requested)
+        .unwrap();
+    assert!(outcome.applied, "{outcome:?}");
+    let observed = service.read_values(&guid).unwrap();
+    assert_eq!(observed, baseline.with_requested(requested));
+    let restored = service
+        .apply_reviewed_values(&guid, observed, baseline.writable())
+        .unwrap();
+    assert!(restored.applied, "{restored:?}");
+    assert_eq!(service.read_values(&guid).unwrap(), baseline);
+    assert_eq!(windows_power::active_scheme_guid().unwrap(), active);
+    assert_eq!(service.read_values(&active).unwrap(), source);
+    drop(fixture);
+    assert!(!windows_power::list_schemes()
+        .unwrap()
+        .iter()
+        .any(|plan| plan.guid == guid));
 }
 
 #[test]
