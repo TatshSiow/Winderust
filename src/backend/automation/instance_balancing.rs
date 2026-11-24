@@ -370,11 +370,11 @@ fn prepare_cohort<P: CpuAllocationPlatform>(
     topology: &CpuTopology,
     rule: &Rule,
     settings: &Settings,
+    explicit_paths: &[String],
 ) -> Result<(Cohort, Vec<InstanceBalancingExclusion>), String> {
     let generation = rule
         .generation
         .ok_or_else(|| "Instance Balancing exhausted its rule generations.".to_owned())?;
-    let explicit_paths = explicit_cpu_allocation_paths(settings);
     let mut members = Vec::new();
     let mut excluded = Vec::new();
     for member in rule.retained.values() {
@@ -382,7 +382,7 @@ fn prepare_cohort<P: CpuAllocationPlatform>(
             return Err(t!("instance_balancing.changed").to_string());
         }
         let target = target(member)?;
-        if explicit_selection(&explicit_paths, &member.path) {
+        if explicit_selection(explicit_paths, &member.path) {
             excluded.push(InstanceBalancingExclusion::ExplicitSelection {
                 process_name: target.name,
                 pid: target.id,
@@ -413,9 +413,13 @@ fn context_is_current(
     shared: &SharedAutomationState,
     configured: &Arc<Settings>,
     active: &Settings,
+    includes_alternate: bool,
+    plugged_in: Option<bool>,
 ) -> bool {
-    let current = active_power_source_settings(configured, power_source::is_plugged_in());
-    if current.general.enabled != active.general.enabled
+    let current = active_power_source_settings(configured, plugged_in);
+    if (plugged_in.is_none() && cpu_allocation_source_difference(configured).is_some())
+        != includes_alternate
+        || current.general.enabled != active.general.enabled
         || current.general.allow_cross_session_process_control
             != active.general.allow_cross_session_process_control
         || current.cpu_sets_soft != active.cpu_sets_soft
@@ -531,6 +535,7 @@ impl RuntimeCore {
         shared: &SharedAutomationState,
         configured: &Arc<Settings>,
         active: &Settings,
+        alternate_cpu_allocation_profile: Option<&Settings>,
         watcher_active: bool,
     ) -> InstanceBalancingSnapshot {
         let runtime = &mut self.instance_balancing;
@@ -608,6 +613,7 @@ impl RuntimeCore {
             return snapshot;
         }
         let mut waiting_exclusions = Vec::new();
+        let mut explicit_paths = None;
         let rule_count = enabled.len();
         let mut observed_rules = 0;
         for (index, observation) in enabled.into_iter().zip(observations) {
@@ -622,12 +628,16 @@ impl RuntimeCore {
                 rule.policy
                     .check_topology(topology)
                     .map_err(|error| error.to_string())?;
+                let explicit_paths = explicit_paths.get_or_insert_with(|| {
+                    explicit_cpu_allocation_paths(active, alternate_cpu_allocation_profile)
+                });
                 let (cohort, excluded) = prepare_cohort(
                     &mut self.cpu_allocation_coordinator,
                     &mut inventory,
                     topology,
                     rule,
                     active,
+                    explicit_paths,
                 )?;
                 let counts = (rule.retained.len(), excluded.len());
                 observed_counts = Some(counts);
@@ -668,6 +678,7 @@ impl RuntimeCore {
                     topology,
                     rule,
                     active,
+                    explicit_paths,
                 )?;
                 if fresh_cohort != cohort || fresh_excluded != exclusions {
                     return Err(t!("instance_balancing.changed").to_string().into());
@@ -689,7 +700,13 @@ impl RuntimeCore {
                         if membership::member_state(member)? != MemberState::Current {
                             return Err(t!("instance_balancing.changed").to_string());
                         }
-                        if !context_is_current(shared, configured, active) {
+                        if !context_is_current(
+                            shared,
+                            configured,
+                            active,
+                            alternate_cpu_allocation_profile.is_some(),
+                            power_source::is_plugged_in(),
+                        ) {
                             return Err(t!("instance_balancing.changed").to_string());
                         }
                         Ok(())

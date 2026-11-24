@@ -692,7 +692,12 @@ Read the relevant section before changing feature policy, ownership, restoration
   Selecting a preset copies its complete selection and topology signature into that tier;
   later preset edits or deletion do not silently rewrite configured rules.
   Both features report Paused while an observation required for rule selection is
-  unavailable. Restoration failures remain current while the policy's released assignments
+  unavailable. When Windows cannot confirm the power source, differing saved Soft and Hard
+  policies pause explicit placement and restore their assignments. The comparison includes
+  configured Soft exclusions, so even an inactive row or a different path spelling can
+  require a pause. Equivalent settings continue to work. Adaptive Engine placement and
+  Instance Balancing reserve configured placement paths from both profiles during the pause.
+  Restoration failures remain current while the policy's released assignments
   remain owned. Once reconciliation settles them, Status keeps any independent observation
   error, and the original restoration failure remains in the Action Log.
 - CPU-selection rules, custom presets, and Adaptive Engine custom selections store

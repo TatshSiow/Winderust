@@ -791,6 +791,18 @@ fn waiting_for_power_source(page: Page, runtime: &RuntimeStatusSnapshot) -> bool
                 .timer_resolution
                 .waiting_for_power_source
         }
+        Page::CpuSetsSoft => {
+            runtime
+                .feature_status
+                .cpu_sets_soft
+                .waiting_for_power_source
+        }
+        Page::ProcessorAffinityHard => {
+            runtime
+                .feature_status
+                .processor_affinity_hard
+                .waiting_for_power_source
+        }
         _ => false,
     }
 }
@@ -1991,7 +2003,7 @@ mod tests {
     }
 
     #[test]
-    fn priority_control_rail_shows_source_wait_and_restore_failure() {
+    fn process_control_rail_shows_source_wait_and_restore_failure() {
         let settings = Settings::default();
         let mut runtime = RuntimeStatusSnapshot {
             generation: 1,
@@ -2004,6 +2016,8 @@ mod tests {
         features.io_priority.waiting_for_power_source = true;
         features.gpu_priority.waiting_for_power_source = true;
         features.memory_priority.waiting_for_power_source = true;
+        features.cpu_sets_soft.waiting_for_power_source = true;
+        features.processor_affinity_hard.waiting_for_power_source = true;
         for page in [
             Page::ProcessPriority,
             Page::ThreadPriority,
@@ -2011,6 +2025,8 @@ mod tests {
             Page::IoPriority,
             Page::GpuPriority,
             Page::MemoryPriority,
+            Page::CpuSetsSoft,
+            Page::ProcessorAffinityHard,
         ] {
             let paused = rail_text(view(page, &settings, &runtime, &[], None).unwrap());
             assert_eq!(paused[0], t!("sidebar_status.paused"));
@@ -2024,6 +2040,8 @@ mod tests {
         features.io_priority.last_error = Some("I/O restore failed".into());
         features.gpu_priority.last_error = Some("GPU restore failed".into());
         features.memory_priority.last_error = Some("memory restore failed".into());
+        features.cpu_sets_soft.last_error = Some("CPU Sets restore failed".into());
+        features.processor_affinity_hard.last_error = Some("affinity restore failed".into());
         for (page, reason) in [
             (Page::ProcessPriority, "priority restore failed"),
             (Page::ThreadPriority, "thread restore failed"),
@@ -2031,6 +2049,8 @@ mod tests {
             (Page::IoPriority, "I/O restore failed"),
             (Page::GpuPriority, "GPU restore failed"),
             (Page::MemoryPriority, "memory restore failed"),
+            (Page::CpuSetsSoft, "CPU Sets restore failed"),
+            (Page::ProcessorAffinityHard, "affinity restore failed"),
         ] {
             let error = rail_text(view(page, &settings, &runtime, &[], None).unwrap());
             assert_eq!(error[0], t!("common.error"));

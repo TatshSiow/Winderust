@@ -1285,6 +1285,12 @@ fn run_background_automation(
             && memory_trim_policy_difference == MemoryTrimPolicyDifference::ManualAndAutomatic;
         let memory_trim_active = !memory_trim_waits_for_source
             && feature_refresh_required(settings, settings.memory_trim.enabled);
+        let cpu_allocation_wait = plugged_in
+            .is_none()
+            .then(|| cpu_allocation_source_difference(&configured_settings))
+            .flatten();
+        let alternate_cpu_allocation_profile =
+            cpu_allocation_wait.map(|_| configured_settings.battery_profile());
         let mut observations = CycleObservations::default();
         let hidden_to_tray = tray_hidden();
         let adaptive_engine_enabled = settings.adaptive_engine.enabled;
@@ -1464,10 +1470,17 @@ fn run_background_automation(
         let power_plan_checks_required = power_plan_waits_for_source
             || power_plan_checks_required(settings)
             || runner.has_temporary_power_plan();
+        let explicit_cpu_allocation_allowed =
+            settings.general.enabled && cpu_allocation_wait.is_none();
+        let cpu_sets_soft_active =
+            explicit_cpu_allocation_allowed && cpu_sets_soft_required(settings);
+        let processor_affinity_hard_active =
+            explicit_cpu_allocation_allowed && processor_affinity_hard_required(settings);
         let scan_process_appearance = process_appearance_scan_required_for_runtime(
             settings,
             cpu_limiter_active,
             memory_trim_active,
+            cpu_sets_soft_active || processor_affinity_hard_active,
         );
         let background_efficiency_active =
             feature_refresh_required(settings, settings.background_efficiency.enabled);
@@ -1483,10 +1496,9 @@ fn run_background_automation(
             || feature_refresh_required(settings, app_suspension_required(settings))
             || app_suspension_command_requested
             || runner.app_suspension_active();
-        let cpu_sets_soft_refresh_required = settings_changed
-            || feature_refresh_required(settings, cpu_sets_soft_required(settings));
-        let processor_affinity_hard_refresh_required = settings_changed
-            || feature_refresh_required(settings, processor_affinity_hard_required(settings));
+        let cpu_sets_soft_refresh_required = settings_changed || cpu_sets_soft_active;
+        let processor_affinity_hard_refresh_required =
+            settings_changed || processor_affinity_hard_active;
         let cpu_limiter_refresh_requested = settings_changed || cpu_limiter_active;
         let cpu_limiter_release_pending = runner.cpu_limiter_release_pending();
         let cpu_limiter_refresh_required = cpu_limiter_refresh_requested
@@ -1688,7 +1700,11 @@ fn run_background_automation(
         let adaptive_engine_process_status = if adaptive_engine_process_refresh_required
             && scheduler.is_due(RefreshDomain::AdaptiveEngineProcess, now)
         {
-            let status = runner.run_adaptive_engine_process_update(settings, &mut observations);
+            let status = runner.run_adaptive_engine_process_update(
+                settings,
+                alternate_cpu_allocation_profile,
+                &mut observations,
+            );
             scheduler.schedule_after(
                 RefreshDomain::AdaptiveEngineProcess,
                 now,
@@ -1838,7 +1854,13 @@ fn run_background_automation(
             }
         }
         if cpu_sets_soft_refresh_required && scheduler.is_due(RefreshDomain::CpuSetsSoft, now) {
-            let status = runner.run_cpu_sets_soft_update(settings, &mut observations);
+            let status = if cpu_allocation_wait.is_some_and(|waiting| waiting.soft) {
+                runner.pause_cpu_allocation_for_power_source(
+                    cpu_allocation::CpuAllocationMode::SoftCpuSets,
+                )
+            } else {
+                runner.run_cpu_sets_soft_update(settings, &mut observations)
+            };
             update_cpu_sets_soft_status(&shared, status);
             scheduler.schedule_after(
                 RefreshDomain::CpuSetsSoft,
@@ -1849,7 +1871,13 @@ fn run_background_automation(
         if processor_affinity_hard_refresh_required
             && scheduler.is_due(RefreshDomain::ProcessorAffinityHard, now)
         {
-            let status = runner.run_processor_affinity_hard_update(settings, &mut observations);
+            let status = if cpu_allocation_wait.is_some_and(|waiting| waiting.hard) {
+                runner.pause_cpu_allocation_for_power_source(
+                    cpu_allocation::CpuAllocationMode::HardAffinity,
+                )
+            } else {
+                runner.run_processor_affinity_hard_update(settings, &mut observations)
+            };
             update_processor_affinity_hard_status(&shared, status);
             scheduler.schedule_after(
                 RefreshDomain::ProcessorAffinityHard,
@@ -1864,6 +1892,7 @@ fn run_background_automation(
                 &shared,
                 &configured_settings,
                 settings,
+                alternate_cpu_allocation_profile,
                 windows_event_watcher_active,
             );
             update_instance_balancing_status(&shared, status);
@@ -2312,7 +2341,13 @@ fn run_background_automation(
         if let Some(delay) = runner.control_release_retry_delay(sleep_now) {
             wait_for = Some(min_worker_wait(wait_for, delay));
         }
-        if process_priority_schedule.source_recheck
+        if cpu_allocation_wait.is_some()
+            || (!windows_event_watcher_active
+                && plugged_in.is_some()
+                && !cpu_sets_soft_active
+                && !processor_affinity_hard_active
+                && cpu_allocation_source_difference(&configured_settings).is_some())
+            || process_priority_schedule.source_recheck
             || thread_priority_schedule.source_recheck
             || dynamic_priority_boost_schedule.source_recheck
             || io_priority_schedule.source_recheck

@@ -1255,6 +1255,42 @@ fn cpu_sets_soft_owns_duplicate_cpu_allocation_rules() {
 }
 
 #[test]
+fn explicit_cpu_allocation_source_wait_accounts_for_configured_soft_precedence() {
+    let mut settings = Settings::default();
+    settings.general.enabled = true;
+    let rule = CpuAllocationRule {
+        enabled: true,
+        executable_path: r"C:\Apps\chat.exe".into(),
+        focus_selection: crate::cpu_topology::test_selection(1),
+        visible_window_selection: crate::cpu_topology::test_selection(1),
+        background_selection: crate::cpu_topology::test_selection(1),
+    };
+    let mut disabled_soft = rule.clone();
+    disabled_soft.enabled = false;
+    settings
+        .battery_profile_mut()
+        .cpu_sets_soft
+        .rules
+        .push(disabled_soft.clone());
+    assert!(cpu_allocation_source_difference(&settings).is_none());
+    settings.processor_affinity_hard.enabled = true;
+    settings.processor_affinity_hard.rules.push(rule);
+    settings.battery_profile_mut().processor_affinity_hard =
+        settings.processor_affinity_hard.clone();
+    let waiting = cpu_allocation_source_difference(&settings).unwrap();
+    assert!(!waiting.soft && waiting.hard);
+    assert!(processor_affinity_hard_required(&settings));
+    assert!(!processor_affinity_hard_required(
+        settings.battery_profile()
+    ));
+    assert!(!process_appearance_scan_required_for_runtime(
+        &settings, false, false, false
+    ));
+    settings.cpu_sets_soft.rules.push(disabled_soft);
+    assert!(cpu_allocation_source_difference(&settings).is_none());
+}
+
+#[test]
 fn explicit_cpu_allocation_paths_exclude_only_active_usable_rules() {
     let mut settings = Settings::default();
     settings.cpu_sets_soft.enabled = true;
@@ -1287,7 +1323,7 @@ fn explicit_cpu_allocation_paths_exclude_only_active_usable_rules() {
             background_selection: crate::cpu_topology::test_selection(0),
         });
 
-    let paths = explicit_cpu_allocation_paths(&settings);
+    let paths = explicit_cpu_allocation_paths(&settings, None);
 
     assert_eq!(paths.len(), 1);
     assert!(paths.contains(&crate::foreground::process_failure_key(r"C:\Apps\soft.exe")));
@@ -1573,7 +1609,7 @@ fn active_cpu_limiter_keeps_process_discovery_at_one_second() {
 
     assert!(process_appearance_scan_required(&settings));
     assert!(!process_appearance_scan_required_for_runtime(
-        &settings, false, false
+        &settings, false, false, false
     ));
     assert_eq!(
         process_appearance_refresh_interval(false, true, false),
@@ -2661,7 +2697,8 @@ fn shared_property_precedence_inputs_are_characterized() {
     );
     assert!(workload.contains("priority_efficiency_controller"));
     assert!(workload.contains("by_running_app_manager.active_process_ids()"));
-    assert!(workload.contains("explicit_cpu_allocation_paths(settings)"));
+    assert!(workload
+        .contains("explicit_cpu_allocation_paths(settings, alternate_cpu_allocation_profile)"));
 
     let process_priority = source_scope(
         source,

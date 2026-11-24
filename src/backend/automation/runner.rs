@@ -574,7 +574,7 @@ impl RuntimeCore {
         if let Err(error) = self.io_priority_controller.shutdown() {
             errors.push(format!("I/O Priority restoration failed: {error}"));
         }
-        self.run_adaptive_engine_process_update(&settings, &mut observations);
+        self.run_adaptive_engine_process_update(&settings, None, &mut observations);
         if let Err(error) = self.cpu_allocation_coordinator.shutdown() {
             errors.push(format!("CPU allocation restoration failed: {error}"));
         }
@@ -959,6 +959,26 @@ impl RuntimeCore {
             })
     }
 
+    pub(super) fn pause_cpu_allocation_for_power_source(
+        &mut self,
+        mode: cpu_allocation::CpuAllocationMode,
+    ) -> CpuAllocationSnapshot {
+        let (manager, owner) = match mode {
+            cpu_allocation::CpuAllocationMode::SoftCpuSets => {
+                (&mut self.cpu_sets_soft_manager, ControlOwner::CpuSetsSoft)
+            }
+            cpu_allocation::CpuAllocationMode::HardAffinity => (
+                &mut self.processor_affinity_hard_manager,
+                ControlOwner::ProcessorAffinityHard,
+            ),
+        };
+        manager.pause_for_power_source(
+            &mut self.cpu_allocation_coordinator,
+            owner,
+            &mut self.action_log,
+        )
+    }
+
     pub(super) fn run_cpu_sets_soft_update(
         &mut self,
         settings: &Settings,
@@ -1104,6 +1124,7 @@ impl RuntimeCore {
     pub(super) fn run_adaptive_engine_process_update(
         &mut self,
         settings: &Settings,
+        alternate_cpu_allocation_profile: Option<&Settings>,
         observations: &mut CycleObservations,
     ) -> AdaptiveEngineProcessSnapshot {
         if bottleneck_classifier_required(settings) {
@@ -1111,7 +1132,8 @@ impl RuntimeCore {
         }
         let foreground_process_id = observations.foreground_process_id();
         let excluded_process_ids = self.by_running_app_manager.active_process_ids();
-        let explicit_cpu_allocation_paths = explicit_cpu_allocation_paths(settings);
+        let explicit_cpu_allocation_paths =
+            explicit_cpu_allocation_paths(settings, alternate_cpu_allocation_profile);
         self.adaptive_engine_process_manager.update(
             AdaptiveEngineProcessUpdate {
                 settings: &settings.adaptive_engine_process,
@@ -2505,9 +2527,13 @@ pub(super) fn processor_affinity_hard_settings(settings: &Settings) -> CpuAlloca
     processor_affinity_hard
 }
 
-pub(super) fn explicit_cpu_allocation_paths(settings: &Settings) -> Vec<String> {
-    [&settings.cpu_sets_soft, &settings.processor_affinity_hard]
-        .into_iter()
+pub(super) fn explicit_cpu_allocation_paths(
+    settings: &Settings,
+    alternate: Option<&Settings>,
+) -> Vec<String> {
+    std::iter::once(settings)
+        .chain(alternate)
+        .flat_map(|profile| [&profile.cpu_sets_soft, &profile.processor_affinity_hard])
         .filter(|feature| feature.enabled)
         .flat_map(|feature| &feature.rules)
         .filter(|rule| {

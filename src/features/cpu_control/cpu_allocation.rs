@@ -39,6 +39,7 @@ const EXTRA_BUILT_IN_EXCLUSIONS: &[&str] = &["rtkauduservice64.exe"];
 pub struct CpuAllocationSnapshot {
     pub enabled: bool,
     pub(crate) observation_paused: bool,
+    pub(crate) waiting_for_power_source: bool,
     pub scanned_processes: usize,
     pub adjusted_processes: usize,
     pub skipped_processes: usize,
@@ -653,6 +654,7 @@ impl CpuAllocationManager {
             snapshot: CpuAllocationSnapshot {
                 enabled: true,
                 observation_paused: false,
+                waiting_for_power_source: false,
                 scanned_processes,
                 adjusted_processes: coordinator.policy_managed_process_count(owner),
                 skipped_processes,
@@ -666,9 +668,30 @@ impl CpuAllocationManager {
         }
     }
 
-    pub(crate) fn take_settled_release_status(
+    pub(crate) fn pause_for_power_source<P: CpuAllocationPlatform>(
         &mut self,
-        coordinator: &CpuAllocationCoordinator,
+        coordinator: &mut CpuAllocationCoordinator<P>,
+        owner: ControlOwner,
+        action_log: &mut ActionLog,
+    ) -> CpuAllocationSnapshot {
+        self.status_after_release = None;
+        self.release_snapshot(
+            coordinator,
+            owner,
+            CpuAllocationSnapshot {
+                enabled: true,
+                observation_paused: true,
+                waiting_for_power_source: true,
+                ..Default::default()
+            },
+            "Windows power source is unavailable",
+            action_log,
+        )
+    }
+
+    pub(crate) fn take_settled_release_status<P: CpuAllocationPlatform>(
+        &mut self,
+        coordinator: &CpuAllocationCoordinator<P>,
         owner: ControlOwner,
     ) -> Option<CpuAllocationSnapshot> {
         if self.status_after_release.is_some()

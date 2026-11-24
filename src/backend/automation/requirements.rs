@@ -145,6 +145,36 @@ pub(super) fn app_suspension_policy_varies_by_source(settings: &Settings) -> boo
         })
 }
 
+#[derive(Clone, Copy)]
+pub(super) struct CpuAllocationSourceDifference {
+    pub(super) soft: bool,
+    pub(super) hard: bool,
+}
+
+pub(super) fn cpu_allocation_source_difference(
+    settings: &Settings,
+) -> Option<CpuAllocationSourceDifference> {
+    let battery = settings.on_battery.as_deref()?;
+    if !settings.general.enabled
+        || (settings.cpu_sets_soft == battery.cpu_sets_soft
+            && settings.processor_affinity_hard == battery.processor_affinity_hard)
+    {
+        return None;
+    }
+    // Hard yields to configured Soft paths even if those Soft rules are disabled.
+    let has_rule = |feature: &CpuAllocationSettings| {
+        feature.enabled
+            && feature.rules.iter().any(|rule| {
+                enabled_executable_path_rule(rule.enabled, &rule.executable_path)
+                    && rule.has_cpu_selection()
+            })
+    };
+    let soft = has_rule(&settings.cpu_sets_soft) || has_rule(&battery.cpu_sets_soft);
+    let hard =
+        has_rule(&settings.processor_affinity_hard) || has_rule(&battery.processor_affinity_hard);
+    (soft || hard).then_some(CpuAllocationSourceDifference { soft, hard })
+}
+
 pub(super) fn cpu_sets_soft_required(settings: &Settings) -> bool {
     settings.cpu_sets_soft.enabled
         && settings.cpu_sets_soft.rules.iter().any(|rule| {
@@ -240,6 +270,8 @@ pub(super) fn process_appearance_scan_required(settings: &Settings) -> bool {
         settings,
         cpu_limiter_required(settings),
         settings.memory_trim.enabled,
+        settings.general.enabled
+            && (cpu_sets_soft_required(settings) || processor_affinity_hard_required(settings)),
     )
 }
 
@@ -247,11 +279,11 @@ pub(super) fn process_appearance_scan_required_for_runtime(
     settings: &Settings,
     cpu_limiter_active: bool,
     memory_trim_active: bool,
+    explicit_cpu_allocation_active: bool,
 ) -> bool {
     settings.general.enabled
         && (settings.background_efficiency.enabled
-            || cpu_sets_soft_required(settings)
-            || processor_affinity_hard_required(settings)
+            || explicit_cpu_allocation_active
             || cpu_limiter_active
             || by_running_app_required(settings)
             || adaptive_engine_process_required(settings)

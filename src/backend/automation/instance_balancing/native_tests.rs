@@ -136,7 +136,8 @@ fn tick(
         "Native smoke exceeded its 24-second deadline"
     );
     let watcher_active = lock_unpoisoned(&shared.state).windows_event_watcher_active;
-    let status = core.run_instance_balancing_update(shared, settings, settings, watcher_active);
+    let status =
+        core.run_instance_balancing_update(shared, settings, settings, None, watcher_active);
     assert!(
         Instant::now() < deadline,
         "Native producer exceeded its deadline"

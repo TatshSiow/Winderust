@@ -70,7 +70,7 @@ fn explicit_cpu_rules_exclude_matching_instances_without_rejecting_unrelated_pat
     };
     let instance = r"C:\Apps\worker.exe";
     let excluded = |settings: &Settings| {
-        explicit_selection(&explicit_cpu_allocation_paths(settings), instance)
+        explicit_selection(&explicit_cpu_allocation_paths(settings, None), instance)
     };
     assert!(!excluded(&settings));
 

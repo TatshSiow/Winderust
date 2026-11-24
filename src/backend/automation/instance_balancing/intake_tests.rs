@@ -1,5 +1,5 @@
 use super::*;
-use crate::application::settings::RuntimeSettingsSnapshot;
+use crate::{application::settings::RuntimeSettingsSnapshot, config::CpuAllocationRule};
 
 fn runtime_handle() -> RuntimeHandle {
     RuntimeHandle::start(&RuntimeSettingsSnapshot {
@@ -189,7 +189,16 @@ fn context_gate_rejects_pending_intents_and_watcher_interruptions() {
     let runtime = runtime_handle();
     let configured = {
         let mut configured = Settings::default();
-        configured.battery_profile_mut();
+        configured.general.enabled = true;
+        let battery = &mut configured.battery_profile_mut().cpu_sets_soft;
+        battery.enabled = true;
+        battery.rules.push(CpuAllocationRule {
+            enabled: true,
+            executable_path: r"C:\Apps\first.exe".into(),
+            focus_selection: crate::cpu_topology::test_selection(1),
+            visible_window_selection: crate::cpu_topology::test_selection(1),
+            background_selection: crate::cpu_topology::test_selection(1),
+        });
         Arc::new(configured)
     };
     let reset = || {
@@ -201,11 +210,19 @@ fn context_gate_rejects_pending_intents_and_watcher_interruptions() {
         state.stop_requested = false;
     };
     reset();
-    assert!(context_is_current(
-        &runtime.shared,
-        &configured,
-        &configured
-    ));
+    let current = |includes_alternate, source| {
+        context_is_current(
+            &runtime.shared,
+            &configured,
+            &configured,
+            includes_alternate,
+            source,
+        )
+    };
+    assert!(current(false, Some(true)));
+    assert!(current(true, None));
+    assert!(!current(false, None));
+    assert!(!current(true, Some(true)));
     type Invalidate = fn(&mut AutomationWorkerState);
     let invalidations: [(&str, Invalidate); 7] = [
         ("suspend", |state| {
@@ -235,7 +252,7 @@ fn context_gate_rejects_pending_intents_and_watcher_interruptions() {
         reset();
         invalidate(&mut lock_unpoisoned(&runtime.shared.state));
         assert!(
-            !context_is_current(&runtime.shared, &configured, &configured),
+            !current(false, Some(true)),
             "{reason} must invalidate a prepared cohort"
         );
     }
@@ -243,10 +260,6 @@ fn context_gate_rejects_pending_intents_and_watcher_interruptions() {
     set_windows_event_watcher_active(&runtime.shared, false);
     set_windows_event_watcher_active(&runtime.shared, true);
     assert!(lock_unpoisoned(&runtime.shared.state).windows_event_watcher_active);
-    assert!(!context_is_current(
-        &runtime.shared,
-        &configured,
-        &configured
-    ));
+    assert!(!current(false, Some(true)));
     reset();
 }
