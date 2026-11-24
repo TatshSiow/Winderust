@@ -3318,6 +3318,8 @@ impl WinderustApp {
                 | Page::InstanceBalancing
                 | Page::ByFocus
                 | Page::ByRunningApp
+                | Page::CpuSetsSoft
+                | Page::ProcessorAffinityHard
                 | Page::Watchdog
         ) || priority_kind(self.page).is_some();
         let save_card =
