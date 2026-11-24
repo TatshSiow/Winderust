@@ -114,22 +114,25 @@ pub(super) fn view_with_path_selection<'a, M: Clone + 'static>(
         .on_input_maybe(enabled.then_some(edit))
         .width(Length::Fill)
         .into();
-    row![
-        widgets::search_field(
-            Element::new(Picker {
-                input,
-                choices,
-                select,
-                browse,
-                enabled,
-                menu: None,
-            }),
-            (enabled && !query.is_empty()).then(|| edit(String::new())),
-        ),
-        widgets::rule_add_button(add),
-    ]
-    .spacing(design::space::SMALL)
-    .align_y(iced::Center)
+    container(
+        row![
+            widgets::search_field(
+                Element::new(Picker {
+                    input,
+                    choices,
+                    select,
+                    browse,
+                    enabled,
+                    menu: None,
+                }),
+                (enabled && !query.is_empty()).then(|| edit(String::new())),
+            ),
+            widgets::rule_add_button(add),
+        ]
+        .spacing(design::space::SMALL)
+        .align_y(iced::Center),
+    )
+    .max_width(460)
     .into()
 }
 
@@ -324,7 +327,7 @@ impl<M: Clone> Picker<'_, M> {
 
 impl<M: Clone + 'static> Widget<M, Theme, Renderer> for Picker<'_, M> {
     fn size(&self) -> Size<Length> {
-        Size::new(Length::Fixed(372.0), Length::Shrink)
+        Size::new(Length::Fill, Length::Shrink)
     }
     fn tag(&self) -> tree::Tag {
         tree::Tag::of::<State>()
@@ -362,7 +365,7 @@ impl<M: Clone + 'static> Widget<M, Theme, Renderer> for Picker<'_, M> {
     ) -> layout::Node {
         self.input
             .as_widget_mut()
-            .layout(&mut tree.children[0], renderer, &limits.width(372))
+            .layout(&mut tree.children[0], renderer, limits)
     }
     fn draw(
         &self,
@@ -820,6 +823,60 @@ mod tests {
                 );
                 assert_eq!(checked.into_inner(), expected, "query {query:?}");
             }
+        }
+    }
+
+    #[test]
+    fn narrow_picker_keeps_the_full_add_rule_label() {
+        #[derive(Default)]
+        struct AddLabel(Option<Rectangle>);
+
+        impl Operation for AddLabel {
+            fn traverse(&mut self, visit: &mut dyn FnMut(&mut dyn Operation)) {
+                visit(self);
+            }
+
+            fn text(
+                &mut self,
+                _: Option<&iced::advanced::widget::Id>,
+                bounds: Rectangle,
+                content: &str,
+            ) {
+                if content == t!("common.add_rule").as_ref() {
+                    self.0 = Some(bounds);
+                }
+            }
+        }
+
+        let renderer = Renderer::new(design::typography::FONT, iced::Pixels(14.0));
+        for query in ["", r"C:\Apps\sample.exe"] {
+            let add_label = |width| {
+                let mut picker = view(
+                    query,
+                    &[],
+                    true,
+                    Message::Select,
+                    Message::Browse,
+                    Some(Message::Browse),
+                    |_| None,
+                );
+                let mut tree = Tree::new(&picker);
+                let limits = layout::Limits::new(Size::ZERO, Size::new(width, 32.0));
+                let node = picker.as_widget_mut().layout(&mut tree, &renderer, &limits);
+                let mut label = AddLabel::default();
+                picker.as_widget_mut().operate(
+                    &mut tree,
+                    Layout::new(&node),
+                    &renderer,
+                    &mut label,
+                );
+                label.0.unwrap()
+            };
+            let narrow = add_label(418.0);
+            let wide = add_label(740.0);
+            assert_eq!(narrow.size(), wide.size());
+            assert!(narrow.x < wide.x);
+            assert!(narrow.x + narrow.width <= 418.0);
         }
     }
 
