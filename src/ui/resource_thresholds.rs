@@ -1,4 +1,4 @@
-use std::{path::Path, sync::Arc};
+use std::{collections::BTreeMap, path::Path, sync::Arc};
 
 use super::{
     app_picker, design,
@@ -312,6 +312,28 @@ impl Editor {
         {
             draft.match_preview = MatchPreview::Loaded(result);
         }
+    }
+
+    #[cfg(feature = "render-smoke")]
+    pub(super) fn set_smoke_match_preview(&mut self) {
+        let draft = self
+            .draft
+            .as_mut()
+            .expect("preview fixture has an open rule");
+        draft.tab = DraftTab::MatchPreview;
+        draft.match_preview = MatchPreview::Loaded(Ok([
+            (41, r"C:\Apps\worker.exe"),
+            (42, r"C:\Apps\worker.exe"),
+            (81, r"D:\Tools\worker.exe"),
+        ]
+        .into_iter()
+        .map(|(pid, path)| preview::MatchRow {
+            pid,
+            path: Some(path.into()),
+            kind: preview::MatchKind::Matched(path.into()),
+            other_matching_rules: Vec::new(),
+        })
+        .collect()));
     }
 
     pub(super) fn toggle_settings(&mut self) {
@@ -758,24 +780,32 @@ impl Editor {
             MatchPreview::Loaded(Ok(matches)) => matches,
         };
 
+        let combined = draft.rule.scope == ResourceThresholdsScope::Combined;
+        let mut path_groups = BTreeMap::<&Path, Vec<_>>::new();
         let mut matched = Vec::new();
         let mut same_name = Vec::new();
         let mut unavailable = Vec::new();
         for entry in matches {
-            let (rows, reason) = match entry.kind {
-                MatchKind::Matched => (&mut matched, None),
-                MatchKind::SameName => (&mut same_name, None),
-                MatchKind::Unavailable(reason) => (&mut unavailable, Some(reason)),
+            let (rows, grouped, reason) = match &entry.kind {
+                MatchKind::Matched(path) if combined => {
+                    (path_groups.entry(path).or_default(), true, None)
+                }
+                MatchKind::Matched(_) => (&mut matched, false, None),
+                MatchKind::SameName => (&mut same_name, false, None),
+                MatchKind::Unavailable(reason) => (&mut unavailable, false, Some(*reason)),
             };
-            let path = entry.path.as_ref().map_or_else(
-                || t!(UnavailableReason::PathUnavailable.label_key()).to_string(),
-                |path| path.display().to_string(),
-            );
-            let mut metadata = column![text(path)
-                .style(text::secondary)
-                .wrapping(text::Wrapping::WordOrGlyph)]
-            .spacing(design::space::TINY)
-            .width(Fill);
+            let mut metadata = column![].spacing(design::space::TINY).width(Fill);
+            if !grouped {
+                let path = entry.path.as_ref().map_or_else(
+                    || t!(UnavailableReason::PathUnavailable.label_key()).to_string(),
+                    |path| path.display().to_string(),
+                );
+                metadata = metadata.push(
+                    text(path)
+                        .style(text::secondary)
+                        .wrapping(text::Wrapping::WordOrGlyph),
+                );
+            }
             let detail = match reason.filter(|_| entry.path.is_some()) {
                 Some(reason) => Some(t!(reason.label_key())),
                 None if !entry.other_matching_rules.is_empty() => {
@@ -811,29 +841,66 @@ impl Editor {
                 .into(),
             );
         }
-        if matched.is_empty() {
+        if matched.is_empty() && path_groups.is_empty() {
             details = details.push(
                 text(t!("resource_thresholds.preview_no_matches").to_string())
                     .style(text::secondary),
             );
         }
-        for (rows, heading) in [
-            (matched, "resource_thresholds.preview_matches"),
-            (same_name, "resource_thresholds.preview_same_name"),
-            (unavailable, "resource_thresholds.preview_unavailable"),
+        if !path_groups.is_empty() {
+            let groups = path_groups.into_iter().map(|(path, rows)| {
+                column![
+                    widgets::heading(path.display().to_string(), design::typography::SECONDARY)
+                        .wrapping(text::Wrapping::WordOrGlyph),
+                    Column::with_children(rows).spacing(design::space::SMALL),
+                ]
+                .spacing(design::space::SMALL)
+                .into()
+            });
+            details = details.push(Self::preview_group(
+                "resource_thresholds.scope_combined",
+                Some("resource_thresholds.preview_combined_scope"),
+                groups,
+            ));
+        }
+        for (rows, heading, scope_help) in [
+            (
+                matched,
+                "resource_thresholds.preview_matches",
+                Some("resource_thresholds.preview_instance_scope"),
+            ),
+            (same_name, "resource_thresholds.preview_same_name", None),
+            (unavailable, "resource_thresholds.preview_unavailable", None),
         ] {
             if rows.is_empty() {
                 continue;
             }
-            details = details.push(widgets::settings_card(
-                column![
-                    widgets::heading(t!(heading).to_string(), design::typography::BODY),
-                    Column::with_children(rows).spacing(design::space::SMALL),
-                ]
-                .spacing(design::space::MEDIUM),
-            ));
+            details = details.push(Self::preview_group(heading, scope_help, rows));
         }
         details
+    }
+
+    fn preview_group<'a>(
+        heading: &str,
+        scope_help: Option<&str>,
+        rows: impl IntoIterator<Item = Element<'a, Message>>,
+    ) -> Element<'a, Message> {
+        widgets::settings_card(
+            column![widgets::heading(
+                t!(heading).to_string(),
+                design::typography::BODY
+            )]
+            .extend(scope_help.map(|key| {
+                text(t!(key).into_owned())
+                    .size(design::typography::CAPTION)
+                    .style(text::secondary)
+                    .wrapping(text::Wrapping::WordOrGlyph)
+                    .into()
+            }))
+            .push(Column::with_children(rows).spacing(design::space::SMALL))
+            .spacing(design::space::MEDIUM),
+        )
+        .into()
     }
 
     pub(super) fn modal<'a>(

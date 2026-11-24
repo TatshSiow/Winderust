@@ -1,17 +1,20 @@
-use std::path::{Path, PathBuf};
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+};
 
 use crate::{
-    config::{ResourceThresholdsRule, ResourceThresholdsSelector},
+    config::{ResourceThresholdsRule, ResourceThresholdsScope, ResourceThresholdsSelector},
     features::watchdog::resource_thresholds::{
-        matching_path, observed_path_matches_name, selector_basename_matches,
+        group_matches, matching_path, observed_path_matches_name, selector_basename_matches,
     },
     foreground::{same_executable_path, ProcessInfo},
     runtime::observations::CycleObservations,
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum MatchKind {
-    Matched,
+    Matched(PathBuf),
     SameName,
     Unavailable(UnavailableReason),
 }
@@ -19,6 +22,7 @@ pub(crate) enum MatchKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum UnavailableReason {
     PathUnavailable,
+    PathUnverified,
     NameUnverified,
     StartTimeUnavailable,
     CriticalityUnknown,
@@ -30,6 +34,7 @@ impl UnavailableReason {
     pub(super) fn label_key(self) -> &'static str {
         match self {
             Self::PathUnavailable => "resource_thresholds.preview_path_unavailable",
+            Self::PathUnverified => "resource_thresholds.preview_path_unverified",
             Self::NameUnverified => "resource_thresholds.preview_name_unverified",
             Self::StartTimeUnavailable => "resource_thresholds.preview_start_time_unavailable",
             Self::CriticalityUnknown => "resource_thresholds.preview_criticality_unknown",
@@ -84,11 +89,23 @@ fn classify(
     use UnavailableReason::*;
 
     let expected_path = selector.exact_path().map(Path::new);
+    // The preview only uses paths already observed for this request.
+    let group_paths = group_matches(
+        selector,
+        ResourceThresholdsScope::Combined,
+        processes
+            .iter()
+            .filter(|process| process.image_path.is_some()),
+    )
+    .into_iter()
+    .flat_map(|((_, path), members)| members.into_iter().map(move |member| (member.id, path)))
+    .collect::<BTreeMap<_, _>>();
     let mut rows = Vec::new();
     for process in processes {
         if !selector_basename_matches(selector, &process.name) {
             continue;
         }
+        let evaluation_path = group_paths.get(&process.id).copied();
         let kind = match process.image_path.as_deref() {
             Some(actual_path)
                 if expected_path.is_some_and(|path| !same_executable_path(actual_path, path)) =>
@@ -108,9 +125,11 @@ fn classify(
                 MatchKind::Unavailable(StartTimeUnavailable)
             }
             Some(_) if process.is_critical.is_none() => MatchKind::Unavailable(CriticalityUnknown),
-            Some(_) => MatchKind::Matched,
+            Some(_) => evaluation_path.map_or(MatchKind::Unavailable(PathUnverified), |path| {
+                MatchKind::Matched(path.to_path_buf())
+            }),
         };
-        let other_matching_rules = if kind == MatchKind::Matched {
+        let other_matching_rules = if matches!(kind, MatchKind::Matched(_)) {
             other_rules
                 .iter()
                 .filter_map(|(index, selector)| matching_path(selector, process).map(|_| *index))
@@ -186,11 +205,11 @@ mod tests {
         let rows = classify(&selector, &others, &processes, 7);
         assert_eq!(
             rows.iter()
-                .map(|row| (row.pid, row.kind))
+                .map(|row| (row.pid, row.kind.clone()))
                 .collect::<Vec<_>>(),
             [
-                (1, MatchKind::Matched),
-                (2, MatchKind::Matched),
+                (1, MatchKind::Matched(path.into())),
+                (2, MatchKind::Matched(path.into())),
                 (3, MatchKind::SameName),
                 (4, MatchKind::Unavailable(PathUnavailable)),
                 (5, MatchKind::Unavailable(StartTimeUnavailable)),
@@ -221,6 +240,7 @@ mod tests {
             process(4, "worker.exe", Some(r"C:\Apps\different.exe")),
             process(5, "worker.exe", Some("worker.exe")),
             process(6, "different.exe", Some(path)),
+            process(7, "worker.exe", Some("C:/Apps/worker.exe")),
         ];
         let selector = ResourceThresholdsSelector::ExactName {
             executable_name: "worker.exe".into(),
@@ -230,21 +250,22 @@ mod tests {
         let rows = classify(&selector, &others, &processes, 0);
         assert_eq!(
             rows.iter()
-                .map(|row| (row.pid, row.kind))
+                .map(|row| (row.pid, row.kind.clone()))
                 .collect::<Vec<_>>(),
             [
-                (1, MatchKind::Matched),
-                (2, MatchKind::Matched),
+                (1, MatchKind::Matched(path.into())),
+                (2, MatchKind::Matched(other_path.into())),
                 (3, MatchKind::Unavailable(PathUnavailable)),
                 (4, MatchKind::Unavailable(NameUnverified)),
                 (5, MatchKind::Unavailable(NameUnverified)),
+                (7, MatchKind::Matched(path.into())),
             ]
         );
         assert_eq!(
             rows.iter()
                 .map(|row| row.other_matching_rules.as_slice())
                 .collect::<Vec<_>>(),
-            [&[0][..], &[], &[], &[], &[]]
+            [&[0][..], &[], &[], &[], &[], &[0]]
         );
         assert_eq!(rows[0].path.as_deref(), Some(Path::new(path)));
         assert_eq!(rows[1].path.as_deref(), Some(Path::new(other_path)));

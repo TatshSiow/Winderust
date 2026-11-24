@@ -367,7 +367,9 @@ hover/press; background shading supplies feedback.
   instance in the rule dialog. Terminate and Restart require an At or above
   monitor in a Combined by path rule with an executable path.
 - Match Preview reads a fresh process snapshot when opened or refreshed. It
-  lists matches by PID and full path, and identifies unavailable instances.
+  groups matching PIDs by executable path in Combined by path mode and lists
+  each PID with its own path in Per instance mode. It identifies unavailable
+  instances and explains that evaluation requires valid resource samples.
   Matching rows identify other enabled rules by their position in the current
   Resource Thresholds rule list.
   For an Executable path rule, it also lists same-named executables elsewhere.

@@ -203,10 +203,10 @@ pub(crate) fn matching_path<'a>(
     }
 }
 
-fn group_matches<'a>(
+pub(crate) fn group_matches<'a>(
     selector: &'a ResourceThresholdsSelector,
     scope: ResourceThresholdsScope,
-    processes: &'a [ProcessInfo],
+    processes: impl IntoIterator<Item = &'a ProcessInfo>,
 ) -> BTreeMap<GroupKey<'a>, Vec<&'a ProcessInfo>> {
     let mut groups = BTreeMap::<_, Vec<_>>::new();
     for process in processes {

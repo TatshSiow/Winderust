@@ -12,7 +12,9 @@ const CONTRAST_DARK_APPEARANCE: usize = 98;
 const CONTRAST_LIGHT_PROCESS_LIST: usize = 99;
 const HOME_HISTORY_WIDE: usize = 100;
 const HOME_HISTORY_COMPACT: usize = 101;
-const EXTRA_STATES: usize = 102;
+const RESOURCE_PREVIEW_COMBINED: usize = 102;
+const RESOURCE_PREVIEW_INSTANCE: usize = 103;
+const EXTRA_STATES: usize = 104;
 pub(super) struct Run {
     pages: Vec<Page>,
     index: usize,
@@ -90,6 +92,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                     | HOME_POWER_COMPACT
                     | CONTRAST_LIGHT_PROCESS_LIST
                     | HOME_HISTORY_COMPACT
+                    | RESOURCE_PREVIEW_INSTANCE
             )
         });
         let page = match extra {
@@ -132,7 +135,9 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             Some(CONTRAST_LIGHT_PROCESS_LIST) => Page::ProcessList,
             Some(49 | 86) => Page::ActionLog,
             Some(50 | 77..=78) => Page::WinderustBehaviour,
-            Some(51..=53) => Page::ResourceThresholds,
+            Some(51..=53 | RESOURCE_PREVIEW_COMBINED | RESOURCE_PREVIEW_INSTANCE) => {
+                Page::ResourceThresholds
+            }
             Some(54..=57 | 81) => Page::ByCpuLoad,
             Some(58..=59) => Page::SleepPrevention,
             Some(60..=61) => Page::KeepRunning,
@@ -1030,6 +1035,11 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
         }
         if matches!(extra, Some(79..=80)) {
             app.settings = SettingsEditor::with_settings(app.settings.global().clone());
+            app.settings.edit_global(|settings| {
+                settings.general.show_feature_status_on_cards =
+                    !settings.general.show_feature_status_on_cards;
+            });
+            assert!(app.settings.has_unsaved_changes());
             let context = extra == Some(79);
             app.processes.show_copy_path_fixture(context);
             assert_eq!(app.processes.context_open(), context);
@@ -1207,6 +1217,31 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                     timeline: Default::default(),
                 });
         }
+        if matches!(
+            extra,
+            Some(RESOURCE_PREVIEW_COMBINED | RESOURCE_PREVIEW_INSTANCE)
+        ) {
+            let scope = if extra == Some(RESOURCE_PREVIEW_COMBINED) {
+                crate::config::ResourceThresholdsScope::Combined
+            } else {
+                crate::config::ResourceThresholdsScope::PerInstance
+            };
+            app.settings.edit_global(|settings| {
+                settings.resource_thresholds.rules =
+                    vec![crate::config::ResourceThresholdsRule::with_selector(
+                        crate::config::ResourceThresholdsSelector::ExactName {
+                            executable_name: "worker.exe".into(),
+                        },
+                    )];
+            });
+            let _ = app.update(Message::ResourceThresholds(
+                resource_thresholds::Message::Edit(0),
+            ));
+            let _ = app.update(Message::ResourceThresholds(
+                resource_thresholds::Message::Scope(scope),
+            ));
+            app.resource_thresholds.set_smoke_match_preview();
+        }
         let size = match extra {
             Some(
                 PROCESS_LIST_COMMIT_COMPACT
@@ -1214,6 +1249,8 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                 | CONTRAST_LIGHT_PROCESS_LIST
                 | HOME_HISTORY_COMPACT,
             ) => iced::Size::new(900.0, 620.0),
+            Some(RESOURCE_PREVIEW_INSTANCE) => iced::Size::new(900.0, 620.0),
+            Some(RESOURCE_PREVIEW_COMBINED) => iced::Size::new(1120.0, 760.0),
             Some(CONTRAST_DARK_APPEARANCE | HOME_HISTORY_WIDE) => iced::Size::new(1120.0, 760.0),
             Some(35..=37 | 40 | 42 | 44..=50 | 52..=69 | 71..=93) => iced::Size::new(900.0, 620.0),
             Some(30) => iced::Size::new(1280.0, 720.0),
