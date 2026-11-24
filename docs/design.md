@@ -164,7 +164,7 @@ hover/press; background shading supplies feedback.
 - Report `Efficiency mode` only when the process has both EcoQoS and `IDLE_PRIORITY_CLASS`, matching Task Manager rather than treating EcoQoS alone as full Efficiency mode.
 - Filters, column visibility, and memory value/percentage controls belong in the Settings side panel.
 - Language and Appearance owns the enabled-feature counts toggle. When enabled, the secondary navigation header shows a numeric pill for Winderust Features, Watchdog, Power Plan Control, Priority Control, and CPU Control based on the section's enabled modules. The primary rail stays unbadged.
-- Language and Appearance separately owns the feature-card status toggle. When enabled, shared landing and search-result cards show Enabled or Disabled pills only for pages backed by a top-level feature switch; pages without a single enabled state remain unbadged.
+- Language and Appearance separately owns the feature-card status toggle. When enabled, landing cards backed by a feature switch show Enabled or Disabled in the theme's normal text color.
 - Editable policy cells should use inline dropdown controls. Avoid modal flows for simple policy edits.
 - Columns are resizable and initially fit their content. Double-click a divider to auto-fit; the last visible column fills remaining width. Preserve the layout tests.
 

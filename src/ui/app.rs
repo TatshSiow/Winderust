@@ -3939,11 +3939,7 @@ impl WinderustApp {
                                 .to_string(),
                             )
                             .size(design::typography::CAPTION)
-                            .style(if enabled {
-                                text::success
-                            } else {
-                                text::secondary
-                            }),
+                            .style(text::base),
                         );
                     }
                 }

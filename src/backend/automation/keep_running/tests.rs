@@ -675,6 +675,65 @@ fn path_resets_preserve_the_other_rules_pending_retry() {
 }
 
 #[test]
+fn resource_thresholds_actions_pause_armed_keep_running_until_resume() {
+    let path = r"C:\Apps\app.exe";
+    let settings = KeepRunningSettings {
+        enabled: true,
+        rules: vec![KeepRunningRule::new(path.into())],
+    };
+    let target = ProcessActionTarget {
+        id: 20,
+        name: "app.exe".into(),
+        executable_path: path.into(),
+        creation_time: 20,
+        session_id: Some(1),
+        is_service_account: Some(false),
+    };
+    let original = key(target.id, path);
+    let replacement = key(21, path);
+    let context = DesktopBindingKey::new("desktop".into());
+    let start = Instant::now();
+    let observation = |observed_at, members| Observation::Complete {
+        observed_at,
+        context: &context,
+        members,
+    };
+
+    // Terminate leaves no process. Restart leaves one verified replacement.
+    for remaining in [&[][..], std::slice::from_ref(&replacement)] {
+        let mut coordinator = Coordinator::<Fake>::default();
+        coordinator.sync_settings(&settings, true);
+        let policy = &mut coordinator.owners[0].policy;
+        policy.observe(start, observation(start, std::slice::from_ref(&original)));
+        assert_eq!(policy.state(), KeepRunningState::Armed);
+
+        coordinator.pause_targets(
+            std::slice::from_ref(&target),
+            PauseReason::ResourceThresholds,
+        );
+        let policy = &mut coordinator.owners[0].policy;
+        policy.exited(start, &original);
+        let now = start + Duration::from_secs(60);
+        assert!(matches!(
+            policy.try_prepare(now, observation(now, remaining)),
+            PrepareDisposition::Wait
+        ));
+        assert_eq!(
+            policy.state(),
+            KeepRunningState::Paused(PauseReason::ResourceThresholds)
+        );
+
+        coordinator.resume(path);
+        let state = coordinator.owners[0].policy.state();
+        if remaining.is_empty() {
+            assert!(matches!(state, KeepRunningState::Retrying { .. }));
+        } else {
+            assert_eq!(state, KeepRunningState::Armed);
+        }
+    }
+}
+
+#[test]
 fn stop_pauses_a_pinned_alias_only_from_verified_action_identity() {
     let original = r"C:\Apps\original.exe";
     let settings = KeepRunningSettings {
