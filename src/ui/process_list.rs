@@ -141,16 +141,18 @@ pub(super) enum Sort {
     Pid,
     Status,
     Cpu,
-    Memory,
+    WorkingSet,
+    PrivateCommit,
     User,
 }
 impl Sort {
-    const ALL: [Self; 6] = [
+    const ALL: [Self; 7] = [
         Self::Name,
         Self::Pid,
         Self::Status,
         Self::Cpu,
-        Self::Memory,
+        Self::WorkingSet,
+        Self::PrivateCommit,
         Self::User,
     ];
     fn label(self) -> String {
@@ -159,7 +161,8 @@ impl Sort {
             Self::Pid => "process_list.pid",
             Self::Status => "process_list.status",
             Self::Cpu => "process_list.cpu_usage",
-            Self::Memory => "process_list.memory_usage",
+            Self::WorkingSet => "process_list.working_set",
+            Self::PrivateCommit => "process_list.private_commit",
             Self::User => "process_list.user",
         })
         .to_string()
@@ -260,8 +263,8 @@ pub(super) struct ProcessList {
     expanded: HashSet<OsString>,
     sort: Sort,
     descending: bool,
-    columns: [bool; 6],
-    column_widths: [Option<f32>; 6],
+    columns: [bool; Sort::ALL.len()],
+    column_widths: [Option<f32>; Sort::ALL.len()],
     resizing: Option<(Sort, f32, Option<f32>)>,
     selected: Option<Selection>,
     focused: Option<FocusedRow>,
@@ -302,8 +305,8 @@ impl Default for ProcessList {
             expanded: HashSet::new(),
             sort: Sort::Name,
             descending: false,
-            columns: [true; 6],
-            column_widths: [None; 6],
+            columns: Sort::ALL.map(|column| column != Sort::PrivateCommit),
+            column_widths: [None; Sort::ALL.len()],
             resizing: None,
             selected: None,
             focused: None,
@@ -492,7 +495,8 @@ impl ProcessList {
                     self.descending = !self.descending;
                 } else {
                     self.sort = sort;
-                    self.descending = matches!(sort, Sort::Cpu | Sort::Memory);
+                    self.descending =
+                        matches!(sort, Sort::Cpu | Sort::WorkingSet | Sort::PrivateCommit);
                 }
                 self.rebuild();
             }
@@ -920,7 +924,7 @@ impl ProcessList {
             let minimum = match col {
                 Sort::Name => 160.0,
                 Sort::Status => 140.0,
-                Sort::User | Sort::Memory => 100.0,
+                Sort::User | Sort::WorkingSet | Sort::PrivateCommit => 100.0,
                 _ => 80.0,
             };
             self.column_widths[*col as usize] = Some((*width + x - start).max(minimum));
@@ -946,14 +950,18 @@ impl ProcessList {
                     |usage| format!("{usage:.1}%"),
                 )
                 .into(),
-            Sort::Memory => self
-                .memory_total(entry)
+            Sort::WorkingSet => self
+                .memory_total(entry, |sample| sample.working_set_bytes)
                 .map_or_else(
                     || t!("common.unknown").into_owned(),
                     |bytes| {
                         format_memory_usage(bytes, self.total_memory_bytes, self.memory_percentage)
                     },
                 )
+                .into(),
+            Sort::PrivateCommit => self
+                .memory_total(entry, |sample| sample.private_commit_bytes)
+                .map_or_else(|| t!("common.unknown").into_owned(), format_megabytes)
                 .into(),
             Sort::User => self.user(entry).into(),
             Sort::Status => t!(self.status_key(entry)),
@@ -987,7 +995,7 @@ impl ProcessList {
         width.ceil()
     }
 
-    fn layout_widths(&self, available: f32) -> [f32; 6] {
+    fn layout_widths(&self, available: f32) -> [f32; Sort::ALL.len()] {
         let mut widths = Sort::ALL.map(|col| self.column_width(col));
         let visible = Sort::ALL
             .into_iter()
@@ -1194,7 +1202,12 @@ impl ProcessList {
                     (Some(left), Some(right)) => left.total_cmp(&right),
                     (left, right) => left.is_some().cmp(&right.is_some()),
                 },
-                Sort::Memory => self.memory_total(a).cmp(&self.memory_total(b)),
+                Sort::WorkingSet => self
+                    .memory_total(a, |sample| sample.working_set_bytes)
+                    .cmp(&self.memory_total(b, |sample| sample.working_set_bytes)),
+                Sort::PrivateCommit => self
+                    .memory_total(a, |sample| sample.private_commit_bytes)
+                    .cmp(&self.memory_total(b, |sample| sample.private_commit_bytes)),
                 Sort::User => self.user(a).cmp(&self.user(b)),
                 Sort::Status => self.status_key(a).cmp(self.status_key(b)),
                 Sort::Name => compare_process_names(
@@ -1238,15 +1251,15 @@ impl ProcessList {
             .map(|i| self.cpu.get(&self.processes[*i].id).copied())
             .sum()
     }
-    fn memory_total(&self, e: &Entry) -> Option<u64> {
-        e.indices
-            .iter()
-            .map(|i| {
-                self.samples
-                    .get(&self.processes[*i].id)
-                    .and_then(|s| s.working_set_bytes)
-            })
-            .sum()
+    fn memory_total(
+        &self,
+        entry: &Entry,
+        field: impl Fn(&ProcessResourceSample) -> Option<u64>,
+    ) -> Option<u64> {
+        entry.indices.iter().try_fold(0u64, |total, index| {
+            let sample = self.samples.get(&self.processes[*index].id)?;
+            total.checked_add(field(sample)?)
+        })
     }
     fn user(&self, e: &Entry) -> String {
         let p = &self.processes[e.indices[0]];
@@ -1348,7 +1361,7 @@ impl ProcessList {
             ))
             .push(
                 row![
-                    text(t!("process_list.memory_usage").to_string()).width(Fill),
+                    text(Sort::WorkingSet.label()).width(Fill),
                     pick_list(
                         vec![value_label, percentage_label.clone()],
                         Some(selected),
@@ -1358,6 +1371,11 @@ impl ProcessList {
                 ]
                 .spacing(design::space::SMALL)
                 .align_y(iced::Center),
+            )
+            .push(
+                text(t!("process_list.memory_counter_help").to_string())
+                    .size(design::typography::SECONDARY)
+                    .style(text::secondary),
             );
         column![
             super::widgets::panel_heading(t!("nav.settings").to_string()),
@@ -2310,8 +2328,12 @@ fn format_memory_usage(bytes: u64, total: Option<u64>, percentage: bool) -> Stri
             None => t!("common.unknown").to_string(),
         }
     } else {
-        format!("{:.1} MB", bytes as f64 / 1_000_000.0)
+        format_megabytes(bytes)
     }
+}
+
+fn format_megabytes(bytes: u64) -> String {
+    format!("{:.1} MB", bytes as f64 / 1_000_000.0)
 }
 
 fn measure_column_text(content: &str) -> f32 {
@@ -2322,7 +2344,8 @@ fn column_width(c: Sort) -> f32 {
     match c {
         Sort::Name => 230.0,
         Sort::Pid => 70.0,
-        Sort::Cpu | Sort::Memory => 100.0,
+        Sort::Cpu | Sort::WorkingSet => 100.0,
+        Sort::PrivateCommit => 130.0,
         Sort::Status => 180.0,
         Sort::User => 200.0,
     }
@@ -2393,25 +2416,88 @@ mod tests {
             indices: vec![0, 1],
             nested: false,
         };
-        let sample = |creation_time, working_set_bytes| ProcessResourceSample {
-            cpu: crate::cpu::ProcessCpuSample {
-                cpu_time_100ns: 0,
-                sampled_at: std::time::Instant::now(),
-            },
-            creation_time,
-            working_set_bytes,
-            private_commit_bytes: None,
-            efficiency_mode: None,
-        };
-        list.samples.insert(10, sample(1, Some(0)));
-        list.samples.insert(11, sample(2, None));
+        let sample =
+            |creation_time, working_set_bytes, private_commit_bytes| ProcessResourceSample {
+                cpu: crate::cpu::ProcessCpuSample {
+                    cpu_time_100ns: 0,
+                    sampled_at: std::time::Instant::now(),
+                },
+                creation_time,
+                working_set_bytes,
+                private_commit_bytes,
+                efficiency_mode: None,
+            };
+        list.samples.insert(10, sample(1, Some(0), Some(100)));
+        list.samples.insert(11, sample(2, None, None));
         assert_eq!(list.cpu_total(&group), None);
-        assert_eq!(list.memory_total(&group), None);
+        assert_eq!(list.memory_total(&group, |s| s.working_set_bytes), None);
+        assert_eq!(list.memory_total(&group, |s| s.private_commit_bytes), None);
 
         list.cpu.insert(11, 0.0);
-        list.samples.insert(11, sample(2, Some(0)));
+        list.samples.insert(11, sample(2, Some(0), Some(42)));
         assert_eq!(list.cpu_total(&group), Some(0.0));
-        assert_eq!(list.memory_total(&group), Some(0));
+        assert_eq!(list.memory_total(&group, |s| s.working_set_bytes), Some(0));
+        assert_eq!(
+            list.memory_total(&group, |s| s.private_commit_bytes),
+            Some(142)
+        );
+    }
+
+    #[test]
+    fn private_commit_sorts_by_bytes_and_remains_in_mb_when_working_set_uses_percent() {
+        let mut list = ProcessList {
+            processes: vec![
+                process(10, 1, "a.exe"),
+                process(11, 2, "b.exe"),
+                process(12, 3, "c.exe"),
+                process(13, 4, "d.exe"),
+            ],
+            total_memory_bytes: Some(10_000_000),
+            memory_percentage: true,
+            sort: Sort::PrivateCommit,
+            descending: true,
+            ..ProcessList::default()
+        };
+        for (process, private_commit_bytes) in
+            list.processes
+                .iter()
+                .zip([Some(1_000_001), Some(1_000_002), None, Some(0)])
+        {
+            list.samples.insert(
+                process.id,
+                ProcessResourceSample {
+                    cpu: crate::cpu::ProcessCpuSample {
+                        cpu_time_100ns: 0,
+                        sampled_at: std::time::Instant::now(),
+                    },
+                    creation_time: process.creation_time.unwrap(),
+                    working_set_bytes: Some(2_000_000),
+                    private_commit_bytes,
+                    efficiency_mode: None,
+                },
+            );
+        }
+        list.rebuild();
+        assert_eq!(
+            list.rows
+                .iter()
+                .map(|row| row.indices[0])
+                .collect::<Vec<_>>(),
+            [1, 0, 3, 2]
+        );
+        assert_eq!(list.cell_value(&list.rows[0], Sort::WorkingSet), "20.0%");
+        assert_eq!(
+            list.cell_value(&list.rows[0], Sort::PrivateCommit),
+            "1.0 MB"
+        );
+        assert_eq!(
+            list.cell_value(&list.rows[2], Sort::PrivateCommit),
+            "0.0 MB"
+        );
+        assert_eq!(
+            list.cell_value(&list.rows[3], Sort::PrivateCommit),
+            t!("common.unknown")
+        );
     }
 
     #[test]
@@ -2495,7 +2581,7 @@ mod tests {
                                     hide_inaccessible,
                                     sort,
                                     descending,
-                                    column_widths: [Some(100.0); 6],
+                                    column_widths: [Some(100.0); Sort::ALL.len()],
                                     ..ProcessList::default()
                                 };
                                 list.rebuild();
@@ -2671,16 +2757,16 @@ mod tests {
             let mut view: Element<'_, Message> = if home_page {
                 page
             } else {
+                let panel = if log_page {
+                    log.side_panel(crate::config::ActionLogMode::Full, true, true)
+                        .map(|_| Message::Refresh)
+                } else {
+                    list.side_panel()
+                };
                 row![
                     container(page).width(Fill).height(Fill),
-                    container(if log_page {
-                        log.side_panel(crate::config::ActionLogMode::Full, true, true)
-                            .map(|_| Message::Refresh)
-                    } else {
-                        list.side_panel()
-                    })
-                    .width(300)
-                    .height(Fill),
+                    // The production dock groups its surface into one repaint layer.
+                    scrolling::repaint_group(container(panel).width(300).height(Fill)),
                 ]
                 .height(Fill)
                 .into()
@@ -3231,17 +3317,28 @@ mod tests {
         list.resize_column(400.0);
         list.rebuild();
         assert_eq!(list.column_width(Sort::Status), 200.0);
-        assert_eq!(list.column_width(Sort::Memory), column_width(Sort::Memory));
+        assert_eq!(
+            list.column_width(Sort::WorkingSet),
+            column_width(Sort::WorkingSet)
+        );
     }
 
     #[test]
     fn last_visible_column_fills_spare_width_and_auto_size_fits_names() {
         let mut list = ProcessList::default();
+        assert!(!list.columns[Sort::PrivateCommit as usize]);
         let widths = list.layout_widths(1200.0);
-        assert_eq!(widths.iter().sum::<f32>() + 5.0 * 8.0 + 32.0, 1200.0);
+        assert_eq!(
+            widths.iter().sum::<f32>() - widths[Sort::PrivateCommit as usize] + 5.0 * 8.0 + 32.0,
+            1200.0
+        );
+        list.columns[Sort::PrivateCommit as usize] = true;
         list.columns[Sort::User as usize] = false;
         let widths = list.layout_widths(1200.0);
-        assert_eq!(widths[..5].iter().sum::<f32>() + 4.0 * 8.0 + 32.0, 1200.0);
+        assert_eq!(
+            widths[..Sort::User as usize].iter().sum::<f32>() + 5.0 * 8.0 + 32.0,
+            1200.0
+        );
         assert_eq!(widths[Sort::Name as usize], column_width(Sort::Name));
         let mut app = process(10, 100, "app.exe");
         app.name = "a_very_long_executable_name_that_must_fit_in_the_column.exe".into();
@@ -3255,7 +3352,7 @@ mod tests {
     fn initial_population_fits_columns_and_refresh_preserves_manual_widths() {
         let mut list = ProcessList::default();
         list.rebuild();
-        assert_eq!(list.column_widths, [None; 6]);
+        assert_eq!(list.column_widths, [None; Sort::ALL.len()]);
         list.processes.push(process(10, 100, r"C:\Fixture\app.exe"));
         list.rebuild();
         assert!(list.column_width(Sort::Status) >= column_width(Sort::Status));

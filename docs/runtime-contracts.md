@@ -240,8 +240,10 @@ Read the relevant section before changing feature policy, ownership, restoration
 - Resource sampling in `src/foreground/process_list.rs` reads CPU and verifies
   creation time for Resource Thresholds. When an enabled rule monitors Memory,
   one query returns both working set and private commit. Process List always requests
-  memory counters and Efficiency Mode. It queries priority class only when
-  EcoQoS is enabled.
+  memory counters for its Working Set and optional Private Commit columns, which
+  share that query. Group totals require a known value for every displayed
+  process. Process List requests Efficiency Mode and queries priority class
+  only when EcoQoS is enabled.
 
 - `src/features/watchdog/resource_thresholds.rs` owns CPU and memory
   sampling, sustained thresholds, escalation, and rearming. Rules are global across
