@@ -337,7 +337,7 @@ impl Editor {
         self.error.clear();
     }
     fn selected_preset(&self, live: &Settings, options: &[Choice<usize>]) -> Option<Choice<usize>> {
-        let current = capture_adaptive_engine_preset(live, String::new());
+        let current = comparable_adaptive_engine_process_tuning(&live.adaptive_engine_process);
         let preferred = self
             .selected_preset
             .as_ref()
@@ -346,19 +346,17 @@ impl Editor {
             .into_iter()
             .chain(options.iter())
             .find(|choice| {
-                let mut candidate = live.clone();
-                if choice.0 < 4 {
-                    apply_built_in_adaptive_engine_preset(
-                        &mut candidate,
-                        BuiltInAdaptiveEnginePreset::ALL[choice.0],
-                    );
+                if let Some(preset) = BuiltInAdaptiveEnginePreset::ALL.get(choice.0) {
+                    let mut candidate = current.clone();
+                    apply_adaptive_engine_process_preset(&mut candidate, *preset);
+                    candidate == current
                 } else {
-                    apply_adaptive_engine_preset(
-                        &mut candidate,
-                        &live.adaptive_engine_presets[choice.0 - 4],
-                    );
+                    comparable_adaptive_engine_process_tuning(
+                        &live.adaptive_engine_presets
+                            [choice.0 - BuiltInAdaptiveEnginePreset::ALL.len()]
+                        .adaptive_engine_process,
+                    ) == current
                 }
-                capture_adaptive_engine_preset(&candidate, String::new()) == current
             })
             .cloned()
     }
@@ -1106,6 +1104,12 @@ mod tests {
         editor.update(&mut settings, Message::New);
         editor.update(&mut settings, Message::Name("My balanced".into()));
         editor.update(&mut settings, Message::Save);
+        settings.edit_global(|settings| {
+            settings.adaptive_engine_presets[0]
+                .adaptive_engine_process
+                .custom_rules
+                .push(new_process_exclusion_rule(r"C:\Apps\excluded.exe"));
+        });
         let options = vec![
             Choice(1, built_in_adaptive_engine_preset_label(builtin)),
             Choice(4, "My balanced".into()),

@@ -84,7 +84,7 @@ pub(super) fn apply_adaptive_engine_preset(settings: &mut Settings, preset: &Ada
     settings.adaptive_engine_process.gpu_priority.exclusions = gpu_exclusions;
 }
 
-fn comparable_adaptive_engine_process_tuning(
+pub(super) fn comparable_adaptive_engine_process_tuning(
     settings: &AdaptiveEngineProcessSettings,
 ) -> AdaptiveEngineProcessSettings {
     let mut settings = settings.clone();
