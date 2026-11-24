@@ -805,17 +805,13 @@ impl WinderustApp {
                 if !repeat {
                     if key == Key::Named(Named::Escape) {
                         return self.update(Message::Preferences(
-                            settings_pages::Message::CancelSearchHotkey,
+                            settings_pages::Message::CancelShortcut,
                         ));
                     }
                     if status != iced::event::Status::Ignored {
                         return Task::none();
                     }
-                    if let Some(shortcut) = super::hotkeys::capture(&key, modifiers) {
-                        return self.update(Message::Preferences(
-                            settings_pages::Message::SetSearchHotkey(slot, Some(shortcut)),
-                        ));
-                    }
+                    return self.capture_shortcut(slot, &key, modifiers);
                 }
                 return Task::none();
             }
@@ -952,6 +948,48 @@ impl WinderustApp {
             }
         }
         Task::none()
+    }
+
+    fn capture_shortcut(
+        &mut self,
+        slot: settings_pages::ShortcutSlot,
+        key: &iced::keyboard::Key,
+        modifiers: iced::keyboard::Modifiers,
+    ) -> Task<Message> {
+        use iced::keyboard::{key::Named, Key};
+        use settings_pages::{Message as Preference, ShortcutSlot};
+
+        let message = match slot {
+            ShortcutSlot::Search(slot) => {
+                let Some(shortcut) = super::hotkeys::capture(key, modifiers) else {
+                    return Task::none();
+                };
+                Preference::SetSearchHotkey(slot, Some(shortcut))
+            }
+            ShortcutSlot::ShowWinderust => {
+                if matches!(
+                    key.as_ref(),
+                    Key::Named(Named::Alt | Named::AltGraph | Named::Control | Named::Shift)
+                ) {
+                    return Task::none();
+                }
+                let shortcut = super::hotkeys::capture(key, modifiers).and_then(|shortcut| {
+                    crate::config::ShowWinderustShortcut::try_from(shortcut).ok()
+                });
+                let Some(shortcut) = shortcut else {
+                    self.preferences.show_shortcut_capture_error =
+                        Some("settings.show_winderust_shortcut_invalid");
+                    return Task::none();
+                };
+                if shortcut.conflicts_with_search(&self.settings.global().general.search_hotkeys) {
+                    self.preferences.show_shortcut_capture_error =
+                        Some("settings.show_winderust_shortcut_search_conflict");
+                    return Task::none();
+                }
+                Preference::SetShowWinderustShortcut(Some(shortcut))
+            }
+        };
+        self.update(Message::Preferences(message))
     }
 
     fn focus_navigation(&self, page: Option<Page>) -> Task<Message> {
@@ -1172,7 +1210,7 @@ impl WinderustApp {
                 self.navigation_search_open = true;
                 self.navigation_search_scope = SearchScope(None);
                 self.navigation_search_selected = 0;
-                self.preferences.hotkey_capture = None;
+                self.preferences.cancel_shortcut_capture();
                 return iced::widget::operation::focus("navigation-search");
             }
             Message::CloseNavigationSearch => {
@@ -1276,8 +1314,8 @@ impl WinderustApp {
                 | settings_pages::Message::PickerHue(_)
                 | settings_pages::Message::PickerSv(..)
                 | settings_pages::Message::PickerHex(_)
-                | settings_pages::Message::RecordSearchHotkey(_)
-                | settings_pages::Message::CancelSearchHotkey
+                | settings_pages::Message::RecordShortcut(_)
+                | settings_pages::Message::CancelShortcut
                 | settings_pages::Message::ToggleAccent
                 | settings_pages::Message::DismissUpdate
                 | settings_pages::Message::Checked(..)),
@@ -1913,7 +1951,7 @@ impl WinderustApp {
                 self.time_rules.dismiss_picker();
                 self.focus_plans.close_preview();
                 self.running_app_plans.close_preview();
-                self.preferences.hotkey_capture = None;
+                self.preferences.cancel_shortcut_capture();
                 self.preferences.replace_settings_open = false;
                 self.navigation_history.visit(page);
                 self.side_panel_tab = SidePanelTab::for_page(page)[0];
@@ -2316,8 +2354,18 @@ impl WinderustApp {
                     match mode {
                         FileDialogMode::Open => {
                             let previous_channel = self.settings.global().general.update_channel;
-                            match self.settings.import_toml_from(&path) {
-                                Ok(outcome) => {
+                            let saved = self.settings.persisted().general.show_winderust_shortcut;
+                            let tray = &mut self.tray;
+                            match self.settings.import_toml_from(&path, |imported| {
+                                Self::prepare_show_shortcut(
+                                    tray,
+                                    saved,
+                                    imported.general.show_winderust_shortcut,
+                                )
+                                .map_err(tray::ShortcutError::localized)
+                            }) {
+                                Ok((outcome, prepared)) => {
+                                    self.commit_show_shortcut(prepared);
                                     self.adaptive_processor_power.commit_preset_selection();
                                     let tray_warning = self.settings_replaced(previous_channel);
                                     let startup_warning =
@@ -2332,6 +2380,7 @@ impl WinderustApp {
                                     }
                                 }
                                 Err(error) => {
+                                    self.sync_tray();
                                     self.error_message =
                                         t!("settings.import_failed", error = error).into_owned();
                                 }
@@ -2375,14 +2424,32 @@ impl WinderustApp {
             return Task::none();
         }
         let settings_changed = self.power_tuning.dirty && self.settings.has_unsaved_changes();
+        let prepared_shortcut = match Self::prepare_show_shortcut(
+            &mut self.tray,
+            self.settings.persisted().general.show_winderust_shortcut,
+            self.settings.global().general.show_winderust_shortcut,
+        ) {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                self.power_tuning.cancel_apply_review();
+                self.sync_tray();
+                self.error_message = error.localized();
+                return Task::none();
+            }
+        };
         let outcome = match self.settings.save() {
             Ok(outcome) => outcome,
             Err(error) => {
                 self.power_tuning.cancel_apply_review();
+                if prepared_shortcut.is_some() {
+                    drop(prepared_shortcut);
+                    self.sync_tray();
+                }
                 self.error_message = error.to_string();
                 return Task::none();
             }
         };
+        self.commit_show_shortcut(prepared_shortcut);
         self.adaptive_processor_power.commit_preset_selection();
         let startup_warning = outcome
             .startup_registration_error()
@@ -2526,7 +2593,7 @@ impl WinderustApp {
         self.navigation.dismiss();
         self.navigation_search_open = false;
         self.preferences.dismiss_picker();
-        self.preferences.hotkey_capture = None;
+        self.preferences.cancel_shortcut_capture();
         self.time_rules.dismiss_picker();
         tray::set_hidden_to_tray(true);
         // Closing the last Iced window releases its renderer/compositor, while the daemon
@@ -2697,11 +2764,68 @@ impl WinderustApp {
             .map(|result| Message::PowerPlans(result.and_then(|result| result)))
     }
 
+    fn tray_intent(&self) -> (bool, bool) {
+        let saved = self.settings.persisted();
+        (
+            self.settings.global().general.hide_to_tray,
+            saved.general.start_minimized
+                || saved.general.show_winderust_shortcut.is_some()
+                || notifications_required(saved),
+        )
+    }
+
     fn tray_retry_pending(&self) -> bool {
-        (self.settings.global().general.hide_to_tray
-            || self.settings.persisted().general.start_minimized
-            || notifications_required(self.settings.persisted()))
-            && self.tray.as_ref().is_none_or(|icon| !icon.is_registered())
+        let intent = self.tray_intent();
+        (intent.0 || intent.1) && self.tray.as_ref().is_none_or(|icon| !icon.is_registered())
+    }
+
+    fn ensure_tray(tray: &mut Option<tray::TrayIcon>) -> Result<(), String> {
+        match tray {
+            Some(icon) if icon.is_registered() => Ok(()),
+            Some(icon) => icon.register(),
+            None => tray::TrayIcon::install().map(|icon| *tray = Some(icon)),
+        }
+    }
+
+    fn prepare_show_shortcut(
+        tray: &mut Option<tray::TrayIcon>,
+        saved: Option<crate::config::ShowWinderustShortcut>,
+        requested: Option<crate::config::ShowWinderustShortcut>,
+    ) -> Result<Option<tray::PreparedShortcut>, tray::ShortcutError> {
+        if requested == saved {
+            return Ok(None);
+        }
+        if requested.is_some() {
+            Self::ensure_tray(tray).map_err(|error| {
+                crate::backend::diagnostics::error(&error);
+                tray::ShortcutError::Unavailable
+            })?;
+        }
+        tray.as_ref()
+            .filter(|icon| requested.is_some() || icon.has_live_owner())
+            .map(|icon| icon.prepare_show_shortcut(requested))
+            .transpose()
+    }
+
+    fn commit_show_shortcut(&mut self, prepared: Option<tray::PreparedShortcut>) {
+        if let Some(prepared) = prepared {
+            let Some(tray) = &mut self.tray else {
+                unreachable!("The tray still owns the prepared Show Winderust shortcut");
+            };
+            tray.commit_show_shortcut(prepared);
+        }
+    }
+
+    fn show_shortcut_error(&self) -> Option<tray::ShortcutError> {
+        let saved = self.settings.persisted().general.show_winderust_shortcut?;
+        if self.settings.global().general.show_winderust_shortcut != Some(saved) {
+            return None;
+        }
+        self.tray
+            .as_ref()
+            .map_or(Some(tray::ShortcutError::Unavailable), |icon| {
+                icon.show_shortcut_error()
+            })
     }
 
     fn sync_tray(&mut self) {
@@ -2762,37 +2886,34 @@ impl WinderustApp {
                 })
                 .collect(),
         });
-        let intent = (
-            self.settings.global().general.hide_to_tray,
-            self.settings.persisted().general.start_minimized
-                || notifications_required(self.settings.persisted()),
-        );
+        let shortcut = saved.general.show_winderust_shortcut;
+        let intent = self.tray_intent();
         if !intent.0 && !intent.1 {
             self.tray = None;
             self.tray_attempt = None;
-        } else {
-            if tray::take_taskbar_created() {
-                self.tray_attempt = None;
-                if let Some(icon) = &mut self.tray {
-                    icon.invalidate();
-                }
+            return None;
+        }
+        if tray::take_taskbar_created() {
+            self.tray_attempt = None;
+            if let Some(icon) = &mut self.tray {
+                icon.invalidate();
             }
-            let missing = self.tray.as_ref().is_none_or(|icon| !icon.is_registered());
-            let now = std::time::Instant::now();
-            if missing && tray_retry_due(self.tray_attempt, intent, now) {
-                let first_attempt = self.tray_attempt.is_none();
-                self.tray_attempt = Some((intent, now));
-                let result = if let Some(icon) = &mut self.tray {
-                    icon.register()
-                } else {
-                    tray::TrayIcon::install().map(|icon| self.tray = Some(icon))
-                };
+        }
+        let missing = self.tray.as_ref().is_none_or(|icon| !icon.is_registered());
+        let now = std::time::Instant::now();
+        if missing && tray_retry_due(self.tray_attempt, intent, now) {
+            let first_attempt = self.tray_attempt.is_none();
+            self.tray_attempt = Some((intent, now));
+            if let Err(error) = Self::ensure_tray(&mut self.tray) {
                 if first_attempt {
-                    return result.err();
+                    return Some(error);
                 }
             }
         }
-        None
+        self.tray
+            .as_mut()?
+            .sync_show_shortcut(shortcut)
+            .map(|error| error.localized())
     }
 
     fn exit_blocking_status(&self) -> Option<&'static str> {
@@ -3918,6 +4039,7 @@ impl WinderustApp {
                     self.page,
                     self.settings.global(),
                     self.can_replace_settings(),
+                    self.show_shortcut_error(),
                 )
                 .map(Message::Preferences),
             Page::PowerPlanControl => scrollable(

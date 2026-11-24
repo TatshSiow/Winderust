@@ -1003,6 +1003,7 @@ fn toml_round_trip_preserves_settings() {
             pause_power_plan_switching_while_plugged_in: true,
             restore_previous_power_plan: true,
             search_hotkeys: crate::config::SearchHotkeys::default(),
+            show_winderust_shortcut: None,
             check_interval_ms: 2_500,
         },
         advanced: AdvancedSettings {

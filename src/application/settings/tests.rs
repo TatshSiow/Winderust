@@ -382,7 +382,9 @@ fn failed_load_preserves_original_until_explicit_replacement_succeeds() {
             editor.export_toml_to(&import_path).unwrap();
             write_error.store(true, Ordering::Relaxed);
             assert!(if import {
-                editor.import_toml_from(&import_path)
+                editor
+                    .import_toml_from(&import_path, |_| Ok(()))
+                    .map(|(outcome, ())| outcome)
             } else {
                 editor.save()
             }
@@ -392,7 +394,7 @@ fn failed_load_preserves_original_until_explicit_replacement_succeeds() {
             assert_eq!(std::fs::read(&path).unwrap(), original);
             write_error.store(false, Ordering::Relaxed);
             if import {
-                editor.import_toml_from(&import_path).unwrap();
+                editor.import_toml_from(&import_path, |_| Ok(())).unwrap();
             } else {
                 editor.save().unwrap();
             }
@@ -1004,8 +1006,8 @@ fn import_writes_imported_settings_to_storage_and_applies_runtime_revision() {
         (coordinator, draft, storage_copy)
     };
 
-    let revision = coordinator
-        .import_toml_from(Path::new("C:\\tmp\\import.toml"), &mut draft)
+    let (revision, ()) = coordinator
+        .import_toml_from(Path::new("C:\\tmp\\import.toml"), &mut draft, |_| Ok(()))
         .expect("import");
 
     assert_eq!(revision, coordinator.persisted_revision());
@@ -1014,6 +1016,30 @@ fn import_writes_imported_settings_to_storage_and_applies_runtime_revision() {
         imported.general.startup_with_windows
     );
     assert_eq!(storage_probe.saved_payloads(), vec![imported]);
+}
+
+#[test]
+fn failed_import_preflight_keeps_persisted_draft_and_runtime_settings() {
+    let mut imported = Settings::default();
+    imported.general.check_interval_ms = 2500;
+    let original = Settings::default();
+    let storage = FakeStorage::new(original.clone(), Ok(imported.clone()), Ok(()), Ok(()));
+    let (mut coordinator, mut draft) = SettingsCoordinator::load_from(Box::new(storage.clone()));
+    let runtime = coordinator.runtime_settings_snapshot(&draft);
+    let rejected = "shortcut unavailable".to_owned();
+
+    let result = coordinator.import_toml_from(Path::new("import.toml"), &mut draft, |candidate| {
+        assert_eq!(candidate, &imported);
+        Err::<(), _>(rejected.clone())
+    });
+
+    assert_eq!(result, Err(SettingsCoordinatorError::Import(rejected)));
+    assert!(storage.saved_payloads().is_empty());
+    assert_eq!(coordinator.persisted(), &original);
+    assert_eq!(draft.value, original);
+    let after = coordinator.runtime_settings_snapshot(&draft);
+    assert_eq!(after.runtime_revision, runtime.runtime_revision);
+    assert!(Arc::ptr_eq(&after.value, &runtime.value));
 }
 
 #[test]
@@ -1032,7 +1058,9 @@ fn nested_battery_profiles_do_not_reach_storage_or_replace_settings() {
         }
         let original_draft = draft.clone();
         let result = if importing {
-            coordinator.import_toml_from(Path::new("nested.toml"), &mut draft)
+            coordinator
+                .import_toml_from(Path::new("nested.toml"), &mut draft, |_| Ok(()))
+                .map(|(revision, ())| revision)
         } else {
             coordinator.save(&mut draft)
         };
@@ -1065,7 +1093,7 @@ fn import_normalizes_shared_fields_without_flattening_feature_profiles() {
     let storage = FakeStorage::new(Settings::default(), Ok(imported.clone()), Ok(()), Ok(()));
     let (mut coordinator, mut draft) = SettingsCoordinator::load_from(Box::new(storage.clone()));
     coordinator
-        .import_toml_from(Path::new("import.toml"), &mut draft)
+        .import_toml_from(Path::new("import.toml"), &mut draft, |_| Ok(()))
         .unwrap();
     imported.sync_shared_settings_to_battery();
     assert_eq!(storage.saved_payloads(), vec![imported.clone()]);

@@ -10,7 +10,8 @@ use std::sync::Arc;
 
 #[derive(Default)]
 pub(super) struct Editor {
-    pub(super) hotkey_capture: Option<SearchHotkeySlot>,
+    pub(super) hotkey_capture: Option<ShortcutSlot>,
+    pub(super) show_shortcut_capture_error: Option<&'static str>,
     color: Option<String>,
     failure_threshold: Option<String>,
     accent_expanded: bool,
@@ -34,6 +35,12 @@ pub(super) struct UpdateCheck {
 pub(super) enum SearchHotkeySlot {
     Primary,
     Secondary,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ShortcutSlot {
+    Search(SearchHotkeySlot),
+    ShowWinderust,
 }
 impl SearchHotkeySlot {
     fn binding(self, settings: &SearchHotkeys) -> &KeyboardShortcut {
@@ -65,10 +72,11 @@ pub(super) enum Flag {
 #[derive(Debug, Clone)]
 pub(super) enum Message {
     Flag(Flag, bool),
-    RecordSearchHotkey(SearchHotkeySlot),
-    CancelSearchHotkey,
+    RecordShortcut(ShortcutSlot),
+    CancelShortcut,
     SetSearchHotkey(SearchHotkeySlot, Option<KeyboardShortcut>),
     ResetSearchHotkeys,
+    SetShowWinderustShortcut(Option<ShowWinderustShortcut>),
     Language(AppLanguage),
     Animation(AnimationMode),
     Theme(AppThemeMode),
@@ -125,10 +133,15 @@ impl Editor {
 
     pub(super) fn reset_drafts(&mut self) {
         self.dismiss_picker();
-        self.hotkey_capture = None;
+        self.cancel_shortcut_capture();
         self.color = None;
         self.failure_threshold = None;
         self.replace_settings_open = false;
+    }
+
+    pub(super) fn cancel_shortcut_capture(&mut self) {
+        self.hotkey_capture = None;
+        self.show_shortcut_capture_error = None;
     }
 
     pub(super) fn reset_update_check(&mut self) {
@@ -193,8 +206,11 @@ impl Editor {
                 }
             }
             Message::CancelColorPicker => self.dismiss_picker(),
-            Message::RecordSearchHotkey(slot) => self.hotkey_capture = Some(slot),
-            Message::CancelSearchHotkey => self.hotkey_capture = None,
+            Message::RecordShortcut(slot) => {
+                self.hotkey_capture = Some(slot);
+                self.show_shortcut_capture_error = None;
+            }
+            Message::CancelShortcut => self.cancel_shortcut_capture(),
             Message::ToggleAccent => self.accent_expanded = !self.accent_expanded,
             Message::DismissUpdate => self.show_update = false,
             Message::Checked(check, result) => {
@@ -244,14 +260,18 @@ impl Editor {
                 } else {
                     binding.enabled = false;
                 }
-                self.hotkey_capture = None;
+                self.cancel_shortcut_capture();
             }
             Message::ResetSearchHotkeys => {
                 s.general.search_hotkeys = SearchHotkeys::default();
-                self.hotkey_capture = None;
+                self.cancel_shortcut_capture();
             }
-            Message::RecordSearchHotkey(_)
-            | Message::CancelSearchHotkey
+            Message::SetShowWinderustShortcut(shortcut) => {
+                s.general.show_winderust_shortcut = shortcut;
+                self.cancel_shortcut_capture();
+            }
+            Message::RecordShortcut(_)
+            | Message::CancelShortcut
             | Message::OpenColorPicker(_)
             | Message::PickerHue(_)
             | Message::PickerSv(..)
@@ -367,21 +387,33 @@ impl Editor {
         label: &str,
     ) -> Element<'a, Message> {
         let binding = slot.binding(&s.general.search_hotkeys);
-        let recording = self.hotkey_capture == Some(slot);
-        let value = if recording {
+        self.shortcut_row(
+            label,
+            ShortcutSlot::Search(slot),
+            binding.enabled.then(|| binding.to_string()),
+            Message::SetSearchHotkey(slot, None),
+        )
+    }
+
+    fn shortcut_row<'a>(
+        &self,
+        label: &str,
+        slot: ShortcutSlot,
+        binding: Option<String>,
+        clear: Message,
+    ) -> Element<'a, Message> {
+        let value = if self.hotkey_capture == Some(slot) {
             t!("settings.shortcut_record_prompt").to_string()
-        } else if binding.enabled {
-            binding.to_string()
         } else {
-            t!("common.disabled").to_string()
+            binding.unwrap_or_else(|| t!("common.disabled").into_owned())
         };
         widgets::setting_row(
             label,
             row![
-                action_button(value).on_press(Message::RecordSearchHotkey(slot)),
+                action_button(value).on_press(Message::RecordShortcut(slot)),
                 action_button(t!("settings.clear_shortcut").to_string())
                     .style(widgets::tertiary_button)
-                    .on_press(Message::SetSearchHotkey(slot, None)),
+                    .on_press(clear),
             ]
             .spacing(design::space::SMALL)
             .align_y(iced::Center),
@@ -423,6 +455,7 @@ impl Editor {
         page: Page,
         s: &'a Settings,
         can_replace_settings: bool,
+        show_shortcut_error: Option<crate::backend::tray::ShortcutError>,
     ) -> Element<'a, Message> {
         let flag_row = |key: &str, value, flag| {
             widgets::setting_row(
@@ -536,6 +569,25 @@ impl Editor {
                         ]),
                     ]
                     .spacing(design::space::MEDIUM),
+                ),
+                widgets::settings_card(
+                    column![self.shortcut_row(
+                        "settings.show_winderust_shortcut",
+                        ShortcutSlot::ShowWinderust,
+                        s.general.show_winderust_shortcut.map(|key| key.to_string()),
+                        Message::SetShowWinderustShortcut(None),
+                    )]
+                    .extend(
+                        self.show_shortcut_capture_error
+                            .map(|key| t!(key).into_owned())
+                            .or_else(|| show_shortcut_error.map(|error| error.localized()))
+                            .map(|error| text(error)
+                                .size(design::typography::CAPTION)
+                                .style(text::danger)
+                                .wrapping(text::Wrapping::WordOrGlyph)
+                                .into())
+                    )
+                    .spacing(design::space::SMALL),
                 ),
                 widgets::heading(
                     t!("settings.settings_files").to_string(),
@@ -1237,7 +1289,7 @@ mod tests {
         let settings = Settings::default();
         let renderer = iced::Renderer::new(design::typography::FONT, iced::Pixels(14.0));
         for width in [780.0, 1200.0] {
-            let mut view = editor.view(Page::About, &settings, false);
+            let mut view = editor.view(Page::About, &settings, false, None);
             let mut tree = Tree::new(&view);
             let bounds = Rectangle::with_size(Size::new(width, 540.0));
             let node = view.as_widget_mut().layout(
@@ -1289,9 +1341,12 @@ mod tests {
         let original = settings.general.search_hotkeys.clone();
         editor.update_ui(
             settings.general.update_channel,
-            Message::RecordSearchHotkey(SearchHotkeySlot::Primary),
+            Message::RecordShortcut(ShortcutSlot::Search(SearchHotkeySlot::Primary)),
         );
-        assert_eq!(editor.hotkey_capture, Some(SearchHotkeySlot::Primary));
+        assert_eq!(
+            editor.hotkey_capture,
+            Some(ShortcutSlot::Search(SearchHotkeySlot::Primary))
+        );
         assert_eq!(settings.general.search_hotkeys, original);
         let shortcut = super::super::hotkeys::capture(
             &iced::keyboard::Key::Character("j".into()),

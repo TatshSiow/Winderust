@@ -14,7 +14,9 @@ const HOME_HISTORY_WIDE: usize = 100;
 const HOME_HISTORY_COMPACT: usize = 101;
 const RESOURCE_PREVIEW_COMBINED: usize = 102;
 const RESOURCE_PREVIEW_INSTANCE: usize = 103;
-const EXTRA_STATES: usize = 104;
+const SHOW_SHORTCUT_INVALID: usize = 104;
+const SHOW_SHORTCUT_READY: usize = 105;
+const EXTRA_STATES: usize = 106;
 pub(super) struct Run {
     pages: Vec<Page>,
     index: usize,
@@ -93,6 +95,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                     | CONTRAST_LIGHT_PROCESS_LIST
                     | HOME_HISTORY_COMPACT
                     | RESOURCE_PREVIEW_INSTANCE
+                    | SHOW_SHORTCUT_READY
             )
         });
         let page = match extra {
@@ -134,7 +137,9 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             Some(CONTRAST_DARK_APPEARANCE) => Page::LanguageAndAppearance,
             Some(CONTRAST_LIGHT_PROCESS_LIST) => Page::ProcessList,
             Some(49 | 86) => Page::ActionLog,
-            Some(50 | 77..=78) => Page::WinderustBehaviour,
+            Some(50 | 77..=78 | SHOW_SHORTCUT_INVALID | SHOW_SHORTCUT_READY) => {
+                Page::WinderustBehaviour
+            }
             Some(51..=53 | RESOURCE_PREVIEW_COMBINED | RESOURCE_PREVIEW_INSTANCE) => {
                 Page::ResourceThresholds
             }
@@ -1242,15 +1247,57 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             ));
             app.resource_thresholds.set_smoke_match_preview();
         }
+        if matches!(extra, Some(SHOW_SHORTCUT_INVALID | SHOW_SHORTCUT_READY)) {
+            use iced::keyboard::{key::Named, Key, Modifiers};
+            use settings_pages::{Message as Preference, ShortcutSlot};
+
+            app.settings = SettingsEditor::with_settings(app.settings.global().clone());
+            app.side_panel_open = extra == Some(SHOW_SHORTCUT_READY);
+            let _ = app.update(Message::Preferences(Preference::RecordShortcut(
+                ShortcutSlot::ShowWinderust,
+            )));
+            let modifiers = if extra == Some(SHOW_SHORTCUT_READY) {
+                Modifiers::CTRL | Modifiers::ALT
+            } else {
+                Modifiers::CTRL
+            };
+            let _ = app.search_keyboard(
+                Key::Named(Named::F24),
+                modifiers,
+                false,
+                iced::event::Status::Ignored,
+            );
+            assert!(app
+                .settings
+                .persisted()
+                .general
+                .show_winderust_shortcut
+                .is_none());
+            assert_eq!(
+                app.settings
+                    .global()
+                    .general
+                    .show_winderust_shortcut
+                    .is_some(),
+                extra == Some(SHOW_SHORTCUT_READY),
+            );
+            assert_eq!(
+                app.preferences.show_shortcut_capture_error.is_some(),
+                extra == Some(SHOW_SHORTCUT_INVALID),
+            );
+        }
         let size = match extra {
             Some(
                 PROCESS_LIST_COMMIT_COMPACT
                 | HOME_POWER_COMPACT
                 | CONTRAST_LIGHT_PROCESS_LIST
-                | HOME_HISTORY_COMPACT,
+                | HOME_HISTORY_COMPACT
+                | SHOW_SHORTCUT_READY,
             ) => iced::Size::new(900.0, 620.0),
             Some(RESOURCE_PREVIEW_INSTANCE) => iced::Size::new(900.0, 620.0),
-            Some(RESOURCE_PREVIEW_COMBINED) => iced::Size::new(1120.0, 760.0),
+            Some(RESOURCE_PREVIEW_COMBINED | SHOW_SHORTCUT_INVALID) => {
+                iced::Size::new(1120.0, 760.0)
+            }
             Some(CONTRAST_DARK_APPEARANCE | HOME_HISTORY_WIDE) => iced::Size::new(1120.0, 760.0),
             Some(35..=37 | 40 | 42 | 44..=50 | 52..=69 | 71..=93) => iced::Size::new(900.0, 620.0),
             Some(30) => iced::Size::new(1280.0, 720.0),
@@ -1342,7 +1389,11 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             iced::widget::scrollable::RelativeOffset { x: 0.0, y: 1.0 },
         ));
     }
-    if matches!(extra, Some(77..=78)) && run.ticks == 3 {
+    if matches!(
+        extra,
+        Some(77..=78 | SHOW_SHORTCUT_INVALID | SHOW_SHORTCUT_READY)
+    ) && run.ticks == 3
+    {
         return Some(iced::widget::operation::snap_to(
             "settings-content",
             iced::widget::scrollable::RelativeOffset { x: 0.0, y: 1.0 },

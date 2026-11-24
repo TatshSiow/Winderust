@@ -216,6 +216,8 @@ pub struct GeneralSettings {
     pub restore_previous_power_plan: bool,
     #[serde(default)]
     pub search_hotkeys: super::SearchHotkeys,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub show_winderust_shortcut: Option<super::ShowWinderustShortcut>,
     pub check_interval_ms: u64,
 }
 
@@ -1960,6 +1962,7 @@ impl Default for Settings {
                 pause_power_plan_switching_while_plugged_in: false,
                 restore_previous_power_plan: false,
                 search_hotkeys: super::SearchHotkeys::default(),
+                show_winderust_shortcut: None,
                 check_interval_ms: 1000,
             },
             advanced: AdvancedSettings::default(),

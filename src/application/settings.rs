@@ -269,11 +269,12 @@ impl SettingsCoordinator {
         Ok(next_revision)
     }
 
-    fn import_toml_from(
+    fn import_toml_from<T>(
         &mut self,
         path: &Path,
         draft: &mut SettingsDraft,
-    ) -> SettingsResult<SettingsRevision> {
+        prepare: impl FnOnce(&Settings) -> Result<T, String>,
+    ) -> SettingsResult<(SettingsRevision, T)> {
         let mut imported = self
             .storage
             .import(path)
@@ -282,6 +283,7 @@ impl SettingsCoordinator {
             .validate()
             .map_err(SettingsCoordinatorError::Import)?;
         imported.sync_shared_settings_to_battery();
+        let prepared = prepare(&imported).map_err(SettingsCoordinatorError::Import)?;
         self.storage
             .save(&imported)
             .map_err(SettingsCoordinatorError::Save)?;
@@ -293,7 +295,7 @@ impl SettingsCoordinator {
         draft.value = imported;
         draft.mark_changed();
         self.refresh_runtime_settings_snapshot(draft);
-        Ok(next_revision)
+        Ok((next_revision, prepared))
     }
 
     fn cancel(&mut self, draft: &mut SettingsDraft) {
@@ -507,12 +509,15 @@ impl SettingsEditor {
         Ok(self.reconcile_startup_registration())
     }
 
-    pub(crate) fn import_toml_from(
+    pub(crate) fn import_toml_from<T>(
         &mut self,
         path: &Path,
-    ) -> SettingsResult<PersistentSettingsOutcome> {
-        let _ = self.coordinator.import_toml_from(path, &mut self.draft)?;
-        Ok(self.reconcile_startup_registration())
+        prepare: impl FnOnce(&Settings) -> Result<T, String>,
+    ) -> SettingsResult<(PersistentSettingsOutcome, T)> {
+        let (_, prepared) = self
+            .coordinator
+            .import_toml_from(path, &mut self.draft, prepare)?;
+        Ok((self.reconcile_startup_registration(), prepared))
     }
 
     pub(crate) fn cancel(&mut self) {

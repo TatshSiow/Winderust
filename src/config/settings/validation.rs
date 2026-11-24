@@ -15,6 +15,17 @@ impl Settings {
         self.validate_dynamic_resource_zones()?;
         self.validate_by_cpu_load_rules()?;
         for profile in self.profiles() {
+            if profile
+                .general
+                .show_winderust_shortcut
+                .is_some_and(|shortcut| {
+                    shortcut.conflicts_with_search(&profile.general.search_hotkeys)
+                })
+            {
+                return Err(
+                    rust_i18n::t!("settings.show_winderust_shortcut_search_conflict").into_owned(),
+                );
+            }
             let mut preset_names = HashSet::new();
             for preset in &profile.adaptive_processor_power_presets {
                 preset.validate()?;

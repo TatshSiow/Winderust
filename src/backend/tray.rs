@@ -26,13 +26,16 @@ use windows_sys::Win32::{
             TrackPopupMenu, TranslateMessage, HICON, ICON_BIG, ICON_SMALL, IMAGE_ICON,
             LR_DEFAULTSIZE, LR_SHARED, MF_CHECKED, MF_GRAYED, MF_POPUP, MF_SEPARATOR, MF_STRING,
             MSG, MSGFLT_ALLOW, PBT_APMPOWERSTATUSCHANGE, SW_RESTORE, SW_SHOW, TPM_RETURNCMD,
-            TPM_RIGHTBUTTON, WM_APP, WM_LBUTTONDBLCLK, WM_LBUTTONUP, WM_POWERBROADCAST,
-            WM_RBUTTONUP, WM_SETICON, WNDCLASSW,
+            TPM_RIGHTBUTTON, WM_APP, WM_CLOSE, WM_HOTKEY, WM_LBUTTONDBLCLK, WM_LBUTTONUP,
+            WM_POWERBROADCAST, WM_RBUTTONUP, WM_SETICON, WNDCLASSW,
         },
     },
 };
 
-use crate::win_util::wide_null;
+use crate::{config::ShowWinderustShortcut, win_util::wide_null};
+
+mod show_winderust_shortcut;
+pub(crate) use show_winderust_shortcut::{PreparedShortcut, ShortcutError};
 
 const TRAY_UID: u32 = 1;
 const WM_TRAYICON: u32 = WM_APP + 1;
@@ -206,6 +209,8 @@ pub struct TrayIcon {
     hwnd: HWND,
     thread: Option<JoinHandle<()>>,
     registered: bool,
+    shortcut_requests: mpsc::SyncSender<show_winderust_shortcut::Prepare>,
+    shortcut_attempt: Option<(Option<ShowWinderustShortcut>, Result<(), ShortcutError>)>,
 }
 
 impl TrayIcon {
@@ -217,41 +222,108 @@ impl TrayIcon {
             return Err("Failed to register the taskbar recreation message.".into());
         }
         TASKBAR_CREATED.store(message, Ordering::Relaxed);
-        let (hwnd, thread) = start_tray_window()?;
+        let (hwnd, thread, shortcut_requests) = start_tray_window()?;
         let mut icon = Self {
             hwnd,
             thread: Some(thread),
             registered: false,
+            shortcut_requests,
+            shortcut_attempt: None,
         };
         icon.register()?;
         Ok(icon)
     }
 
     pub fn is_registered(&self) -> bool {
-        self.registered
-            && self
-                .thread
-                .as_ref()
-                .is_some_and(|thread| !thread.is_finished())
+        self.registered && self.has_live_owner()
+    }
+
+    pub(crate) fn has_live_owner(&self) -> bool {
+        self.thread
+            .as_ref()
+            .is_some_and(|thread| !thread.is_finished())
     }
 
     pub fn invalidate(&mut self) {
         NOTIFICATION_WINDOW.store(0, Ordering::Release);
         self.registered = false;
+        if matches!(
+            self.shortcut_attempt,
+            Some((_, Err(ShortcutError::Unavailable)))
+        ) {
+            self.shortcut_attempt = None;
+        }
+    }
+
+    pub(crate) fn prepare_show_shortcut(
+        &self,
+        shortcut: Option<ShowWinderustShortcut>,
+    ) -> Result<PreparedShortcut, ShortcutError> {
+        show_winderust_shortcut::prepare(self.hwnd, &self.shortcut_requests, shortcut)
+    }
+
+    pub(crate) fn commit_show_shortcut(&mut self, prepared: PreparedShortcut) {
+        self.shortcut_attempt = Some((prepared.shortcut, Ok(())));
+        prepared.commit();
+    }
+
+    pub(crate) fn sync_show_shortcut(
+        &mut self,
+        shortcut: Option<ShowWinderustShortcut>,
+    ) -> Option<ShortcutError> {
+        if self
+            .shortcut_attempt
+            .map_or(shortcut.is_none(), |(previous, _)| previous == shortcut)
+        {
+            return None;
+        }
+        match self.prepare_show_shortcut(shortcut) {
+            Ok(prepared) => {
+                self.commit_show_shortcut(prepared);
+                None
+            }
+            Err(error) => {
+                self.shortcut_attempt = Some((shortcut, Err(error)));
+                Some(error)
+            }
+        }
+    }
+
+    pub(crate) fn show_shortcut_error(&self) -> Option<ShortcutError> {
+        if !self.has_live_owner() {
+            return Some(ShortcutError::Unavailable);
+        }
+        self.shortcut_attempt.and_then(|(_, result)| result.err())
+    }
+
+    #[cfg(feature = "render-smoke")]
+    pub(crate) fn post_show_shortcut_for_smoke(&self, key: u16, modifiers: u32) -> bool {
+        let chord = (u32::from(key) << 16) | modifiers;
+        // SAFETY: this fixture's tray HWND is live. WM_HOTKEY carries only numbers.
+        unsafe {
+            PostMessageW(
+                self.hwnd,
+                WM_HOTKEY,
+                show_winderust_shortcut::FIRST_REGISTRATION_ID as WPARAM,
+                chord as LPARAM,
+            ) != 0
+        }
     }
 
     pub fn register(&mut self) -> Result<(), String> {
         NOTIFICATION_WINDOW.store(0, Ordering::Release);
         self.registered = false;
-        if self.thread.as_ref().is_none_or(JoinHandle::is_finished) {
+        if !self.has_live_owner() {
             if let Some(thread) = self.thread.take() {
                 if thread.join().is_err() {
                     eprintln!("Tray window thread panicked before registration retry.");
                 }
             }
-            let (hwnd, thread) = start_tray_window()?;
+            let (hwnd, thread, shortcut_requests) = start_tray_window()?;
             self.hwnd = hwnd;
             self.thread = Some(thread);
+            self.shortcut_requests = shortcut_requests;
+            self.shortcut_attempt = None;
         }
         let message = TASKBAR_CREATED.load(Ordering::Relaxed);
         // SAFETY: hwnd is the live tray host; only the payload-free shell notification is allowed.
@@ -375,18 +447,21 @@ fn load_app_icon() -> HICON {
     }
 }
 
-fn start_tray_window() -> Result<(HWND, JoinHandle<()>), String> {
+type ShortcutRequests = mpsc::SyncSender<show_winderust_shortcut::Prepare>;
+
+fn start_tray_window() -> Result<(HWND, JoinHandle<()>, ShortcutRequests), String> {
     let (sender, receiver) = mpsc::sync_channel(1);
+    let (requests, inbox) = mpsc::sync_channel(1);
     let thread = thread::Builder::new()
         .name("tray-window".into())
-        .spawn(move || tray_window_thread(sender))
+        .spawn(move || tray_window_thread(sender, inbox))
         .map_err(|error| format!("Failed to start the tray window thread: {error}"))?;
     match receiver
         .recv()
         .map_err(|error| format!("Tray window did not start: {error}"))
         .and_then(std::convert::identity)
     {
-        Ok(hwnd) => Ok((hwnd as HWND, thread)),
+        Ok(hwnd) => Ok((hwnd as HWND, thread, requests)),
         Err(error) => {
             if thread.join().is_err() {
                 eprintln!("Tray window thread panicked during startup.");
@@ -396,7 +471,10 @@ fn start_tray_window() -> Result<(HWND, JoinHandle<()>), String> {
     }
 }
 
-fn tray_window_thread(sender: mpsc::SyncSender<Result<usize, String>>) {
+fn tray_window_thread(
+    sender: mpsc::SyncSender<Result<usize, String>>,
+    shortcut_requests: mpsc::Receiver<show_winderust_shortcut::Prepare>,
+) {
     let hwnd = match create_tray_window() {
         Ok(hwnd) => hwnd,
         Err(error) => {
@@ -406,6 +484,7 @@ fn tray_window_thread(sender: mpsc::SyncSender<Result<usize, String>>) {
             return;
         }
     };
+    show_winderust_shortcut::start(shortcut_requests);
     if sender.send(Ok(hwnd as usize)).is_ok() {
         let mut message = MSG::default();
         loop {
@@ -425,6 +504,7 @@ fn tray_window_thread(sender: mpsc::SyncSender<Result<usize, String>>) {
             }
         }
     }
+    show_winderust_shortcut::stop();
     // SAFETY: this thread owns the hidden tray window and will not use it after destruction.
     unsafe { DestroyWindow(hwnd) };
 }
@@ -482,13 +562,26 @@ unsafe extern "system" fn tray_wnd_proc(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
-    if message == WM_STOP_TRAY {
+    if matches!(message, WM_CLOSE | WM_STOP_TRAY) {
+        // The message loop releases shortcuts before destroying the native window.
         // SAFETY: this callback runs on the tray owner thread; both calls retain no pointers.
         unsafe {
             EndMenu();
             PostQuitMessage(0);
         }
         return 0;
+    }
+    if message == show_winderust_shortcut::WM_UPDATE_SHOW_SHORTCUT {
+        show_winderust_shortcut::update(hwnd);
+        return 0;
+    }
+    if message == WM_HOTKEY {
+        if show_winderust_shortcut::should_restore(wparam, lparam) {
+            request_restore();
+            return 0;
+        }
+    } else {
+        show_winderust_shortcut::reconcile_pending();
     }
     if message != 0 && message == TASKBAR_CREATED.load(Ordering::Relaxed) {
         TASKBAR_RECREATED.store(true, Ordering::Relaxed);
@@ -725,7 +818,7 @@ mod tests {
     fn tray_host_lives_independently_of_the_gui_window() {
         use windows_sys::Win32::UI::WindowsAndMessaging::{GetParent, IsWindow, IsWindowVisible};
 
-        let (host, thread) = start_tray_window().expect("start independent tray host");
+        let (host, thread, _) = start_tray_window().expect("start independent tray host");
         let class = wide_null("STATIC");
         // SAFETY: STATIC is a built-in class; this test owns the hidden GUI stand-in window.
         let gui = unsafe {
@@ -761,6 +854,110 @@ mod tests {
         assert!(!gui.is_null());
         assert!(gui_destroyed && host_exists && host_hidden && host_top_level);
         assert!(posted && joined.is_ok() && host_destroyed);
+    }
+
+    #[test]
+    #[ignore = "Uses three system-wide function-key shortcuts on the current Windows desktop"]
+    fn show_winderust_shortcut_owner_delivers_and_releases_registrations() {
+        use crate::config::KeyboardShortcut;
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::{
+            Foundation::WAIT_OBJECT_0,
+            System::Threading::WaitForSingleObject,
+            UI::Input::KeyboardAndMouse::{
+                MOD_ALT, MOD_CONTROL, MOD_SHIFT, VK_F22, VK_F23, VK_F24,
+            },
+        };
+
+        struct Host {
+            hwnd: HWND,
+            thread: Option<JoinHandle<()>>,
+            requests: ShortcutRequests,
+        }
+        impl Host {
+            fn start() -> Self {
+                let (hwnd, thread, requests) = start_tray_window().unwrap();
+                Self {
+                    hwnd,
+                    thread: Some(thread),
+                    requests,
+                }
+            }
+
+            fn prepare(&self, key: &str) -> Result<PreparedShortcut, ShortcutError> {
+                let shortcut = ShowWinderustShortcut::try_from(KeyboardShortcut {
+                    key: key.into(),
+                    enabled: true,
+                    ctrl: true,
+                    alt: true,
+                    shift: true,
+                })
+                .unwrap();
+                show_winderust_shortcut::prepare(self.hwnd, &self.requests, Some(shortcut))
+            }
+
+            fn dispatch(&self, id: usize, key: u16) -> bool {
+                let _ = take_restore_requested();
+                let combination = (u32::from(key) << 16) | MOD_ALT | MOD_CONTROL | MOD_SHIFT;
+                // SAFETY: hwnd is this live test's tray window; WM_HOTKEY carries only numbers.
+                unsafe { SendMessageW(self.hwnd, WM_HOTKEY, id, combination as LPARAM) };
+                take_restore_requested()
+            }
+
+            fn close(mut self) {
+                let thread = self.thread.take().unwrap();
+                // SAFETY: the owned test window is live and WM_CLOSE carries no pointers.
+                assert_ne!(unsafe { PostMessageW(self.hwnd, WM_CLOSE, 0, 0) }, 0);
+                // SAFETY: the owned JoinHandle keeps the native thread handle open while waiting.
+                let wait = unsafe { WaitForSingleObject(thread.as_raw_handle(), 5_000) };
+                assert_eq!(wait, WAIT_OBJECT_0, "WM_CLOSE did not stop the tray owner");
+                thread.join().unwrap();
+            }
+        }
+
+        impl Drop for Host {
+            fn drop(&mut self) {
+                if let Some(thread) = self.thread.take() {
+                    // SAFETY: hwnd is this live test's tray window; the stop message carries no pointers.
+                    unsafe { PostMessageW(self.hwnd, WM_STOP_TRAY, 0, 0) };
+                    thread.join().unwrap();
+                }
+            }
+        }
+
+        let app = Host::start();
+        let blocker = Host::start();
+        blocker.prepare("f24").unwrap().commit();
+        app.prepare("f23").unwrap().commit();
+        assert!(app.dispatch(1, VK_F23));
+        assert!(!app.dispatch(2, VK_F23));
+        assert!(!app.dispatch(1, VK_F22));
+        assert_eq!(app.prepare("f24").err(), Some(ShortcutError::Conflict));
+        assert!(app.dispatch(1, VK_F23));
+
+        let staged = app.prepare("f22").unwrap();
+        assert_eq!(blocker.prepare("f22").err(), Some(ShortcutError::Conflict));
+        assert!(!app.dispatch(3, VK_F22));
+        drop(staged);
+        assert!(app.dispatch(1, VK_F23));
+        drop(blocker.prepare("f22").unwrap());
+        assert!(blocker.dispatch(1, VK_F24));
+
+        app.prepare("f22").unwrap().commit();
+        assert!(!app.dispatch(1, VK_F23));
+        assert!(app.dispatch(4, VK_F22));
+        drop(blocker.prepare("f23").unwrap());
+
+        show_winderust_shortcut::prepare(app.hwnd, &app.requests, None)
+            .unwrap()
+            .commit();
+        assert!(!app.dispatch(4, VK_F22));
+        drop(blocker.prepare("f22").unwrap());
+        assert!(blocker.dispatch(1, VK_F24));
+
+        app.prepare("f22").unwrap().commit();
+        app.close();
+        blocker.prepare("f22").unwrap().commit();
     }
 
     #[test]

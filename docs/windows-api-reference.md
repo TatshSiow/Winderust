@@ -1218,6 +1218,24 @@ and permits closing the GUI to the tray only while the icon is registered. Tray 
 restore/quit intent without capturing a GUI HWND. The daemon destroys/recreates its Iced window;
 the native tray host remains alive in background mode. No undocumented Windows contract is used.
 
+`src/backend/tray/show_winderust_shortcut.rs` owns the optional Show Winderust
+registration on that same window thread. [RegisterHotKey](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-registerhotkey)
+uses `MOD_NOREPEAT` and a distinct identifier for a staged replacement.
+[WM_HOTKEY](https://learn.microsoft.com/en-us/windows/win32/inputdev/wm-hotkey)
+must match the active identifier, virtual key, and modifiers before requesting
+the existing UI restore. [UnregisterHotKey](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-unregisterhotkey)
+releases cancelled and replaced bindings, and the owner drains its remaining
+registrations before destroying the tray window. Recreating only the Iced
+window leaves registration intact. Windows controls foreground activation under
+[SetForegroundWindow](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setforegroundwindow).
+
+The opt-in `src/ui/window_lifecycle_smoke.rs` fixture uses
+[SendInput](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-sendinput)
+only after its disposable window owns the foreground and
+[GetAsyncKeyState](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getasynckeystate)
+finds no pressed chord keys. The feature-gated test sends balanced key presses
+and releases and checks the native restore path across Iced window teardown.
+
 ## Dashboard network rates
 
 `src/backend/dashboard_metrics.rs` keys network baselines by `MIB_IF_ROW2.InterfaceLuid.Value` and sums comparable per-interface `InOctets`/`OutOctets` deltas. Newly observed or reset interfaces establish a baseline; missing interfaces and failed/empty samples discard stale baselines. Loopback, down, and disconnected interfaces remain excluded. The interface index is not used because Windows can change it when an adapter is disabled/re-enabled. Reference: [MIB_IF_ROW2](https://learn.microsoft.com/en-us/windows/win32/api/netioapi/ns-netioapi-mib_if_row2).

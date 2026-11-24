@@ -1,5 +1,6 @@
 mod search_hotkeys;
-pub use search_hotkeys::{KeyboardShortcut, SearchHotkeys};
+pub(crate) use search_hotkeys::ShowWinderustShortcutKey;
+pub use search_hotkeys::{KeyboardShortcut, SearchHotkeys, ShowWinderustShortcut};
 mod rule_time;
 pub use rule_time::RuleTime;
 mod executable_selector;

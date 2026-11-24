@@ -31,6 +31,15 @@ Read the relevant section before changing feature policy, ownership, restoration
   Action Log, tray host, event subscriptions, and runtime owners remain alive. Tray restoration
   and duplicate launches recreate the window; explicit Exit still completes restoration before
   stopping the daemon. A failed tray registration keeps or reopens the GUI for recovery.
+- Show Winderust is an opt-in, system-wide keyboard shortcut shared by both
+  power profiles. It uses the existing tray host and restore path independently
+  of the master automation switch. Save and Import reserve a changed shortcut
+  before persisting settings and release the reservation on failure. A
+  conflicting change leaves the previous settings and binding intact. A saved
+  shortcut uses normal tray recovery when its host is unavailable. A transient
+  failure to reach a live host can retry when Explorer recreates the taskbar.
+  A Windows chord conflict is reported without polling. The tray host releases
+  its registrations on exit.
 
 ## Keep Running
 

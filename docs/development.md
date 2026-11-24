@@ -215,10 +215,18 @@ cargo build --locked --release --features render-smoke
 .\target\release\winderust.exe --window-lifecycle-smoke --retain-window
 .\target\release\winderust.exe --window-lifecycle-smoke
 .\target\release\winderust.exe --window-lifecycle-smoke --start-minimized
+.\target\release\winderust.exe --window-lifecycle-smoke --show-winderust-shortcut
 ```
 
 The retained-window option models the previous hidden-window behavior inside the probe only.
 These controlled samples do not establish memory use with every production feature enabled.
+The shortcut option requires an unlocked interactive Windows desktop. It checks that
+the original native window is destroyed before sending Ctrl+Alt+Shift+F24 from a
+dedicated foreground window, then verifies that one visible Iced window reopens.
+Leave the keyboard untouched while it runs. See `shortcut-visible.csv` under the
+same output directory for the recorded transition.
+Append `--post-hotkey` to check the tray message and window recreation without
+physical input. That run records `posted-shortcut-visible.csv`.
 
 All scrolling uses `scrolling::scrollable`, including dialogs and dropdowns. It keeps
 native Iced input while clipping repaint sections; virtual lists use

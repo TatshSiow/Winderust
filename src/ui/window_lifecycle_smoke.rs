@@ -11,13 +11,26 @@ use windows_sys::Win32::{
         ProcessStatus::{K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS_EX2},
         Threading::GetCurrentProcess,
     },
-    UI::WindowsAndMessaging::{GetWindowRect, IsWindow, IsZoomed},
+    UI::{
+        Input::KeyboardAndMouse::{
+            GetAsyncKeyState, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT,
+            KEYEVENTF_KEYUP, MOD_ALT, MOD_CONTROL, MOD_SHIFT, VK_CONTROL, VK_F24, VK_LWIN, VK_MENU,
+            VK_RWIN, VK_SHIFT,
+        },
+        WindowsAndMessaging::{
+            CreateWindowExW, DestroyWindow, GetForegroundWindow, GetWindowRect, IsWindow,
+            IsWindowVisible, IsZoomed, SetForegroundWindow, WS_CAPTION, WS_POPUP, WS_VISIBLE,
+        },
+    },
 };
 
 static REQUESTED: AtomicBool = AtomicBool::new(false);
 static COMPLETED: AtomicBool = AtomicBool::new(false);
 const SETTLE: Duration = Duration::from_secs(3);
 const OFFSCREEN: iced::Point = iced::Point::new(1_000_000.0, 1_000_000.0);
+const SHOW_SHORTCUT_FLAG: &str = "--show-winderust-shortcut";
+const POST_SHORTCUT_FLAG: &str = "--post-hotkey";
+const SHOW_SHORTCUT_KEYS: [u16; 4] = [VK_CONTROL, VK_MENU, VK_SHIFT, VK_F24];
 
 pub(super) struct Run {
     started: Instant,
@@ -26,6 +39,9 @@ pub(super) struct Run {
     cycle: u8,
     retain_window: bool,
     start_minimized: bool,
+    check_shortcut: bool,
+    post_shortcut: bool,
+    shortcut_foreground: Option<ShortcutForeground>,
     runtime: Option<usize>,
     tray: Option<usize>,
     previous_window: Option<iced::window::Id>,
@@ -48,6 +64,9 @@ impl Run {
                 cycle: 0,
                 retain_window: std::env::args().any(|arg| arg == "--retain-window"),
                 start_minimized: std::env::args().any(|arg| arg == "--start-minimized"),
+                check_shortcut: std::env::args().any(|arg| arg == SHOW_SHORTCUT_FLAG),
+                post_shortcut: std::env::args().any(|arg| arg == POST_SHORTCUT_FLAG),
+                shortcut_foreground: None,
                 runtime: None,
                 tray: None,
                 previous_window: None,
@@ -105,7 +124,11 @@ impl Run {
             counters.PrivateUsage,
             counters.WorkingSetSize
         ));
-        let mode = if self.retain_window {
+        let mode = if self.post_shortcut {
+            "posted-shortcut"
+        } else if self.check_shortcut {
+            "shortcut"
+        } else if self.retain_window {
             "retained"
         } else {
             "destroyed"
@@ -217,6 +240,12 @@ impl Run {
                 assert_eq!(self.normal_position, Some(iced::Point::new(80.0, 80.0)));
                 self.normal_rect = app.hwnd.map(window_rect);
                 self.record("initial_visible");
+                if self.check_shortcut {
+                    assert_eq!(app.show_shortcut_error(), None);
+                    if !self.post_shortcut {
+                        self.shortcut_foreground = Some(ShortcutForeground::open());
+                    }
+                }
                 Some(self.hide(app))
             }
             3 => {
@@ -232,6 +261,15 @@ impl Run {
                 }
                 self.record("hidden");
                 self.stage = 4;
+                if self.post_shortcut {
+                    assert!(app.tray.as_ref().is_some_and(|icon| icon
+                        .post_show_shortcut_for_smoke(VK_F24, MOD_CONTROL | MOD_ALT | MOD_SHIFT)));
+                    return None;
+                }
+                if let Some(foreground) = &self.shortcut_foreground {
+                    foreground.send();
+                    return None;
+                }
                 tray::request_restore();
                 tray::request_restore();
                 let first = app.show_window();
@@ -242,8 +280,10 @@ impl Run {
             }
             4 => {
                 self.check_identity(app);
-                assert!(!app.hidden);
-                assert!(app.hwnd.is_some_and(is_window));
+                assert!(
+                    !app.hidden && app.hwnd.is_some_and(is_window),
+                    "no live main window after restore"
+                );
                 if self.retain_window {
                     assert_eq!(app.window, self.previous_window);
                 } else {
@@ -260,6 +300,18 @@ impl Run {
                     }
                 }
                 self.check_normal_settings(app);
+                if self.check_shortcut {
+                    self.shortcut_foreground = None;
+                    assert!(app.hwnd.is_some_and(|hwnd| {
+                        // SAFETY: the fixture has verified this live Iced window handle.
+                        unsafe { IsWindowVisible(hwnd as HWND) != 0 }
+                    }));
+                    self.record("reopened_by_shortcut");
+                    self.stage = 5;
+                    return Some(
+                        single_window(current_window(app)).chain(app.update(Message::Close)),
+                    );
+                }
                 self.record("reopened");
                 let window = current_window(app);
                 let next = match self.cycle {
@@ -373,6 +425,100 @@ impl Run {
     }
 }
 
+struct ShortcutForeground(HWND);
+
+impl ShortcutForeground {
+    fn open() -> Self {
+        // SAFETY: both strings are null-terminated. STATIC is a predefined system class.
+        let hwnd = unsafe {
+            CreateWindowExW(
+                0,
+                windows_sys::w!("STATIC"),
+                windows_sys::w!("Winderust shortcut verification"),
+                WS_POPUP | WS_CAPTION | WS_VISIBLE,
+                80,
+                80,
+                300,
+                65,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null(),
+            )
+        };
+        assert!(
+            !hwnd.is_null(),
+            "could not create a shortcut foreground window: {}",
+            std::io::Error::last_os_error()
+        );
+        // SAFETY: the handle is a live top-level window owned by this UI thread.
+        unsafe { SetForegroundWindow(hwnd) };
+        Self(hwnd)
+    }
+
+    fn send(&self) {
+        let presses = SHOW_SHORTCUT_KEYS.map(|key| key_event(key, false));
+        let mut releases = SHOW_SHORTCUT_KEYS.map(|key| key_event(key, true));
+        releases.reverse();
+        let batch = [presses, releases];
+        let events = batch.as_flattened();
+        for key in SHOW_SHORTCUT_KEYS.into_iter().chain([VK_LWIN, VK_RWIN]) {
+            // SAFETY: key is a virtual-key code. The sign bit reports the current down state.
+            let key_released = unsafe { GetAsyncKeyState(i32::from(key)) } >= 0;
+            assert!(key_released, "key {key} is held");
+        }
+        // SAFETY: the queried foreground handle is compared with the fixture's own live window.
+        let foreground = unsafe { GetForegroundWindow() };
+        assert_eq!(
+            foreground, self.0,
+            "shortcut fixture needs an unlocked desktop with its probe window active"
+        );
+
+        let inserted = send_input(events);
+        if inserted != events.len() {
+            let held = inserted.min(events.len().saturating_sub(inserted));
+            let pending = &releases[releases.len() - held..];
+            let released = if pending.is_empty() {
+                0
+            } else {
+                send_input(pending)
+            };
+            panic!("SendInput inserted {inserted} of {} key events and cleaned up {released} of {held} key releases", events.len());
+        }
+    }
+}
+
+impl Drop for ShortcutForeground {
+    fn drop(&mut self) {
+        // SAFETY: the fixture destroys its dedicated probe on the same thread that created it.
+        unsafe { DestroyWindow(self.0) };
+    }
+}
+
+fn key_event(key: u16, release: bool) -> INPUT {
+    INPUT {
+        r#type: INPUT_KEYBOARD,
+        Anonymous: INPUT_0 {
+            ki: KEYBDINPUT {
+                wVk: key,
+                dwFlags: if release { KEYEVENTF_KEYUP } else { 0 },
+                ..Default::default()
+            },
+        },
+    }
+}
+
+fn send_input(events: &[INPUT]) -> usize {
+    // SAFETY: events is initialized and contiguous for the supplied count and structure size.
+    unsafe {
+        SendInput(
+            events.len() as u32,
+            events.as_ptr(),
+            std::mem::size_of::<INPUT>() as i32,
+        ) as usize
+    }
+}
+
 fn is_window(hwnd: usize) -> bool {
     // SAFETY: IsWindow accepts an arbitrary handle value without dereferencing it in this process.
     unsafe { IsWindow(hwnd as HWND) != 0 }
@@ -453,6 +599,22 @@ pub(crate) fn run_check() {
     settings.general.hide_to_tray = true;
     settings.general.start_minimized = std::env::args().any(|arg| arg == "--start-minimized");
     settings.general.startup_with_windows = false;
+    let check_shortcut = std::env::args().any(|arg| arg == SHOW_SHORTCUT_FLAG);
+    assert!(check_shortcut || !std::env::args().any(|arg| arg == POST_SHORTCUT_FLAG));
+    if check_shortcut {
+        assert!(!std::env::args().any(|arg| arg == "--retain-window"));
+        settings.general.hide_to_tray = false;
+        settings.general.show_winderust_shortcut = Some(
+            crate::config::ShowWinderustShortcut::try_from(crate::config::KeyboardShortcut {
+                enabled: true,
+                key: "f24".into(),
+                ctrl: true,
+                alt: true,
+                shift: true,
+            })
+            .expect("valid shortcut in fixture"),
+        );
+    }
     let mut editor = SettingsEditor::with_settings(settings);
     let recovery = Arc::new(Mutex::new(crate::crash_recovery::RecoveryClient::start()));
     let runtime = RuntimeHandle::start(&editor.runtime_settings_snapshot());
