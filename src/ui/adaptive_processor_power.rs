@@ -236,11 +236,19 @@ impl Editor {
                 Some(Message::Enabled),
             ),
             self.preset_picker(s),
-            container(tabs.wrap()).style(widgets::tab_bar),
-            text(t!(help_key).to_string())
-                .size(design::typography::SECONDARY)
-                .style(text::secondary)
-                .width(Fill),
+            container(
+                column![
+                    tabs.wrap(),
+                    text(t!(help_key).to_string())
+                        .size(design::typography::SECONDARY)
+                        .style(text::secondary)
+                        .width(Fill),
+                ]
+                .spacing(design::space::SMALL),
+            )
+            .padding(widgets::CARD_PADDING as u16)
+            .width(Fill)
+            .style(widgets::tab_bar),
         ]
         .spacing(widgets::CARD_GAP);
         match self.tab {
@@ -454,7 +462,7 @@ mod tests {
                 let layout = layout::Layout::new(&node);
                 let body = unwrap_single_child(layout);
                 let mut messages = Vec::new();
-                for card in body.children().skip(5).step_by(2) {
+                for card in body.children().skip(4).step_by(2) {
                     let rows = unwrap_single_child(card);
                     assert_eq!(rows.children().len(), 3, "one policy, divider and mode");
                     let policy = rows.children().next().unwrap();

@@ -507,24 +507,29 @@ impl Editor {
                     t!("settings.keyboard_shortcuts").to_string(),
                     design::typography::BODY
                 ),
-                text(t!("settings.shortcut_help").to_string())
-                    .size(design::typography::SECONDARY)
-                    .style(text::secondary),
-                widgets::settings_card(widgets::settings_rows([
-                    self.search_hotkey_row(
-                        s,
-                        SearchHotkeySlot::Primary,
-                        "settings.search_shortcut"
-                    ),
-                    self.search_hotkey_row(
-                        s,
-                        SearchHotkeySlot::Secondary,
-                        "settings.search_alternate_shortcut"
-                    ),
-                    row![action_button(t!("settings.reset_shortcuts").to_string())
-                        .on_press(Message::ResetSearchHotkeys)]
-                    .into(),
-                ])),
+                widgets::settings_card(
+                    column![
+                        text(t!("settings.shortcut_help").to_string())
+                            .size(design::typography::SECONDARY)
+                            .style(text::secondary),
+                        widgets::settings_rows([
+                            self.search_hotkey_row(
+                                s,
+                                SearchHotkeySlot::Primary,
+                                "settings.search_shortcut"
+                            ),
+                            self.search_hotkey_row(
+                                s,
+                                SearchHotkeySlot::Secondary,
+                                "settings.search_alternate_shortcut"
+                            ),
+                            row![action_button(t!("settings.reset_shortcuts").to_string())
+                                .on_press(Message::ResetSearchHotkeys)]
+                            .into(),
+                        ]),
+                    ]
+                    .spacing(design::space::MEDIUM),
+                ),
                 widgets::heading(
                     t!("settings.settings_files").to_string(),
                     design::typography::BODY
