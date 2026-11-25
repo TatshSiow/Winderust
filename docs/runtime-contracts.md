@@ -735,13 +735,17 @@ Read the relevant section before changing feature policy, ownership, restoration
   mutual exclusion, actual-owner Action Log attribution, and clean/crash restoration are part of
   the boundary. Raw affinity, CPU Set, and packed topology-buffer calls live only in
   `src/platform/windows/cpu_allocation.rs`.
-- Adaptive Engine's master switch gates its policies. CPU Behaviour has no additional master
-  gate: CPU Pressure Restraint, Limit Background Processors, and Dynamic Resource Zones have
-  independent switches. Disabling one must not disable or apply the others.
+- Adaptive Engine's master switch gates its policies. CPU Pressure Restraint, Limit Background
+  Processors, and Dynamic Resource Zones each have their own switch and eligibility by default.
   Limit Background Processors exposes one explicit processor selection:
   least-used logical processors across All, P-core, or E-core pools with a configurable percentage,
   fixed P/E/no-SMT topology masks, or an exact custom mask. The per-app CPU threshold decides when a background app becomes eligible;
   the shared CPU allocation coordinator remains the only mutation and restoration owner.
+- Only during CPU Pressure Restraint limits the placement policy to exact processes whose
+  priority restraint is selected and verified in the current pass. If CPU Pressure Restraint
+  is off, the scoped limiter is dormant. It releases the placement claim when the episode
+  loses verification or ends. Dynamic Resource Zones, explicit CPU allocation, and manual
+  ownership keep their existing precedence.
 - Limit Background Processors can instead reduce each target's original group-0 affinity by
   a configured count, retaining at least one logical processor. Selection stays stable for the
   exact process while its captured baseline holds. Reduce affinity preserves external default

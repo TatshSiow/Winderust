@@ -901,6 +901,8 @@ adaptive_engine_process:
   shared_detection: "共用偵測與時間設定"
   shared_detection_help: "設定自適應引擎判定 CPU 壓力及還原背景應用程式的條件。"
   limit_background_processors: "限制背景處理器"
+  limit_background_processors_during_restraint: "僅在 CPU 壓力限制期間"
+  limit_background_processors_during_restraint_help: "只限制目前已套用 CPU 壓力限制的應用程式，須啟用 CPU 壓力限制。關閉時會獨立套用背景處理器上限。"
   limit_background_processors_help: "限制符合條件的背景應用程式可用的處理器，前景配置維持原狀。"
   dynamic_resource_zones: "動態資源區域（實驗性）"
   dynamic_resource_zones_help: "CPU 資源競爭時，將前景與背景應用程式分配至不同的 CPU 集合。這可能降低前景效能。"

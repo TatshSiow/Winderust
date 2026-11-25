@@ -18,11 +18,14 @@ use crate::{
     control::{
         cpu_allocation::CpuAllocationCoordinator,
         priority_efficiency::{
-            AdaptiveRestraintProcess, PriorityClassClaim, PriorityClassPreservation,
-            PriorityClassValue, PriorityEfficiencyController, PriorityEfficiencyReleaseSummary,
-            ProcessPropertyApplyOutcome,
+            AdaptiveRestraintProcess, AdaptiveRestraintState, PriorityClassClaim,
+            PriorityClassPreservation, PriorityClassValue, PriorityEfficiencyController,
+            PriorityEfficiencyReleaseSummary, ProcessPropertyApplyOutcome,
         },
-        process::{ControlOwner, ProcessControlError, ProcessControlTarget},
+        process::{
+            ControlOwner, ProcessControlError, ProcessControlTarget, ProcessIdentity,
+            ProcessTargetKey,
+        },
     },
     cpu::{process_cpu_demand_percent, PerProcessorUsageMonitor, ProcessCpuSample},
     cpu_allocation::{
@@ -338,6 +341,25 @@ impl AdaptiveEngineProcessManager {
         priority_efficiency_controller: &mut PriorityEfficiencyController,
         action_log: &mut ActionLog,
     ) -> AdaptiveEngineProcessSnapshot {
+        self.update_with_activity(
+            input,
+            cpu_allocation_coordinator,
+            priority_efficiency_controller,
+            action_log,
+            process_cpu_sample_with_identity,
+            active_audio_process_ids,
+        )
+    }
+
+    fn update_with_activity(
+        &mut self,
+        input: AdaptiveEngineProcessUpdate<'_>,
+        cpu_allocation_coordinator: &mut CpuAllocationCoordinator,
+        priority_efficiency_controller: &mut PriorityEfficiencyController,
+        action_log: &mut ActionLog,
+        mut sample_process_cpu: impl FnMut(u32, &str) -> Option<(ProcessCpuSample, u64)>,
+        read_active_audio: impl FnOnce() -> Result<BTreeSet<u32>, String>,
+    ) -> AdaptiveEngineProcessSnapshot {
         self.source_release = None;
         let AdaptiveEngineProcessUpdate {
             settings,
@@ -401,11 +423,13 @@ impl AdaptiveEngineProcessManager {
             };
         }
 
+        let limit_during_restraint = settings.limit_background_processors_during_restraint;
+        let background_limit_enabled = settings.background_processor_limit_enabled();
+        let independent_limit_enabled = background_limit_enabled && !limit_during_restraint;
         let restraint_idle_pause = RestraintIdlePause::detect(settings, user_idle_for);
-        if let Some(pause) = restraint_idle_pause.filter(|_| {
-            !settings.limit_background_processors_enabled
-                && !settings.dynamic_resource_zones_enabled
-        }) {
+        if let Some(pause) = restraint_idle_pause
+            .filter(|_| !independent_limit_enabled && !settings.dynamic_resource_zones_enabled)
+        {
             let failed = self.clear_all(
                 cpu_allocation_coordinator,
                 priority_efficiency_controller,
@@ -658,9 +682,10 @@ impl AdaptiveEngineProcessManager {
             && restraint_idle_pause.is_none()
             && background_pressure_triggered
             && (foreground_cpu_usage_percent.is_some() || total_cpu_usage_percent.is_some());
-        let cpu_allocation_applies = settings.limit_background_processors_enabled
+        let cpu_allocation_applies = background_limit_enabled
             && background_pressure_triggered
-            && !focus_and_launch_profile_target;
+            && !focus_and_launch_profile_target
+            && (!limit_during_restraint || cpu_pressure_restraint_applies);
         let zone_grace = focus_and_launch_profile_target;
         let zone_pressure = cpu_pressure_restraint_should_run(
             settings,
@@ -673,6 +698,8 @@ impl AdaptiveEngineProcessManager {
             && foreground_cpu_usage_percent.is_some()
             && !foreground_changed;
         let placement_applies = cpu_allocation_applies || dynamic_resource_zones_apply;
+        let independent_placement_applies =
+            (cpu_allocation_applies && !limit_during_restraint) || dynamic_resource_zones_apply;
         let service_process_ids = if settings.exclude_service_hosts
             && (cpu_pressure_restraint_applies || placement_applies)
         {
@@ -748,6 +775,7 @@ impl AdaptiveEngineProcessManager {
         let mut auto_excluded_processes = BTreeSet::new();
 
         let mut cpu_allocation_targets = Vec::new();
+        let mut restraint_allocation_selection = None;
         let mut priority_candidates = Vec::new();
         let topology_observation = (placement_applies
             || cpu_allocation_coordinator.needs_topology_observation())
@@ -770,14 +798,14 @@ impl AdaptiveEngineProcessManager {
         }
         let audio_process_ids = cpu_pressure_restraint_applies
             .then(|| {
-                active_audio_process_ids().map_err(|error| {
+                read_active_audio().map_err(|error| {
                     failures.last_error = Some(format!(
                         "CPU Pressure Restraint is waiting for audio activity: {error}"
                     ));
                 })
             })
             .and_then(Result::ok);
-        if audio_process_ids.is_some() || placement_applies {
+        if audio_process_ids.is_some() || independent_placement_applies {
             let now = Instant::now();
             let processors = topology
                 .and_then(Result::ok)
@@ -910,7 +938,7 @@ impl AdaptiveEngineProcessManager {
                     continue;
                 }
                 actionable_process_ids.insert(*process_id);
-                let sample = process_cpu_sample_with_identity(*process_id, &executable_path)
+                let sample = sample_process_cpu(*process_id, &executable_path)
                     .filter(|(_, creation_time)| Some(*creation_time) == process.creation_time);
                 if let Some(candidate) = self
                     .update_adaptive_engine_process_sample(
@@ -921,7 +949,7 @@ impl AdaptiveEngineProcessManager {
                         *tier,
                         sample,
                     )
-                    .filter(|_| placement_applies)
+                    .filter(|_| independent_placement_applies)
                 {
                     adaptive_engine_process_candidates.push(candidate);
                 }
@@ -1002,6 +1030,7 @@ impl AdaptiveEngineProcessManager {
                     )
                 {
                     if cpu_allocation_applies
+                        && !limit_during_restraint
                         && candidate.decision == AdaptiveEngineProcessDecision::LimitProcessors
                     {
                         if let Some(selection) = &cpu_allocation_selection {
@@ -1097,83 +1126,12 @@ impl AdaptiveEngineProcessManager {
             {
                 zone_foreground_targets.clear();
             }
+            if limit_during_restraint {
+                restraint_allocation_selection = cpu_allocation_selection;
+            }
         } else {
             self.tracked_processes.clear();
             self.cpu_allocation_selection = [None; 2];
-        }
-
-        let attempted_zones =
-            !zone_background_targets.is_empty() && !zone_foreground_targets.is_empty();
-        if dynamic_resource_zones_apply
-            && !zone_background_targets.is_empty()
-            && zone_foreground_targets.is_empty()
-            && zones.status != ZoneStatus::Unavailable
-        {
-            zones.status = ZoneStatus::Overridden;
-            zones.reason = "zone_foreground_unavailable";
-        }
-        if attempted_zones {
-            zones.status = ZoneStatus::Applying;
-        }
-        let allocation = if let Some(topology) = topology {
-            self.cpu_allocation.reconcile_targets(
-                cpu_allocation_coordinator,
-                topology,
-                ControlOwner::AdaptiveEngine,
-                cpu_allocation_targets,
-                attempted_zones.then_some((zone_background_targets, zone_foreground_targets)),
-                scanned_processes,
-                allow_cross_session_process_control,
-                action_log,
-            )
-        } else {
-            self.cpu_allocation.reconcile_empty_generation(
-                cpu_allocation_coordinator,
-                ControlOwner::AdaptiveEngine,
-                scanned_processes,
-                action_log,
-            )
-        };
-        let mut cpu_allocation_snapshot = allocation.snapshot;
-        if let Some(error) = allocation_error {
-            cpu_allocation_snapshot.last_error.get_or_insert(error);
-        }
-        if let Some((foreground, background)) = allocation.zone_counts {
-            zones.status = ZoneStatus::Active;
-            zones.reason = "zone_active";
-            zones.foreground_targets = foreground;
-            zones.background_targets = background;
-        } else {
-            zones.foreground_processors = 0;
-            zones.background_processors = 0;
-            zones.background_limit_targets = allocation.fallback_count;
-            if attempted_zones {
-                use crate::cpu_allocation::ZoneAllocationFailure;
-                (zones.status, zones.reason) = match allocation.zone_failure {
-                    ZoneAllocationFailure::Waiting => (ZoneStatus::Waiting, "zone_waiting"),
-                    ZoneAllocationFailure::Overridden => {
-                        (ZoneStatus::Overridden, "zone_foreground_unavailable")
-                    }
-                    ZoneAllocationFailure::Unavailable => {
-                        (ZoneStatus::Unavailable, "zone_unavailable")
-                    }
-                    ZoneAllocationFailure::Degraded => (ZoneStatus::Degraded, "zone_retry"),
-                };
-            }
-        }
-        if cpu_allocation_snapshot.failed_processes > 0 && settings.dynamic_resource_zones_enabled {
-            zones.status = ZoneStatus::Degraded;
-            zones.reason = "zone_retry";
-        }
-        auto_excluded_processes.extend(
-            cpu_allocation_snapshot
-                .auto_excluded_processes
-                .iter()
-                .cloned(),
-        );
-        failures.count += cpu_allocation_snapshot.failed_processes;
-        if failures.last_error.is_none() {
-            failures.last_error = cpu_allocation_snapshot.last_error.clone();
         }
 
         priority_candidates.sort_unstable_by_key(|(score, _, target)| (Reverse(*score), target.id));
@@ -1262,6 +1220,7 @@ impl AdaptiveEngineProcessManager {
                 "Lowered process priority to Idle during sustained background CPU pressure.",
             ),
         };
+        let mut successful_priority_targets = BTreeSet::new();
         for (sampled_at, target) in selected_candidates {
             let process_id = target.id;
             let executable_path = target.executable_path.to_string_lossy();
@@ -1285,6 +1244,9 @@ impl AdaptiveEngineProcessManager {
                     .pressure_restraint
                     .selected_since
                     .get_or_insert(sampled_at);
+                if restraint_allocation_selection.is_some() {
+                    successful_priority_targets.insert(target.key());
+                }
             }
             match result {
                 Ok(ProcessPropertyApplyOutcome::Applied) => {
@@ -1315,6 +1277,89 @@ impl AdaptiveEngineProcessManager {
                     ));
                 }
             }
+        }
+        if let Some(selection) = restraint_allocation_selection {
+            cpu_allocation_targets = verified_restraint_allocation_targets(
+                priority_efficiency_controller.adaptive_restraint_processes(),
+                &successful_priority_targets,
+                explicit_cpu_allocation_paths,
+                cpu_allocation_method(settings),
+                &selection,
+            );
+        }
+
+        let attempted_zones =
+            !zone_background_targets.is_empty() && !zone_foreground_targets.is_empty();
+        if dynamic_resource_zones_apply
+            && !zone_background_targets.is_empty()
+            && zone_foreground_targets.is_empty()
+            && zones.status != ZoneStatus::Unavailable
+        {
+            zones.status = ZoneStatus::Overridden;
+            zones.reason = "zone_foreground_unavailable";
+        }
+        if attempted_zones {
+            zones.status = ZoneStatus::Applying;
+        }
+        let allocation = if let Some(topology) = topology {
+            self.cpu_allocation.reconcile_targets(
+                cpu_allocation_coordinator,
+                topology,
+                ControlOwner::AdaptiveEngine,
+                cpu_allocation_targets,
+                attempted_zones.then_some((zone_background_targets, zone_foreground_targets)),
+                scanned_processes,
+                allow_cross_session_process_control,
+                action_log,
+            )
+        } else {
+            self.cpu_allocation.reconcile_empty_generation(
+                cpu_allocation_coordinator,
+                ControlOwner::AdaptiveEngine,
+                scanned_processes,
+                action_log,
+            )
+        };
+        let mut cpu_allocation_snapshot = allocation.snapshot;
+        if let Some(error) = allocation_error {
+            cpu_allocation_snapshot.last_error.get_or_insert(error);
+        }
+        if let Some((foreground, background)) = allocation.zone_counts {
+            zones.status = ZoneStatus::Active;
+            zones.reason = "zone_active";
+            zones.foreground_targets = foreground;
+            zones.background_targets = background;
+        } else {
+            zones.foreground_processors = 0;
+            zones.background_processors = 0;
+            zones.background_limit_targets = allocation.fallback_count;
+            if attempted_zones {
+                use crate::cpu_allocation::ZoneAllocationFailure;
+                (zones.status, zones.reason) = match allocation.zone_failure {
+                    ZoneAllocationFailure::Waiting => (ZoneStatus::Waiting, "zone_waiting"),
+                    ZoneAllocationFailure::Overridden => {
+                        (ZoneStatus::Overridden, "zone_foreground_unavailable")
+                    }
+                    ZoneAllocationFailure::Unavailable => {
+                        (ZoneStatus::Unavailable, "zone_unavailable")
+                    }
+                    ZoneAllocationFailure::Degraded => (ZoneStatus::Degraded, "zone_retry"),
+                };
+            }
+        }
+        if cpu_allocation_snapshot.failed_processes > 0 && settings.dynamic_resource_zones_enabled {
+            zones.status = ZoneStatus::Degraded;
+            zones.reason = "zone_retry";
+        }
+        auto_excluded_processes.extend(
+            cpu_allocation_snapshot
+                .auto_excluded_processes
+                .iter()
+                .cloned(),
+        );
+        failures.count += cpu_allocation_snapshot.failed_processes;
+        if failures.last_error.is_none() {
+            failures.last_error = cpu_allocation_snapshot.last_error.clone();
         }
         AdaptiveEngineProcessSnapshot {
             source: None,
@@ -1839,6 +1884,36 @@ fn cached_executable_path(
         .ok()?;
     executable_paths.insert(process.id, path.clone());
     Some(path)
+}
+
+fn verified_restraint_allocation_targets<'a>(
+    restraint_processes: impl Iterator<Item = (&'a ProcessIdentity, AdaptiveRestraintState)>,
+    successful_priority_targets: &BTreeSet<ProcessTargetKey>,
+    explicit_cpu_allocation_paths: &[String],
+    mode: CpuAllocationMode,
+    selection: &CpuSelection,
+) -> Vec<CpuAllocationTarget> {
+    restraint_processes
+        .filter_map(|(process, state)| {
+            if state != AdaptiveRestraintState::Verified
+                || !successful_priority_targets.contains(&process.key())
+            {
+                return None;
+            }
+            let path = process.executable_path.to_str()?;
+            if cpu_allocation::contains_process(explicit_cpu_allocation_paths, path) {
+                return None;
+            }
+            Some(CpuAllocationTarget {
+                process_id: process.id,
+                process_name: process.name.clone(),
+                executable_path: path.to_owned(),
+                mode,
+                selection: selection.clone(),
+                creation_time: process.creation_time,
+            })
+        })
+        .collect()
 }
 
 #[cfg(test)]

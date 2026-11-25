@@ -55,6 +55,9 @@ CPU Behaviour has shared detection/timing followed by three independent policies
   percentage/custom mask, and soft/hard method. Its Reduce affinity (Hard) method removes
   a configurable number of logical processors from each process's original mask. It never
   narrows foreground access.
+  Only during CPU Pressure Restraint restricts the limiter to apps with verified
+  restraint. Each app's limit ends when its restraint ends or loses verification.
+  The option requires CPU Pressure Restraint and defaults off.
 - **Dynamic Resource Zones (Experimental)** uses separate settings and complementary CPU Sets (Soft).
   The Performance preset enables zoning; Speed, Balanced, and Power Save leave it off.
 

@@ -528,6 +528,8 @@ hover/press; background shading supplies feedback.
   In Limit Background Processors, place the CPU allocation method first. Reduce affinity (Hard)
   shows a removal count in place of all fixed processor-selection controls. The two hard methods
   show Preserve custom affinity inside the same expandable card.
+  Place Only during CPU Pressure Restraint in that card, with its prerequisite visible in the
+  setting description in live and preset editors.
 - Restraint CPU priority, Restraint I/O priority, and Energy-efficient scheduling sit together
   in CPU Pressure Restraint. The scheduling toggle is independent of the selected priority.
 - Separate foreground CPU threshold is available in the shared detection card when the source

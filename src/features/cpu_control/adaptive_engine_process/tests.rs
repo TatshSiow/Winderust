@@ -827,6 +827,55 @@ fn elapsed_restraint_cap_releases_hot_process_and_requires_new_hot_interval() {
 }
 
 #[test]
+fn scoped_placement_requires_current_verified_priority_on_the_exact_process() {
+    let process = |id, creation_time, path| {
+        ProcessIdentity::new(
+            id,
+            "worker.exe".into(),
+            PathBuf::from(path),
+            creation_time,
+            None,
+        )
+    };
+    let current = process(42, 2, r"C:\Apps\worker.exe");
+    let old_process = process(42, 1, r"C:\Apps\worker.exe");
+    let stale_path = process(42, 2, r"C:\Old\worker.exe");
+    let pending_restore = process(43, 2, r"C:\Apps\worker.exe");
+    let unconfirmed = process(44, 2, r"C:\Apps\worker.exe");
+    let previously_verified = process(45, 2, r"C:\Apps\worker.exe");
+    let explicit = process(46, 2, r"C:\Pinned\worker.exe");
+    let successful = BTreeSet::from([
+        current.key(),
+        pending_restore.key(),
+        unconfirmed.key(),
+        explicit.key(),
+    ]);
+    let audit = [
+        (&current, AdaptiveRestraintState::Verified),
+        (&old_process, AdaptiveRestraintState::Verified),
+        (&stale_path, AdaptiveRestraintState::Verified),
+        (&pending_restore, AdaptiveRestraintState::RestorationPending),
+        (&unconfirmed, AdaptiveRestraintState::ConfirmationPending),
+        (&previously_verified, AdaptiveRestraintState::Verified),
+        (&explicit, AdaptiveRestraintState::Verified),
+    ];
+    let targets = verified_restraint_allocation_targets(
+        audit.into_iter(),
+        &successful,
+        &[r"C:\Pinned\worker.exe".into()],
+        CpuAllocationMode::HardAffinity,
+        &crate::cpu_topology::test_selection(1),
+    );
+
+    let [target] = targets.as_slice() else {
+        panic!("expected one verified placement, got {}", targets.len());
+    };
+    assert_eq!(target.process_id, current.id);
+    assert_eq!(target.creation_time, current.creation_time);
+    assert_eq!(Path::new(&target.executable_path), current.executable_path);
+}
+
+#[test]
 fn restraint_idle_pause_distinguishes_inactivity_from_unavailable_input() {
     let mut settings = AdaptiveEngineProcessSettings {
         cpu_pressure_restraint_enabled: true,
@@ -1277,26 +1326,19 @@ fn adaptive_engine_source_wait_clears_qualification_and_rearms_after_update() {
     ));
 }
 
-#[test]
-#[ignore = "modifies and restores a disposable Windows process; run in explicit integration QA"]
-fn native_pressure_restraint_idle_restores_priority() -> Result<(), String> {
-    use std::{
-        os::windows::process::CommandExt,
-        process::{Child, Command},
-    };
-    use windows_sys::Win32::System::Threading::{CREATE_NO_WINDOW, NORMAL_PRIORITY_CLASS};
+struct DisposableProcess(std::process::Child);
 
-    use crate::config::{AdaptiveEngineExclusionRule, ExecutableSelector, ProcessPrioritySetting};
-    use crate::control::priority_efficiency::current_process_priority;
-
-    struct DisposableProcess(Child);
-
-    impl Drop for DisposableProcess {
-        fn drop(&mut self) {
-            let _ = self.0.kill();
-            let _ = self.0.wait();
-        }
+impl Drop for DisposableProcess {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
     }
+}
+
+fn disposable_restraint_target(
+) -> Result<(DisposableProcess, crate::foreground::ProcessActionTarget), String> {
+    use std::{os::windows::process::CommandExt, process::Command};
+    use windows_sys::Win32::System::Threading::{CREATE_NO_WINDOW, NORMAL_PRIORITY_CLASS};
 
     let executable_path = std::env::var_os("SystemRoot")
         .map(|path| PathBuf::from(path).join(r"System32\PING.EXE"))
@@ -1309,19 +1351,55 @@ fn native_pressure_restraint_idle_restores_priority() -> Result<(), String> {
             .map_err(|error| format!("Could not start disposable process: {error}"))?,
     );
     let deadline = Instant::now() + Duration::from_secs(2);
-    let target = loop {
+    loop {
         match crate::foreground::capture_process_action_target(
             child.0.id(),
             &executable_path,
             false,
         ) {
-            Ok(target) => break target,
+            Ok(target) => return Ok((child, target)),
             Err(_) if Instant::now() < deadline => {
                 std::thread::sleep(Duration::from_millis(25));
             }
             Err(error) => return Err(error.to_string()),
         }
+    }
+}
+
+fn restraint_target_observations(
+    target: &crate::foreground::ProcessActionTarget,
+) -> CycleObservations {
+    let foreground_id = std::process::id();
+    let worker = ProcessInfo {
+        id: target.id,
+        name: target.name.clone(),
+        creation_time: Some(target.creation_time),
+        parent_id: None,
+        session_id: target.session_id,
+        user_name: None,
+        is_service_account: target.is_service_account,
+        is_critical: Some(false),
+        can_set_information: true,
+        image_path: Some(target.executable_path.clone()),
     };
+    let foreground = ProcessInfo {
+        id: foreground_id,
+        name: "foreground.exe".into(),
+        creation_time: Some(1),
+        image_path: None,
+        ..worker.clone()
+    };
+    CycleObservations::with_adaptive_cpu_sample(vec![foreground, worker], Some(foreground_id), None)
+        .with_visible_windows(BTreeSet::new())
+}
+
+#[test]
+#[ignore = "modifies and restores a disposable Windows process; run in explicit integration QA"]
+fn native_pressure_restraint_idle_restores_priority() -> Result<(), String> {
+    use crate::config::{AdaptiveEngineExclusionRule, ExecutableSelector, ProcessPrioritySetting};
+    use crate::control::priority_efficiency::current_process_priority;
+
+    let (_child, target) = disposable_restraint_target()?;
     let read_priority =
         || current_process_priority(&target, false).map_err(|error| error.to_string());
     assert_eq!(read_priority()?, ProcessPrioritySetting::Normal);
@@ -1365,34 +1443,9 @@ fn native_pressure_restraint_idle_restores_priority() -> Result<(), String> {
                     executable_name: target.name.to_ascii_uppercase(),
                 },
             });
-            let foreground_id = std::process::id();
-            let worker = ProcessInfo {
-                id: target.id,
-                name: target.name.clone(),
-                creation_time: Some(target.creation_time),
-                parent_id: None,
-                session_id: target.session_id,
-                user_name: None,
-                is_service_account: target.is_service_account,
-                is_critical: Some(false),
-                can_set_information: true,
-                image_path: Some(target.executable_path.clone()),
-            };
-            let foreground = ProcessInfo {
-                id: foreground_id,
-                name: "foreground.exe".into(),
-                creation_time: Some(1),
-                image_path: None,
-                ..worker.clone()
-            };
             (
-                Some(foreground_id),
-                CycleObservations::with_adaptive_cpu_sample(
-                    vec![foreground, worker],
-                    Some(foreground_id),
-                    None,
-                )
-                .with_visible_windows(BTreeSet::new()),
+                Some(std::process::id()),
+                restraint_target_observations(&target),
             )
         } else {
             (None, CycleObservations::default())
@@ -1429,6 +1482,109 @@ fn native_pressure_restraint_idle_restores_priority() -> Result<(), String> {
         assert_eq!(snapshot.failed_processes, 0);
         assert_eq!(read_priority()?, ProcessPrioritySetting::Normal);
         assert!(priority.adaptive_restraint_processes().next().is_none());
+    }
+    Ok(())
+}
+
+#[test]
+#[ignore = "modifies and restores priority and affinity on a disposable Windows process"]
+fn native_scoped_placement_follows_verified_episodes() -> Result<(), String> {
+    use crate::{
+        config::ProcessPrioritySetting,
+        control::{
+            priority_efficiency::current_process_priority,
+            process::open_process_for_set_information,
+        },
+        platform::windows::cpu_allocation::query_affinity,
+    };
+
+    let (_child, target) = disposable_restraint_target()?;
+    let (_, process) =
+        open_process_for_set_information(&ProcessControlTarget::from_action_target(&target), false)
+            .map_err(|error| error.to_string())?;
+    let read_affinity = || {
+        query_affinity(&process)
+            .map(|(current, _)| current)
+            .map_err(|error| format!("Read test process affinity: {error:?}"))
+    };
+    let baseline = read_affinity()?;
+    if baseline.count_ones() < 2 {
+        return Err("the affinity test needs at least two available processors".into());
+    }
+    let expected = 1_usize << baseline.trailing_zeros();
+    let topology = cpu_allocation::processor_topology()?;
+    let settings = AdaptiveEngineProcessSettings {
+        cpu_pressure_restraint_enabled: true,
+        limit_background_processors_enabled: true,
+        limit_background_processors_during_restraint: true,
+        cpu_allocation_method: CpuAllocationMethod::ProcessorAffinityHard,
+        background_processor_selection: BackgroundProcessorSelection::Custom,
+        specific_processors: CpuSelection::from_group_zero_mask(&topology, expected as u64)
+            .map_err(|error| error.to_string())?,
+        background_app_cpu_threshold_percent: 25,
+        pressure_source: AdaptivePressureSource::System,
+        restraint_trigger_time_ms: 250,
+        minimum_restraint_time_ms: 250,
+        maximum_restraint_time_ms: 250,
+        pause_restraint_when_idle: true,
+        restraint_idle_timeout_seconds: 30,
+        ..Default::default()
+    };
+    let mut manager = AdaptiveEngineProcessManager::default();
+    let mut allocation = CpuAllocationCoordinator::default();
+    let mut priority = PriorityEfficiencyController::default();
+    let mut log = ActionLog::default();
+    let started_at = Instant::now();
+    for (elapsed_ms, idle, restrained) in [
+        (0, false, false),
+        (250, false, false),
+        (500, false, true),
+        (749, false, true),
+        (750, false, false),
+        (1_000, false, false),
+        (1_250, false, true),
+        (1_499, true, false),
+    ] {
+        let status = manager.update_with_activity(
+            AdaptiveEngineProcessUpdate {
+                settings: &settings,
+                automation_enabled: true,
+                allow_cross_session_process_control: false,
+                foreground_process_id: Some(std::process::id()),
+                total_cpu_usage_percent: Some(100.0),
+                user_idle_for: Some(Duration::from_secs(if idle { 30 } else { 0 })),
+                excluded_process_id: None,
+                explicit_cpu_allocation_paths: &[],
+                observations: &mut restraint_target_observations(&target),
+            },
+            &mut allocation,
+            &mut priority,
+            &mut log,
+            |id, _| {
+                (id == target.id).then_some((
+                    ProcessCpuSample {
+                        cpu_time_100ns: elapsed_ms * 10_000,
+                        sampled_at: started_at + Duration::from_millis(elapsed_ms),
+                    },
+                    target.creation_time,
+                ))
+            },
+            || Ok(BTreeSet::new()),
+        );
+        assert!(!status.observation_paused, "{status:?}");
+        assert_eq!(status.failed_processes, 0, "{status:?}");
+        assert_eq!(
+            read_affinity()?,
+            if restrained { expected } else { baseline }
+        );
+        assert_eq!(
+            current_process_priority(&target, false).map_err(|error| error.to_string())?,
+            if restrained {
+                ProcessPrioritySetting::BelowNormal
+            } else {
+                ProcessPrioritySetting::Normal
+            }
+        );
     }
     Ok(())
 }

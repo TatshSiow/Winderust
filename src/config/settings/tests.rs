@@ -357,6 +357,28 @@ fn network_threshold_units_convert_to_canonical_bytes() {
 }
 
 #[test]
+fn restraint_scoped_background_processor_limit_requires_restraint() {
+    let mut settings = AdaptiveEngineProcessSettings {
+        limit_background_processors_enabled: true,
+        ..Default::default()
+    };
+    assert!(settings.background_processor_limit_enabled());
+    assert!(settings.has_enabled_policies());
+
+    settings.limit_background_processors_during_restraint = true;
+    assert!(!settings.background_processor_limit_enabled());
+    assert!(!settings.has_enabled_policies());
+
+    settings.cpu_pressure_restraint_enabled = true;
+    assert!(settings.background_processor_limit_enabled());
+    assert!(settings.has_enabled_policies());
+
+    settings.limit_background_processors_enabled = false;
+    assert!(!settings.background_processor_limit_enabled());
+    assert!(settings.has_enabled_policies());
+}
+
+#[test]
 fn adaptive_custom_rules_match_the_configured_selector_kind() {
     let settings = AdaptiveEngineProcessSettings {
         custom_rules: vec![

@@ -898,6 +898,8 @@ fn invalid_zone_configuration_is_rejected_before_save_or_deserialization() {
 fn omitted_cpu_behaviour_settings_use_defaults_independent_of_sampling_interval() {
     let process = AdaptiveEngineProcessSettings {
         foreground_cpu_threshold_percent: Some(35),
+        limit_background_processors_enabled: true,
+        limit_background_processors_during_restraint: true,
         ..Default::default()
     };
     let mut settings = toml::Value::try_from(process).unwrap();
@@ -907,6 +909,7 @@ fn omitted_cpu_behaviour_settings_use_defaults_independent_of_sampling_interval(
         "pressure_source",
         "foreground_cpu_threshold_percent",
         "exclude_service_hosts",
+        "limit_background_processors_during_restraint",
         "preserve_custom_affinity",
         "processors_to_remove",
         "restraint_trigger_time_ms",
@@ -925,6 +928,8 @@ fn omitted_cpu_behaviour_settings_use_defaults_independent_of_sampling_interval(
             .unwrap(),
         AdaptiveEngineProcessSettings {
             reaction_time_ms: 750,
+            limit_background_processors_enabled: true,
+            limit_background_processors_during_restraint: false,
             ..Default::default()
         }
     );
@@ -1330,7 +1335,10 @@ fn toml_round_trip_preserves_settings() {
             background_pressure_profile:
                 crate::power::AdaptivePowerBoostValues::BACKGROUND_PRESSURE,
             focus_and_launch_profile: crate::power::AdaptivePowerBoostValues::FOCUS_AND_LAUNCH,
-            adaptive_engine_process: AdaptiveEngineProcessSettings::default(),
+            adaptive_engine_process: AdaptiveEngineProcessSettings {
+                limit_background_processors_during_restraint: true,
+                ..Default::default()
+            },
         }],
         adaptive_processor_power_presets: vec![processor_power_preset],
         by_activity: ByActivitySettings {
@@ -1554,6 +1562,7 @@ fn toml_round_trip_preserves_settings() {
             background_memory_priority: ProcessMemoryPrioritySetting::Low,
             cpu_pressure_restraint_enabled: true,
             limit_background_processors_enabled: true,
+            limit_background_processors_during_restraint: true,
             dynamic_resource_zones_enabled: true,
             dynamic_resource_zone_settings: Default::default(),
             cpu_allocation_method: CpuAllocationMethod::ReduceAffinity,

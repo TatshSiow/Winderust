@@ -1814,6 +1814,20 @@ fn run_background_automation(
         } else {
             None
         };
+        let cpu_behaviour = &settings.adaptive_engine_process;
+        let scoped_placement = adaptive_engine_process_active
+            && cpu_behaviour.background_processor_limit_enabled()
+            && cpu_behaviour.limit_background_processors_during_restraint;
+        let restraints_before_commands = (scoped_placement
+            && adaptive_engine_process_status.is_some()
+            && process_control_commands.iter().any(|command| {
+                matches!(
+                    command,
+                    ProcessControlCommand::ProcessPriority { .. }
+                        | ProcessControlCommand::EfficiencyMode { .. }
+                )
+            }))
+        .then(|| runner.verified_restraint_targets().collect::<Vec<_>>());
         if wake_events.tray_visibility_changed
             || (settings_changed && !bottleneck_classifier_refresh_required)
         {
@@ -2286,12 +2300,19 @@ fn run_background_automation(
         if let Some(error) = runner.retry_control_releases(&shared, Instant::now()) {
             update_worker_error(&shared, Some(error));
         }
-        runner.publish_adaptive_engine_process_status(
+        let restraint_changed_between_passes = runner.publish_adaptive_engine_process_status(
             &shared,
             active_power_source(plugged_in),
             (!adaptive_engine_process_waits_for_source).then_some(settings),
             adaptive_engine_process_status,
         );
+        if scoped_placement
+            && (restraint_changed_between_passes
+                || restraints_before_commands
+                    .is_some_and(|before| !runner.verified_restraint_targets().eq(before)))
+        {
+            scheduler.schedule_now(RefreshDomain::AdaptiveEngineProcess, now);
+        }
         let wait_now = Instant::now();
         let mut wait_for = if power_plan_checks_required {
             run_scheduled_power_plan_check(&mut scheduler, wait_now, || {

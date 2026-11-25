@@ -1113,6 +1113,24 @@ impl Editor {
                         ),
                     );
                 }
+                allocation = allocation.push(super::widgets::settings_divider()).push(
+                    super::widgets::setting_row(
+                        "adaptive_engine_process.limit_background_processors_during_restraint",
+                        super::widgets::switch(
+                            cpu.limit_background_processors_during_restraint,
+                            editable.then_some(|enabled| {
+                                Message::Toggle(
+                                    |settings, enabled| {
+                                        settings
+                                            .adaptive_engine_process
+                                            .limit_background_processors_during_restraint = enabled
+                                    },
+                                    enabled,
+                                )
+                            }),
+                        ),
+                    ),
+                );
                 body = body.push(super::widgets::setting_group(
                     "adaptive_engine_process.limit_background_processors".to_string(),
                     self.expanded[usize::from(preset)][BackgroundProcessors as usize],

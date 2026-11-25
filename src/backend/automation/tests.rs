@@ -4060,3 +4060,31 @@ fn adaptive_engine_source_selection_checks_effective_affinity_and_service_guard(
     settings.adaptive_engine_process.exclude_service_hosts = true;
     assert!(adaptive_engine_process_waits_for_source(&settings, None));
 }
+
+#[test]
+fn adaptive_engine_source_selection_only_compares_effective_placement_scope() {
+    let mut settings = Settings::default();
+    settings.adaptive_engine.enabled = true;
+    settings
+        .adaptive_engine_process
+        .cpu_pressure_restraint_enabled = true;
+    settings
+        .battery_profile_mut()
+        .adaptive_engine_process
+        .limit_background_processors_during_restraint = true;
+    assert!(!adaptive_engine_process_waits_for_source(&settings, None));
+
+    settings
+        .adaptive_engine_process
+        .limit_background_processors_enabled = true;
+    settings
+        .battery_profile_mut()
+        .adaptive_engine_process
+        .limit_background_processors_enabled = true;
+    assert!(adaptive_engine_process_waits_for_source(&settings, None));
+
+    settings
+        .adaptive_engine_process
+        .limit_background_processors_during_restraint = true;
+    assert!(!adaptive_engine_process_waits_for_source(&settings, None));
+}

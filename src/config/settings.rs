@@ -1202,6 +1202,8 @@ pub struct AdaptiveEngineProcessSettings {
     pub background_memory_priority: ProcessMemoryPrioritySetting,
     pub cpu_pressure_restraint_enabled: bool,
     pub limit_background_processors_enabled: bool,
+    #[serde(default)]
+    pub limit_background_processors_during_restraint: bool,
     pub dynamic_resource_zones_enabled: bool,
     pub dynamic_resource_zone_settings: DynamicResourceZoneSettings,
     pub cpu_allocation_method: CpuAllocationMethod,
@@ -1278,6 +1280,8 @@ struct AdaptiveEngineProcessSettingsWire {
     pub background_memory_priority: ProcessMemoryPrioritySetting,
     pub cpu_pressure_restraint_enabled: bool,
     pub limit_background_processors_enabled: bool,
+    #[serde(default)]
+    pub limit_background_processors_during_restraint: bool,
     pub dynamic_resource_zones_enabled: bool,
     #[serde(default)]
     pub dynamic_resource_zone_settings: Option<DynamicResourceZoneSettings>,
@@ -1372,6 +1376,8 @@ impl TryFrom<AdaptiveEngineProcessSettingsWire> for AdaptiveEngineProcessSetting
             background_memory_priority: wire.background_memory_priority,
             cpu_pressure_restraint_enabled: wire.cpu_pressure_restraint_enabled,
             limit_background_processors_enabled: wire.limit_background_processors_enabled,
+            limit_background_processors_during_restraint: wire
+                .limit_background_processors_during_restraint,
             dynamic_resource_zones_enabled: wire.dynamic_resource_zones_enabled,
             cpu_allocation_method: wire.cpu_allocation_method,
             preserve_custom_affinity: wire.preserve_custom_affinity,
@@ -2581,6 +2587,7 @@ impl Default for AdaptiveEngineProcessSettings {
             background_memory_priority: ProcessMemoryPrioritySetting::Low,
             cpu_pressure_restraint_enabled: false,
             limit_background_processors_enabled: false,
+            limit_background_processors_during_restraint: false,
             dynamic_resource_zones_enabled: false,
             dynamic_resource_zone_settings: DynamicResourceZoneSettings::default(),
             cpu_allocation_method: CpuAllocationMethod::CpuSetsSoft,
@@ -2970,9 +2977,15 @@ impl AdaptiveEngineProcessSettings {
         (shared, foreground)
     }
 
+    pub(crate) const fn background_processor_limit_enabled(&self) -> bool {
+        self.limit_background_processors_enabled
+            && (!self.limit_background_processors_during_restraint
+                || self.cpu_pressure_restraint_enabled)
+    }
+
     pub(crate) const fn has_enabled_policies(&self) -> bool {
         self.cpu_pressure_restraint_enabled
-            || self.limit_background_processors_enabled
+            || self.background_processor_limit_enabled()
             || self.dynamic_resource_zones_enabled
     }
 
@@ -2980,6 +2993,8 @@ impl AdaptiveEngineProcessSettings {
         let defaults = Self::default();
         self.cpu_pressure_restraint_enabled = defaults.cpu_pressure_restraint_enabled;
         self.limit_background_processors_enabled = defaults.limit_background_processors_enabled;
+        self.limit_background_processors_during_restraint =
+            defaults.limit_background_processors_during_restraint;
         self.dynamic_resource_zones_enabled = defaults.dynamic_resource_zones_enabled;
         self.dynamic_resource_zone_settings = defaults.dynamic_resource_zone_settings;
         self.cpu_allocation_method = defaults.cpu_allocation_method;

@@ -56,7 +56,7 @@ pub(super) fn cpu_pressure_restraint_should_run(
     total_cpu_usage_percent: Option<f32>,
 ) -> bool {
     if !settings.cpu_pressure_restraint_enabled
-        && !settings.limit_background_processors_enabled
+        && !settings.background_processor_limit_enabled()
         && !settings.dynamic_resource_zones_enabled
     {
         return false;
@@ -131,7 +131,8 @@ pub(super) fn adaptive_engine_process_process_decision(
     settings: &AdaptiveEngineProcessSettings,
     tier: AdaptiveEngineProcessTier,
 ) -> AdaptiveEngineProcessDecision {
-    if settings.limit_background_processors_enabled && tier == AdaptiveEngineProcessTier::Background
+    if settings.background_processor_limit_enabled()
+        && tier == AdaptiveEngineProcessTier::Background
     {
         AdaptiveEngineProcessDecision::LimitProcessors
     } else {

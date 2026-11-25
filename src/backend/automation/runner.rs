@@ -1268,20 +1268,30 @@ impl RuntimeCore {
         )
     }
 
+    pub(super) fn verified_restraint_targets(
+        &self,
+    ) -> impl Iterator<Item = crate::control::process::ProcessTargetKey> + '_ {
+        self.priority_efficiency_controller
+            .adaptive_restraint_processes()
+            .filter(|(_, state)| *state == AdaptiveRestraintState::Verified)
+            .map(|(process, _)| process.key())
+    }
+
+    /// Returns whether the restraint audit changed without an Adaptive Engine pass.
     pub(super) fn publish_adaptive_engine_process_status(
         &mut self,
         shared: &SharedAutomationState,
         source: PowerSourceProfile,
         restraint_settings: Option<&Settings>,
         status: Option<AdaptiveEngineProcessSnapshot>,
-    ) {
+    ) -> bool {
         if status.is_none()
             && self.adaptive_restraint_processes.is_none()
             && !self
                 .priority_efficiency_controller
                 .has_adaptive_restraint_claims()
         {
-            return;
+            return false;
         }
 
         let audit_changed = {
@@ -1319,7 +1329,7 @@ impl RuntimeCore {
                     |features| &mut features.adaptive_engine_process.restraint_processes,
                 );
             }
-            return;
+            return audit_changed;
         };
         status.restraint_processes = self.adaptive_restraint_processes.clone();
         status.source = (!status.waiting_for_power_source).then_some(source);
@@ -1340,6 +1350,7 @@ impl RuntimeCore {
                 .len();
         }
         update_adaptive_engine_process_status(shared, status);
+        false
     }
 
     fn reconcile_adaptive_restraint_actions(

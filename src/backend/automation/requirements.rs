@@ -142,7 +142,9 @@ pub(super) fn adaptive_engine_process_waits_for_source(
                     .pause_restraint_when_idle
                     .then_some(policy.restraint_idle_timeout_seconds),
             )),
-            policy.limit_background_processors_enabled,
+            policy
+                .background_processor_limit_enabled()
+                .then_some(policy.limit_background_processors_during_restraint),
             policy.dynamic_resource_zones_enabled,
             policy.pressure_source,
             policy.exclude_service_hosts,
@@ -157,7 +159,7 @@ pub(super) fn adaptive_engine_process_waits_for_source(
     };
     !same_exclusion_selectors(&settings.by_running_app, &battery.by_running_app)
         || shared_policy(ac) != shared_policy(dc)
-        || (ac.limit_background_processors_enabled
+        || (ac.background_processor_limit_enabled()
             && (ac.cpu_allocation_method != dc.cpu_allocation_method
                 || (ac.cpu_allocation_method.is_hard_affinity()
                     && ac.preserve_custom_affinity != dc.preserve_custom_affinity)
