@@ -830,10 +830,11 @@ retain restoration ownership.
 
 ## CPU Limiter Duty Cycling
 
-CPU Limiter page defaults target 1% to 100% Allowed CPU Time for Focus, Visible Window, and
-Background app groups within a fixed 100 ms cycle. Each rule tier can follow that page default,
-remain Unlimited, or apply its own 1% to 100% target. A 100% target is Unlimited and creates no
-limiter schedule.
+CPU Limiter defaults for the selected power profile target 1% to 100% Allowed CPU Time for Focus,
+Visible Window, and Background app groups within a fixed 100 ms cycle. Each rule tier can use
+Profile Limit for Winderust's matching target, Custom for its own 1% to 100% target, or
+No Time Cap to turn off the cap for that tier. Winderust schedules duty cycling only for targets
+below 100%.
 This is wall-clock duty cycling, not processor affinity and not Windows Job Object
 CPU-rate control. During the awake phase the app may use any processors Windows schedules for it;
 during the frozen phase its selected backend prevents execution. Future child processes normally

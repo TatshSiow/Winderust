@@ -663,9 +663,10 @@ Read the relevant section before changing feature policy, ownership, restoration
   Object creation, assignment, and membership live in `src/platform/windows/job.rs`; freeze/thaw
   and the shared undocumented layout live in `src/platform/windows/suspension.rs`.
 - Efficiency Mode and CPU Limiter's CPU time rules use Focus, Visible Window, and Background
-  columns with Focus > Visible Window > Background precedence. CPU Limiter page defaults set
-  1% to 100% Focus, Visible Window, and Background targets; each rule tier selects Follow Default,
-  Custom, or Unlimited, with Custom owning its own 1% to 100% target. A 100% target is Unlimited.
+  columns with Focus > Visible Window > Background precedence. The selected power profile defines
+  the 1% to 100% default targets. Each CPU time rule tier selects Profile Limit for Winderust's
+  matching target, Custom for its own 1% to 100% target, or No Time Cap to turn off
+  the cap for that tier. A 100% target also leaves the tier uncapped.
 - CPU Limiter's CPU time method uses a 100 ms freeze/thaw duty cycle. It shares
   `SuspensionController` with App Suspension; independent owner phases combine
   into one effective frozen state, and one feature cannot thaw the other's claim. One native

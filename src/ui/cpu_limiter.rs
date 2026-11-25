@@ -44,6 +44,7 @@ pub(super) fn limit_slider<'a, M: Clone + 'a>(
 #[derive(Default)]
 pub(super) struct CpuLimiter {
     path: String,
+    defaults_expanded: bool,
     draft: Option<(usize, CpuLimiterSettings)>,
     numbers: HashMap<(String, Tier), String>,
     affinity: Option<AffinityEditor>,
@@ -180,6 +181,7 @@ impl Tier {
 #[derive(Debug, Clone)]
 pub(super) enum Message {
     Enabled(bool),
+    ToggleDefaults,
     Path(String),
     Browse,
     Number(Option<usize>, Tier, String),
@@ -369,6 +371,7 @@ impl CpuLimiter {
                     self.numbers.clear();
                 }
             }
+            Message::ToggleDefaults => self.defaults_expanded = !self.defaults_expanded,
             Message::Path(path) => self.path = path,
             Message::Browse => {}
             Message::Edit(_)
@@ -521,12 +524,20 @@ impl CpuLimiter {
         master_enabled: bool,
         status: Option<&CpuLimiterSnapshot>,
     ) -> Element<'a, Message> {
-        let mut body = column![super::widgets::toggle_card(
-            "cpu_limiter.enable",
-            settings.enabled,
-            Some(Message::Enabled),
+        let defaults =
+            Tier::ALL.map(|tier| self.limit_row(None, tier, "", tier.default_limit(settings)));
+        let mut body = column![widgets::setting_group(
+            "cpu_limiter.enable".to_owned(),
+            self.defaults_expanded,
+            Message::ToggleDefaults,
+            widgets::switch(settings.enabled, Some(Message::Enabled)),
+            column![
+                widgets::setting_title("cpu_limiter.limits"),
+                widgets::settings_rows(defaults),
+            ]
+            .spacing(widgets::CARD_GAP),
         )]
-        .spacing(super::widgets::CARD_GAP);
+        .spacing(widgets::CARD_GAP);
         if self.has_invalid_inputs() {
             body = body.push(
                 text(t!("cpu_limiter.invalid_limit").to_string())
@@ -534,16 +545,7 @@ impl CpuLimiter {
                     .style(text::danger),
             );
         }
-        let defaults =
-            Tier::ALL.map(|tier| self.limit_row(None, tier, "", tier.default_limit(settings)));
         body = body
-            .push(super::widgets::heading(
-                t!("cpu_limiter.limits").to_string(),
-                design::typography::BODY,
-            ))
-            .push(super::widgets::settings_card(
-                super::widgets::settings_rows(defaults),
-            ))
             .push(super::widgets::setting_title_with_help(
                 "common.rules",
                 "",
@@ -573,14 +575,12 @@ impl CpuLimiter {
                     continue;
                 }
                 let (mode, _) = tier.rule_values(rule);
-                let choices: Vec<_> = ProcessRuleMode::ALL
-                    .into_iter()
-                    .map(|mode| Mode(mode, mode_label(mode)))
-                    .collect();
                 let selector: Element<'_, Message> = {
-                    pick_list(choices, Some(Mode(mode, mode_label(mode))), move |mode| {
-                        Message::RuleMode(index, tier, mode.0)
-                    })
+                    pick_list(
+                        ProcessRuleMode::ALL.map(Mode),
+                        Some(Mode(mode)),
+                        move |mode| Message::RuleMode(index, tier, mode.0),
+                    )
                     .width(Fill)
                     .into()
                 };
@@ -739,14 +739,9 @@ impl CpuLimiter {
             let mut controls = column![super::widgets::setting_row_with_unit(
                 tier.key(),
                 "%",
-                pick_list(
-                    ProcessRuleMode::ALL
-                        .into_iter()
-                        .map(|m| Mode(m, mode_label(m)))
-                        .collect::<Vec<_>>(),
-                    Some(Mode(mode, mode_label(mode))),
-                    move |m| Message::RuleMode(index, tier, m.0),
-                )
+                pick_list(ProcessRuleMode::ALL.map(Mode), Some(Mode(mode)), move |m| {
+                    Message::RuleMode(index, tier, m.0)
+                })
                 .width(design::SELECT_WIDTH),
             )]
             .spacing(design::space::SMALL);
@@ -850,22 +845,17 @@ fn affinity_preview(trigger: u8, duration: u64, count: usize, total: usize) -> S
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct Mode(ProcessRuleMode, String);
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct Mode(pub(super) ProcessRuleMode);
 
 impl std::fmt::Display for Mode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.1)
+        f.write_str(&t!(match self.0 {
+            ProcessRuleMode::Default => "cpu_limiter.profile_limit",
+            ProcessRuleMode::Enabled => "cpu_limiter.custom",
+            ProcessRuleMode::Disabled => "cpu_limiter.no_time_cap",
+        }))
     }
-}
-
-fn mode_label(mode: ProcessRuleMode) -> String {
-    match mode {
-        ProcessRuleMode::Default => t!("cpu_limiter.follow_default"),
-        ProcessRuleMode::Enabled => t!("cpu_limiter.custom"),
-        ProcessRuleMode::Disabled => t!("cpu_limiter.unlimited"),
-    }
-    .to_string()
 }
 
 pub(super) fn observations_paused(status: &CpuLimiterSnapshot) -> bool {
@@ -1225,6 +1215,23 @@ mod tests {
         );
         assert_eq!(settings.global().cpu_limiter, before.cpu_limiter);
         assert!(editor.has_invalid_inputs());
+    }
+    #[test]
+    fn expanding_defaults_preserves_the_switch_and_default_limit_edits() {
+        let mut editor = CpuLimiter::default();
+        let mut settings = crate::config::Settings::default().cpu_limiter;
+
+        assert!(!editor.defaults_expanded);
+        editor.update(&mut settings, Message::ToggleDefaults);
+        assert!(editor.defaults_expanded);
+        assert!(!settings.enabled);
+
+        editor.update(&mut settings, Message::Default(Tier::Focus, 34));
+        editor.update(&mut settings, Message::ToggleDefaults);
+        editor.update(&mut settings, Message::Enabled(true));
+        assert!(!editor.defaults_expanded);
+        assert!(settings.enabled);
+        assert_eq!(settings.focus_allowed_cpu_time_percent, 34);
     }
     #[test]
     fn invalid_number_drafts_cannot_change_settings_and_removal_is_immediate() {

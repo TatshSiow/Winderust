@@ -318,10 +318,13 @@ hover/press; background shading supplies feedback.
 - Priority Control custom rules use the same three policy columns and independently select the
   priority for Focus, Visible Window, and Background.
 - CPU Limiter offers CPU time and Load-triggered affinity as per-app methods.
-  CPU time rules use Follow Default, Custom, and Unlimited in the Focus, Visible
-  Window, and Background columns. The CPU time limits card keeps the page defaults
-  visible below the master switch. Custom tiers show a 1% to 100% Allowed CPU Time
-  slider, and a 100% target is Unlimited. Inactive rules retain their selections.
+  CPU time rules use Profile Limit, Custom, and No Time Cap in the Focus,
+  Visible Window, and Background columns. Profile Limit uses Winderust's configured
+  limit for the selected power profile and app state. No Time Cap turns off the cap for
+  that state. The Enable CPU Limiter card starts collapsed and expands to show
+  Default CPU time limits for the selected profile. Custom tiers show a 1% to 100%
+  Allowed CPU Time slider. At 100%, Winderust applies no CPU time cap. Inactive
+  rules retain their selections.
   Explain both methods beside the selector. The Load-triggered affinity form
   shows the CPU trigger, sustained duration, and selected processor count.
   Choose processors opens the verified picker in the same dialog. Its processor

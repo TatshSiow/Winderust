@@ -587,7 +587,7 @@ fn resolved_allowed_cpu_time_percent(
         ProcessRuleMode::Enabled => Some(custom),
         ProcessRuleMode::Disabled => None,
     }
-    // A 100% target is Unlimited, so it does not create a limiter schedule.
+    // A 100% target applies no CPU time cap and creates no limiter schedule.
     .filter(|percent| (1..=99).contains(percent))
 }
 

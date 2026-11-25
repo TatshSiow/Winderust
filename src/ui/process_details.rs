@@ -41,18 +41,6 @@ impl std::fmt::Display for Plan {
         self.1.fmt(f)
     }
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct Mode(ProcessRuleMode);
-impl std::fmt::Display for Mode {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        t!(match self.0 {
-            ProcessRuleMode::Default => "common.default",
-            ProcessRuleMode::Enabled => "common.custom",
-            ProcessRuleMode::Disabled => "cpu_limiter.unlimited",
-        })
-        .fmt(f)
-    }
-}
 pub(super) fn update(s: &mut SettingsEditor, image_path: &str, m: Message) -> Option<String> {
     if !std::path::Path::new(image_path).is_absolute() {
         return None;
@@ -601,9 +589,11 @@ pub(super) fn view<'a>(
             };
             let mut controls = column![row![
                 text(tier.label()).width(Fill),
-                pick_list(ProcessRuleMode::ALL.map(Mode), Some(Mode(mode)), move |m| {
-                    Message::LimiterMode(tier, m.0)
-                })
+                pick_list(
+                    ProcessRuleMode::ALL.map(cpu_limiter::Mode),
+                    Some(cpu_limiter::Mode(mode)),
+                    move |m| Message::LimiterMode(tier, m.0),
+                )
             ]]
             .spacing(widgets::CARD_GAP);
             if mode == ProcessRuleMode::Enabled {
