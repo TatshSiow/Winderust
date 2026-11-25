@@ -116,6 +116,7 @@ Prefer visible state, compact controls, and predictable rows. Use restrained acc
 - Use a slider with minus, plus, and an editable value for ranges users may want
   to explore. Use a compact stepper for precise integers and a numeric input
   when the field accepts decimals or a blank override.
+  Match the height, neutral fill, and outline of the step buttons and value field.
 - Group the two endpoints of an editable range and show validation beside the pair.
 - Use dropdowns for bounded option sets.
 - Use icon buttons for compact repeated actions; text buttons are fine for clear primary commands such as save/import/export.

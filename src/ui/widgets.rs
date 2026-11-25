@@ -784,6 +784,17 @@ pub(super) fn text_input<'a, M: Clone + 'a>(
         })
 }
 
+pub(super) fn numeric_input<'a, M: Clone + 'a>(
+    placeholder: &str,
+    value: &str,
+) -> iced::widget::TextInput<'a, M> {
+    let line_height = design::BUTTON_HEIGHT - 2 * u32::from(design::INPUT_PADDING);
+    text_input(placeholder, value)
+        .line_height(iced::Pixels(line_height as f32))
+        .align_x(iced::Center)
+        .width(design::NUMERIC_WIDTH)
+}
+
 pub(super) fn pick_list<'a, T, L, V, M>(
     options: L,
     selected: Option<V>,
@@ -1509,10 +1520,7 @@ pub(super) fn stepper<'a, M: Clone + 'a>(
             "icons/minus.svg",
             lower.zip(action.as_ref()).map(|(v, f)| f(v.to_string()))
         ),
-        text_input("", value)
-            .align_x(iced::alignment::Horizontal::Center)
-            .on_input_maybe(action.clone())
-            .width(design::NUMERIC_WIDTH),
+        numeric_input("", value).on_input_maybe(action.clone()),
         step_button(
             "icons/plus.svg",
             upper.zip(action.as_ref()).map(|(v, f)| f(v.to_string()))
@@ -1527,10 +1535,24 @@ fn step_button<'a, M: 'a>(
     icon: &'static str,
     action: Option<M>,
 ) -> super::animated_controls::Button<'a, M> {
-    icon_button(icon)
-        .width(design::STEPPER_BUTTON_WIDTH)
-        .style(control_button)
-        .on_press_maybe(action)
+    icon_button_maybe(icon, action).style(|theme, status| {
+        use iced::widget::button::Status;
+        let mut style = control_button(theme, status);
+        if !design::is_contrast(theme) {
+            let surface = theme.extended_palette().background.neutral.color;
+            let tint = match status {
+                Status::Hovered => 0.10,
+                Status::Pressed => 0.18,
+                _ => 0.0,
+            };
+            style.background =
+                Some(iced::theme::palette::mix(surface, theme.palette().primary, tint).into());
+            if status != Status::Disabled {
+                style.border.color = control_border(theme);
+            }
+        }
+        style
+    })
 }
 
 pub(super) fn slider_controls<'a, M: Clone + 'a>(
@@ -1545,7 +1567,7 @@ pub(super) fn slider_controls<'a, M: Clone + 'a>(
         step_button("icons/plus.svg", increase),
         value.into(),
     ]
-    .spacing(design::space::SMALL)
+    .spacing(design::space::CONTROL)
     .align_y(iced::Center)
 }
 
@@ -1576,9 +1598,7 @@ pub(super) fn slider_stepper<'a, M: Clone + 'a>(
         slider,
         lower.map(|v| action(v.to_string())),
         upper.map(|v| action(v.to_string())),
-        text_input("", input)
-            .on_input(action)
-            .width(design::NUMERIC_WIDTH),
+        numeric_input("", input).on_input(action),
     )
 }
 
@@ -2006,6 +2026,31 @@ mod step_tests {
         let inactive = text_bounds(panel_tab("Status".into(), false, ()).into());
         let active = text_bounds(panel_tab("Status".into(), true, ()).into());
         assert_eq!(inactive, active);
+    }
+
+    #[test]
+    fn numeric_inputs_match_the_step_button_height() {
+        use super::design;
+        use iced::advanced::{layout, widget::Tree, Layout};
+
+        let views = [
+            (super::stepper("5", 1..=10, 1, Some(|_| ())), &[0, 1, 2][..]),
+            (
+                super::slider_stepper(5, None, 1..=10, 1, |_| ()).into(),
+                &[0, 2, 3][..],
+            ),
+        ];
+        let renderer = iced::Renderer::new(design::typography::FONT, iced::Pixels(14.0));
+        let limits = layout::Limits::new(iced::Size::ZERO, iced::Size::new(320.0, 50.0));
+        for (mut view, controls) in views {
+            let mut tree = Tree::new(&view);
+            let node = view.as_widget_mut().layout(&mut tree, &renderer, &limits);
+            for &index in controls {
+                let bounds = Layout::new(&node).children().nth(index).unwrap().bounds();
+                assert_eq!(bounds.y, 0.0);
+                assert_eq!(bounds.height, design::BUTTON_HEIGHT as f32);
+            }
+        }
     }
 
     #[test]

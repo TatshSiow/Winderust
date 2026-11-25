@@ -1,6 +1,6 @@
 use super::cpu_allocation::{self, Kind, SelectionCatalog};
 use super::design;
-use super::widgets::{self, checkbox, pick_list, slider, text_input};
+use super::widgets::{self, checkbox, numeric_input, pick_list, slider};
 use crate::ui::scrolling::scrollable;
 use iced::widget::{column, row, text, Row};
 use iced::{Element, Fill};
@@ -487,9 +487,8 @@ impl CpuLimiter {
         limit_slider(
             value,
             change,
-            text_input("1-100", &self.number(path, tier, value))
-                .on_input(move |raw| Message::Number(index, tier, raw))
-                .width(design::NUMERIC_WIDTH),
+            numeric_input("1-100", &self.number(path, tier, value))
+                .on_input(move |raw| Message::Number(index, tier, raw)),
         )
     }
     pub(super) fn view<'a>(

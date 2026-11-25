@@ -41,7 +41,6 @@ pub(super) const SLIDER_HEIGHT: u32 = 16;
 pub(super) const NUMERIC_WIDTH: u32 = 80;
 pub(super) const STANDALONE_NUMERIC_WIDTH: u32 = 96;
 pub(super) const SELECT_WIDTH: u32 = 240;
-pub(super) const STEPPER_BUTTON_WIDTH: u32 = 32;
 pub(super) const CARD_RADIUS: f32 = 10.0;
 pub(super) const CONTROL_RADIUS: f32 = 6.0;
 pub(super) const CONTENT_WIDTH: u32 = 1440;
