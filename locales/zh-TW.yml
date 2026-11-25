@@ -914,6 +914,8 @@ adaptive_engine_process:
   pressure_source_both: "前景及系統"
   pressure_threshold: "CPU 壓力閾值"
   pressure_threshold_help: "達到此 CPU 使用率即判定為有壓力。若選擇前景及系統，兩者都必須達到此數值。"
+  exclude_service_hosts: "排除服務主機"
+  exclude_service_hosts_help: "略過偵測到的 Windows 服務處理程序，以及工作階段 0 中的所有處理程序。無法讀取服務清單時，自適應引擎會暫停。"
   background_app_cpu_threshold: "背景應用程式 CPU 限制閾值"
   background_app_cpu_threshold_help: "應用程式必須在連續取樣中持續使用單一邏輯處理器的指定比例，才會調低優先順序。"
   cpu_recovery_threshold: "CPU 還原閾值"
@@ -938,7 +940,13 @@ adaptive_engine_process:
   cpu_recovery_time: "CPU 還原時間"
   cpu_recovery_time_help: "CPU 使用率需持續維持在還原門檻或以下達這段時間，才會還原優先順序。"
   cpu_allocation_method: "CPU 配置方法"
-  cpu_allocation_method_help: "使用 CPU 集合引導 Windows 排程，或使用處理器親和性限制可用的處理器。"
+  cpu_allocation_method_help: "使用 CPU 集合引導 Windows 排程、強制套用選取的處理器親和性，或從應用程式原本的親和性移除處理器。"
+  reduce_affinity: "縮減親和性（硬性）"
+  processors_to_remove: "要移除的處理器數量"
+  processors_to_remove_help: "從各應用程式在處理器群組 0 的原始親和性中移除最多指定數量的邏輯處理器，至少保留一個。"
+  processors_to_remove_invalid: "要移除的處理器數量須為 1 到 63 的整數。"
+  preserve_custom_affinity: "保留自訂親和性"
+  preserve_custom_affinity_help: "略過已縮減處理器親和性或設定自訂 CPU 集合的應用程式。縮減親和性一律略過有自訂 CPU 集合的應用程式。"
   custom_rules_help: "排除符合規則的處理程序，讓自適應引擎略過其優先順序限制與 CPU 配置。"
 
 

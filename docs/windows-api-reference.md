@@ -694,6 +694,19 @@ Implementation entry points:
 | `SetProcessWorkingSetSize` | `src/platform/windows/memory_trim.rs` alone passes `SIZE_T(-1)` for both bounds to remove as many pages as possible. `MemoryTrimController` supplies a handle with exact creation/path identity, critical/PPL, current-session policy, and `PROCESS_SET_QUOTA` validation immediately before the irreversible call. | https://learn.microsoft.com/en-us/windows/win32/api/memoryapi/nf-memoryapi-setprocessworkingsetsize |
 
 
+## Adaptive Engine service hosts
+
+`src/platform/windows/service_hosts.rs` opens the local Service Control Manager with
+`SC_MANAGER_ENUMERATE_SERVICE` and reads active `SERVICE_WIN32` service process IDs.
+The adapter pages aligned `SC_ENUM_PROCESS_INFO` buffers within the documented 256 KiB
+limit and closes its SCM handle. Windows may omit services when the caller lacks
+`SERVICE_QUERY_STATUS`. `CycleObservations` supplies the list only when a guarded
+Adaptive policy is otherwise eligible. Session 0, unknown sessions, and known service
+accounts are independently excluded. An enumeration failure withdraws guarded claims.
+[OpenSCManagerW](https://learn.microsoft.com/en-us/windows/win32/api/winsvc/nf-winsvc-openscmanagerw) ·
+[EnumServicesStatusExW](https://learn.microsoft.com/en-us/windows/win32/api/winsvc/nf-winsvc-enumservicesstatusexw) ·
+[CloseServiceHandle](https://learn.microsoft.com/en-us/windows/win32/api/winsvc/nf-winsvc-closeservicehandle)
+
 ## CPU Sets (Soft) and Processor Affinity (Hard)
 
 Winderust exposes two separate per-app rule features. CPU Sets (Soft) applies
@@ -710,6 +723,12 @@ All automatic CPU allocation shares one coordinator with this order: CPU Sets
 CPU Sets and affinity cannot remain simultaneously Winderust-owned for one exact process instance. Adaptive
 Engine retains group-0 selection and sampling; its policy choices do not create
 another mutation owner.
+
+Limit Background Processors adds guarded exact and relative affinity claims to the same
+coordinator. Reduce affinity (Hard) verifies a single group-0 mask, then selects a stable
+subset of the captured process affinity. Both guarded methods read the process's default
+CPU Sets before writes. If a live mask or CPU Set assignment no longer matches a verified
+managed value, the coordinator relinquishes it without overwriting the external assignment.
 
 Windows process affinity sets one group-relative mask. On Windows 11 and Windows
 Server 2022, default affinity may span groups while process mask readback exposes

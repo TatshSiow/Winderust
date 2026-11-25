@@ -1,9 +1,9 @@
 use super::{
     AdaptiveEngineProcessSettings, AppSuspensionSettings, ByCpuLoadRule, CpuLoadPercent,
-    CpuUsageComparison, Settings, SleepPreventionSettings, ADAPTIVE_RESTRAINT_IDLE_MAX_SECONDS,
-    ADAPTIVE_RESTRAINT_IDLE_MIN_SECONDS, ADAPTIVE_RESTRAINT_MAX_TIME_SECONDS,
-    ADAPTIVE_RESTRAINT_TRIGGER_MAX_MS, ADAPTIVE_RESTRAINT_TRIGGER_MIN_MS,
-    NESTED_BATTERY_PROFILE_ERROR,
+    CpuUsageComparison, Settings, SleepPreventionSettings, ADAPTIVE_AFFINITY_REMOVAL_MAX,
+    ADAPTIVE_RESTRAINT_IDLE_MAX_SECONDS, ADAPTIVE_RESTRAINT_IDLE_MIN_SECONDS,
+    ADAPTIVE_RESTRAINT_MAX_TIME_SECONDS, ADAPTIVE_RESTRAINT_TRIGGER_MAX_MS,
+    ADAPTIVE_RESTRAINT_TRIGGER_MIN_MS, NESTED_BATTERY_PROFILE_ERROR,
 };
 use crate::config::{is_valid_executable_name, ExecutableSelector};
 use std::collections::HashSet;
@@ -18,13 +18,11 @@ impl Settings {
         self.validate_dynamic_resource_zones()?;
         self.validate_by_cpu_load_rules()?;
         for profile in self.profiles() {
-            profile
-                .adaptive_engine_process
-                .validate_cpu_pressure_restraint()?;
+            profile.adaptive_engine_process.validate_cpu_behaviour()?;
             for preset in &profile.adaptive_engine_presets {
                 preset
                     .adaptive_engine_process
-                    .validate_cpu_pressure_restraint()
+                    .validate_cpu_behaviour()
                     .map_err(|error| format!("Preset '{}': {error}", preset.name))?;
             }
             if profile
@@ -161,7 +159,7 @@ impl Settings {
 }
 
 impl AdaptiveEngineProcessSettings {
-    pub(crate) fn validate_cpu_pressure_restraint(&self) -> Result<(), String> {
+    pub(crate) fn validate_cpu_behaviour(&self) -> Result<(), String> {
         if !(ADAPTIVE_RESTRAINT_TRIGGER_MIN_MS..=ADAPTIVE_RESTRAINT_TRIGGER_MAX_MS)
             .contains(&self.restraint_trigger_time_ms)
         {
@@ -184,6 +182,11 @@ impl AdaptiveEngineProcessSettings {
             return Err(
                 rust_i18n::t!("adaptive_engine_process.maximum_restraint_time_invalid")
                     .into_owned(),
+            );
+        }
+        if !(1..=ADAPTIVE_AFFINITY_REMOVAL_MAX).contains(&self.processors_to_remove) {
+            return Err(
+                rust_i18n::t!("adaptive_engine_process.processors_to_remove_invalid").into_owned(),
             );
         }
         Ok(())

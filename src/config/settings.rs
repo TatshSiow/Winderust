@@ -29,6 +29,7 @@ pub const ADAPTIVE_RESTRAINT_TRIGGER_MAX_MS: u64 = 60_000;
 pub const ADAPTIVE_RESTRAINT_IDLE_MIN_SECONDS: u64 = 1;
 pub const ADAPTIVE_RESTRAINT_IDLE_MAX_SECONDS: u64 = 3_600;
 pub const ADAPTIVE_RESTRAINT_MAX_TIME_SECONDS: u64 = 3_600;
+pub const ADAPTIVE_AFFINITY_REMOVAL_MAX: u8 = 63;
 pub(crate) const DEFAULT_ADAPTIVE_RESTRAINT_IDLE_TIMEOUT_SECONDS: u64 = 300;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -588,10 +589,23 @@ pub enum CpuAllocationMethod {
     #[default]
     CpuSetsSoft,
     ProcessorAffinityHard,
+    ReduceAffinity,
 }
 
 impl CpuAllocationMethod {
-    pub const ALL: [Self; 2] = [Self::CpuSetsSoft, Self::ProcessorAffinityHard];
+    pub const ALL: [Self; 3] = [
+        Self::CpuSetsSoft,
+        Self::ProcessorAffinityHard,
+        Self::ReduceAffinity,
+    ];
+
+    pub const fn uses_processor_selection(self) -> bool {
+        !matches!(self, Self::ReduceAffinity)
+    }
+
+    pub const fn is_hard_affinity(self) -> bool {
+        matches!(self, Self::ProcessorAffinityHard | Self::ReduceAffinity)
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -1153,10 +1167,13 @@ pub struct AdaptiveEngineProcessSettings {
     pub dynamic_resource_zones_enabled: bool,
     pub dynamic_resource_zone_settings: DynamicResourceZoneSettings,
     pub cpu_allocation_method: CpuAllocationMethod,
+    pub preserve_custom_affinity: bool,
+    pub processors_to_remove: u8,
     pub background_processor_selection: BackgroundProcessorSelection,
     pub processor_limit_percent: u8,
     pub specific_processors: CpuSelection,
     pub pressure_source: AdaptivePressureSource,
+    pub exclude_service_hosts: bool,
     pub foreground_or_system_cpu_threshold_percent: u8,
     pub background_app_cpu_threshold_percent: u8,
     pub cpu_recovery_threshold_percent: u8,
@@ -1219,11 +1236,17 @@ struct AdaptiveEngineProcessSettingsWire {
     #[serde(default)]
     pub dynamic_resource_zone_settings: Option<DynamicResourceZoneSettings>,
     pub cpu_allocation_method: CpuAllocationMethod,
+    #[serde(default)]
+    pub preserve_custom_affinity: bool,
+    #[serde(default = "default_processors_to_remove")]
+    pub processors_to_remove: u8,
     pub background_processor_selection: BackgroundProcessorSelection,
     pub processor_limit_percent: u8,
     pub specific_processors: CpuSelection,
     #[serde(default)]
     pub pressure_source: AdaptivePressureSource,
+    #[serde(default)]
+    pub exclude_service_hosts: bool,
     pub foreground_or_system_cpu_threshold_percent: u8,
     pub background_app_cpu_threshold_percent: u8,
     pub cpu_recovery_threshold_percent: u8,
@@ -1294,10 +1317,13 @@ impl TryFrom<AdaptiveEngineProcessSettingsWire> for AdaptiveEngineProcessSetting
             limit_background_processors_enabled: wire.limit_background_processors_enabled,
             dynamic_resource_zones_enabled: wire.dynamic_resource_zones_enabled,
             cpu_allocation_method: wire.cpu_allocation_method,
+            preserve_custom_affinity: wire.preserve_custom_affinity,
+            processors_to_remove: wire.processors_to_remove,
             background_processor_selection: wire.background_processor_selection,
             processor_limit_percent: wire.processor_limit_percent,
             specific_processors: wire.specific_processors,
             pressure_source: wire.pressure_source,
+            exclude_service_hosts: wire.exclude_service_hosts,
             foreground_or_system_cpu_threshold_percent: wire
                 .foreground_or_system_cpu_threshold_percent,
             background_app_cpu_threshold_percent: wire.background_app_cpu_threshold_percent,
@@ -1313,7 +1339,7 @@ impl TryFrom<AdaptiveEngineProcessSettingsWire> for AdaptiveEngineProcessSetting
             maximum_restrained_apps: wire.maximum_restrained_apps,
             custom_rules: wire.custom_rules,
         };
-        settings.validate_cpu_pressure_restraint()?;
+        settings.validate_cpu_behaviour()?;
         Ok(settings)
     }
 }
@@ -2458,6 +2484,10 @@ const fn default_restraint_idle_timeout_seconds() -> u64 {
     DEFAULT_ADAPTIVE_RESTRAINT_IDLE_TIMEOUT_SECONDS
 }
 
+pub(crate) const fn default_processors_to_remove() -> u8 {
+    1
+}
+
 impl Default for AdaptiveEngineProcessSettings {
     fn default() -> Self {
         Self {
@@ -2494,10 +2524,13 @@ impl Default for AdaptiveEngineProcessSettings {
             dynamic_resource_zones_enabled: false,
             dynamic_resource_zone_settings: DynamicResourceZoneSettings::default(),
             cpu_allocation_method: CpuAllocationMethod::CpuSetsSoft,
+            preserve_custom_affinity: false,
+            processors_to_remove: default_processors_to_remove(),
             background_processor_selection: BackgroundProcessorSelection::LeastUsed,
             processor_limit_percent: 75,
             specific_processors: CpuSelection::default(),
             pressure_source: AdaptivePressureSource::default(),
+            exclude_service_hosts: false,
             foreground_or_system_cpu_threshold_percent: 75,
             background_app_cpu_threshold_percent: 30,
             cpu_recovery_threshold_percent: 10,

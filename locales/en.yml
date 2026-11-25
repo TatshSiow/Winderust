@@ -912,6 +912,8 @@ adaptive_engine_process:
   pressure_source_both: "Foreground and system"
   pressure_threshold: "CPU pressure threshold"
   pressure_threshold_help: "CPU usage required to detect pressure. When both sources are required, each must reach this level."
+  exclude_service_hosts: "Exclude service hosts"
+  exclude_service_hosts_help: "Skip detected Windows service processes and all Session 0 processes. Adaptive Engine pauses if it cannot read the service list."
   background_app_cpu_threshold: "Background app CPU threshold"
   background_app_cpu_threshold_help: "An app must sustain this share of one logical processor across CPU samples to qualify for priority restraint."
   cpu_recovery_threshold: "CPU recovery threshold"
@@ -936,7 +938,13 @@ adaptive_engine_process:
   cpu_recovery_time: "CPU recovery time"
   cpu_recovery_time_help: "How long CPU usage must stay at or below the recovery threshold before priority is restored."
   cpu_allocation_method: "CPU allocation method"
-  cpu_allocation_method_help: "Use CPU Sets to guide Windows scheduling or Processor Affinity to enforce the selected processors."
+  cpu_allocation_method_help: "Guide Windows scheduling with CPU Sets, enforce a selected affinity, or remove processors from each app's original affinity."
+  reduce_affinity: "Reduce affinity (Hard)"
+  processors_to_remove: "Processors to remove"
+  processors_to_remove_help: "Remove up to this many logical processors from each app's original affinity in processor group 0. At least one stays available."
+  processors_to_remove_invalid: "Enter a whole number from 1 to 63 for Processors to remove."
+  preserve_custom_affinity: "Preserve custom affinity"
+  preserve_custom_affinity_help: "Skip apps with narrower processor affinity or custom CPU Sets. Reduce affinity always skips apps with custom CPU Sets."
   custom_rules_help: "Keeps matching processes out of Adaptive Engine priority restraint and CPU placement."
 
 priority_control:

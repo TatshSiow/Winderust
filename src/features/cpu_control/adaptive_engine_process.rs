@@ -622,36 +622,6 @@ impl AdaptiveEngineProcessManager {
             self.allocation_foreground = foreground_identity;
         }
         let mut failures = PriorityFailures::default();
-        let mut restrainable_processes = BTreeMap::new();
-        for process in processes.iter() {
-            if process.is_critical != Some(false)
-                || !process.can_set_information
-                || should_skip_process(
-                    process.id,
-                    &process.name,
-                    current_process_id,
-                    foreground_process_id,
-                    &foreground_group,
-                    excluded_process_id,
-                )
-            {
-                continue;
-            }
-
-            if !allow_cross_session_process_control
-                && process_session_id(process.id) != Some(current_session_id)
-            {
-                continue;
-            }
-
-            let tier = if visible_window_process_group_ids.contains(&process.id) {
-                AdaptiveEngineProcessTier::VisibleWindow
-            } else {
-                AdaptiveEngineProcessTier::Background
-            };
-            restrainable_processes.insert(process.id, (process.name.clone(), tier));
-        }
-
         let focus_and_launch_profile_target = foreground_processes
             .iter()
             .find(|process| process.id == foreground_id)
@@ -688,6 +658,62 @@ impl AdaptiveEngineProcessManager {
             && foreground_cpu_usage_percent.is_some()
             && !foreground_changed;
         let placement_applies = cpu_allocation_applies || dynamic_resource_zones_apply;
+        let service_process_ids = if settings.exclude_service_hosts
+            && (cpu_pressure_restraint_applies || placement_applies)
+        {
+            match observations.service_process_ids() {
+                Ok(ids) => Some(ids),
+                Err(error) => {
+                    return self.pause_for_observation_failure(
+                        settings.dynamic_resource_zones_enabled,
+                        restraint_idle_pause,
+                        cpu_allocation_coordinator,
+                        priority_efficiency_controller,
+                        action_log,
+                        ("Windows service hosts unavailable", Some(error)),
+                    );
+                }
+            }
+        } else {
+            None
+        };
+        let excluded_service_host = |process: &ProcessInfo| {
+            service_process_ids.as_ref().is_some_and(|ids| {
+                process.session_id.is_none_or(|id| id == 0)
+                    || process.is_service_account == Some(true)
+                    || ids.contains(&process.id)
+            })
+        };
+        let mut restrainable_processes = BTreeMap::new();
+        for process in processes.iter() {
+            if process.is_critical != Some(false)
+                || !process.can_set_information
+                || excluded_service_host(process)
+                || should_skip_process(
+                    process.id,
+                    &process.name,
+                    current_process_id,
+                    foreground_process_id,
+                    &foreground_group,
+                    excluded_process_id,
+                )
+            {
+                continue;
+            }
+
+            if !allow_cross_session_process_control
+                && process_session_id(process.id) != Some(current_session_id)
+            {
+                continue;
+            }
+
+            let tier = if visible_window_process_group_ids.contains(&process.id) {
+                AdaptiveEngineProcessTier::VisibleWindow
+            } else {
+                AdaptiveEngineProcessTier::Background
+            };
+            restrainable_processes.insert(process.id, (process.name.clone(), tier));
+        }
         let mut zones = DynamicResourceZoneSnapshot {
             status: if settings.dynamic_resource_zones_enabled {
                 ZoneStatus::Waiting
@@ -714,7 +740,9 @@ impl AdaptiveEngineProcessManager {
             .as_ref()
             .map(|value| value.as_deref().map_err(String::as_str));
         let mut allocation_error = None;
+        let fixed_selection = settings.cpu_allocation_method.uses_processor_selection();
         let needs_load = (cpu_allocation_applies
+            && fixed_selection
             && settings.background_processor_selection.uses_percentage())
             || (dynamic_resource_zones_apply
                 && settings
@@ -746,11 +774,19 @@ impl AdaptiveEngineProcessManager {
             let limiter_error = topology
                 .filter(|_| cpu_allocation_applies)
                 .and_then(|topology| {
-                    saved_processor_selection_error(
-                        settings.background_processor_selection,
-                        &settings.specific_processors,
-                        topology,
-                    )
+                    if fixed_selection {
+                        saved_processor_selection_error(
+                            settings.background_processor_selection,
+                            &settings.specific_processors,
+                            topology,
+                        )
+                    } else {
+                        topology.ok().and_then(|topology| {
+                            (topology.groups().len() != 1 || processors.len() < 2).then(|| {
+                                "Reduce affinity requires at least two logical processors in one active processor group (group 0).".to_owned()
+                            })
+                        })
+                    }
                 });
             let zone_error =
                 topology
@@ -770,6 +806,9 @@ impl AdaptiveEngineProcessManager {
                 .flatten();
             let cpu_allocation_mask = (cpu_allocation_applies && limiter_error.is_none())
                 .then(|| {
+                    if !fixed_selection {
+                        return Some(cpu_allocation::logical_processor_mask(&processors));
+                    }
                     self.cpu_allocation_mask(
                         settings.background_processor_selection,
                         &settings.specific_processors,
@@ -998,6 +1037,7 @@ impl AdaptiveEngineProcessManager {
                     };
                     if process.is_critical != Some(false)
                         || !process.can_set_information
+                        || excluded_service_host(process)
                         || excluded_process_id == Some(*process_id)
                         || !focus_process_priority_eligible(
                             *process_id,

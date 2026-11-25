@@ -103,7 +103,14 @@ fn cpu_pressure_reaches(
 pub(super) fn cpu_allocation_method(settings: &AdaptiveEngineProcessSettings) -> CpuAllocationMode {
     match settings.cpu_allocation_method {
         CpuAllocationMethod::CpuSetsSoft => CpuAllocationMode::SoftCpuSets,
+        CpuAllocationMethod::ProcessorAffinityHard if settings.preserve_custom_affinity => {
+            CpuAllocationMode::PreserveHardAffinity
+        }
         CpuAllocationMethod::ProcessorAffinityHard => CpuAllocationMode::HardAffinity,
+        CpuAllocationMethod::ReduceAffinity => CpuAllocationMode::ReduceAffinity {
+            processors_to_remove: settings.processors_to_remove,
+            preserve_custom_affinity: settings.preserve_custom_affinity,
+        },
     }
 }
 

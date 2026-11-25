@@ -735,6 +735,12 @@ Read the relevant section before changing feature policy, ownership, restoration
   least-used logical processors across All, P-core, or E-core pools with a configurable percentage,
   fixed P/E/no-SMT topology masks, or an exact custom mask. The per-app CPU threshold decides when a background app becomes eligible;
   the shared CPU allocation coordinator remains the only mutation and restoration owner.
+- Limit Background Processors can instead reduce each target's original group-0 affinity by
+  a configured count, retaining at least one logical processor. Selection stays stable for the
+  exact process while its captured baseline holds. Reduce affinity preserves external default
+  CPU Sets. The preservation switch on each hard method also preserves narrowed external affinity.
+  Guarded owner handoffs restore or relinquish the previous managed assignment if the target
+  cannot be changed.
 - Adaptive per-process demand requires consecutive valid CPU observations for
   the same exact identity. Missing samples, invalid deltas, or a non-actionable
   target discard its old qualification/recovery state without resetting unrelated
@@ -882,6 +888,9 @@ Read the relevant section before changing feature policy, ownership, restoration
   ownership, and Adaptive Processor Power retain their own state.
   Home and the Status panel report paused process policies separately from a
   verified Adaptive power plan. Process counts remain unavailable until observed.
+- When Exclude service hosts is enabled, Adaptive Engine excludes observable active
+  service hosts, known service accounts, and Session 0 or unknown-session processes. Unavailable
+  service inventory pauses the process policies and restores managed state.
 - Adaptive Engine uses the shared right-rail Status / Presets pattern. Presets apply CPU Behaviour tuning while preserving master switches, exclusions, and Adaptive Processor Power settings.
 
 ## Interrupt Timing

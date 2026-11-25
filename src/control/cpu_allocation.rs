@@ -1,5 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
+    hash::{DefaultHasher, Hasher},
     mem::take,
 };
 
@@ -99,9 +100,23 @@ impl CpuSetInventory {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum CpuAllocationRequest {
-    SoftCpuSets { selection: CpuSelection },
-    HardAffinity { selection: CpuSelection },
-    AffinityLimit { selection: CpuSelection },
+    SoftCpuSets {
+        selection: CpuSelection,
+    },
+    HardAffinity {
+        selection: CpuSelection,
+    },
+    AffinityLimit {
+        selection: CpuSelection,
+    },
+    PreserveHardAffinity {
+        selection: CpuSelection,
+    },
+    ReduceAffinity {
+        selection: CpuSelection,
+        processors_to_remove: u8,
+        preserve_custom_affinity: bool,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -450,6 +465,12 @@ impl<P: CpuAllocationPlatform> CpuAllocationCoordinator<P> {
             return Ok(CpuAllocationApplyOutcome::Shadowed);
         }
 
+        let withdraw_on_failure = owner == ControlOwner::InstanceBalancing
+            || matches!(
+                effective.request,
+                CpuAllocationRequest::PreserveHardAffinity { .. }
+                    | CpuAllocationRequest::ReduceAffinity { .. }
+            );
         let failed_claim = claim_fingerprint(&effective);
         let mut result = self.apply_effective_claim(
             inventory,
@@ -457,7 +478,7 @@ impl<P: CpuAllocationPlatform> CpuAllocationCoordinator<P> {
             effective,
             allow_cross_session_process_control,
         );
-        if owner == ControlOwner::InstanceBalancing && result.is_err() {
+        if withdraw_on_failure && result.is_err() {
             if let Some(claims) = self.claims.get_mut(&owner) {
                 claims.remove(&key);
             }
@@ -634,6 +655,28 @@ impl<P: CpuAllocationPlatform> CpuAllocationCoordinator<P> {
         let desired =
             match request {
                 HardAffinityRequest::Exact(mask) => target_affinity_mask(mask, system),
+                HardAffinityRequest::PreserveExact(mask) => self
+                    .guarded_affinity_baseline(identity, process, (current, system), true)?
+                    .and_then(|_| target_affinity_mask(mask, system)),
+                HardAffinityRequest::Reduce {
+                    full_mask,
+                    processors_to_remove,
+                    preserve_custom_affinity,
+                } => {
+                    if target_affinity_mask(full_mask, system) == Some(system) {
+                        self.guarded_affinity_baseline(
+                            identity,
+                            process,
+                            (current, system),
+                            preserve_custom_affinity,
+                        )?
+                        .and_then(|baseline| {
+                            reduced_affinity_mask(identity, baseline, processors_to_remove)
+                        })
+                    } else {
+                        None
+                    }
+                }
                 HardAffinityRequest::Limit(mask) => {
                     if self.managed_affinity.get(identity).is_some_and(|managed| {
                         managed.owner == owner && managed.expected != current
@@ -692,6 +735,38 @@ impl<P: CpuAllocationPlatform> CpuAllocationCoordinator<P> {
                 Err(self.finish_switch_failure(failure.error, compensation, identity, process))
             }
         }
+    }
+
+    fn guarded_affinity_baseline(
+        &mut self,
+        identity: &ProcessIdentity,
+        process: &P::Process,
+        (current, system): (usize, usize),
+        preserve_custom_affinity: bool,
+    ) -> Result<Option<usize>, ProcessControlError> {
+        // A verified assignment made by Winderust is not a custom Windows baseline.
+        let affinity = match self.managed_affinity.get(identity) {
+            Some(managed) if managed.confirmed && managed.expected == current => managed.baseline,
+            Some(_) => return Ok(None),
+            None => current,
+        };
+        if affinity == 0
+            || affinity & system != affinity
+            || (preserve_custom_affinity && affinity != system)
+        {
+            return Ok(None);
+        }
+
+        let mut current_sets = self.platform.query_cpu_sets(process)?;
+        normalize_cpu_set_ids(&mut current_sets);
+        let baseline_sets = match self.managed_cpu_sets.get(identity) {
+            Some(managed) if managed.confirmed && managed.expected == current_sets => {
+                &managed.baseline
+            }
+            Some(_) => return Ok(None),
+            None => &current_sets,
+        };
+        Ok(baseline_sets.is_empty().then_some(affinity))
     }
 
     fn finish_switch_failure(
@@ -1840,6 +1915,12 @@ enum ManagedProperty {
 enum HardAffinityRequest {
     Exact(u64),
     Limit(u64),
+    PreserveExact(u64),
+    Reduce {
+        full_mask: u64,
+        processors_to_remove: u8,
+        preserve_custom_affinity: bool,
+    },
 }
 
 enum SwitchCompensation {
@@ -2118,6 +2199,27 @@ fn target_affinity_mask(rule_mask: u64, system_affinity: usize) -> Option<usize>
     (mask != 0 && mask & system_affinity == mask).then_some(mask)
 }
 
+fn reduced_affinity_mask(
+    identity: &ProcessIdentity,
+    baseline: usize,
+    processors_to_remove: u8,
+) -> Option<usize> {
+    let count = u32::from(processors_to_remove).min(baseline.count_ones().saturating_sub(1));
+    let mut choice = DefaultHasher::new();
+    choice.write_u32(identity.id);
+    choice.write_u64(identity.creation_time);
+    let mut mask = baseline;
+    for step in 0..count {
+        choice.write_u32(step);
+        let mut candidates = mask;
+        for _ in 0..choice.finish() % u64::from(mask.count_ones()) {
+            candidates &= candidates - 1;
+        }
+        mask &= !(1 << candidates.trailing_zeros());
+    }
+    (count > 0).then_some(mask)
+}
+
 enum ResolvedCpuAllocation<'a> {
     SoftCpuSets(&'a [ProcessorId]),
     HardAffinity(HardAffinityRequest),
@@ -2155,6 +2257,22 @@ fn resolve_request<'a>(
         CpuAllocationRequest::HardAffinity { selection } => selection
             .resolve_group_zero(topology)
             .map(|mask| ResolvedCpuAllocation::HardAffinity(HardAffinityRequest::Exact(mask))),
+        CpuAllocationRequest::PreserveHardAffinity { selection } => {
+            selection.resolve_group_zero(topology).map(|mask| {
+                ResolvedCpuAllocation::HardAffinity(HardAffinityRequest::PreserveExact(mask))
+            })
+        }
+        CpuAllocationRequest::ReduceAffinity {
+            selection,
+            processors_to_remove,
+            preserve_custom_affinity,
+        } => selection.resolve_group_zero(topology).map(|full_mask| {
+            ResolvedCpuAllocation::HardAffinity(HardAffinityRequest::Reduce {
+                full_mask,
+                processors_to_remove: *processors_to_remove,
+                preserve_custom_affinity: *preserve_custom_affinity,
+            })
+        }),
         CpuAllocationRequest::AffinityLimit { selection } => selection
             .resolve_group_zero(topology)
             .map(|mask| ResolvedCpuAllocation::HardAffinity(HardAffinityRequest::Limit(mask))),

@@ -102,6 +102,11 @@ pub struct CpuAllocationManager {
 pub(crate) enum CpuAllocationMode {
     SoftCpuSets,
     HardAffinity,
+    PreserveHardAffinity,
+    ReduceAffinity {
+        processors_to_remove: u8,
+        preserve_custom_affinity: bool,
+    },
 }
 
 impl CpuAllocationManager {
@@ -476,6 +481,19 @@ impl CpuAllocationManager {
                 CpuAllocationMode::HardAffinity => CpuAllocationRequest::HardAffinity {
                     selection: target.selection.clone(),
                 },
+                CpuAllocationMode::PreserveHardAffinity => {
+                    CpuAllocationRequest::PreserveHardAffinity {
+                        selection: target.selection.clone(),
+                    }
+                }
+                CpuAllocationMode::ReduceAffinity {
+                    processors_to_remove,
+                    preserve_custom_affinity,
+                } => CpuAllocationRequest::ReduceAffinity {
+                    selection: target.selection.clone(),
+                    processors_to_remove,
+                    preserve_custom_affinity,
+                },
             };
             let claim = CpuAllocationClaim {
                 target: ProcessControlTarget::automatic(
@@ -504,10 +522,15 @@ impl CpuAllocationManager {
                         Some(target.process_id),
                         target.process_name,
                         ActionLogResult::Applied,
-                        format!(
-                            "{role}: allowed {} logical CPUs.",
-                            target.selection.processors().len()
-                        ),
+                        match target.mode {
+                            CpuAllocationMode::ReduceAffinity { processors_to_remove, .. } => {
+                                format!("{role}: reduced the original affinity by up to {processors_to_remove} logical CPUs.")
+                            }
+                            _ => format!(
+                                "{role}: allowed {} logical CPUs.",
+                                target.selection.processors().len()
+                            ),
+                        },
                     );
                 }
                 Ok(CpuAllocationApplyOutcome::Unchanged) => {
@@ -1006,7 +1029,9 @@ fn cpu_allocation_request_label(
     }
     match request {
         CpuAllocationRequest::SoftCpuSets { .. } => "CPU Sets (Soft)",
-        CpuAllocationRequest::HardAffinity { .. } => "Processor Affinity (Hard)",
+        CpuAllocationRequest::HardAffinity { .. }
+        | CpuAllocationRequest::PreserveHardAffinity { .. } => "Processor Affinity (Hard)",
+        CpuAllocationRequest::ReduceAffinity { .. } => "Reduce affinity (Hard)",
         CpuAllocationRequest::AffinityLimit { .. } => "CPU Limiter",
     }
 }

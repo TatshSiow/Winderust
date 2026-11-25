@@ -1957,9 +1957,7 @@ fn run_background_automation(
         }
         if cpu_sets_soft_refresh_required && scheduler.is_due(RefreshDomain::CpuSetsSoft, now) {
             let status = if cpu_allocation_wait.is_some_and(|waiting| waiting.soft) {
-                runner.pause_cpu_allocation_for_power_source(
-                    cpu_allocation::CpuAllocationMode::SoftCpuSets,
-                )
+                runner.pause_cpu_sets_soft_for_power_source()
             } else {
                 runner.run_cpu_sets_soft_update(settings, &mut observations)
             };
@@ -1974,9 +1972,7 @@ fn run_background_automation(
             && scheduler.is_due(RefreshDomain::ProcessorAffinityHard, now)
         {
             let status = if cpu_allocation_wait.is_some_and(|waiting| waiting.hard) {
-                runner.pause_cpu_allocation_for_power_source(
-                    cpu_allocation::CpuAllocationMode::HardAffinity,
-                )
+                runner.pause_processor_affinity_hard_for_power_source()
             } else {
                 runner.run_processor_affinity_hard_update(settings, &mut observations)
             };

@@ -143,6 +143,7 @@ pub(super) fn adaptive_engine_process_waits_for_source(
             policy.limit_background_processors_enabled,
             policy.dynamic_resource_zones_enabled,
             policy.pressure_source,
+            policy.exclude_service_hosts,
             policy.foreground_or_system_cpu_threshold_percent,
             policy.background_app_cpu_threshold_percent,
             policy.cpu_recovery_threshold_percent,
@@ -156,12 +157,18 @@ pub(super) fn adaptive_engine_process_waits_for_source(
         || shared_policy(ac) != shared_policy(dc)
         || (ac.limit_background_processors_enabled
             && (ac.cpu_allocation_method != dc.cpu_allocation_method
-                || ac.background_processor_selection != dc.background_processor_selection
-                || (ac.background_processor_selection.uses_percentage()
-                    && ac.processor_limit_percent != dc.processor_limit_percent)
-                || (ac.background_processor_selection
-                    == crate::config::BackgroundProcessorSelection::Custom
-                    && ac.specific_processors != dc.specific_processors)))
+                || (ac.cpu_allocation_method.is_hard_affinity()
+                    && ac.preserve_custom_affinity != dc.preserve_custom_affinity)
+                || if ac.cpu_allocation_method.uses_processor_selection() {
+                    ac.background_processor_selection != dc.background_processor_selection
+                        || (ac.background_processor_selection.uses_percentage()
+                            && ac.processor_limit_percent != dc.processor_limit_percent)
+                        || (ac.background_processor_selection
+                            == crate::config::BackgroundProcessorSelection::Custom
+                            && ac.specific_processors != dc.specific_processors)
+                } else {
+                    ac.processors_to_remove != dc.processors_to_remove
+                }))
         || (ac.dynamic_resource_zones_enabled
             && ac.dynamic_resource_zone_settings != dc.dynamic_resource_zone_settings)
         || ac

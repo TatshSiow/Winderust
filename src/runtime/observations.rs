@@ -97,6 +97,7 @@ struct ObservationSources {
     visible_window_process_ids: fn() -> Option<BTreeSet<u32>>,
     top_level_window_process_ids: fn() -> BTreeSet<u32>,
     cpu_topology: fn() -> Result<crate::cpu_topology::CpuTopology, String>,
+    service_process_ids: fn() -> Result<BTreeSet<u32>, String>,
 }
 
 impl Default for ObservationSources {
@@ -110,6 +111,8 @@ impl Default for ObservationSources {
             visible_window_process_ids,
             top_level_window_process_ids,
             cpu_topology: crate::features::cpu_control::cpu_allocation::processor_topology,
+            service_process_ids:
+                crate::platform::windows::service_hosts::active_service_process_ids,
         }
     }
 }
@@ -161,6 +164,10 @@ impl Default for CycleObservations {
 }
 
 impl CycleObservations {
+    pub(crate) fn service_process_ids(&self) -> Result<BTreeSet<u32>, String> {
+        (self.sources.service_process_ids)()
+    }
+
     fn with_sources(sources: ObservationSources) -> Self {
         Self {
             sources,
@@ -649,6 +656,62 @@ mod tests {
     }
 
     #[test]
+    fn adaptive_service_protection_reads_only_during_pressure_and_pauses_on_failure() {
+        use crate::{
+            config::{AdaptiveEngineProcessSettings, AdaptivePressureSource},
+            features::cpu_control::adaptive_engine_process::{
+                AdaptiveEngineProcessManager, AdaptiveEngineProcessUpdate,
+            },
+        };
+
+        let _guard = TEST_LOCK.lock().unwrap();
+        for (exclude, system_cpu, expected_pause) in [
+            (true, 20.0, false),
+            (false, 90.0, false),
+            (true, 90.0, true),
+        ] {
+            let settings = AdaptiveEngineProcessSettings {
+                limit_background_processors_enabled: true,
+                pressure_source: AdaptivePressureSource::System,
+                exclude_service_hosts: exclude,
+                ..Default::default()
+            };
+            let mut observations =
+                CycleObservations::with_adaptive_cpu_sample(processes().unwrap(), Some(42), None);
+            observations.sources.visible_window_process_ids = || Some(BTreeSet::new());
+            observations.sources.cpu_topology = || Ok(crate::cpu_topology::test_topology());
+            observations.sources.service_process_ids = if expected_pause {
+                || Err("Services database unavailable in test".into())
+            } else {
+                || panic!("service-host guard must not query the database for this pass")
+            };
+            let status = AdaptiveEngineProcessManager::default().update(
+                AdaptiveEngineProcessUpdate {
+                    settings: &settings,
+                    automation_enabled: true,
+                    allow_cross_session_process_control: true,
+                    foreground_process_id: Some(42),
+                    total_cpu_usage_percent: Some(system_cpu),
+                    user_idle_for: None,
+                    excluded_process_id: None,
+                    explicit_cpu_allocation_paths: &[],
+                    observations: &mut observations,
+                },
+                &mut Default::default(),
+                &mut Default::default(),
+                &mut ActionLog::default(),
+            );
+            assert_eq!(status.observation_paused, expected_pause);
+            if expected_pause {
+                assert_eq!(
+                    status.last_error.as_deref(),
+                    Some("Services database unavailable in test")
+                );
+            }
+        }
+    }
+
+    #[test]
     fn idle_restraint_still_scans_for_independently_enabled_placement() {
         use crate::{
             config::AdaptiveEngineProcessSettings,
@@ -872,6 +935,7 @@ mod tests {
             visible_window_process_ids: visible_windows,
             top_level_window_process_ids: top_level_windows,
             cpu_topology: topology,
+            ..ObservationSources::default()
         });
         let before = observations.processes().unwrap();
         let workload = observations.adaptive_workload(&before);
@@ -1141,6 +1205,7 @@ mod tests {
             visible_window_process_ids: visible_windows,
             top_level_window_process_ids: top_level_windows,
             cpu_topology: topology,
+            ..ObservationSources::default()
         });
         assert_eq!(
             observations.availability(),
@@ -1256,6 +1321,7 @@ mod tests {
             visible_window_process_ids: visible_windows,
             top_level_window_process_ids: top_level_windows,
             cpu_topology: topology,
+            ..ObservationSources::default()
         });
         let settings = AppSuspensionSettings {
             enabled: true,
@@ -1363,6 +1429,7 @@ mod tests {
             visible_window_process_ids: unavailable_visible_windows,
             top_level_window_process_ids: top_level_windows,
             cpu_topology: topology,
+            ..ObservationSources::default()
         });
 
         assert_eq!(

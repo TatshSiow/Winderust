@@ -997,22 +997,20 @@ impl RuntimeCore {
             })
     }
 
-    pub(super) fn pause_cpu_allocation_for_power_source(
-        &mut self,
-        mode: cpu_allocation::CpuAllocationMode,
-    ) -> CpuAllocationSnapshot {
-        let (manager, owner) = match mode {
-            cpu_allocation::CpuAllocationMode::SoftCpuSets => {
-                (&mut self.cpu_sets_soft_manager, ControlOwner::CpuSetsSoft)
-            }
-            cpu_allocation::CpuAllocationMode::HardAffinity => (
-                &mut self.processor_affinity_hard_manager,
-                ControlOwner::ProcessorAffinityHard,
-            ),
-        };
-        manager.pause_for_power_source(
+    pub(super) fn pause_cpu_sets_soft_for_power_source(&mut self) -> CpuAllocationSnapshot {
+        self.cpu_sets_soft_manager.pause_for_power_source(
             &mut self.cpu_allocation_coordinator,
-            owner,
+            ControlOwner::CpuSetsSoft,
+            &mut self.action_log,
+        )
+    }
+
+    pub(super) fn pause_processor_affinity_hard_for_power_source(
+        &mut self,
+    ) -> CpuAllocationSnapshot {
+        self.processor_affinity_hard_manager.pause_for_power_source(
+            &mut self.cpu_allocation_coordinator,
+            ControlOwner::ProcessorAffinityHard,
             &mut self.action_log,
         )
     }

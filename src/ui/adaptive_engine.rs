@@ -232,7 +232,7 @@ impl Editor {
                         return;
                     }
                     let cpu = &draft.adaptive_engine_process;
-                    if let Err(error) = cpu.validate_cpu_pressure_restraint().and_then(|()| {
+                    if let Err(error) = cpu.validate_cpu_behaviour().and_then(|()| {
                         cpu.dynamic_resource_zone_settings
                             .validate(cpu.dynamic_resource_zones_enabled)
                     }) {
@@ -341,7 +341,23 @@ impl Editor {
                             f(target, n);
                         }
                     }
-                    Message::Choice(f, v) => f(self.draft.as_mut().unwrap_or_else(|| &mut **s), v),
+                    Message::Choice(f, v) => {
+                        let (target, numbers) = match &mut self.draft {
+                            Some(draft) => (draft, &mut self.preset_numbers),
+                            None => (&mut **s, &mut self.live_numbers),
+                        };
+                        f(target, v);
+                        let inactive_limit = if target
+                            .adaptive_engine_process
+                            .cpu_allocation_method
+                            .uses_processor_selection()
+                        {
+                            "adaptive_engine_process.processors_to_remove"
+                        } else {
+                            "adaptive_engine_process.processor_limit_percent"
+                        };
+                        numbers.drafts.remove(inactive_limit);
+                    }
                     _ => {}
                 }
             }
@@ -640,10 +656,13 @@ impl Editor {
                     BackgroundProcessors, CpuPressureRestraint, ResourceZones, SharedDetection,
                 };
 
+                let cpu = &s.adaptive_engine_process;
+                let method = cpu.cpu_allocation_method;
+                let selection = cpu.background_processor_selection;
                 let custom_selection = editable
-                    && (s.adaptive_engine_process.background_processor_selection
-                        == BackgroundProcessorSelection::Custom
-                        || s.adaptive_engine_process
+                    && ((method.uses_processor_selection()
+                        && selection == BackgroundProcessorSelection::Custom)
+                        || cpu
                             .dynamic_resource_zone_settings
                             .background_processor_selection
                             == BackgroundProcessorSelection::Custom);
@@ -709,6 +728,19 @@ impl Editor {
                         3600,
                         adaptive_engine_process.cpu_recovery_time_seconds
                     ),
+                    super::widgets::setting_row(
+                        "adaptive_engine_process.exclude_service_hosts",
+                        super::widgets::switch(
+                            cpu.exclude_service_hosts,
+                            editable.then_some(|v| {
+                                Message::Toggle(
+                                    |s, v| s.adaptive_engine_process.exclude_service_hosts = v,
+                                    v,
+                                )
+                            }),
+                        ),
+                    )
+                    .into(),
                 ]);
                 body = body.push(super::widgets::setting_group(
                     "adaptive_engine_process.shared_detection".to_string(),
@@ -777,68 +809,88 @@ impl Editor {
                     ),
                     restraint,
                 ));
-                let mut allocation = super::widgets::settings_rows([
-                    choice!(
-                        s,
-                        "adaptive_engine_process.processor_selection",
-                        BackgroundProcessorSelection,
-                        &BackgroundProcessorSelection::ALL,
-                        background_processor_selection_label,
-                        adaptive_engine_process.background_processor_selection
-                    )
-                    .into(),
-                    choice!(
-                        s,
-                        "adaptive_engine_process.cpu_allocation_method",
-                        CpuAllocationMethod,
-                        &CpuAllocationMethod::ALL,
-                        allocation_label,
-                        adaptive_engine_process.cpu_allocation_method
-                    )
-                    .into(),
-                ]);
-                if s.adaptive_engine_process
-                    .background_processor_selection
-                    .uses_percentage()
-                {
+                let mut allocation = super::widgets::settings_rows([choice!(
+                    s,
+                    "adaptive_engine_process.cpu_allocation_method",
+                    CpuAllocationMethod,
+                    &CpuAllocationMethod::ALL,
+                    allocation_label,
+                    adaptive_engine_process.cpu_allocation_method
+                )
+                .into()]);
+                if method.uses_processor_selection() {
+                    allocation = allocation
+                        .push(super::widgets::settings_divider())
+                        .push(choice!(
+                            s,
+                            "adaptive_engine_process.processor_selection",
+                            BackgroundProcessorSelection,
+                            &BackgroundProcessorSelection::ALL,
+                            background_processor_selection_label,
+                            adaptive_engine_process.background_processor_selection
+                        ));
+                    if selection.uses_percentage() {
+                        allocation =
+                            allocation
+                                .push(super::widgets::settings_divider())
+                                .push(number!(
+                                    "adaptive_engine_process.processor_limit",
+                                    1,
+                                    100,
+                                    adaptive_engine_process.processor_limit_percent
+                                ));
+                    }
+                    if selection == BackgroundProcessorSelection::Custom {
+                        if let Some(catalog) = &cpu_catalog {
+                            allocation = allocation.push(super::widgets::settings_divider()).push(
+                                super::cpu_allocation::mask_selector(
+                                    &cpu.specific_processors,
+                                    catalog,
+                                    &s.cpu_allocation_presets,
+                                    super::cpu_allocation::ProcessorPickerLayout::Compact,
+                                    Message::Mask,
+                                ),
+                            );
+                        } else if !editable {
+                            allocation =
+                                allocation
+                                    .push(super::widgets::settings_divider())
+                                    .push(text(format!(
+                                        "{}: {}",
+                                        t!("adaptive_engine_process.specific_processors"),
+                                        super::cpu_allocation::selection_text(
+                                            &cpu.specific_processors
+                                        )
+                                    )));
+                        }
+                    }
+                } else {
                     allocation = allocation
                         .push(super::widgets::settings_divider())
                         .push(number!(
-                            "adaptive_engine_process.processor_limit",
+                            "adaptive_engine_process.processors_to_remove",
                             1,
-                            100,
-                            adaptive_engine_process.processor_limit_percent
+                            u64::from(ADAPTIVE_AFFINITY_REMOVAL_MAX),
+                            adaptive_engine_process.processors_to_remove
                         ));
                 }
-                if s.adaptive_engine_process.background_processor_selection
-                    == BackgroundProcessorSelection::Custom
-                    && editable
-                {
-                    if let Some(catalog) = &cpu_catalog {
-                        allocation = allocation.push(super::widgets::settings_divider()).push(
-                            super::cpu_allocation::mask_selector(
-                                &s.adaptive_engine_process.specific_processors,
-                                catalog,
-                                &s.cpu_allocation_presets,
-                                super::cpu_allocation::ProcessorPickerLayout::Compact,
-                                Message::Mask,
+                if method.is_hard_affinity() {
+                    allocation = allocation.push(super::widgets::settings_divider()).push(
+                        super::widgets::setting_row(
+                            "adaptive_engine_process.preserve_custom_affinity",
+                            super::widgets::switch(
+                                cpu.preserve_custom_affinity,
+                                editable.then_some(|v| {
+                                    Message::Toggle(
+                                        |s, v| {
+                                            s.adaptive_engine_process.preserve_custom_affinity = v
+                                        },
+                                        v,
+                                    )
+                                }),
                             ),
-                        );
-                    }
-                }
-                if s.adaptive_engine_process.background_processor_selection
-                    == BackgroundProcessorSelection::Custom
-                    && !editable
-                {
-                    allocation = allocation
-                        .push(super::widgets::settings_divider())
-                        .push(text(format!(
-                            "{}: {}",
-                            t!("adaptive_engine_process.specific_processors"),
-                            super::cpu_allocation::selection_text(
-                                &s.adaptive_engine_process.specific_processors
-                            )
-                        )));
+                        ),
+                    );
                 }
                 body = body.push(super::widgets::setting_group(
                     "adaptive_engine_process.limit_background_processors".to_string(),
@@ -1050,6 +1102,7 @@ fn allocation_label(v: CpuAllocationMethod) -> String {
     t!(match v {
         CpuAllocationMethod::CpuSetsSoft => "nav.cpu_sets_soft",
         CpuAllocationMethod::ProcessorAffinityHard => "nav.processor_affinity_hard",
+        CpuAllocationMethod::ReduceAffinity => "adaptive_engine_process.reduce_affinity",
     })
     .to_string()
 }
@@ -1676,6 +1729,43 @@ mod tests {
         assert_eq!(cpu.pressure_source, AdaptivePressureSource::Both);
         assert_eq!(cpu.restraint_priority, AdaptiveRestraintPriority::Idle);
         assert_eq!(cpu.maximum_restraint_time_seconds, 11);
+    }
+
+    #[test]
+    fn switching_placement_methods_discards_invalid_hidden_inputs() {
+        let mut settings = SettingsEditor::with_settings(Settings::default());
+        let mut editor = Editor::default();
+        let method = |settings: &mut Settings, index| {
+            settings.adaptive_engine_process.cpu_allocation_method =
+                CpuAllocationMethod::ALL[index];
+        };
+        for (current, next, field, max) in [
+            (
+                CpuAllocationMethod::CpuSetsSoft,
+                CpuAllocationMethod::ReduceAffinity,
+                "adaptive_engine_process.processor_limit_percent",
+                100,
+            ),
+            (
+                CpuAllocationMethod::ReduceAffinity,
+                CpuAllocationMethod::ProcessorAffinityHard,
+                "adaptive_engine_process.processors_to_remove",
+                u64::from(ADAPTIVE_AFFINITY_REMOVAL_MAX),
+            ),
+        ] {
+            settings.adaptive_engine_process.cpu_allocation_method = current;
+            editor.update(
+                &mut settings,
+                Message::Number(|_, _| {}, String::new(), 1, max, field, field),
+            );
+            assert!(editor.validation_error().is_some());
+            let index = CpuAllocationMethod::ALL
+                .iter()
+                .position(|option| *option == next)
+                .unwrap();
+            editor.update(&mut settings, Message::Choice(method, index));
+            assert!(editor.validation_error().is_none());
+        }
     }
 
     #[test]

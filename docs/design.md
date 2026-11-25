@@ -519,6 +519,10 @@ hover/press; background shading supplies feedback.
 - Avoid duplicated help text between inline descriptions, info popovers, and sidebar Feature info.
 
 - Adaptive Engine CPU Behaviour presents Pressure source and its threshold together in Shared Detection and Timing. Time above threshold, restrained priority, Maximum restraint time, and idle settings belong inside the expandable CPU Pressure Restraint card. Limit Background Processors and Dynamic Resource Zones keep their controls under independent toggle headers with visible descriptions. Keep disclosure state separate for the live and preset editors. Zoning keeps its 1-99 foreground share and visible throughput warning. The limiter percentage always refers to background capacity, and its allocation method remains editable when zones are enabled. Show verified zoning status and counts.
+- Exclude service hosts belongs in Shared Detection and Timing because it covers all three policies.
+  In Limit Background Processors, place the CPU allocation method first. Reduce affinity (Hard)
+  shows a removal count in place of all fixed processor-selection controls. The two hard methods
+  show Preserve custom affinity inside the same expandable card.
 
 ## Current reference layout
 

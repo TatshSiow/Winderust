@@ -43,13 +43,17 @@ CPU Behaviour has shared detection/timing followed by three independent policies
 - **CPU Pressure Restraint** temporarily lowers the priority of background apps
   with sustained CPU demand during aggregate CPU pressure.
 - **Limit Background Processors** restricts background candidates only, using its own selector,
-  percentage/custom mask, and soft/hard method. It never narrows foreground access.
+  percentage/custom mask, and soft/hard method. Its Reduce affinity (Hard) method removes
+  a configurable number of logical processors from each process's original mask. It never
+  narrows foreground access.
 - **Dynamic Resource Zones (Experimental)** uses separate settings and complementary CPU Sets (Soft).
   The Performance preset enables zoning; Speed, Balanced, and Power Save leave it off.
 
 Shared Detection and Timing can use total system CPU, foreground-group CPU, either reading, or
 both readings. The threshold and release band use the same selected source. Background-app CPU
 demand is normalized against one logical processor; the thresholds are not directly interchangeable.
+Optional Exclude service hosts protects detected active service processes, Session 0,
+and processes whose session could not be determined. It applies to all three policies.
 Reaction time, candidate cap, restraint hold, and recovery values retain their existing units.
 
 Zoning requires fresh foreground observations outside startup grace and current hot eligible
@@ -141,6 +145,13 @@ migration or copying from the limiter is performed.
   the existing rebalance interval or a meaningful load improvement. Fixed topology and custom
   selections do not rebalance. Least-used selection requires a fresh load interval after sampling
   pauses.
+- Reduce affinity (Hard) requires one active processor group and uses a stable per-process choice
+  from its captured original mask. It leaves at least one logical processor and respects custom
+  default CPU Sets. Both hard methods can also preserve an already narrowed affinity. The
+  coordinator restores the original mask and does not overwrite an external change during release.
+- Exclude service hosts reads the local service inventory only when a policy is about
+  to act. If Windows cannot read that inventory, Adaptive Engine releases its claims and pauses.
+  Windows can omit services whose status the caller lacks permission to read.
 - Existing priority, CPU Set, affinity, and power-plan state is restored when its
   claim is released or Winderust shuts down. The watchdog independently restores committed
   externally persistent state after an abnormal exit.

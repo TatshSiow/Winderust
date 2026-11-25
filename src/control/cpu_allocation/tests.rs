@@ -13,6 +13,7 @@ use std::{
 
 use super::*;
 
+mod adaptive;
 mod instance_balancing;
 
 #[derive(Clone)]
@@ -2945,6 +2946,55 @@ fn cpu_allocation_live_apply_and_clean_release() -> Result<(), String> {
         .query_cpu_sets(&process)
         .map_err(|error| error.to_string())?;
     normalize_cpu_set_ids(&mut baseline_cpu_sets);
+    if baseline_cpu_sets.is_empty()
+        && topology.groups().len() == 1
+        && topology.groups()[0].number == 0
+        && topology.groups()[0].active_mask == system_affinity as u64
+        && available_affinity.count_ones() > 1
+    {
+        let reduced = CpuAllocationClaim {
+            target: target.clone(),
+            owner: ControlOwner::AdaptiveEngine,
+            balancing_generation: None,
+            request: CpuAllocationRequest::ReduceAffinity {
+                selection: CpuSelection::from_group_zero_mask(&topology, system_affinity as u64)
+                    .map_err(|error| error.to_string())?,
+                processors_to_remove: 1,
+                preserve_custom_affinity: false,
+            },
+        };
+        let mut inventory = CpuSetInventory::default();
+        for expected in [
+            CpuAllocationApplyOutcome::Applied,
+            CpuAllocationApplyOutcome::Unchanged,
+        ] {
+            assert_eq!(
+                coordinator
+                    .apply_policy_claim(&mut inventory, Ok(&topology), reduced.clone(), true)
+                    .map_err(|error| error.to_string())?,
+                expected
+            );
+            let observed = coordinator
+                .platform
+                .query_affinity(&process)
+                .map_err(|error| error.to_string())?
+                .0;
+            assert_eq!(observed & baseline_affinity, observed);
+            assert_eq!(observed.count_ones(), available_affinity.count_ones() - 1);
+        }
+        let released = coordinator.release_all_policy(ControlOwner::AdaptiveEngine);
+        if let Some(failure) = released.failures.first() {
+            return Err(failure.error.to_string());
+        }
+        assert_eq!(
+            coordinator
+                .platform
+                .query_affinity(&process)
+                .map_err(|error| error.to_string())?
+                .0,
+            baseline_affinity
+        );
+    }
     let mut per_group = BTreeMap::new();
     for record in coordinator
         .platform

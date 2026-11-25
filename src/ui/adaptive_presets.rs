@@ -157,9 +157,12 @@ pub(super) fn apply_adaptive_engine_process_preset(
     settings.limit_background_processors_enabled = values.limit_background_processors_enabled;
     settings.dynamic_resource_zones_enabled = values.dynamic_resource_zones_enabled;
     settings.dynamic_resource_zone_settings = DynamicResourceZoneSettings::default();
+    settings.preserve_custom_affinity = false;
+    settings.processors_to_remove = default_processors_to_remove();
     settings.background_processor_selection = values.background_processor_selection;
     settings.processor_limit_percent = values.processor_limit_percent;
     settings.pressure_source = AdaptivePressureSource::default();
+    settings.exclude_service_hosts = false;
     settings.foreground_or_system_cpu_threshold_percent =
         values.foreground_or_system_cpu_threshold_percent;
     settings.background_app_cpu_threshold_percent = values.background_app_cpu_threshold_percent;
@@ -441,8 +444,12 @@ mod tests {
                 pause_restraint_when_idle: true,
                 restraint_idle_timeout_seconds: 120,
                 pressure_source: AdaptivePressureSource::System,
+                exclude_service_hosts: true,
                 restraint_priority: AdaptiveRestraintPriority::Idle,
                 maximum_restraint_time_seconds: 10,
+                cpu_allocation_method: CpuAllocationMethod::ReduceAffinity,
+                preserve_custom_affinity: true,
+                processors_to_remove: 4,
                 ..Default::default()
             };
             apply_adaptive_engine_process_preset(&mut settings, preset);
@@ -450,6 +457,13 @@ mod tests {
             assert!(!settings.pause_restraint_when_idle);
             assert_eq!(settings.restraint_idle_timeout_seconds, 300);
             assert_eq!(settings.pressure_source, AdaptivePressureSource::Either);
+            assert!(!settings.exclude_service_hosts);
+            assert_eq!(
+                settings.cpu_allocation_method,
+                CpuAllocationMethod::ReduceAffinity
+            );
+            assert!(!settings.preserve_custom_affinity);
+            assert_eq!(settings.processors_to_remove, 1);
             assert_eq!(
                 settings.restraint_priority,
                 AdaptiveRestraintPriority::BelowNormal
@@ -464,6 +478,11 @@ mod tests {
         settings.adaptive_engine_process.restraint_trigger_time_ms = 2_700;
         settings.adaptive_engine_process.pause_restraint_when_idle = true;
         settings.adaptive_engine_process.pressure_source = AdaptivePressureSource::Both;
+        settings.adaptive_engine_process.exclude_service_hosts = true;
+        settings.adaptive_engine_process.cpu_allocation_method =
+            CpuAllocationMethod::ReduceAffinity;
+        settings.adaptive_engine_process.preserve_custom_affinity = true;
+        settings.adaptive_engine_process.processors_to_remove = 4;
         settings.adaptive_engine_process.restraint_priority = AdaptiveRestraintPriority::Idle;
         settings
             .adaptive_engine_process

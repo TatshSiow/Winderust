@@ -3930,3 +3930,37 @@ fn adaptive_engine_source_selection_checks_pressure_and_restraint_actions() {
         .maximum_restraint_time_seconds = 30;
     assert!(!adaptive_engine_process_waits_for_source(&settings, None));
 }
+
+#[test]
+fn adaptive_engine_source_selection_checks_effective_affinity_and_service_guard() {
+    use crate::config::{BackgroundProcessorSelection, CpuAllocationMethod};
+
+    let mut settings = Settings::default();
+    settings.adaptive_engine.enabled = true;
+    settings
+        .adaptive_engine_process
+        .limit_background_processors_enabled = true;
+    settings.adaptive_engine_process.cpu_allocation_method = CpuAllocationMethod::ReduceAffinity;
+    let battery = &mut settings.battery_profile_mut().adaptive_engine_process;
+    battery.background_processor_selection = BackgroundProcessorSelection::Custom;
+    assert!(!adaptive_engine_process_waits_for_source(&settings, None));
+
+    settings
+        .battery_profile_mut()
+        .adaptive_engine_process
+        .processors_to_remove = 2;
+    assert!(adaptive_engine_process_waits_for_source(&settings, None));
+    settings.adaptive_engine_process.processors_to_remove = 2;
+    assert!(!adaptive_engine_process_waits_for_source(&settings, None));
+
+    settings
+        .battery_profile_mut()
+        .adaptive_engine_process
+        .preserve_custom_affinity = true;
+    assert!(adaptive_engine_process_waits_for_source(&settings, None));
+    settings.adaptive_engine_process.preserve_custom_affinity = true;
+    assert!(!adaptive_engine_process_waits_for_source(&settings, None));
+
+    settings.adaptive_engine_process.exclude_service_hosts = true;
+    assert!(adaptive_engine_process_waits_for_source(&settings, None));
+}
