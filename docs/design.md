@@ -139,6 +139,8 @@ Prefer visible state, compact controls, and predictable rows. Use restrained acc
 
 - Reuse bundled Lucide SVGs through `src/ui/assets.rs`; page icons are mapped in
   `src/ui/navigation.rs`.
+- Draw bundled icons as centered vector paths so their origins follow the same
+  fractional layout coordinates as the surrounding controls.
 - Bundle brand marks alongside the existing assets when a link needs its service's
   identity; About uses the official Discord symbol from its branding page.
 - Trace all asset consumers before changing Lucide generation or dependencies.

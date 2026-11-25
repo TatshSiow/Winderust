@@ -445,12 +445,11 @@ fn disabled_plan_selector(message: String) -> Element<'static, Message> {
                 .size(design::typography::BODY)
                 .style(text::secondary)
                 .width(Fill),
-            iced::widget::svg(super::assets::chevron_frame(0.0))
-                .width(design::ICON_SIZE)
-                .height(design::ICON_SIZE)
-                .style(|theme: &iced::Theme, _| iced::widget::svg::Style {
-                    color: Some(widgets::muted_color(theme)),
-                }),
+            super::assets::icon(
+                "icons/chevron-right.svg",
+                design::ICON_SIZE,
+                widgets::muted_color,
+            ),
         ]
         .spacing(design::space::SMALL)
         .align_y(iced::Center),

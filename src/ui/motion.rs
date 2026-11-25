@@ -214,12 +214,12 @@ impl<M> Widget<M, Theme, Renderer> for Motion<'_, M> {
             _ => None,
         };
         if let Some(quarter_turns) = quarter_turns {
-            use iced::advanced::svg::Renderer as _;
-            renderer.draw_svg(
-                iced::advanced::svg::Svg::new(super::assets::chevron_frame(quarter_turns))
-                    .color(super::widgets::muted_color(theme)),
+            super::assets::draw_icon(
+                renderer,
+                "icons/chevron-right.svg",
                 bounds,
-                *viewport,
+                super::widgets::muted_color(theme),
+                quarter_turns,
             );
             return;
         }
@@ -285,7 +285,6 @@ impl<M> Widget<M, Theme, Renderer> for Motion<'_, M> {
                 visual.foreground,
             );
         } else if let Effect::Checkbox { interactive, .. } = self.effect {
-            use iced::advanced::svg::Renderer as _;
             self.content.as_widget().draw(
                 &tree.children[0],
                 renderer,
@@ -305,19 +304,17 @@ impl<M> Widget<M, Theme, Renderer> for Motion<'_, M> {
             };
             let color = super::widgets::checkbox_style(theme, status).icon_color;
             let inset = 2.0;
-            renderer.draw_svg(
-                iced::advanced::svg::Svg::new(
-                    super::assets::iced_icon("icons/check.svg").expect("Check icon is bundled"),
-                )
-                .color(iced::Color { a: 1.0, ..color })
-                .opacity(color.a * progress),
+            super::assets::draw_icon(
+                renderer,
+                "icons/check.svg",
                 Rectangle {
                     x: checkbox.x + inset,
                     y: checkbox.y + inset,
                     width: checkbox.width - 2.0 * inset,
                     height: checkbox.height - 2.0 * inset,
                 },
-                *viewport,
+                color.scale_alpha(progress),
+                0.0,
             );
         } else {
             self.content.as_widget().draw(
@@ -472,17 +469,18 @@ mod tests {
     use super::*;
     use std::time::Instant;
     #[test]
-    fn chevron_frames_render_with_upstream_renderer() {
-        use iced::advanced::{renderer::Headless as _, svg::Renderer as _};
+    fn chevron_rotations_render_with_upstream_renderer() {
+        use iced::advanced::renderer::Headless as _;
         let mut shots = Vec::new();
         for quarter_turns in [0.0, 0.5, 1.0, 2.0, 3.0] {
             let mut renderer = Renderer::new(iced::Font::DEFAULT, iced::Pixels(14.0));
             let bounds = Rectangle::with_size(Size::new(24.0, 24.0));
-            renderer.draw_svg(
-                iced::advanced::svg::Svg::new(super::super::assets::chevron_frame(quarter_turns))
-                    .color(iced::Color::WHITE),
+            super::super::assets::draw_icon(
+                &mut renderer,
+                "icons/chevron-right.svg",
                 bounds,
-                bounds,
+                iced::Color::WHITE,
+                quarter_turns,
             );
             let shot = renderer.screenshot(Size::new(24, 24), 1.0, iced::Color::BLACK);
             assert!(
@@ -572,6 +570,7 @@ mod tests {
     }
     #[test]
     fn checkbox_paints_intermediate_check_opacity() {
+        use iced::advanced::renderer::Headless as _;
         let mut renderer = Renderer::new(iced::Font::DEFAULT, iced::Pixels(14.0));
         let mut widget: Element<'_, ()> = super::super::animated_controls::Checkbox::new(false)
             .on_toggle(|_| ())
@@ -584,7 +583,7 @@ mod tests {
             &renderer,
             &layout::Limits::new(Size::ZERO, Size::new(100.0, 40.0)),
         );
-        let mut opacities = Vec::new();
+        let mut check_contrasts = Vec::new();
         for elapsed in [0, 60, 300] {
             if elapsed > 0 {
                 tree.state
@@ -602,22 +601,23 @@ mod tests {
                 mouse::Cursor::Unavailable,
                 &Rectangle::with_size(Size::new(100.0, 40.0)),
             );
-            let opacity = renderer
-                .layers()
-                .iter()
-                .flat_map(|layer| &layer.images)
-                .find_map(|image| {
-                    if let iced::advanced::graphics::Image::Vector { svg, .. } = image {
-                        Some(svg.opacity)
-                    } else {
-                        None
-                    }
-                })
-                .unwrap();
-            opacities.push(opacity);
+            let size = super::super::design::CHECKBOX_SIZE;
+            let shot = renderer.screenshot(Size::new(size, size), 1.0, iced::Color::BLACK);
+            // The checkbox fill animates too. Compare the check against its own interior.
+            let interior = shot
+                .as_chunks::<4>()
+                .0
+                .chunks_exact(size as usize)
+                .skip(3)
+                .take((size - 6) as usize)
+                .flat_map(|row| row.iter().skip(3).take((size - 6) as usize))
+                .map(|pixel| pixel[0]);
+            let low = interior.clone().min().unwrap();
+            let high = interior.max().unwrap();
+            check_contrasts.push(high - low);
         }
-        assert_eq!(opacities[0], 0.0);
-        assert!(opacities[0] < opacities[1] && opacities[1] < opacities[2]);
+        assert_eq!(check_contrasts[0], 0);
+        assert!(check_contrasts[0] < check_contrasts[1] && check_contrasts[1] < check_contrasts[2]);
     }
     #[test]
     fn transition_retargets_without_jumping_and_can_settle_immediately() {

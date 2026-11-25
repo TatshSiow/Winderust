@@ -2542,12 +2542,7 @@ fn status_cell(key: &'static str) -> Element<'static, Message> {
     };
     let label: std::borrow::Cow<'static, str> = t!(key);
     let cell = row![
-        iced::widget::svg(crate::ui::assets::iced_icon(icon).expect("Status icon is bundled"))
-            .width(design::ICON_SIZE)
-            .height(design::ICON_SIZE)
-            .style(move |theme, _| iced::widget::svg::Style {
-                color: Some(color(theme))
-            }),
+        super::assets::icon(icon, design::ICON_SIZE, color),
         text(label)
             .wrapping(iced::widget::text::Wrapping::None)
             .style(move |theme| text::Style {

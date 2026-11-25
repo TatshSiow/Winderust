@@ -32,6 +32,7 @@ serde_json = "1.0.150"
 semver = "1.0.27"
 thiserror = "2.0.18"
 toml = "0.8.23"
+usvg = { version = "=0.45.1", default-features = false }
 windows = { version = "0.61.3", features = [
     "UI_ViewManagement",
     "Win32_System_WinRT",

@@ -228,20 +228,17 @@ pub(super) fn process_rule_header_with_target_and_notify<'a, M: 'a>(
 pub(super) fn rule_delete_button<'a, M: Clone + 'a>(remove: Option<M>) -> Element<'a, M> {
     use iced::widget::container;
     let removable = remove.is_some();
-    let delete = button(
-        iced::widget::svg(
-            super::assets::iced_icon("icons/trash-2.svg").expect("Trash icon is bundled"),
-        )
-        .width(design::ICON_SIZE)
-        .height(design::ICON_SIZE)
-        .style(move |theme: &iced::Theme, _| iced::widget::svg::Style {
-            color: Some(if removable {
+    let delete = button(super::assets::icon(
+        "icons/trash-2.svg",
+        design::ICON_SIZE,
+        move |theme| {
+            if removable {
                 theme.palette().danger
             } else {
                 muted_color(theme)
-            }),
-        }),
-    )
+            }
+        },
+    ))
     .padding(7)
     .width(32)
     .height(32)

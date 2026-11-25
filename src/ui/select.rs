@@ -295,19 +295,19 @@ impl<'a, T: ToString + PartialEq + Clone + 'static, M: Clone + 'a> Widget<M, The
             cursor,
             &bounds.union(viewport),
         );
-        use iced::advanced::svg::Renderer as _;
         let size = design::ICON_SIZE as f32;
         let state = tree.state.downcast_ref::<State<T>>();
-        let icon = super::assets::chevron_frame(*state.chevron.value());
-        renderer.draw_svg(
-            iced::advanced::svg::Svg::new(icon).color(widgets::muted_color(theme)),
+        super::assets::draw_icon(
+            renderer,
+            "icons/chevron-right.svg",
             Rectangle {
                 x: bounds.x + bounds.width - design::SELECT_PADDING[1] as f32 - size,
                 y: bounds.center_y() - size / 2.0,
                 width: size,
                 height: size,
             },
-            *viewport,
+            widgets::muted_color(theme),
+            *state.chevron.value(),
         );
         if !self.options.is_empty() {
             state.focus.draw(renderer, theme, bounds);

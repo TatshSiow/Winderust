@@ -1,4 +1,4 @@
-use super::design;
+use super::{assets, design};
 use crate::config::Settings;
 use crate::ui::{self, Page};
 use iced::{Element, Theme};
@@ -308,17 +308,11 @@ pub(super) fn rail_item<'a, Message: Clone + 'a>(
         .height(design::ICON_SIZE)];
     if has_children(page) {
         icon_row = icon_row.push(
-            container(
-                iced::widget::svg(
-                    crate::ui::assets::iced_icon("icons/chevron-right.svg")
-                        .expect("Navigation chevron is bundled"),
-                )
-                .width(12)
-                .height(12)
-                .style(|theme: &Theme, _| iced::widget::svg::Style {
-                    color: Some(super::widgets::muted_color(theme)),
-                }),
-            )
+            container(assets::icon(
+                "icons/chevron-right.svg",
+                12,
+                super::widgets::muted_color,
+            ))
             .align_right(iced::Fill)
             .center_y(design::ICON_SIZE),
         );
@@ -430,22 +424,16 @@ pub(super) fn page_feature_info(page: Page) -> String {
 }
 
 pub(super) fn icon<'a, Message: 'a>(page: Page, selected: bool) -> Element<'a, Message> {
-    iced::widget::svg(
-        crate::ui::assets::iced_icon(icon_path(page)).expect("Every UI icon is bundled"),
-    )
-    .width(design::ICON_SIZE)
-    .height(design::ICON_SIZE)
-    .style(move |theme: &Theme, _| iced::widget::svg::Style {
-        color: Some(if selected {
+    assets::icon(icon_path(page), design::ICON_SIZE, move |theme| {
+        if selected {
             super::widgets::accent_text(
                 theme,
                 Some(theme.palette().primary.scale_alpha(0.22).into()),
             )
         } else {
             super::widgets::muted_color(theme)
-        }),
+        }
     })
-    .into()
 }
 
 pub(super) fn glyph<'a, Message: 'a>(path: &'static str) -> Element<'a, Message> {
@@ -456,14 +444,9 @@ pub(super) fn glyph_with_opacity<'a, Message: 'a>(
     path: &'static str,
     opacity: f32,
 ) -> Element<'a, Message> {
-    iced::widget::svg(crate::ui::assets::iced_icon(path).expect("Every UI icon is bundled"))
-        .width(design::ICON_SIZE)
-        .height(design::ICON_SIZE)
-        .opacity(opacity)
-        .style(|theme: &Theme, _| iced::widget::svg::Style {
-            color: Some(super::widgets::muted_color(theme)),
-        })
-        .into()
+    assets::icon(path, design::ICON_SIZE, move |theme| {
+        super::widgets::muted_color(theme).scale_alpha(opacity)
+    })
 }
 pub(super) fn icon_path(page: Page) -> &'static str {
     match page {
@@ -1131,9 +1114,9 @@ mod tests {
     #[test]
     fn every_page_has_a_bundled_icon_and_sidebar_counts_follow_feature_settings() {
         for section in Page::sections() {
-            assert!(crate::ui::assets::iced_icon(icon_path(section.landing_page)).is_some());
+            assert!(assets::has_icon(icon_path(section.landing_page)));
             for page in section.pages {
-                assert!(crate::ui::assets::iced_icon(icon_path(*page)).is_some());
+                assert!(assets::has_icon(icon_path(*page)));
             }
         }
         let mut settings = Settings::default();
