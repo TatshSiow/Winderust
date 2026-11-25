@@ -1,8 +1,8 @@
 use super::design;
 use crate::config::ExecutableSelector;
 use crate::power::{PowerPlan, ProcessorBoostMode};
-use iced::widget::{row, text};
-use iced::{Element, Fill};
+use iced::widget::{column, container, responsive, row, text, Container, Row};
+use iced::{Element, Fill, Shrink};
 use std::{borrow::Cow, rc::Rc};
 
 pub(super) fn tooltip<'a, M: 'a>(
@@ -39,6 +39,8 @@ pub(super) const CARD_HEIGHT: u32 = SETTING_ROW_HEIGHT + 2 * CARD_PADDING;
 pub(super) const RULE_ENABLE_WIDTH: u32 = 48;
 pub(super) const RULE_STATUS_WIDTH: u32 = 140;
 pub(super) const RULE_ACTIONS_WIDTH: u32 = 80;
+const SLIDER_CONTROL_WIDTH: u32 = 320;
+const SLIDER_INLINE_MIN_WIDTH: f32 = 600.0;
 
 pub(super) fn rules_table<'a, M: 'a>(
     header: iced::widget::Row<'a, M>,
@@ -1065,6 +1067,29 @@ pub(super) fn setting_row_with_unit<'a, M: 'a>(
     .align_y(iced::Center)
 }
 
+pub(super) fn slider_setting<'a, M: 'a>(
+    key: &'a str,
+    unit: &'a str,
+    control: impl Fn() -> Row<'a, M> + 'a,
+) -> Element<'a, M> {
+    responsive(move |size| {
+        let control = control();
+        if size.width >= SLIDER_INLINE_MIN_WIDTH {
+            setting_row_with_unit(key, unit, control.width(SLIDER_CONTROL_WIDTH)).into()
+        } else {
+            column![setting_title_with_unit(key, unit), trailing_slider(control)]
+                .spacing(design::space::SMALL)
+                .into()
+        }
+    })
+    .height(Shrink)
+    .into()
+}
+
+pub(super) fn trailing_slider<'a, M: 'a>(control: Row<'a, M>) -> Container<'a, M> {
+    container(control.width(SLIDER_CONTROL_WIDTH)).align_right(Fill)
+}
+
 pub(super) fn setting_title<'a, M: 'a>(key: &str) -> Element<'a, M> {
     setting_title_with_unit(key, "").into()
 }
@@ -1437,26 +1462,48 @@ pub(super) fn stepper<'a, M: Clone + 'a>(
 ) -> Element<'a, M> {
     let (lower, upper) = step_values(value, range, step);
     row![
-        button(super::navigation::glyph("icons/minus.svg"))
-            .padding(7)
-            .height(32)
-            .style(control_button)
-            .width(design::STEPPER_BUTTON_WIDTH)
-            .on_press_maybe(lower.zip(action.as_ref()).map(|(v, f)| f(v.to_string()))),
+        step_button(
+            "icons/minus.svg",
+            lower.zip(action.as_ref()).map(|(v, f)| f(v.to_string()))
+        ),
         text_input("", value)
             .align_x(iced::alignment::Horizontal::Center)
             .on_input_maybe(action.clone())
             .width(design::NUMERIC_WIDTH),
-        button(super::navigation::glyph("icons/plus.svg"))
-            .padding(7)
-            .height(32)
-            .style(control_button)
-            .width(design::STEPPER_BUTTON_WIDTH)
-            .on_press_maybe(upper.zip(action.as_ref()).map(|(v, f)| f(v.to_string())))
+        step_button(
+            "icons/plus.svg",
+            upper.zip(action.as_ref()).map(|(v, f)| f(v.to_string()))
+        ),
     ]
     .spacing(design::space::CONTROL)
     .align_y(iced::Center)
     .into()
+}
+
+fn step_button<'a, M: 'a>(
+    icon: &'static str,
+    action: Option<M>,
+) -> super::animated_controls::Button<'a, M> {
+    icon_button(icon)
+        .width(design::STEPPER_BUTTON_WIDTH)
+        .style(control_button)
+        .on_press_maybe(action)
+}
+
+pub(super) fn slider_controls<'a, M: Clone + 'a>(
+    track: impl Into<Element<'a, M>>,
+    decrease: Option<M>,
+    increase: Option<M>,
+    value: impl Into<Element<'a, M>>,
+) -> Row<'a, M> {
+    row![
+        step_button("icons/minus.svg", decrease),
+        track.into(),
+        step_button("icons/plus.svg", increase),
+        value.into(),
+    ]
+    .spacing(design::space::SMALL)
+    .align_y(iced::Center)
 }
 
 pub(super) fn slider_stepper<'a, M: Clone + 'a>(
@@ -1465,7 +1512,7 @@ pub(super) fn slider_stepper<'a, M: Clone + 'a>(
     range: std::ops::RangeInclusive<u32>,
     step: u32,
     action: impl Fn(String) -> M + Clone + 'a,
-) -> Element<'a, M> {
+) -> Row<'a, M> {
     let formatted;
     let input = if let Some(draft) = draft {
         draft
@@ -1475,19 +1522,21 @@ pub(super) fn slider_stepper<'a, M: Clone + 'a>(
     };
     let stepper_range = u64::from(*range.start())..=u64::from(*range.end());
     let slider_value = value.clamp(*stepper_range.start(), *stepper_range.end()) as u32;
+    let (lower, upper) = step_values(input, stepper_range, u64::from(step));
     let on_slide = action.clone();
     let slider = slider(range, slider_value, move |value| {
         on_slide(value.to_string())
     })
     .step(step)
     .width(Fill);
-    row![
+    slider_controls(
         slider,
-        stepper(input, stepper_range, u64::from(step), Some(action)),
-    ]
-    .spacing(design::space::SMALL)
-    .align_y(iced::Center)
-    .into()
+        lower.map(|v| action(v.to_string())),
+        upper.map(|v| action(v.to_string())),
+        text_input("", input)
+            .on_input(action)
+            .width(design::NUMERIC_WIDTH),
+    )
 }
 
 fn step_values(

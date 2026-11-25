@@ -788,8 +788,25 @@ fn cpu_stability_hides_no_invalid_drafts_after_toggle_or_comparison_changes() {
 
 #[test]
 fn long_cpu_durations_stay_visible_and_edit_transactionally() {
-    use iced::advanced::{layout, widget::Tree, Layout, Shell};
-    use iced::{keyboard, mouse, Event, Size};
+    use iced::advanced::{
+        layout,
+        widget::{operation::TextInput, Id, Operation, Tree},
+        Layout, Shell,
+    };
+    use iced::{keyboard, mouse, Event, Rectangle, Size};
+
+    #[derive(Default)]
+    struct InputBounds(Option<Rectangle>);
+
+    impl Operation for InputBounds {
+        fn traverse(&mut self, visit: &mut dyn FnMut(&mut dyn Operation)) {
+            visit(self);
+        }
+
+        fn text_input(&mut self, _: Option<&Id>, bounds: Rectangle, _: &mut dyn TextInput) {
+            self.0 = Some(bounds);
+        }
+    }
 
     let mut settings = Settings::default();
     settings.by_cpu_load.rules[0].duration_seconds = 90_000;
@@ -803,7 +820,6 @@ fn long_cpu_durations_stay_visible_and_edit_transactionally() {
         Field::Duration,
         "by_cpu_load.duration",
         editor.draft.as_ref().unwrap().by_cpu_load.rules[0].duration_seconds,
-        86400,
         Message::Duration,
     );
     let renderer = iced::Renderer::new(design::typography::FONT, iced::Pixels(14.0));
@@ -813,14 +829,10 @@ fn long_cpu_durations_stay_visible_and_edit_transactionally() {
         &renderer,
         &layout::Limits::new(Size::ZERO, Size::new(700.0, 100.0)),
     );
-    let cursor = mouse::Cursor::Available(
-        Layout::new(&node)
-            .children()
-            .last()
-            .unwrap()
-            .bounds()
-            .center(),
-    );
+    let mut input_bounds = InputBounds::default();
+    view.as_widget_mut()
+        .operate(&mut tree, Layout::new(&node), &renderer, &mut input_bounds);
+    let cursor = mouse::Cursor::Available(input_bounds.0.unwrap().center());
     let key = |key: keyboard::Key, value| {
         Event::Keyboard(keyboard::Event::KeyPressed {
             key: key.clone(),

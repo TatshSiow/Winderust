@@ -84,7 +84,7 @@ impl Inputs {
 pub(super) fn view<'a>(
     settings: &'a Settings,
     plans: &[PowerPlan],
-    inputs: &Inputs,
+    inputs: &'a Inputs,
 ) -> Element<'a, Message> {
     let activity = &settings.by_activity;
     let plan_picker = |guid: &Option<String>, action: fn(Option<String>) -> Message| {
@@ -147,19 +147,19 @@ pub(super) fn view<'a>(
                 )
                 .into(),
             ])),
-            widgets::settings_card(
-                column![
-                    widgets::setting_title_with_unit("by_activity.idle_timeout", "s"),
+            widgets::settings_card(widgets::slider_setting(
+                "by_activity.idle_timeout",
+                "s",
+                move || {
                     widgets::slider_stepper(
                         activity.idle_timeout_seconds,
                         inputs.idle.as_deref(),
                         IDLE_TIMEOUT_RANGE,
                         1,
                         Message::IdleTimeout,
-                    ),
-                ]
-                .spacing(design::space::SMALL),
-            ),
+                    )
+                },
+            )),
         ]
         .spacing(widgets::CARD_GAP),
     )

@@ -110,6 +110,9 @@ Prefer visible state, compact controls, and predictable rows. Use restrained acc
 - Action and toggle cards use their full surface, including padding and blank space, as the hit target. Expandable cards toggle only from the full header, including its padding; expanded content never toggles the group. Keep one 16px inset for headers and bodies. Nested controls retain their own actions, cursor, and input handling, and disabled controls stay inactive.
 - Collapse expandable cards by default. Keep configuration editable when its main switch is off; read-only presets and invalid operations remain disabled.
 - Sliders always reflect their input values, including when disabled. Put units in labels and use plus/minus icons.
+- Use the shared slider row for numeric settings. Keep the label on the left and
+  the minus button, slider, plus button, and value in a bounded group on the right.
+  Stack the label above the right-aligned controls when the card is narrow.
 - Use sliders, steppers, or numeric inputs for numeric settings.
 - Use dropdowns for bounded option sets.
 - Use icon buttons for compact repeated actions; text buttons are fine for clear primary commands such as save/import/export.
@@ -322,11 +325,9 @@ hover/press; background shading supplies feedback.
   Visible Window, and Background columns. Profile Limit uses Winderust's configured
   limit for the selected power profile and app state. No Time Cap turns off the cap for
   that state. The Enable CPU Limiter card starts collapsed and expands directly to
-  the selected profile's three default limit controls. Align the slider, stepper
-  buttons, and value together at the right edge. Stack the label above the controls
-  when the card is narrow. Custom tiers show a 1% to 100% Allowed CPU Time slider.
-  At 100%, Winderust applies no CPU time cap. Inactive
-  rules retain their selections.
+  the selected profile's three default limit controls. Custom tiers show a 1% to 100%
+  Allowed CPU Time slider. At 100%, Winderust applies no CPU time cap. Inactive rules
+  retain their selections.
   Explain both methods beside the selector. The Load-triggered affinity form
   shows the CPU trigger, sustained duration, and selected processor count.
   Choose processors opens the verified picker in the same dialog. Its processor
@@ -350,8 +351,8 @@ hover/press; background shading supplies feedback.
   separately for Plugged In and On Battery. Offer all six scheduling choices
   for recognized policy values. For unavailable controls, distinguish missing,
   unreadable, and unknown values, and show the raw index for unknown values.
-  Keep the other controls editable. Put each percentage label above its slider
-  and stepper so the label can wrap beside the Info panel.
+  Keep the other controls editable. Percentage fields use the shared slider row,
+  with validation feedback below the complete row.
 - Built-in presets keep current scheduling policies; custom presets can capture
   choices or keep current. Re-read after every Apply attempt, including partial
   failure. Adaptive Engine does not own these persistent writes.

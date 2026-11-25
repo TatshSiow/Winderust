@@ -1,9 +1,9 @@
 use super::cpu_allocation::{self, Kind, SelectionCatalog};
 use super::design;
-use super::widgets::{self, checkbox, icon_button, pick_list, slider, text_input};
+use super::widgets::{self, checkbox, pick_list, slider, text_input};
 use crate::ui::scrolling::scrollable;
-use iced::widget::{column, container, responsive, row, text, Container, Row};
-use iced::{Element, Fill, Shrink};
+use iced::widget::{column, row, text, Row};
+use iced::{Element, Fill};
 use rust_i18n::t;
 use std::collections::HashMap;
 use std::ops::{Deref, DerefMut};
@@ -21,30 +21,19 @@ use crate::ui::process_rules::{
 };
 
 pub(super) const CHOOSE_PROCESSORS_ID: &str = "cpu-limiter-choose-processors";
-const LIMIT_CONTROL_WIDTH: u32 = 320;
-const SIDE_BY_SIDE_MIN_WIDTH: f32 = 600.0;
-
 pub(super) fn limit_slider<'a, M: Clone + 'a>(
     value: u8,
     change: impl Fn(u8) -> M + 'a,
+    field: impl Into<Element<'a, M>>,
 ) -> Row<'a, M> {
     let decrease = (value > 1).then(|| change(value.saturating_sub(1)));
     let increase = (value < 100).then(|| change(value.saturating_add(1)));
-    row![
-        icon_button("icons/minus.svg")
-            .style(super::widgets::control_button)
-            .on_press_maybe(decrease),
+    widgets::slider_controls(
         slider(1..=100, value, change).width(Fill),
-        icon_button("icons/plus.svg")
-            .style(super::widgets::control_button)
-            .on_press_maybe(increase),
-    ]
-    .spacing(design::space::SMALL)
-    .align_y(iced::Center)
-}
-
-pub(super) fn trailing_limit_control<'a, M: 'a>(control: Row<'a, M>) -> Container<'a, M> {
-    container(control.width(LIMIT_CONTROL_WIDTH)).align_right(Fill)
+        decrease,
+        increase,
+        field,
+    )
 }
 
 #[derive(Default)]
@@ -495,28 +484,13 @@ impl CpuLimiter {
             Some(index) => Message::RuleLimit(index, tier, value),
             None => Message::Default(tier, value),
         };
-        row![
-            limit_slider(value, change),
+        limit_slider(
+            value,
+            change,
             text_input("1-100", &self.number(path, tier, value))
                 .on_input(move |raw| Message::Number(index, tier, raw))
-                .width(design::NUMERIC_WIDTH)
-        ]
-        .spacing(design::space::SMALL)
-        .align_y(iced::Center)
-    }
-    fn default_limit_row(&self, tier: Tier, value: u8, width: f32) -> Element<'_, Message> {
-        let control = self.limit_control(None, tier, "", value);
-        if width >= SIDE_BY_SIDE_MIN_WIDTH {
-            widgets::setting_row_with_unit(tier.key(), "%", control.width(LIMIT_CONTROL_WIDTH))
-                .into()
-        } else {
-            column![
-                widgets::setting_title_with_unit(tier.key(), "%"),
-                trailing_limit_control(control),
-            ]
-            .spacing(design::space::SMALL)
-            .into()
-        }
+                .width(design::NUMERIC_WIDTH),
+        )
     }
     pub(super) fn view<'a>(
         &'a self,
@@ -525,20 +499,17 @@ impl CpuLimiter {
         master_enabled: bool,
         status: Option<&CpuLimiterSnapshot>,
     ) -> Element<'a, Message> {
-        let defaults =
-            responsive(move |size| {
-                widgets::settings_rows(Tier::ALL.map(|tier| {
-                    self.default_limit_row(tier, tier.default_limit(settings), size.width)
-                }))
-                .into()
+        let defaults = Tier::ALL.map(|tier| {
+            widgets::slider_setting(tier.key(), "%", move || {
+                self.limit_control(None, tier, "", tier.default_limit(settings))
             })
-            .height(Shrink);
+        });
         let mut body = column![widgets::setting_group(
             "cpu_limiter.enable".to_owned(),
             self.defaults_expanded,
             Message::ToggleDefaults,
             widgets::switch(settings.enabled, Some(Message::Enabled)),
-            column![defaults],
+            widgets::settings_rows(defaults),
         )]
         .spacing(widgets::CARD_GAP);
         if self.has_invalid_inputs() {
@@ -749,7 +720,7 @@ impl CpuLimiter {
             )]
             .spacing(design::space::SMALL);
             if mode == ProcessRuleMode::Enabled {
-                controls = controls.push(trailing_limit_control(self.limit_control(
+                controls = controls.push(widgets::trailing_slider(self.limit_control(
                     Some(index),
                     tier,
                     &rule.executable_path,
@@ -974,19 +945,21 @@ mod tests {
         use iced::advanced::{layout, widget::Tree, Layout};
         let renderer = iced::Renderer::new(iced::Font::DEFAULT, iced::Pixels(14.0));
         let editor = CpuLimiter::default();
-        for width in [400.0, SIDE_BY_SIDE_MIN_WIDTH, 800.0] {
+        for (width, stacked) in [(400.0, true), (600.0, false), (800.0, false)] {
             for tier in Tier::ALL {
-                let mut view = editor.default_limit_row(tier, 50, width);
+                let mut view = widgets::slider_setting(tier.key(), "%", || {
+                    editor.limit_control(None, tier, "", 50)
+                });
                 let mut tree = Tree::new(&view);
                 let node = view.as_widget_mut().layout(
                     &mut tree,
                     &renderer,
                     &layout::Limits::new(iced::Size::ZERO, iced::Size::new(width, 1000.0)),
                 );
-                let mut children = Layout::new(&node).children();
+                let mut children = Layout::new(&node).children().next().unwrap().children();
                 let label = children.next().unwrap().bounds();
                 let area = children.next().unwrap();
-                let control = if width < SIDE_BY_SIDE_MIN_WIDTH {
+                let control = if stacked {
                     let control = area.children().next().unwrap();
                     assert!(control.bounds().y >= label.y + label.height);
                     control
@@ -995,10 +968,9 @@ mod tests {
                     area
                 };
                 let bounds = control.bounds();
-                let stepper = control.children().next().unwrap();
-                let slider = stepper.children().nth(1).unwrap().bounds();
+                let slider = control.children().nth(1).unwrap().bounds();
                 assert_eq!(bounds.x + bounds.width, width);
-                assert_eq!(bounds.width, LIMIT_CONTROL_WIDTH as f32);
+                assert_eq!(bounds.width, 320.0);
                 assert!(bounds.height <= 40.0);
                 assert!(slider.width >= 150.0);
             }

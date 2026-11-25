@@ -1,6 +1,5 @@
 use super::design;
-use super::widgets::{self, checkbox, icon_button, Choice};
-use super::widgets::{pick_list, slider, text_input};
+use super::widgets::{self, checkbox, icon_button, pick_list, text_input, Choice};
 use crate::ui::scrolling::scrollable;
 use crate::{
     application::SettingsEditor,
@@ -760,7 +759,6 @@ impl Editor {
                         Field::Threshold,
                         "by_cpu_load.threshold",
                         u64::from(r.threshold_percent.get()),
-                        100,
                         Message::Threshold,
                     ),
                 ]);
@@ -773,7 +771,6 @@ impl Editor {
                             .unwrap_or(CpuLoadPercent::MAX)
                             .get(),
                     ),
-                    100,
                     Message::Upper,
                 );
                 let mut condition = condition
@@ -787,7 +784,6 @@ impl Editor {
                         Field::Duration,
                         "by_cpu_load.duration",
                         r.duration_seconds,
-                        86400,
                         Message::Duration,
                     ));
                 if r.comparison != CpuUsageComparison::Else {
@@ -814,7 +810,6 @@ impl Editor {
                                 "by_cpu_load.release_below"
                             },
                             u64::from(stability.exit_threshold_percent.get()),
-                            100,
                             Message::ExitThreshold,
                         ));
                     if r.comparison == CpuUsageComparison::Between {
@@ -829,7 +824,6 @@ impl Editor {
                                         .unwrap_or(CpuLoadPercent::MAX)
                                         .get(),
                                 ),
-                                100,
                                 Message::ExitUpper,
                             ),
                         );
@@ -841,7 +835,6 @@ impl Editor {
                             Field::MinimumHold,
                             "by_cpu_load.minimum_hold",
                             stability.minimum_hold_seconds,
-                            86400,
                             Message::MinimumHold,
                         ));
                 }
@@ -987,15 +980,18 @@ impl Editor {
             "by_time.end"
         };
         let field = if start { Field::Start } else { Field::End };
-        let input = text_input("HH:MM", &self.input(id, field, current.to_string()))
-            .on_input(move |value| {
-                if start {
-                    Message::Start(index, value)
-                } else {
-                    Message::End(index, value)
-                }
-            })
-            .width(Fill);
+        let input = text_input(
+            "HH:MM",
+            self.input(id, field).unwrap_or(&current.to_string()),
+        )
+        .on_input(move |value| {
+            if start {
+                Message::Start(index, value)
+            } else {
+                Message::End(index, value)
+            }
+        })
+        .width(Fill);
         let clock = widgets::tooltip(
             icon_button("icons/clock.svg").on_press(Message::OpenTimePicker(start)),
             text(t!(label).to_string()),
@@ -1004,41 +1000,27 @@ impl Editor {
         row![input, clock].spacing(design::space::SMALL).into()
     }
 
-    fn input(&self, id: u64, field: Field, current: String) -> String {
-        self.inputs.get(&(id, field)).cloned().unwrap_or(current)
+    fn input(&self, id: u64, field: Field) -> Option<&str> {
+        self.inputs.get(&(id, field)).map(String::as_str)
     }
     fn number(
         &self,
         target: (u64, usize),
         field: Field,
-        label: &str,
+        label: &'static str,
         value: u64,
-        max: u32,
         action: fn(usize, String) -> Message,
-    ) -> Element<'static, Message> {
+    ) -> Element<'_, Message> {
         let (id, index) = target;
-        row![
-            text(widgets::label_with_unit(
-                &t!(label),
-                if matches!(field, Field::Duration | Field::MinimumHold) {
-                    "s"
-                } else {
-                    "%"
-                }
-            ))
-            .width(180),
-            slider(0..=max, value.min(u64::from(max)) as u32, move |v| action(
-                index,
-                v.to_string()
-            )),
-            text_input("", &self.input(id, field, value.to_string()))
-                .on_input(move |v| action(index, v))
-                .width(design::NUMERIC_WIDTH)
-        ]
-        .spacing(design::space::COMPACT)
-        .height(widgets::SETTING_ROW_HEIGHT)
-        .align_y(iced::Center)
-        .into()
+        let (unit, max) = if matches!(field, Field::Duration | Field::MinimumHold) {
+            ("s", 86_400)
+        } else {
+            ("%", u32::from(CpuLoadPercent::MAX.get()))
+        };
+        let draft = self.input(id, field);
+        widgets::slider_setting(label, unit, move || {
+            widgets::slider_stepper(value, draft, 0..=max, 1, move |v| action(index, v))
+        })
     }
 }
 fn initial_stability(rule: &ByCpuLoadRule) -> ByCpuLoadStability {

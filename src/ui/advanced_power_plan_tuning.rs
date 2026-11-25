@@ -1093,20 +1093,20 @@ impl Editor {
                         )
                     }),
                 ) {
+                    let control = super::widgets::slider_setting(label, "%", move || {
+                        super::widgets::slider_stepper(
+                            u64::from(value),
+                            invalid.0[field as usize].as_deref(),
+                            0..=100,
+                            1,
+                            move |value| Message::ValueText(source, field, value),
+                        )
+                    });
                     controls.push(
-                        column![
-                            super::widgets::setting_title_with_unit(label, "%"),
-                            super::widgets::slider_stepper(
-                                u64::from(value),
-                                invalid.0[field as usize].as_deref(),
-                                0..=100,
-                                1,
-                                move |value| Message::ValueText(source, field, value),
-                            ),
-                        ]
-                        .spacing(design::space::SMALL)
-                        .extend(invalid.feedback(field).map(Element::from))
-                        .into(),
+                        column![control]
+                            .spacing(design::space::SMALL)
+                            .extend(invalid.feedback(field).map(Element::from))
+                            .into(),
                     );
                 }
                 if values.energy_performance_preference.is_none() {

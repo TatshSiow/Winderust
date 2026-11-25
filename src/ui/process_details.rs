@@ -597,14 +597,11 @@ pub(super) fn view<'a>(
             ]]
             .spacing(widgets::CARD_GAP);
             if mode == ProcessRuleMode::Enabled {
-                controls = controls.push(cpu_limiter::trailing_limit_control(
-                    row![
-                        cpu_limiter::limit_slider(limit, move |v| Message::LimiterLimit(tier, v)),
-                        text(format!("{limit}%"))
-                    ]
-                    .spacing(design::space::SMALL)
-                    .align_y(iced::Center),
-                ));
+                controls = controls.push(widgets::trailing_slider(cpu_limiter::limit_slider(
+                    limit,
+                    move |v| Message::LimiterLimit(tier, v),
+                    container(text(format!("{limit}%"))).align_right(design::NUMERIC_WIDTH),
+                )));
             }
             card = card.push(widgets::settings_divider()).push(controls);
         }

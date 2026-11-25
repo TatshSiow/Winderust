@@ -49,22 +49,20 @@ impl Editor {
         self.fallback_polling_interval = None;
     }
 
-    pub(super) fn fallback_polling_interval_field(
-        &self,
-        interval: u64,
-    ) -> Element<'static, Message> {
-        column![
-            widgets::setting_title_with_unit("power_plan_control.fallback_polling_interval", "ms"),
-            widgets::slider_stepper(
-                interval,
-                self.fallback_polling_interval.as_deref(),
-                CHECK_INTERVAL_MIN_MS as u32..=CHECK_INTERVAL_MAX_MS as u32,
-                250,
-                Message::FallbackPollingInterval,
-            ),
-        ]
-        .spacing(design::space::SMALL)
-        .into()
+    pub(super) fn fallback_polling_interval_field(&self, interval: u64) -> Element<'_, Message> {
+        widgets::slider_setting(
+            "power_plan_control.fallback_polling_interval",
+            "ms",
+            move || {
+                widgets::slider_stepper(
+                    interval,
+                    self.fallback_polling_interval.as_deref(),
+                    CHECK_INTERVAL_MIN_MS as u32..=CHECK_INTERVAL_MAX_MS as u32,
+                    250,
+                    Message::FallbackPollingInterval,
+                )
+            },
+        )
     }
 
     pub(super) fn discard_unavailable_plan(&mut self, plans: &[PowerPlan]) -> bool {
