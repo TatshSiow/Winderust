@@ -748,7 +748,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                     assert_eq!(app.settings.global().adaptive_engine, ac);
                     assert!(!app.settings.general.enabled);
                     assert_eq!(&app.settings.runtime_settings_snapshot().value, &before);
-                    assert!(app.pending_changes());
+                    assert!(app.pending_settings_changes());
                     let _ = app.update(Message::AdaptiveProcessorPower(PowerMessage::Tab(
                         Tab::DemandProfiles,
                     )));
@@ -899,7 +899,6 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
         ) {
             let _ = app.update(Message::Processes(process_list::Message::CloseSelection));
             app.settings = SettingsEditor::with_settings(app.settings.global().clone());
-            app.power_plan_control.selected_guid = None;
             assert!(!app.processes.modal_open());
         }
         if matches!(extra, Some(GPU_MEMORY_WIDE | GPU_MEMORY_COMPACT)) {
@@ -1810,7 +1809,7 @@ fn exercise_adaptive_processor_power_presets(app: &mut WinderustApp) {
         app.settings.runtime_settings_snapshot().value,
         runtime_before
     );
-    assert!(app.pending_changes());
+    assert!(app.pending_settings_changes());
 }
 
 pub(super) fn captured(app: &mut WinderustApp, shot: iced::window::Screenshot) -> Task<Message> {

@@ -488,18 +488,18 @@ Read the relevant section before changing feature policy, ownership, restoration
   requires fresh observations after the wait. Turning off automation or both
   profiles still releases owned state. Equivalent profiles can run during an
   unknown reading.
-- The landing-page selector verifies the chosen installed plan through the
-  runtime power-plan controller after Save. Manual switching is unavailable
-  while Windows is using the plan owned by Adaptive Processor Power. A staged
-  selection can release that plan when Save also disables the active policy.
-  An unresolved source-dependent policy still protects the managed plan.
-  A successful manual change ends the current restoration episode and becomes
-  the baseline for later automatic changes. If Windows reports the selected
-  plan as active and the recovery update remains unconfirmed, Save and Exit
-  keeps the app open. Save retries recovery against the current Windows plan
-  before allowing a new switch.
-  Enabled rules can switch plans again. The temporary Winderust Adaptive plan
-  is reserved for Adaptive Processor Power.
+- Selecting an installed plan on the landing page submits a manual runtime
+  command immediately. Save and Discard handle settings drafts independently.
+  The worker uses saved policy, rechecks the target, and verifies the active plan
+  after switching. Manual switching is unavailable while Adaptive Processor Power
+  owns the current plan. An unresolved source-dependent policy still protects the
+  managed plan. A successful manual change ends the current restoration episode
+  and becomes the baseline for later automatic changes. If Windows reports the
+  selected plan as active and the recovery update remains unconfirmed, Winderust
+  reports the error and reconciles recovery before allowing another switch.
+  Exit waits while the manual command is pending. Enabled rules can switch plans
+  again. The temporary Winderust Adaptive plan is reserved for Adaptive Processor
+  Power.
 - Managed adaptive-plan recovery recognizes only the current `Winderust Adaptive` name and description.
   Startup cleanup rechecks the live active GUID after matching metadata and
   verifies restoration before deleting an active managed plan. It preserves

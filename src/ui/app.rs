@@ -96,10 +96,12 @@ fn page_header<'a>(
 fn page_canvas<'a>(
     heading: Element<'a, Message>,
     content: Element<'a, Message>,
+    save_card: Option<Element<'a, Message>>,
 ) -> Element<'a, Message> {
     container(
         container(
             column![heading, content]
+                .extend(save_card)
                 .spacing(design::space::WIDE)
                 .height(Fill),
         )
@@ -114,8 +116,6 @@ fn page_canvas<'a>(
 
 const SIDE_PANEL_TOGGLE: &str = "side-panel-toggle";
 const SIDE_PANEL_CLOSE: &str = "side-panel-close";
-const SAVE_CHANGES_BUTTON: &str = "save-changes-button";
-const KEEP_EDITING_BUTTON: &str = "keep-editing-button";
 
 fn side_panel_button(open: bool) -> Element<'static, Message> {
     button(
@@ -293,7 +293,6 @@ pub(crate) fn run(
                 navigation: navigation::Flyout::default(),
                 side_panel_open: false,
                 side_panel_tab: SidePanelTab::Info,
-                save_dialog_open: false,
                 preferences: settings_pages::Editor::default(),
                 home: home::Model::default(),
                 action_log: action_log::Editor::default(),
@@ -607,7 +606,6 @@ struct WinderustApp {
     navigation: navigation::Flyout,
     side_panel_open: bool,
     side_panel_tab: SidePanelTab,
-    save_dialog_open: bool,
     preferences: settings_pages::Editor,
     home: home::Model,
     action_log: action_log::Editor,
@@ -736,8 +734,6 @@ enum Message {
     WindowCloseRequested(iced::window::Id),
     WindowClose,
     Close,
-    OpenSaveDialog,
-    DismissSaveDialog,
     Save,
     Cancel,
     PausePowerPlans(bool),
@@ -842,21 +838,6 @@ impl WinderustApp {
             } else {
                 Message::Preferences(settings_pages::Message::DismissUpdate)
             });
-        }
-        if !review_open && self.save_dialog_open {
-            return match key {
-                Key::Named(Named::Tab) if tab => {
-                    super::keyboard_focus::move_focus(!modifiers.shift(), true)
-                }
-                Key::Named(Named::Escape)
-                    if !repeat
-                        && modifiers.is_empty()
-                        && status == iced::event::Status::Ignored =>
-                {
-                    self.update(Message::DismissSaveDialog)
-                }
-                _ => Task::none(),
-            };
         }
         if !review_open && self.page == Page::WinderustBehaviour {
             if let Some(slot) = self.preferences.hotkey_capture {
@@ -1220,9 +1201,6 @@ impl WinderustApp {
         if self.exiting && !message.allowed_during_exit() {
             return Task::none();
         }
-        if matches!(message, Message::Save | Message::Cancel | Message::Close) {
-            self.save_dialog_open = false;
-        }
         match message {
             Message::DismissPickers => {
                 self.preferences.dismiss_picker();
@@ -1231,11 +1209,6 @@ impl WinderustApp {
             #[cfg(feature = "render-smoke")]
             Message::SmokeScreenshot(screenshot) => return smoke::captured(self, screenshot),
             Message::DismissError => {
-                if let Some(after_save) = &mut self.power_plan_control.pending {
-                    let _ = after_save
-                        .warning
-                        .take_if(|warning| warning.as_str() == self.error_message);
-                }
                 self.error_message.clear();
             }
             Message::SearchKeyboard {
@@ -1853,17 +1826,17 @@ impl WinderustApp {
             Message::PowerPlanControl(power_plan_control::Message::Select(guid)) => {
                 let status = &self.status.power_plan_status;
                 if self.power_plans_loaded
-                    && self.power_plan_control.pending.is_none()
+                    && !self.power_plans_loading
+                    && !self.power_plan_control.pending
                     && !power_plan_control::managed_by_adaptive_processor_power(
                         status,
                         &self.power_plans,
                     )
                     && power_plan_control::is_selectable(&self.power_plans, &guid)
+                    && !power_plan_control::current_plan_guid(status, &self.power_plans)
+                        .is_some_and(|current| current.eq_ignore_ascii_case(&guid))
                 {
-                    let current = power_plan_control::current_plan_guid(status, &self.power_plans);
-                    self.power_plan_control.selected_guid = (!current
-                        .is_some_and(|current| current.eq_ignore_ascii_case(&guid)))
-                    .then_some(guid);
+                    return self.switch_power_plan(guid);
                 }
             }
             Message::PowerPlanControl(power_plan_control::Message::AdaptiveProcessorPower) => {
@@ -1878,27 +1851,9 @@ impl WinderustApp {
                 return self.update(Message::Page(Page::AdaptiveProcessorPower));
             }
             Message::PowerPlanSwitchFinished(result) => {
-                let after_save = self.power_plan_control.pending.take();
-                match result {
-                    Ok(()) => {
-                        self.power_plan_control.selected_guid = None;
-                        if after_save.is_some_and(|save| save.exit) && self.closing {
-                            return self.shutdown();
-                        }
-                    }
-                    Err(error) => {
-                        if matches!(
-                            error,
-                            RuntimeCommandError::PowerPlanUnavailable
-                                | RuntimeCommandError::PowerPlan(
-                                    ManualPowerPlanError::ManagedTarget
-                                )
-                        ) {
-                            self.power_plan_control.selected_guid = None;
-                        }
-                        let warning = after_save.and_then(|save| save.warning);
-                        self.error_message = power_plan_switch_error(error, warning.as_deref());
-                    }
+                self.power_plan_control.pending = false;
+                if let Err(error) = result {
+                    self.error_message = power_plan_switch_error(error);
                 }
                 self.power_plans_reload_pending |= self.power_plans_loading;
                 return self.load_power_plans();
@@ -1913,16 +1868,6 @@ impl WinderustApp {
                     Ok(false) => return self.load_power_plans(),
                     Ok(true) => {
                         self.power_plans_loaded = true;
-                        if self
-                            .power_plan_control
-                            .discard_unavailable_plan(&self.power_plans)
-                        {
-                            self.save_dialog_open = false;
-                            if self.error_message.is_empty() {
-                                self.error_message =
-                                    t!("common.selected_plan_unavailable").to_string();
-                            }
-                        }
                         if self.page == Page::AdvancedPowerPlanTuning
                             && self.power_tuning.review_origin().is_none()
                         {
@@ -2331,25 +2276,9 @@ impl WinderustApp {
                 self.closing = true;
                 return self.show_window();
             }
-            Message::OpenSaveDialog => {
-                if self.pending_changes() && self.power_plan_control.pending.is_none() {
-                    self.navigation.dismiss();
-                    self.save_dialog_open = true;
-                    return iced::widget::operation::focus(KEEP_EDITING_BUTTON);
-                }
-            }
-            Message::DismissSaveDialog => {
-                self.save_dialog_open = false;
-                return iced::widget::operation::focus(SAVE_CHANGES_BUTTON);
-            }
-            Message::Save if self.closing && self.exit_blocking_status().is_some() => {}
-            Message::Save | Message::Cancel if self.power_plan_control.pending.is_some() => {}
             Message::Save
-                if self.power_plan_control.selected_guid.is_some()
-                    && !self.pending_settings_changes() =>
-            {
-                return self.finish_save(self.closing, None);
-            }
+                if self.power_plan_control.pending
+                    || self.closing && self.exit_blocking_status().is_some() => {}
             Message::Save if self.pending_editor() => {
                 self.error_message = t!("unsaved.message").to_string();
             }
@@ -2414,8 +2343,10 @@ impl WinderustApp {
                             if !self.power_tuning.dirty {
                                 return if self.pending_settings_changes() {
                                     self.save_settings()
+                                } else if self.closing {
+                                    self.shutdown()
                                 } else {
-                                    self.finish_save(self.closing, None)
+                                    Task::none()
                                 };
                             }
                         }
@@ -2426,7 +2357,6 @@ impl WinderustApp {
                 }
             }
             Message::Cancel => {
-                self.power_plan_control.selected_guid = None;
                 let previous_channel = self.settings.global().general.update_channel;
                 self.settings.cancel();
                 self.adaptive_processor_power.discard_preset_selection();
@@ -2451,9 +2381,6 @@ impl WinderustApp {
                 return self.finish_exit();
             }
             Message::Stay => {
-                if let Some(after_save) = &mut self.power_plan_control.pending {
-                    *after_save = power_plan_control::AfterSave::default();
-                }
                 self.closing = false;
                 self.exit_export_failed = false;
                 self.error_message.clear();
@@ -2537,10 +2464,6 @@ impl WinderustApp {
         Task::none()
     }
 
-    fn pending_changes(&self) -> bool {
-        self.power_plan_control.selected_guid.is_some() || self.pending_settings_changes()
-    }
-
     fn pending_settings_changes(&self) -> bool {
         self.settings.has_unsaved_changes()
             || self.power_tuning.dirty
@@ -2552,7 +2475,7 @@ impl WinderustApp {
         self.page == Page::WinderustBehaviour
             && !self.closing
             && self.settings.load_error().is_some()
-            && !self.pending_changes()
+            && !self.pending_settings_changes()
     }
 
     fn save_settings(&mut self) -> Task<Message> {
@@ -2616,32 +2539,26 @@ impl WinderustApp {
             };
             return Task::none();
         }
-        if let Some(warning) = &warning {
-            self.error_message.clone_from(warning);
+        if let Some(warning) = warning {
+            self.error_message = warning;
         }
         self.reset_editors();
-        self.finish_save(exit_after_save, warning)
+        if exit_after_save {
+            self.shutdown()
+        } else {
+            Task::none()
+        }
     }
 
-    fn finish_save(&mut self, exit_after_save: bool, warning: Option<String>) -> Task<Message> {
-        let Some(guid) = self.power_plan_control.selected_guid.clone() else {
-            return if exit_after_save {
-                self.shutdown()
-            } else {
-                Task::none()
-            };
-        };
+    fn switch_power_plan(&mut self, guid: String) -> Task<Message> {
         let receiver = match self.runtime.request_power_plan_switch(guid) {
             Ok(receiver) => receiver,
             Err(error) => {
-                self.error_message = power_plan_switch_error(error, warning.as_deref());
+                self.error_message = power_plan_switch_error(error);
                 return Task::none();
             }
         };
-        self.power_plan_control.pending = Some(power_plan_control::AfterSave {
-            exit: exit_after_save,
-            warning,
-        });
+        self.power_plan_control.pending = true;
         tasks::run(move || {
             receiver
                 .recv()
@@ -2759,8 +2676,7 @@ impl WinderustApp {
     }
 
     fn blocking_editor_open(&self) -> bool {
-        self.save_dialog_open
-            || self.preferences.replace_settings_open
+        self.preferences.replace_settings_open
             || self.adaptive.preset_open()
             || self.preset_close_message().is_some()
             || self.pending_editor()
@@ -3063,7 +2979,6 @@ impl WinderustApp {
         } else {
             self.power_plan_control
                 .pending
-                .is_some()
                 .then_some("power_plan_control.switching")
         }
     }
@@ -3159,7 +3074,7 @@ impl WinderustApp {
             )]
             .spacing(design::space::LARGE);
             if !self.exiting && self.closing {
-                let pending_changes = self.pending_changes();
+                let pending_changes = self.pending_settings_changes();
                 let blocking_status = self.exit_blocking_status();
                 let can_exit = blocking_status.is_none();
                 let status = blocking_status.unwrap_or(if pending_changes {
@@ -3294,9 +3209,6 @@ impl WinderustApp {
             .max_width(460)
             .style(widgets::surface);
             return centered_modal(content, dialog.into());
-        }
-        if self.save_dialog_open {
-            return centered_modal(content, self.save_dialog());
         }
         if self.process_context_open() {
             iced::widget::stack![
@@ -3534,27 +3446,8 @@ impl WinderustApp {
             };
             header = header.push(item);
         }
-        let settings_are_pending = self.pending_settings_changes();
-        let mut breadcrumb =
-            row![container(header.wrap().vertical_spacing(design::space::TIGHT)).width(Fill),]
-                .spacing(design::space::MEDIUM)
-                .align_y(iced::Center);
-        if !process_actions_open
-            && (settings_are_pending || self.power_plan_control.selected_guid.is_some())
-        {
-            let switching = self.power_plan_control.pending.is_some();
-            let label = if switching {
-                t!("power_plan_control.switching").to_string()
-            } else {
-                format!("{}…", t!("common.save"))
-            };
-            breadcrumb = breadcrumb.push(
-                action_button(label)
-                    .style(widgets::primary_button)
-                    .focus_id(SAVE_CHANGES_BUTTON)
-                    .on_press_maybe((!switching).then_some(Message::OpenSaveDialog)),
-            );
-        }
+        let breadcrumb =
+            container(header.wrap().vertical_spacing(design::space::TIGHT)).width(Fill);
         let mut profile_controls = None;
         if self.page.supports_power_source_profiles() {
             let plugged_in = read_power_source();
@@ -3604,6 +3497,7 @@ impl WinderustApp {
             profile_controls.map(Into::into),
             panel_button,
         );
+        let settings_are_pending = self.pending_settings_changes();
         let content = container(super::motion::wrap(
             super::motion::wrap(
                 super::scrolling::repaint_group(self.page_view(
@@ -3619,7 +3513,13 @@ impl WinderustApp {
         ))
         .width(Fill)
         .height(Fill);
-        let body = page_canvas(shield(heading), content.into());
+        let save_card = (settings_are_pending && !process_actions_open).then(|| {
+            container(self.save_card())
+                .width(Fill)
+                .align_x(iced::Right)
+                .into()
+        });
+        let body = page_canvas(shield(heading), content.into(), save_card);
         let layout = row![
             navigation,
             container(body)
@@ -3809,45 +3709,27 @@ impl WinderustApp {
         iced::widget::stack![layout].into()
     }
 
-    fn save_dialog(&self) -> Element<'static, Message> {
-        let plan = self.power_plan_control.selected_guid.as_deref();
-        let title = if plan.is_some() && !self.pending_settings_changes() {
-            "power_plan_control.save_title"
-        } else {
-            "unsaved.title"
-        };
-        let mut body = column![widgets::heading(
-            t!(title).to_string(),
-            design::typography::DIALOG_TITLE
-        )];
-        if let Some(guid) = plan {
-            let plan = power_plan_control::plan_name(&self.power_plans, guid);
-            body = body.push(
-                text(t!("power_plan_control.save_message", plan = plan).to_string())
-                    .wrapping(text::Wrapping::WordOrGlyph),
-            );
-        }
-        container(
-            body.push(
+    fn save_card(&self) -> Element<'static, Message> {
+        widgets::settings_card(
+            column![
+                widgets::heading(t!("unsaved.title").to_string(), design::typography::BODY),
                 row![
                     iced::widget::Space::new().width(Fill),
-                    action_button(t!("unsaved.keep_editing").to_string())
+                    action_button(t!("common.discard").to_string())
                         .style(widgets::tertiary_button)
-                        .focus_id(KEEP_EDITING_BUTTON)
-                        .on_press(Message::DismissSaveDialog),
-                    action_button(t!("common.discard").to_string()).on_press(Message::Cancel),
+                        .on_press(Message::Cancel),
                     action_button(t!("common.save").to_string())
                         .style(widgets::primary_button)
-                        .on_press(Message::Save),
+                        .on_press_maybe(
+                            (!self.power_plan_control.pending).then_some(Message::Save)
+                        ),
                 ]
                 .spacing(design::space::SMALL),
-            )
-            .spacing(design::space::LARGE),
+            ]
+            .spacing(design::space::SMALL),
         )
-        .padding(design::space::LARGE as u16)
         .width(Fill)
-        .max_width(460)
-        .style(widgets::surface)
+        .max_width(320)
         .into()
     }
 
@@ -4357,7 +4239,7 @@ fn combine_warnings(first: Option<String>, second: Option<String>) -> Option<Str
     }
 }
 
-fn power_plan_switch_error(error: RuntimeCommandError, warning: Option<&str>) -> String {
+fn power_plan_switch_error(error: RuntimeCommandError) -> String {
     let key = match error {
         RuntimeCommandError::PowerPlanUnavailable => "common.selected_plan_unavailable",
         RuntimeCommandError::PowerPlan(ManualPowerPlanError::ManagedByAdaptive) => {
@@ -4383,12 +4265,7 @@ fn power_plan_switch_error(error: RuntimeCommandError, warning: Option<&str>) ->
             "power_plan_control.switch_failed"
         }
     };
-    let error = t!(key);
-    if let Some(warning) = warning {
-        format!("{warning}\n{error}")
-    } else {
-        error.into_owned()
-    }
+    t!(key).into_owned()
 }
 
 fn sync_active_power_plan(
@@ -4546,13 +4423,15 @@ mod tests {
     }
 
     #[test]
-    fn dock_reserves_content_width_and_keeps_header_alignment() {
+    fn dock_and_save_card_reserve_space_and_keep_header_alignment() {
         use iced::advanced::{layout, widget::Tree};
         let renderer = iced::Renderer::new(iced::Font::DEFAULT, iced::Pixels(14.0));
         for width in [780.0, 1440.0, 1800.0] {
             let size = iced::Size::new(width, 600.0);
             let mut expected = None;
-            for profiles in [false, true] {
+            for (profiles, has_save_card) in
+                [(false, false), (true, false), (false, true), (true, true)]
+            {
                 for available in [false, true] {
                     for open in [false, true] {
                         let heading = page_header(
@@ -4564,6 +4443,8 @@ mod tests {
                         let workspace = page_canvas(
                             heading,
                             iced::widget::Space::new().width(Fill).height(Fill).into(),
+                            has_save_card
+                                .then(|| iced::widget::Space::new().width(Fill).height(90).into()),
                         );
                         let panel = (available && open)
                             .then(|| iced::widget::Space::new().height(Fill).into());
@@ -4583,6 +4464,11 @@ mod tests {
                         let canvas = &workspace.children()[0];
                         let column = &canvas.children()[0];
                         let mut bounds = column.children()[1].bounds();
+                        if has_save_card {
+                            let footer = column.children()[2].bounds();
+                            assert!(bounds.y + bounds.height <= footer.y);
+                            assert_eq!(footer.y + footer.height, size.height);
+                        }
                         assert_eq!(column.children()[0].bounds().x, bounds.x);
                         bounds.x += canvas.bounds().x;
                         let content_width = available_width.min(design::CONTENT_WIDTH as f32);

@@ -31,9 +31,9 @@ Prefer visible state, compact controls, and predictable rows. Use restrained acc
   first and reveal advanced options where users need them. Keep essential consequences
   beside the control and longer explanations in Info.
 - Distinguish a switch's configured state, an unsaved edit, and the last verified
-  result from Windows. When edits are pending, show Save… in the shared page
-  header. It opens a centered dialog with Keep editing, Discard, and Save.
-  Keep editing and Escape return to the draft. Discard clears pending edits.
+  result from Windows. Direct commands apply when invoked. Configuration edits
+  use the compact Save / Discard card at the bottom right of the work area.
+  Save commits the draft. Discard clears pending edits.
 - Make core tasks keyboard-operable with visible focus and predictable focus return.
   Give controls meaningful Windows UI Automation names and states. Use at least
   4.5:1 contrast for normal text across supported themes and accent choices. Use
@@ -74,9 +74,9 @@ Prefer visible state, compact controls, and predictable rows. Use restrained acc
 - Rows and table headers should have stable heights across state changes.
 - Rules tables fill the same canvas width as settings cards. Use fixed or computed minimum widths for dense tables and policy columns, with horizontal scrolling when the dock leaves too little room. Do not let dynamic labels resize the process list.
 - Keep the last rule reachable with the dock open at the minimum window size,
-  including when both scrollbars are needed. Save lives in the header and leaves
-  the editor's scrolling area available. Process List hides Save while its
-  context menu or dialog is open and keeps the pending edits.
+  including when both scrollbars are needed. The Save card uses its own space
+  below the editor. Process List hides the card while its context menu or dialog
+  is open and keeps the pending edits.
 - Constrain long process names, labels, and status values so they do not resize adjacent columns.
 - Group related settings beneath each section heading in one card, with shared internal dividers between complete rows. Every grouped card needs a concise, localized category heading outside its outline. Apply this to pages, preset editors, rule dialogs, and process details; independent collapsible groups use their own headers. Keep each label, description, and control together; avoid a separate card for every setting. Preserve independent collapsible feature groups.
 - Avoid nested cards. Cards are for repeated rows, setting groups, status blocks, popovers, and tool surfaces.
@@ -243,10 +243,10 @@ hover/press; background shading supplies feedback.
   every power-plan rail uses Status, Current power plan, Successful actions, and Failed actions.
   Power-plan actions are recorded only after the controller verifies the Windows plan transition.
 - The Power Plan Control landing page shows the active Windows plan in a compact
-  selector with an automation summary. Choosing a different plan stages it and
-  makes Save available. The Save dialog names the staged plan. Keep the active
-  plan visible while a different plan is staged. If a read fails, show the read
-  failure in the automation summary.
+  selector with an automation summary. Choosing a different plan requests a
+  switch immediately. Keep showing the verified active plan and disable the
+  selector until the switch finishes. Unsaved automation settings remain in the
+  draft. If a read fails, show the read failure in the automation summary.
   When Adaptive Processor Power owns the active plan, show Winderust Adaptive
   in the disabled selector next to its settings shortcut. Enable manual selection
   after Windows confirms the plan release. Keep restoration status in the Status rail.

@@ -2486,7 +2486,7 @@ impl RuntimeCore {
             return Err(ManualPowerPlanError::ManagedTarget.into());
         }
         let now = Instant::now();
-        // Save can disable Adaptive Processor Power and submit a staged selection together.
+        // Finish Adaptive Processor Power cleanup when the current policy allows it.
         if !(settings.general.enabled && adaptive_power_plan_required(settings))
             && !self.adaptive_power_plan_waiting_for_source()
             && self.power_plan_controller.has_pending_cleanup()

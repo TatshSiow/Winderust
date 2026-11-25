@@ -267,8 +267,7 @@ status:
   action_log_export_failed: "Failed to export log to %{path}: %{error}"
 
 unsaved:
-  title: "Save changes?"
-  keep_editing: "Keep editing"
+  title: "Unsaved settings"
   message: "Finish or discard your pending edits before continuing."
 
 admin_rights:
@@ -1274,11 +1273,9 @@ power_plan_control:
   paused_on_ac: "Paused on A/C"
   waiting_for_observation: "Waiting for required observations"
   no_rule_selects_plan: "No rule currently selects a plan"
-  switch_plan_help: "Using %{plan}. Automation can still change the plan."
+  switch_plan_help: "Select a plan to switch immediately."
   choose_plan: "Choose a power plan"
   switching: "Switching…"
-  save_title: "Power plan change"
-  save_message: "Switch Windows to %{plan}."
   switch_failed: "Could not switch the power plan."
   switch_active_recovery_pending: "Windows reported the selected power plan as active. Winderust could not confirm the recovery update."
   switch_managed_active: "Adaptive Processor Power is managing the current power plan."

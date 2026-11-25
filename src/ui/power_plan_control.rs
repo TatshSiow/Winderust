@@ -22,8 +22,7 @@ pub(super) enum Message {
 
 #[derive(Debug, Default)]
 pub(super) struct Editor {
-    pub(super) selected_guid: Option<String>,
-    pub(super) pending: Option<AfterSave>,
+    pub(super) pending: bool,
     fallback_polling_interval: Option<String>,
 }
 
@@ -64,19 +63,6 @@ impl Editor {
             },
         )
     }
-
-    pub(super) fn discard_unavailable_plan(&mut self, plans: &[PowerPlan]) -> bool {
-        if self.pending.is_some()
-            || !self
-                .selected_guid
-                .as_deref()
-                .is_some_and(|guid| !is_selectable(plans, guid))
-        {
-            return false;
-        }
-        self.selected_guid = None;
-        true
-    }
 }
 
 fn parse_fallback_polling_interval(value: &str) -> Option<u64> {
@@ -92,12 +78,6 @@ pub(super) fn is_selectable(plans: &[PowerPlan], guid: &str) -> bool {
         .any(|plan| !plan.managed_adaptive && plan.guid.eq_ignore_ascii_case(guid))
 }
 
-#[derive(Debug, Default)]
-pub(super) struct AfterSave {
-    pub(super) exit: bool,
-    pub(super) warning: Option<String>,
-}
-
 pub(super) fn view(
     status: &PowerPlanStatus,
     plans: &[PowerPlan],
@@ -109,7 +89,16 @@ pub(super) fn view(
         return widgets::settings_card(managed_switch()).into();
     }
     let current = current_plan_guid(status, plans);
-    let selector = manual_switch(plans, plans_loaded, loading, current, editor);
+    let can_select = plans_loaded
+        && !loading
+        && !editor.pending
+        && plans.iter().any(|plan| !plan.managed_adaptive);
+    let help = if editor.pending {
+        Some("power_plan_control.switching")
+    } else {
+        can_select.then_some("power_plan_control.switch_plan_help")
+    };
+    let selector = manual_switch(plans, can_select, loading, current, help);
     let (detail, failed) = if status.active_plan_read_error.is_some() {
         (
             t!("power_plan_control.active_plan_read_failed").into_owned(),
@@ -345,44 +334,32 @@ fn indexed_mode_label(mode: String, rule_index: Option<usize>) -> String {
 
 fn manual_switch(
     plans: &[PowerPlan],
-    plans_loaded: bool,
+    can_select: bool,
     loading: bool,
     current: Option<&str>,
-    editor: &Editor,
+    help: Option<&'static str>,
 ) -> Element<'static, Message> {
-    let choices: Vec<_> = plans
-        .iter()
-        .filter(|plan| !plan.managed_adaptive)
-        .map(|plan| widgets::Choice(plan.guid.clone(), plan.name.clone()))
-        .collect();
-    let selected = editor
-        .selected_guid
-        .as_deref()
-        .or(current)
-        .and_then(|guid| {
+    let current_name = current.map(|guid| plan_name(plans, guid));
+    let selector: Element<'static, Message> = if can_select {
+        let choices: Vec<_> = plans
+            .iter()
+            .filter(|plan| !plan.managed_adaptive)
+            .map(|plan| widgets::Choice(plan.guid.clone(), plan.name.clone()))
+            .collect();
+        let selected = current.and_then(|guid| {
             choices
                 .iter()
                 .find(|choice| choice.0.eq_ignore_ascii_case(guid))
                 .cloned()
         });
-    let eligible = plans_loaded && !loading && editor.pending.is_none() && !choices.is_empty();
-    let staged = eligible
-        && selected
-            .as_ref()
-            .is_some_and(|plan| !current.is_some_and(|guid| plan.0.eq_ignore_ascii_case(guid)));
-    let current_name = current.map(|guid| plan_name(plans, guid));
-    let selector: Element<'static, Message> = if eligible {
-        let placeholder = if let Some(name) = current_name.as_ref() {
-            name.clone()
-        } else {
-            t!("power_plan_control.choose_plan").to_string()
-        };
+        let placeholder =
+            current_name.unwrap_or_else(|| t!("power_plan_control.choose_plan").to_string());
         widgets::pick_list(choices, selected, |choice| Message::Select(choice.0))
             .placeholder(placeholder)
             .width(design::SELECT_WIDTH)
             .into()
     } else {
-        let message = current_name.clone().unwrap_or_else(|| {
+        let message = current_name.unwrap_or_else(|| {
             t!(if loading {
                 "common.loading"
             } else {
@@ -392,17 +369,15 @@ fn manual_switch(
         });
         disabled_plan_selector(message)
     };
-    let mut label = column![widgets::setting_title("common.current_power_plan")]
-        .spacing(design::space::TIGHT)
-        .width(Fill);
-    if staged {
-        let current = current_name.unwrap_or_else(|| t!("common.unknown").to_string());
-        label = label.push(
-            text(t!("power_plan_control.switch_plan_help", plan = current).to_string())
+    let label = column![widgets::setting_title("common.current_power_plan")]
+        .extend(help.map(|key| {
+            text(t!(key).to_string())
                 .size(design::typography::SECONDARY)
-                .style(text::secondary),
-        );
-    }
+                .style(text::secondary)
+                .into()
+        }))
+        .spacing(design::space::TINY)
+        .width(Fill);
     row![label, selector]
         .spacing(design::space::MEDIUM)
         .align_y(iced::Center)
@@ -611,27 +586,6 @@ mod tests {
     #[test]
     fn unknown_plan_guid_is_not_shown_as_its_name() {
         assert_eq!(plan_name(&[], "unknown-plan-guid"), t!("common.unknown"));
-    }
-
-    #[test]
-    fn a_fresh_catalog_clears_an_unavailable_draft_after_the_switch_finishes() {
-        let mut editor = Editor {
-            selected_guid: Some("Balanced".into()),
-            pending: Some(AfterSave::default()),
-            ..Default::default()
-        };
-        assert!(!editor.discard_unavailable_plan(&[]));
-        editor.pending = None;
-
-        let plans = [PowerPlan {
-            guid: "balanced".into(),
-            name: "Balanced".into(),
-            active: false,
-            managed_adaptive: false,
-        }];
-        assert!(!editor.discard_unavailable_plan(&plans));
-        assert!(editor.discard_unavailable_plan(&[]));
-        assert!(editor.selected_guid.is_none());
     }
 
     #[test]

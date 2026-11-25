@@ -267,8 +267,7 @@ status:
   action_log_export_failed: "無法將動作記錄匯出至 %{path}：%{error}"
 
 unsaved:
-  title: "儲存變更？"
-  keep_editing: "繼續編輯"
+  title: "未儲存的設定"
   message: "請先完成或放棄目前的編輯。"
 
 admin_rights:
@@ -1277,11 +1276,9 @@ power_plan_control:
   paused_on_ac: "插電期間暫停切換"
   waiting_for_observation: "等待必要的觀測資料"
   no_rule_selects_plan: "目前沒有規則選擇電源計畫"
-  switch_plan_help: "目前使用 %{plan}。自動化仍可切換電源計畫。"
+  switch_plan_help: "選取後立即切換電源計畫。"
   choose_plan: "選擇電源計畫"
   switching: "切換中…"
-  save_title: "電源計畫變更"
-  save_message: "將 Windows 電源計畫切換為 %{plan}。"
   switch_failed: "無法切換電源計畫。"
   switch_active_recovery_pending: "Windows 回報選取的電源計畫為使用中。Winderust 無法確認復原記錄已更新。"
   switch_managed_active: "目前的電源計畫由自適應處理器電源管理。"
