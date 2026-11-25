@@ -375,6 +375,9 @@ process_list:
   cpu_time_help: "CPU 時間是所有執行緒使用 CPU 的時間總和。群組會合計目前成員的時間。"
   working_set: "工作集"
   private_commit: "認可大小"
+  dedicated_gpu_memory: "專用 GPU 記憶體"
+  shared_gpu_memory: "共用 GPU 記憶體"
+  gpu_memory_grouped_help: "展開應用程式群組以查看各處理程序使用的 GPU 記憶體。"
   memory_counter_help: "工作集是常駐實體記憶體的用量，可能包含共用頁面。認可大小是 Windows 為處理程序認可的私人記憶體量。"
   no_path_specific_plan: "此路徑不指定電源計畫"
 

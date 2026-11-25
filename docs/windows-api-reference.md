@@ -1088,6 +1088,28 @@ therefore reports suspension only for process IDs currently suspended and
 tracked by Winderust; it does not infer suspension from undocumented NT thread
 state.
 
+### Dedicated GPU Memory and Shared GPU Memory
+
+`src/platform/windows/gpu_memory.rs` reads `\GPU Process Memory(*)\Dedicated Usage`
+and `\GPU Process Memory(*)\Shared Usage` in one local PDH query. The Process List
+requests the query only when a GPU memory column is visible. The query uses
+[PdhAddEnglishCounterW](https://learn.microsoft.com/en-us/windows/win32/api/pdh/nf-pdh-pdhaddenglishcounterw),
+[PdhCollectQueryData](https://learn.microsoft.com/en-us/windows/win32/api/pdh/nf-pdh-pdhcollectquerydata),
+and [PdhGetFormattedCounterArrayW](https://learn.microsoft.com/en-us/windows/win32/api/pdh/nf-pdh-pdhgetformattedcounterarrayw)
+to read byte counts without opening GPU memory handles or enabling debug privilege.
+
+The provider's instance convention, observed with `typeperf -qx "GPU Process Memory"`,
+is `pid_<pid>_luid_<high>_<low>_phys_<index>`. The sampler totals distinct
+adapter and physical GPU entries per process. Missing or invalid readings stay
+unavailable. Windows can attribute the same allocation to more than one
+process, so Process List omits a total for grouped apps.
+[Microsoft's GPU memory breakdown](https://devblogs.microsoft.com/directx/gpus-in-the-task-manager/#details-tab)
+
+On affected Windows 10 systems, the per-process counter can overstate dedicated
+GPU memory after applications recreate GPU resources. The same Windows issue
+affects the Dedicated GPU memory column in Task Manager's Details pane.
+[Microsoft KB 4490156](https://learn.microsoft.com/en-us/troubleshoot/windows-client/performance/gpu-process-memory-counters-report-wrong-value)
+
 ## GPU Engine utilization
 
 - Implementation: `src/platform/windows/gpu_usage.rs` owns the English PDH wildcard query for

@@ -24,7 +24,9 @@ const RAIL_RESIZE_TALL: usize = 110;
 const RAIL_RESIZE_COMPACT: usize = 111;
 const KEEP_AWAKE_READY: usize = 112;
 const KEEP_AWAKE_ACTIVE: usize = 113;
-const EXTRA_STATES: usize = 114;
+const GPU_MEMORY_WIDE: usize = 114;
+const GPU_MEMORY_COMPACT: usize = 115;
+const EXTRA_STATES: usize = 116;
 pub(super) struct Run {
     pages: Vec<Page>,
     index: usize,
@@ -112,6 +114,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                     | DOCK_FOCUS_COMPACT
                     | MEMORY_TRIM_UNKNOWN
                     | KEEP_AWAKE_ACTIVE
+                    | GPU_MEMORY_COMPACT
             )
         });
         let page = match extra {
@@ -152,6 +155,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             Some(47) => Page::AdaptiveEngine,
             Some(48 | 79..=80) => Page::ProcessList,
             Some(PROCESS_LIST_COMMIT_WIDE | PROCESS_LIST_COMMIT_COMPACT) => Page::ProcessList,
+            Some(GPU_MEMORY_WIDE | GPU_MEMORY_COMPACT) => Page::ProcessList,
             Some(CONTRAST_DARK_APPEARANCE) => Page::LanguageAndAppearance,
             Some(CONTRAST_LIGHT_PROCESS_LIST) => Page::ProcessList,
             Some(49 | 86) => Page::ActionLog,
@@ -461,6 +465,19 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                     cpu_allocation::Message::ClosePreset,
                 ));
             }
+        }
+        if matches!(extra, Some(GPU_MEMORY_WIDE | GPU_MEMORY_COMPACT)) {
+            use process_list::{Message as ProcessMessage, Sort};
+
+            for column in [Sort::DedicatedGpuMemory, Sort::SharedGpuMemory] {
+                let _ = app.update(Message::Processes(ProcessMessage::Column(column, true)));
+            }
+            let _ = app.update(Message::Processes(ProcessMessage::Group(
+                extra == Some(GPU_MEMORY_COMPACT),
+            )));
+            let _ = app.update(Message::Processes(ProcessMessage::Sort(
+                Sort::DedicatedGpuMemory,
+            )));
         }
         let was_open = app.side_panel_open;
         let navigate = app.update(Message::Page(page));
@@ -861,12 +878,17 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                 PROCESS_LIST_COMMIT_WIDE
                     | PROCESS_LIST_COMMIT_COMPACT
                     | CONTRAST_LIGHT_PROCESS_LIST
+                    | GPU_MEMORY_WIDE
+                    | GPU_MEMORY_COMPACT
             )
         ) {
             let _ = app.update(Message::Processes(process_list::Message::CloseSelection));
             app.settings = SettingsEditor::with_settings(app.settings.global().clone());
             app.power_plan_control.selected_guid = None;
             assert!(!app.processes.modal_open());
+        }
+        if matches!(extra, Some(GPU_MEMORY_WIDE | GPU_MEMORY_COMPACT)) {
+            app.side_panel_open = extra == Some(GPU_MEMORY_COMPACT);
         }
         if extra == Some(HOME_WITHOUT_BATTERY) {
             use crate::backend::power_source::{BatteryStatus, PowerStatus};
@@ -1352,7 +1374,8 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                 | DOCK_FOCUS_COMPACT
                 | MEMORY_TRIM_PARTIAL
                 | MEMORY_TRIM_UNKNOWN
-                | KEEP_AWAKE_ACTIVE,
+                | KEEP_AWAKE_ACTIVE
+                | GPU_MEMORY_COMPACT,
             ) => iced::Size::new(900.0, 620.0),
             Some(RESOURCE_PREVIEW_INSTANCE) => iced::Size::new(900.0, 620.0),
             Some(

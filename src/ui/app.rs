@@ -2065,7 +2065,7 @@ impl WinderustApp {
                 if page_needs_power_plans(page, self.processes.rulesets_open()) {
                     tasks.push(self.load_power_plans());
                 }
-                if page == Page::ProcessList {
+                if page == Page::ProcessList && !self.hidden {
                     tasks.push(
                         self.processes
                             .update(

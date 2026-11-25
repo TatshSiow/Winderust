@@ -55,6 +55,7 @@ pub(crate) mod appearance;
 pub(crate) mod cpu_allocation;
 pub(crate) mod cpu_limiter;
 pub(crate) mod dynamic_priority_boost;
+pub(crate) mod gpu_memory;
 pub(crate) mod gpu_priority;
 pub(crate) mod gpu_usage;
 pub(crate) mod instance_limits;

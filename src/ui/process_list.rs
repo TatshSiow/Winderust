@@ -7,6 +7,7 @@ use crate::config::*;
 use crate::foreground::{
     self, ProcessActionTarget, ProcessActionTargetError, ProcessInfo, ProcessResourceSample,
 };
+use crate::platform::windows::gpu_memory::{self, GpuMemorySample};
 use crate::ui::scrolling::scrollable;
 use iced::widget::{column, container, image, mouse_area, responsive, row, text, Space};
 use iced::{
@@ -40,6 +41,7 @@ type Icons = HashMap<PathBuf, Option<Arc<image::Handle>>>;
 pub(super) struct Population {
     processes: Vec<ProcessInfo>,
     samples: BTreeMap<u32, ProcessResourceSample>,
+    gpu_memory: BTreeMap<u32, GpuMemorySample>,
     total_memory_bytes: Option<u64>,
 }
 #[derive(Debug, Clone)]
@@ -147,10 +149,12 @@ pub(super) enum Sort {
     CpuTime,
     WorkingSet,
     PrivateCommit,
+    DedicatedGpuMemory,
+    SharedGpuMemory,
     User,
 }
 impl Sort {
-    const ALL: [Self; 8] = [
+    const ALL: [Self; 10] = [
         Self::Name,
         Self::Pid,
         Self::Status,
@@ -158,6 +162,8 @@ impl Sort {
         Self::CpuTime,
         Self::WorkingSet,
         Self::PrivateCommit,
+        Self::DedicatedGpuMemory,
+        Self::SharedGpuMemory,
         Self::User,
     ];
     fn label(self) -> String {
@@ -169,9 +175,15 @@ impl Sort {
             Self::CpuTime => "process_list.cpu_time",
             Self::WorkingSet => "process_list.working_set",
             Self::PrivateCommit => "process_list.private_commit",
+            Self::DedicatedGpuMemory => "process_list.dedicated_gpu_memory",
+            Self::SharedGpuMemory => "process_list.shared_gpu_memory",
             Self::User => "process_list.user",
         })
         .to_string()
+    }
+
+    fn is_gpu_memory(self) -> bool {
+        matches!(self, Self::DedicatedGpuMemory | Self::SharedGpuMemory)
     }
 }
 #[derive(Debug, Clone, Copy)]
@@ -269,6 +281,7 @@ pub(super) struct ProcessList {
     offsets: Vec<f32>,
     rows_revision: u64,
     samples: BTreeMap<u32, ProcessResourceSample>,
+    gpu_memory: BTreeMap<u32, GpuMemorySample>,
     total_memory_bytes: Option<u64>,
     cpu: HashMap<u32, f32>,
     suspended_process_instances: Vec<(u32, u64)>,
@@ -311,6 +324,7 @@ impl Default for ProcessList {
             offsets: vec![0.0],
             rows_revision: 0,
             samples: BTreeMap::new(),
+            gpu_memory: BTreeMap::new(),
             total_memory_bytes: None,
             cpu: HashMap::new(),
             suspended_process_instances: Vec::new(),
@@ -327,7 +341,9 @@ impl Default for ProcessList {
             expanded: HashSet::new(),
             sort: Sort::Name,
             descending: false,
-            columns: Sort::ALL.map(|column| !matches!(column, Sort::CpuTime | Sort::PrivateCommit)),
+            columns: Sort::ALL.map(|column| {
+                !column.is_gpu_memory() && !matches!(column, Sort::CpuTime | Sort::PrivateCommit)
+            }),
             column_widths: [None; Sort::ALL.len()],
             resizing: None,
             selected: None,
@@ -366,7 +382,13 @@ impl ProcessList {
         }
         self.refreshing = true;
         self.refresh_started_at = Some(now);
-        background(load_population, Message::Loaded)
+        let sample_gpu_memory = self.gpu_memory_visible();
+        background(move || load_population(sample_gpu_memory), Message::Loaded)
+    }
+
+    fn gpu_memory_visible(&self) -> bool {
+        self.columns[Sort::DedicatedGpuMemory as usize]
+            || self.columns[Sort::SharedGpuMemory as usize]
     }
 
     pub(super) fn context_open(&self) -> bool {
@@ -436,6 +458,9 @@ impl ProcessList {
                         }
                         self.processes = data.processes;
                         self.samples = data.samples;
+                        if self.gpu_memory_visible() {
+                            self.gpu_memory = data.gpu_memory;
+                        }
                         self.total_memory_bytes = data.total_memory_bytes;
                         let paths = self
                             .processes
@@ -470,7 +495,13 @@ impl ProcessList {
                             );
                         }
                     }
-                    Err(e) => self.error = Some(e),
+                    Err(e) => {
+                        self.gpu_memory.clear();
+                        if self.sort.is_gpu_memory() {
+                            self.rebuild();
+                        }
+                        self.error = Some(e);
+                    }
                 }
             }
             Message::IconsLoaded(result) => {
@@ -517,15 +548,26 @@ impl ProcessList {
                     self.descending = !self.descending;
                 } else {
                     self.sort = sort;
-                    self.descending = matches!(
-                        sort,
-                        Sort::Cpu | Sort::CpuTime | Sort::WorkingSet | Sort::PrivateCommit
-                    );
+                    self.descending = sort.is_gpu_memory()
+                        || matches!(
+                            sort,
+                            Sort::Cpu | Sort::CpuTime | Sort::WorkingSet | Sort::PrivateCommit
+                        );
                 }
                 self.rebuild();
             }
             Message::Column(column, visible) => {
                 self.columns[column as usize] = visible;
+                if column.is_gpu_memory() && !visible {
+                    if !self.gpu_memory_visible() {
+                        self.gpu_memory.clear();
+                    }
+                    if self.sort == column {
+                        self.sort = Sort::Name;
+                        self.descending = false;
+                        self.rebuild();
+                    }
+                }
                 self.fit_visible_columns();
             }
             Message::Menu(message) => {
@@ -929,7 +971,12 @@ impl ProcessList {
             let minimum = match col {
                 Sort::Name => 160.0,
                 Sort::Status => 140.0,
-                Sort::CpuTime | Sort::User | Sort::WorkingSet | Sort::PrivateCommit => 100.0,
+                Sort::CpuTime
+                | Sort::User
+                | Sort::WorkingSet
+                | Sort::PrivateCommit
+                | Sort::DedicatedGpuMemory
+                | Sort::SharedGpuMemory => 100.0,
                 _ => 80.0,
             };
             self.column_widths[*col as usize] = Some((*width + x - start).max(minimum));
@@ -972,6 +1019,14 @@ impl ProcessList {
                 .resource_total(entry, |sample| sample.private_commit_bytes)
                 .map_or_else(|| t!("common.unknown").into_owned(), format_megabytes)
                 .into(),
+            Sort::DedicatedGpuMemory | Sort::SharedGpuMemory => {
+                match self.gpu_memory_bytes(entry, col) {
+                    None => Cow::Borrowed("—"),
+                    Some(0) => Cow::Borrowed("0 MB"),
+                    Some(1..=49_999) => Cow::Borrowed("<0.1 MB"),
+                    Some(bytes) => format_megabytes(bytes).into(),
+                }
+            }
             Sort::User => self.user(entry).into(),
             Sort::Status => t!(self.status_key(entry)),
         }
@@ -1278,6 +1333,11 @@ impl ProcessList {
                 Sort::PrivateCommit => self
                     .resource_total(a, |sample| sample.private_commit_bytes)
                     .cmp(&self.resource_total(b, |sample| sample.private_commit_bytes)),
+                Sort::DedicatedGpuMemory | Sort::SharedGpuMemory => {
+                    return self
+                        .compare_gpu_memory(a, b)
+                        .then_with(|| a.key.cmp(&b.key));
+                }
                 Sort::User => self.user(a).cmp(&self.user(b)),
                 Sort::Status => self.status_key(a).cmp(self.status_key(b)),
                 Sort::Name => compare_process_names(
@@ -1290,7 +1350,7 @@ impl ProcessList {
         });
         self.rows.clear();
         for group in groups {
-            let children = if group.indices.len() > 1 && self.expanded.contains(&group.key) {
+            let mut children = if group.indices.len() > 1 && self.expanded.contains(&group.key) {
                 group
                     .indices
                     .iter()
@@ -1303,6 +1363,9 @@ impl ProcessList {
             } else {
                 Vec::new()
             };
+            if self.sort.is_gpu_memory() {
+                children.sort_by(|a, b| self.compare_gpu_memory(a, b));
+            }
             self.rows.push(group);
             self.rows.extend(children);
         }
@@ -1327,6 +1390,29 @@ impl ProcessList {
     }
     fn cpu_time_total(&self, entry: &Entry) -> Option<u64> {
         self.resource_total(entry, |sample| Some(sample.cpu.cpu_time_100ns))
+    }
+
+    fn gpu_memory_bytes(&self, entry: &Entry, column: Sort) -> Option<u64> {
+        // Cross-process allocations can be counted for multiple members of a group.
+        let [index] = entry.indices.as_slice() else {
+            return None;
+        };
+        let sample = self.gpu_memory.get(&self.processes[*index].id)?;
+        match column {
+            Sort::DedicatedGpuMemory => sample.dedicated_bytes,
+            Sort::SharedGpuMemory => sample.shared_bytes,
+            _ => None,
+        }
+    }
+
+    fn compare_gpu_memory(&self, a: &Entry, b: &Entry) -> std::cmp::Ordering {
+        let left = self.gpu_memory_bytes(a, self.sort);
+        let right = self.gpu_memory_bytes(b, self.sort);
+        match (left, right) {
+            (Some(left), Some(right)) if self.descending => right.cmp(&left),
+            (Some(left), Some(right)) => left.cmp(&right),
+            _ => right.is_some().cmp(&left.is_some()),
+        }
     }
 
     fn resource_total(
@@ -1428,6 +1514,13 @@ impl ProcessList {
         if self.columns[Sort::CpuTime as usize] {
             filters = filters.push(
                 text(t!("process_list.cpu_time_help").to_string())
+                    .size(design::typography::SECONDARY)
+                    .style(text::secondary),
+            );
+        }
+        if self.grouped && self.gpu_memory_visible() {
+            filters = filters.push(
+                text(t!("process_list.gpu_memory_grouped_help").to_string())
                     .size(design::typography::SECONDARY)
                     .style(text::secondary),
             );
@@ -2458,6 +2551,7 @@ fn column_width(c: Sort) -> f32 {
         Sort::Pid => 70.0,
         Sort::Cpu | Sort::CpuTime | Sort::WorkingSet => 100.0,
         Sort::PrivateCommit => 130.0,
+        Sort::DedicatedGpuMemory | Sort::SharedGpuMemory => 190.0,
         Sort::Status => 180.0,
         Sort::User => 200.0,
     }
@@ -2499,16 +2593,24 @@ fn background<T: Send + 'static>(
     super::tasks::run(work).map(move |result| map(result.and_then(|value| value)))
 }
 
-fn load_population() -> Result<Population, String> {
+fn load_population(sample_gpu_memory: bool) -> Result<Population, String> {
     let processes = foreground::list_processes_with_paths()?;
+    let mut gpu_memory = if sample_gpu_memory {
+        gpu_memory::sample().unwrap_or_default()
+    } else {
+        BTreeMap::new()
+    };
     let samples = foreground::sample_process_resources(
         &processes,
         foreground::ProcessResourceSampling::WithEfficiencyMode,
     );
+    // Verify that the catalog process still owns its PID after the GPU counter snapshot.
+    gpu_memory.retain(|pid, _| samples.contains_key(pid));
     Ok(Population {
         total_memory_bytes: crate::dashboard_metrics::sample_memory_usage().total_physical_bytes,
         processes,
         samples,
+        gpu_memory,
     })
 }
 
@@ -2664,6 +2766,83 @@ mod tests {
             list.cell_value(&list.rows[3], Sort::PrivateCommit),
             t!("common.unknown")
         );
+    }
+
+    #[test]
+    fn gpu_memory_sorts_bytes_and_omits_group_totals_and_unavailable_values() {
+        let mut list = ProcessList {
+            processes: vec![
+                process(10, 1, "a.exe"),
+                process(11, 2, "a.exe"),
+                process(12, 3, "b.exe"),
+                process(13, 4, "c.exe"),
+            ],
+            gpu_memory: BTreeMap::from([
+                (
+                    10,
+                    GpuMemorySample {
+                        dedicated_bytes: Some(1_000_001),
+                        shared_bytes: Some(0),
+                    },
+                ),
+                (
+                    11,
+                    GpuMemorySample {
+                        dedicated_bytes: Some(1_000_002),
+                        shared_bytes: Some(1),
+                    },
+                ),
+                (
+                    12,
+                    GpuMemorySample {
+                        dedicated_bytes: Some(0),
+                        shared_bytes: None,
+                    },
+                ),
+            ]),
+            expanded: HashSet::from([foreground::executable_grouping_key(Path::new("a.exe"))]),
+            sort: Sort::DedicatedGpuMemory,
+            descending: true,
+            memory_percentage: true,
+            ..ProcessList::default()
+        };
+        let indices = |list: &ProcessList| {
+            list.rows
+                .iter()
+                .map(|row| row.indices[0])
+                .collect::<Vec<_>>()
+        };
+
+        list.rebuild();
+        assert_eq!(indices(&list), [2, 0, 1, 0, 3]);
+        assert_eq!(
+            list.cell_value(&list.rows[0], Sort::DedicatedGpuMemory),
+            "0 MB"
+        );
+        assert_eq!(list.cell_value(&list.rows[0], Sort::SharedGpuMemory), "—");
+        assert_eq!(
+            list.cell_value(&list.rows[1], Sort::DedicatedGpuMemory),
+            "—"
+        );
+        assert_eq!(
+            list.cell_value(&list.rows[2], Sort::DedicatedGpuMemory),
+            "1.0 MB"
+        );
+        assert_eq!(
+            list.cell_value(&list.rows[2], Sort::SharedGpuMemory),
+            "<0.1 MB"
+        );
+        assert_eq!(
+            list.cell_value(&list.rows[3], Sort::SharedGpuMemory),
+            "0 MB"
+        );
+
+        list.grouped = false;
+        list.rebuild();
+        assert_eq!(indices(&list), [1, 0, 2, 3]);
+        list.descending = false;
+        list.rebuild();
+        assert_eq!(indices(&list), [2, 0, 1, 3]);
     }
 
     #[test]
@@ -2987,7 +3166,7 @@ mod tests {
         let _ = super::super::widgets::text_width("Home", design::typography::BODY);
         eprintln!("Font warmup: {:?}", font_start.elapsed());
         let start = Instant::now();
-        let population = load_population().unwrap();
+        let population = load_population(false).unwrap();
         let sampled = start.elapsed();
         let mut list = ProcessList {
             processes: population.processes,
@@ -3035,6 +3214,7 @@ mod tests {
         let population = || Population {
             processes: vec![process(10, 100, path.to_str().unwrap())],
             samples: BTreeMap::new(),
+            gpu_memory: BTreeMap::new(),
             total_memory_bytes: None,
         };
         let icons = list.update(Message::Loaded(Ok(population())), &mut editor, &runtime);
@@ -3552,24 +3732,20 @@ mod tests {
         let mut list = ProcessList::default();
         assert!(!list.columns[Sort::CpuTime as usize]);
         assert!(!list.columns[Sort::PrivateCommit as usize]);
+        assert!(!list.gpu_memory_visible());
         let widths = list.layout_widths(1200.0);
-        assert_eq!(
-            widths.iter().sum::<f32>()
-                - widths[Sort::PrivateCommit as usize]
-                - widths[Sort::CpuTime as usize]
-                + 5.0 * 8.0
-                + 32.0,
-            1200.0
-        );
+        let visible_width = |list: &ProcessList, widths: [f32; Sort::ALL.len()]| {
+            widths
+                .into_iter()
+                .zip(list.columns)
+                .filter_map(|(width, visible)| visible.then_some(width))
+                .sum::<f32>()
+        };
+        assert_eq!(visible_width(&list, widths) + 5.0 * 8.0 + 32.0, 1200.0);
         list.columns[Sort::PrivateCommit as usize] = true;
         list.columns[Sort::User as usize] = false;
         let widths = list.layout_widths(1200.0);
-        assert_eq!(
-            widths[..Sort::User as usize].iter().sum::<f32>() - widths[Sort::CpuTime as usize]
-                + 5.0 * 8.0
-                + 32.0,
-            1200.0
-        );
+        assert_eq!(visible_width(&list, widths) + 5.0 * 8.0 + 32.0, 1200.0);
         assert_eq!(widths[Sort::Name as usize], column_width(Sort::Name));
         let mut app = process(10, 100, "app.exe");
         app.name = "a_very_long_executable_name_that_must_fit_in_the_column.exe".into();
