@@ -166,6 +166,15 @@ impl Settings {
 
 impl AdaptiveEngineProcessSettings {
     pub(crate) fn validate_cpu_behaviour(&self) -> Result<(), String> {
+        if self
+            .foreground_cpu_threshold_percent
+            .is_some_and(|threshold| !(1..=100).contains(&threshold))
+        {
+            return Err(
+                rust_i18n::t!("adaptive_engine_process.foreground_cpu_threshold_invalid")
+                    .into_owned(),
+            );
+        }
         if !(ADAPTIVE_RESTRAINT_TRIGGER_MIN_MS..=ADAPTIVE_RESTRAINT_TRIGGER_MAX_MS)
             .contains(&self.restraint_trigger_time_ms)
         {

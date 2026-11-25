@@ -1116,6 +1116,12 @@ pub enum AdaptivePressureSource {
     Both,
 }
 
+impl AdaptivePressureSource {
+    pub(crate) const fn supports_separate_foreground_threshold(self) -> bool {
+        matches!(self, Self::Either | Self::Both)
+    }
+}
+
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AdaptiveRestraintPriority {
@@ -1187,6 +1193,7 @@ pub struct AdaptiveEngineProcessSettings {
     pub pressure_source: AdaptivePressureSource,
     pub exclude_service_hosts: bool,
     pub foreground_or_system_cpu_threshold_percent: u8,
+    pub foreground_cpu_threshold_percent: Option<u8>,
     pub background_app_cpu_threshold_percent: u8,
     pub cpu_recovery_threshold_percent: u8,
     pub reaction_time_ms: u64,
@@ -1262,6 +1269,8 @@ struct AdaptiveEngineProcessSettingsWire {
     #[serde(default)]
     pub exclude_service_hosts: bool,
     pub foreground_or_system_cpu_threshold_percent: u8,
+    #[serde(default)]
+    pub foreground_cpu_threshold_percent: Option<u8>,
     pub background_app_cpu_threshold_percent: u8,
     pub cpu_recovery_threshold_percent: u8,
     pub reaction_time_ms: u64,
@@ -1344,6 +1353,7 @@ impl TryFrom<AdaptiveEngineProcessSettingsWire> for AdaptiveEngineProcessSetting
             exclude_service_hosts: wire.exclude_service_hosts,
             foreground_or_system_cpu_threshold_percent: wire
                 .foreground_or_system_cpu_threshold_percent,
+            foreground_cpu_threshold_percent: wire.foreground_cpu_threshold_percent,
             background_app_cpu_threshold_percent: wire.background_app_cpu_threshold_percent,
             cpu_recovery_threshold_percent: wire.cpu_recovery_threshold_percent,
             reaction_time_ms: wire.reaction_time_ms,
@@ -2552,6 +2562,7 @@ impl Default for AdaptiveEngineProcessSettings {
             pressure_source: AdaptivePressureSource::default(),
             exclude_service_hosts: false,
             foreground_or_system_cpu_threshold_percent: 75,
+            foreground_cpu_threshold_percent: None,
             background_app_cpu_threshold_percent: 30,
             cpu_recovery_threshold_percent: 10,
             reaction_time_ms: 1_000,
@@ -2908,6 +2919,27 @@ impl CpuAllocationSettings {
 }
 
 impl AdaptiveEngineProcessSettings {
+    pub(crate) fn active_foreground_cpu_threshold(&self) -> Option<u8> {
+        if self
+            .pressure_source
+            .supports_separate_foreground_threshold()
+        {
+            self.foreground_cpu_threshold_percent
+        } else {
+            None
+        }
+    }
+
+    /// Returns the effective system and foreground thresholds, in that order.
+    pub(crate) fn pressure_thresholds(&self) -> (u8, u8) {
+        let shared = self.foreground_or_system_cpu_threshold_percent.min(100);
+        let foreground = self
+            .active_foreground_cpu_threshold()
+            .unwrap_or(shared)
+            .min(100);
+        (shared, foreground)
+    }
+
     pub(crate) const fn has_enabled_policies(&self) -> bool {
         self.cpu_pressure_restraint_enabled
             || self.limit_background_processors_enabled

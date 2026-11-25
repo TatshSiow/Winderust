@@ -23,6 +23,14 @@ mod presets;
 pub(super) use presets::BuiltInAdaptiveEnginePreset;
 use presets::*;
 
+const FOREGROUND_THRESHOLD_FIELD: &str =
+    stringify!(adaptive_engine_process.foreground_cpu_threshold_percent);
+const FOREGROUND_THRESHOLD_LABEL: &str = "adaptive_engine_process.foreground_cpu_threshold";
+const SHARED_THRESHOLD_FIELD: &str =
+    stringify!(adaptive_engine_process.foreground_or_system_cpu_threshold_percent);
+const SHARED_THRESHOLD_LABEL: &str = "adaptive_engine_process.pressure_threshold";
+const SYSTEM_THRESHOLD_LABEL: &str = "adaptive_engine_process.system_cpu_threshold";
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(super) enum TuningTab {
     #[default]
@@ -91,6 +99,20 @@ impl NumberInputs {
         self.drafts.values().find_map(|draft| draft.invalid)
     }
 
+    fn update_shared_threshold_label(&mut self, separate: bool) {
+        if let Some((_, _, label)) = self
+            .drafts
+            .get_mut(SHARED_THRESHOLD_FIELD)
+            .and_then(|draft| draft.invalid.as_mut())
+        {
+            *label = if separate {
+                SYSTEM_THRESHOLD_LABEL
+            } else {
+                SHARED_THRESHOLD_LABEL
+            };
+        }
+    }
+
     pub(super) fn validation_error(&self) -> Option<String> {
         self.invalid()
             .map(|(min, max, label)| format!("{}: {min}..{max}", t!(label)))
@@ -105,6 +127,7 @@ pub(super) fn parse_number(text: &str, min: u64, max: u64) -> Option<u64> {
 #[derive(Debug, Clone)]
 pub(super) enum Message {
     Toggle(fn(&mut Settings, bool), bool),
+    SeparateForegroundThreshold(bool),
     InterruptTiming(super::interrupt_timing::Message),
     TuningTab(TuningTab),
     Collapse(TuningGroup),
@@ -322,6 +345,22 @@ impl Editor {
                 }
                 match edit {
                     Message::Toggle(f, v) => f(self.draft.as_mut().unwrap_or_else(|| &mut **s), v),
+                    Message::SeparateForegroundThreshold(enabled) => {
+                        let (target, numbers) = match &mut self.draft {
+                            Some(draft) => (draft, &mut self.preset_numbers),
+                            None => (&mut **s, &mut self.live_numbers),
+                        };
+                        let cpu = &mut target.adaptive_engine_process;
+                        if cpu.pressure_source.supports_separate_foreground_threshold() {
+                            cpu.foreground_cpu_threshold_percent = enabled.then(|| {
+                                cpu.foreground_cpu_threshold_percent.unwrap_or_else(|| {
+                                    cpu.foreground_or_system_cpu_threshold_percent.clamp(1, 100)
+                                })
+                            });
+                            numbers.drafts.remove(FOREGROUND_THRESHOLD_FIELD);
+                            numbers.update_shared_threshold_label(enabled);
+                        }
+                    }
                     Message::Number(f, v, min, max, key, label) => {
                         let numbers = if self.draft.is_some() {
                             &mut self.preset_numbers
@@ -357,6 +396,14 @@ impl Editor {
                             "adaptive_engine_process.processor_limit_percent"
                         };
                         numbers.drafts.remove(inactive_limit);
+                        let separate = target
+                            .adaptive_engine_process
+                            .active_foreground_cpu_threshold()
+                            .is_some();
+                        if !separate {
+                            numbers.drafts.remove(FOREGROUND_THRESHOLD_FIELD);
+                        }
+                        numbers.update_shared_threshold_label(separate);
                     }
                     _ => {}
                 }
@@ -671,77 +718,148 @@ impl Editor {
                         super::cpu_allocation::Kind::Hard,
                     )
                 });
-                let pressure = super::widgets::settings_rows([
-                    choice!(
-                        s,
-                        "adaptive_engine_process.pressure_source",
-                        AdaptivePressureSource,
-                        &[
-                            AdaptivePressureSource::Either,
-                            AdaptivePressureSource::System,
-                            AdaptivePressureSource::Foreground,
-                            AdaptivePressureSource::Both,
-                        ],
-                        pressure_source_label,
-                        adaptive_engine_process.pressure_source
+                let supports_split = cpu.pressure_source.supports_separate_foreground_threshold();
+                let foreground_threshold = cpu.active_foreground_cpu_threshold();
+                let pressure_source = choice!(
+                    s,
+                    "adaptive_engine_process.pressure_source",
+                    AdaptivePressureSource,
+                    &[
+                        AdaptivePressureSource::Either,
+                        AdaptivePressureSource::System,
+                        AdaptivePressureSource::Foreground,
+                        AdaptivePressureSource::Both,
+                    ],
+                    pressure_source_label,
+                    adaptive_engine_process.pressure_source
+                )
+                .into();
+                let separate_threshold = supports_split.then(|| {
+                    super::widgets::setting_row(
+                        "adaptive_engine_process.separate_foreground_cpu_threshold",
+                        super::widgets::switch(
+                            foreground_threshold.is_some(),
+                            editable.then_some(Message::SeparateForegroundThreshold),
+                        ),
                     )
-                    .into(),
+                    .into()
+                });
+                let threshold_slider =
+                    |value: u8,
+                     key: &'static str,
+                     label: &'static str,
+                     apply: fn(&mut Settings, u64)| {
+                        if editable {
+                            super::widgets::slider_setting(label, "%", move || {
+                                super::widgets::slider_stepper(
+                                    u64::from(value),
+                                    numbers.drafts.get(key).map(|draft| draft.text.as_str()),
+                                    1..=100,
+                                    1,
+                                    move |value| Message::Number(apply, value, 1, 100, key, label),
+                                )
+                            })
+                        } else {
+                            super::widgets::numeric_setting(label, "%", move || {
+                                super::widgets::stepper(
+                                    &value.to_string(),
+                                    1..=100,
+                                    1,
+                                    None::<fn(String) -> Message>,
+                                )
+                            })
+                        }
+                    };
+                let shared_threshold = if foreground_threshold.is_some() {
+                    threshold_slider(
+                        cpu.foreground_or_system_cpu_threshold_percent,
+                        SHARED_THRESHOLD_FIELD,
+                        SYSTEM_THRESHOLD_LABEL,
+                        |s, n| {
+                            s.adaptive_engine_process
+                                .foreground_or_system_cpu_threshold_percent = n as u8
+                        },
+                    )
+                } else {
                     number!(
-                        "adaptive_engine_process.pressure_threshold",
+                        SHARED_THRESHOLD_LABEL,
                         1,
                         100,
                         adaptive_engine_process.foreground_or_system_cpu_threshold_percent
-                    ),
-                    number!(
-                        "adaptive_engine_process.background_app_cpu_threshold",
-                        1,
-                        100,
-                        adaptive_engine_process.background_app_cpu_threshold_percent
-                    ),
-                    number!(
-                        "adaptive_engine_process.restraint_candidate_limit",
-                        1,
-                        64,
-                        adaptive_engine_process.maximum_restrained_apps
-                    ),
-                    number!(
-                        "adaptive_engine_process.reaction_time",
-                        250,
-                        5000,
-                        adaptive_engine_process.reaction_time_ms
-                    ),
-                    number!(
-                        "adaptive_engine_process.cpu_restraint_time",
-                        1,
-                        3600,
-                        adaptive_engine_process.cpu_restraint_time_seconds
-                    ),
-                    number!(
-                        "adaptive_engine_process.cpu_recovery_threshold",
-                        1,
-                        100,
-                        adaptive_engine_process.cpu_recovery_threshold_percent
-                    ),
-                    number!(
-                        "adaptive_engine_process.cpu_recovery_time",
-                        1,
-                        3600,
-                        adaptive_engine_process.cpu_recovery_time_seconds
-                    ),
-                    super::widgets::setting_row(
-                        "adaptive_engine_process.exclude_service_hosts",
-                        super::widgets::switch(
-                            cpu.exclude_service_hosts,
-                            editable.then_some(|v| {
-                                Message::Toggle(
-                                    |s, v| s.adaptive_engine_process.exclude_service_hosts = v,
-                                    v,
-                                )
-                            }),
-                        ),
                     )
-                    .into(),
-                ]);
+                };
+                let foreground_threshold = foreground_threshold.map(|value| {
+                    threshold_slider(
+                        value,
+                        FOREGROUND_THRESHOLD_FIELD,
+                        FOREGROUND_THRESHOLD_LABEL,
+                        |s, n| {
+                            s.adaptive_engine_process.foreground_cpu_threshold_percent =
+                                Some(n as u8)
+                        },
+                    )
+                });
+                let pressure = super::widgets::settings_rows(
+                    [
+                        Some(pressure_source),
+                        separate_threshold,
+                        Some(shared_threshold),
+                        foreground_threshold,
+                    ]
+                    .into_iter()
+                    .flatten()
+                    .chain([
+                        number!(
+                            "adaptive_engine_process.background_app_cpu_threshold",
+                            1,
+                            100,
+                            adaptive_engine_process.background_app_cpu_threshold_percent
+                        ),
+                        number!(
+                            "adaptive_engine_process.restraint_candidate_limit",
+                            1,
+                            64,
+                            adaptive_engine_process.maximum_restrained_apps
+                        ),
+                        number!(
+                            "adaptive_engine_process.reaction_time",
+                            250,
+                            5000,
+                            adaptive_engine_process.reaction_time_ms
+                        ),
+                        number!(
+                            "adaptive_engine_process.cpu_restraint_time",
+                            1,
+                            3600,
+                            adaptive_engine_process.cpu_restraint_time_seconds
+                        ),
+                        number!(
+                            "adaptive_engine_process.cpu_recovery_threshold",
+                            1,
+                            100,
+                            adaptive_engine_process.cpu_recovery_threshold_percent
+                        ),
+                        number!(
+                            "adaptive_engine_process.cpu_recovery_time",
+                            1,
+                            3600,
+                            adaptive_engine_process.cpu_recovery_time_seconds
+                        ),
+                        super::widgets::setting_row(
+                            "adaptive_engine_process.exclude_service_hosts",
+                            super::widgets::switch(
+                                cpu.exclude_service_hosts,
+                                editable.then_some(|v| {
+                                    Message::Toggle(
+                                        |s, v| s.adaptive_engine_process.exclude_service_hosts = v,
+                                        v,
+                                    )
+                                }),
+                            ),
+                        )
+                        .into(),
+                    ]),
+                );
                 body = body.push(super::widgets::setting_group(
                     "adaptive_engine_process.shared_detection".to_string(),
                     self.expanded[usize::from(preset)][SharedDetection as usize],
@@ -1805,6 +1923,91 @@ mod tests {
             editor.update(&mut settings, Message::Choice(method, index));
             assert!(editor.validation_error().is_none());
         }
+    }
+
+    #[test]
+    fn switching_pressure_source_preserves_thresholds_and_discards_hidden_invalid_input() {
+        let mut settings = SettingsEditor::with_settings(Settings::default());
+        let mut editor = Editor::default();
+        settings.adaptive_engine_process.pressure_source = AdaptivePressureSource::Either;
+        settings
+            .adaptive_engine_process
+            .foreground_or_system_cpu_threshold_percent = 74;
+        let foreground = |text: &str| {
+            Message::Number(
+                |s, value| {
+                    s.adaptive_engine_process.foreground_cpu_threshold_percent = Some(value as u8)
+                },
+                text.into(),
+                1,
+                100,
+                FOREGROUND_THRESHOLD_FIELD,
+                FOREGROUND_THRESHOLD_LABEL,
+            )
+        };
+        editor.update(&mut settings, Message::SeparateForegroundThreshold(true));
+        assert_eq!(
+            settings
+                .adaptive_engine_process
+                .active_foreground_cpu_threshold(),
+            Some(74)
+        );
+        editor.update(&mut settings, foreground("42"));
+        editor.update(&mut settings, foreground("0"));
+        assert!(editor.validation_error().is_some());
+
+        editor.update(
+            &mut settings,
+            Message::Choice(
+                |s, _| {
+                    s.adaptive_engine_process.pressure_source = AdaptivePressureSource::Foreground
+                },
+                0,
+            ),
+        );
+        assert!(editor.validation_error().is_none());
+        assert_eq!(
+            settings
+                .adaptive_engine_process
+                .active_foreground_cpu_threshold(),
+            None
+        );
+        assert_eq!(
+            settings
+                .adaptive_engine_process
+                .foreground_cpu_threshold_percent,
+            Some(42)
+        );
+
+        editor.update(
+            &mut settings,
+            Message::Choice(
+                |s, _| s.adaptive_engine_process.pressure_source = AdaptivePressureSource::Both,
+                0,
+            ),
+        );
+        assert_eq!(
+            settings
+                .adaptive_engine_process
+                .active_foreground_cpu_threshold(),
+            Some(42)
+        );
+        editor.update(&mut settings, foreground("101"));
+        assert!(editor.validation_error().is_some());
+        editor.update(&mut settings, Message::SeparateForegroundThreshold(false));
+        assert!(editor.validation_error().is_none());
+        assert_eq!(
+            settings
+                .adaptive_engine_process
+                .foreground_cpu_threshold_percent,
+            None
+        );
+        assert_eq!(
+            settings
+                .adaptive_engine_process
+                .foreground_or_system_cpu_threshold_percent,
+            74
+        );
     }
 
     #[test]

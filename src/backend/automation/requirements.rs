@@ -146,7 +146,7 @@ pub(super) fn adaptive_engine_process_waits_for_source(
             policy.dynamic_resource_zones_enabled,
             policy.pressure_source,
             policy.exclude_service_hosts,
-            policy.foreground_or_system_cpu_threshold_percent,
+            policy.pressure_thresholds(),
             policy.background_app_cpu_threshold_percent,
             policy.cpu_recovery_threshold_percent,
             policy.reaction_time_ms,

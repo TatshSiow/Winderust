@@ -261,6 +261,96 @@ fn new_pressure_source_requires_fresh_trigger_instead_of_old_recovery_band() {
 }
 
 #[test]
+fn both_pressure_signals_use_their_own_trigger_and_recovery_boundaries() {
+    let settings = AdaptiveEngineProcessSettings {
+        cpu_pressure_restraint_enabled: true,
+        pressure_source: AdaptivePressureSource::Both,
+        foreground_or_system_cpu_threshold_percent: 80,
+        foreground_cpu_threshold_percent: Some(30),
+        ..Default::default()
+    };
+    let mut manager = AdaptiveEngineProcessManager::default();
+    assert!(!manager.update_background_pressure(&settings, None, Some(80.0)));
+    assert!(!manager.update_background_pressure(&settings, Some(30.0), None));
+    assert!(!manager.update_background_pressure(&settings, Some(29.9), Some(80.0)));
+    assert!(!manager.update_background_pressure(&settings, Some(30.0), Some(79.9)));
+    assert!(manager.update_background_pressure(&settings, Some(30.0), Some(80.0)));
+    assert!(manager.update_background_pressure(&settings, Some(25.0), Some(75.0)));
+    assert!(!manager.update_background_pressure(&settings, Some(30.0), Some(74.9)));
+    assert!(manager.update_background_pressure(&settings, Some(30.0), Some(80.0)));
+    assert!(!manager.update_background_pressure(&settings, Some(24.9), Some(80.0)));
+}
+
+#[test]
+fn either_pressure_signal_can_maintain_an_existing_qualified_gate() {
+    let settings = AdaptiveEngineProcessSettings {
+        cpu_pressure_restraint_enabled: true,
+        foreground_or_system_cpu_threshold_percent: 80,
+        foreground_cpu_threshold_percent: Some(30),
+        ..Default::default()
+    };
+    let mut manager = AdaptiveEngineProcessManager::default();
+    assert!(!manager.update_background_pressure(&settings, None, Some(75.0)));
+    assert!(manager.update_background_pressure(&settings, Some(30.0), None));
+    assert!(manager.update_background_pressure(&settings, None, Some(75.0)));
+    assert!(!manager.update_background_pressure(&settings, None, Some(74.9)));
+    assert!(manager.update_background_pressure(&settings, None, Some(80.0)));
+    assert!(manager.update_background_pressure(&settings, Some(25.0), None));
+    assert!(!manager.update_background_pressure(&settings, Some(24.9), None));
+}
+
+#[test]
+fn zero_foreground_usage_releases_pressure_with_a_one_percent_override() {
+    let settings = AdaptiveEngineProcessSettings {
+        cpu_pressure_restraint_enabled: true,
+        foreground_or_system_cpu_threshold_percent: 80,
+        foreground_cpu_threshold_percent: Some(1),
+        ..Default::default()
+    };
+    let mut manager = AdaptiveEngineProcessManager::default();
+    assert!(manager.update_background_pressure(&settings, Some(1.0), Some(30.0)));
+    assert!(manager.update_background_pressure(&settings, Some(0.25), Some(30.0)));
+    assert!(!manager.update_background_pressure(&settings, Some(0.0), Some(30.0)));
+}
+
+#[test]
+fn effective_threshold_changes_require_fresh_pressure() {
+    let mut settings = AdaptiveEngineProcessSettings {
+        cpu_pressure_restraint_enabled: true,
+        foreground_or_system_cpu_threshold_percent: 80,
+        foreground_cpu_threshold_percent: Some(30),
+        ..Default::default()
+    };
+    let mut manager = AdaptiveEngineProcessManager::default();
+    assert!(manager.update_background_pressure(&settings, Some(30.0), None));
+    manager.allocation_settings = Some(settings.clone());
+    settings.foreground_cpu_threshold_percent = Some(35);
+    assert!(!manager.update_background_pressure(&settings, Some(33.0), None));
+    assert!(manager.update_background_pressure(&settings, Some(35.0), None));
+
+    manager.allocation_settings = Some(settings.clone());
+    settings.foreground_or_system_cpu_threshold_percent = 85;
+    assert!(!manager.update_background_pressure(&settings, None, Some(83.0)));
+    assert!(manager.update_background_pressure(&settings, None, Some(85.0)));
+}
+
+#[test]
+fn unused_foreground_override_does_not_reset_system_pressure() {
+    let mut settings = AdaptiveEngineProcessSettings {
+        cpu_pressure_restraint_enabled: true,
+        pressure_source: AdaptivePressureSource::System,
+        foreground_or_system_cpu_threshold_percent: 80,
+        foreground_cpu_threshold_percent: Some(30),
+        ..Default::default()
+    };
+    let mut manager = AdaptiveEngineProcessManager::default();
+    assert!(manager.update_background_pressure(&settings, None, Some(80.0)));
+    manager.allocation_settings = Some(settings.clone());
+    settings.foreground_cpu_threshold_percent = Some(95);
+    assert!(manager.update_background_pressure(&settings, None, Some(75.0)));
+}
+
+#[test]
 fn adaptive_engine_process_selects_highest_scored_candidates() {
     let max_targeted = 6;
     let candidates = (0..=u32::from(max_targeted))

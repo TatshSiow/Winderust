@@ -65,7 +65,7 @@ pub(super) fn cpu_pressure_restraint_should_run(
         settings.pressure_source,
         foreground_cpu_usage_percent,
         total_cpu_usage_percent,
-        settings.foreground_or_system_cpu_threshold_percent.min(100),
+        settings.pressure_thresholds(),
     )
 }
 
@@ -74,24 +74,37 @@ pub(super) fn cpu_pressure_above_recovery_threshold(
     foreground_cpu_usage_percent: Option<f32>,
     total_cpu_usage_percent: Option<f32>,
 ) -> bool {
-    let trigger = settings.foreground_or_system_cpu_threshold_percent.min(100);
+    let (system_trigger, foreground_trigger) = settings.pressure_thresholds();
+    // A recovery threshold saturated at zero still requires observed CPU activity.
+    let active_usage = |usage: Option<f32>| usage.filter(|&usage| usage > 0.0);
     cpu_pressure_reaches(
         settings.pressure_source,
-        foreground_cpu_usage_percent,
-        total_cpu_usage_percent,
-        trigger.saturating_sub(ADAPTIVE_ENGINE_PROCESS_RECOVERY_BAND_PERCENT),
+        active_usage(foreground_cpu_usage_percent),
+        active_usage(total_cpu_usage_percent),
+        (
+            system_trigger.saturating_sub(ADAPTIVE_ENGINE_PROCESS_RECOVERY_BAND_PERCENT),
+            foreground_trigger.saturating_sub(ADAPTIVE_ENGINE_PROCESS_RECOVERY_BAND_PERCENT),
+        ),
     )
+}
+
+pub(super) fn pressure_gate_changed(
+    previous: &AdaptiveEngineProcessSettings,
+    next: &AdaptiveEngineProcessSettings,
+) -> bool {
+    previous.pressure_source != next.pressure_source
+        || previous.pressure_thresholds() != next.pressure_thresholds()
 }
 
 fn cpu_pressure_reaches(
     source: AdaptivePressureSource,
     foreground_usage: Option<f32>,
     system_usage: Option<f32>,
-    threshold: u8,
+    (system_threshold, foreground_threshold): (u8, u8),
 ) -> bool {
-    let reaches_threshold = |usage| usage >= f32::from(threshold);
-    let foreground_high = foreground_usage.is_some_and(reaches_threshold);
-    let system_high = system_usage.is_some_and(reaches_threshold);
+    let foreground_high =
+        foreground_usage.is_some_and(|usage| usage >= f32::from(foreground_threshold));
+    let system_high = system_usage.is_some_and(|usage| usage >= f32::from(system_threshold));
     match source {
         AdaptivePressureSource::Either => foreground_high || system_high,
         AdaptivePressureSource::System => system_high,

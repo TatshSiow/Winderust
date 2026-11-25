@@ -528,6 +528,10 @@ hover/press; background shading supplies feedback.
   show Preserve custom affinity inside the same expandable card.
 - Restraint CPU priority, Restraint I/O priority, and Energy-efficient scheduling sit together
   in CPU Pressure Restraint. The scheduling toggle is independent of the selected priority.
+- Separate foreground CPU threshold is available in the shared detection card when the source
+  combines system and foreground CPU. Enabling it reveals separate System CPU threshold and
+  Foreground CPU threshold sliders. The foreground help states that its unit is whole-system
+  capacity.
   The I/O selector defaults to Unchanged and uses the same Low and Very Low labels as I/O Priority.
 
 ## Current reference layout

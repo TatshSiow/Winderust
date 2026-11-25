@@ -50,8 +50,10 @@ CPU Behaviour has shared detection/timing followed by three independent policies
   The Performance preset enables zoning; Speed, Balanced, and Power Save leave it off.
 
 Shared Detection and Timing can use total system CPU, foreground-group CPU, either reading, or
-both readings. The threshold and release band use the same selected source. Background-app CPU
-demand is normalized against one logical processor; the thresholds are not directly interchangeable.
+both readings. Either and Both can use a separate foreground CPU threshold. Each selected signal
+has a release boundary five percentage points below its own threshold. The foreground-group
+reading is a share of total system CPU capacity. Background-app CPU demand is measured against
+one logical processor.
 Optional Exclude service hosts protects detected active service processes, Session 0,
 and processes whose session could not be determined. It applies to all three policies.
 Reaction time, candidate cap, restraint hold, and recovery values retain their existing units.

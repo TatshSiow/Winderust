@@ -603,7 +603,7 @@ impl AdaptiveEngineProcessManager {
                 for process in self.tracked_processes.values_mut() {
                     process.pressure_restraint = PressureRestraintEpisode::default();
                 }
-            } else if previous.pressure_source != settings.pressure_source {
+            } else if pressure_gate_changed(previous, settings) {
                 for process in self.tracked_processes.values_mut() {
                     process.pressure_restraint.hot_since = None;
                     process.pressure_restraint.below_since = None;
@@ -615,6 +615,10 @@ impl AdaptiveEngineProcessManager {
             previous.restraint_idle_timeout_seconds = settings.restraint_idle_timeout_seconds;
             previous.maximum_restraint_time_seconds = settings.maximum_restraint_time_seconds;
             previous.restraint_priority = settings.restraint_priority;
+            if previous.pressure_thresholds() == settings.pressure_thresholds() {
+                previous.foreground_cpu_threshold_percent =
+                    settings.foreground_cpu_threshold_percent;
+            }
         }
         if self.allocation_settings.as_ref() != Some(settings) || foreground_changed {
             self.invalidate_allocation_selection();
@@ -1538,7 +1542,7 @@ impl AdaptiveEngineProcessManager {
         if self
             .allocation_settings
             .as_ref()
-            .is_some_and(|previous| previous.pressure_source != settings.pressure_source)
+            .is_some_and(|previous| pressure_gate_changed(previous, settings))
         {
             self.background_pressure_active = false;
         }

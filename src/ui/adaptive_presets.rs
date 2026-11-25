@@ -165,6 +165,7 @@ pub(super) fn apply_adaptive_engine_process_preset(
     settings.exclude_service_hosts = false;
     settings.foreground_or_system_cpu_threshold_percent =
         values.foreground_or_system_cpu_threshold_percent;
+    settings.foreground_cpu_threshold_percent = None;
     settings.background_app_cpu_threshold_percent = values.background_app_cpu_threshold_percent;
     settings.cpu_recovery_threshold_percent = values.cpu_recovery_threshold_percent;
     settings.reaction_time_ms = values.reaction_time_ms;
@@ -446,6 +447,7 @@ mod tests {
                 pause_restraint_when_idle: true,
                 restraint_idle_timeout_seconds: 120,
                 pressure_source: AdaptivePressureSource::System,
+                foreground_cpu_threshold_percent: Some(35),
                 exclude_service_hosts: true,
                 restraint_priority: AdaptiveRestraintPriority::Idle,
                 restraint_io_priority: AdaptiveRestraintIoPriority::Low,
@@ -461,6 +463,7 @@ mod tests {
             assert!(!settings.pause_restraint_when_idle);
             assert_eq!(settings.restraint_idle_timeout_seconds, 300);
             assert_eq!(settings.pressure_source, AdaptivePressureSource::Either);
+            assert_eq!(settings.foreground_cpu_threshold_percent, None);
             assert!(!settings.exclude_service_hosts);
             assert_eq!(
                 settings.cpu_allocation_method,
@@ -487,6 +490,9 @@ mod tests {
         settings.adaptive_engine_process.restraint_trigger_time_ms = 2_700;
         settings.adaptive_engine_process.pause_restraint_when_idle = true;
         settings.adaptive_engine_process.pressure_source = AdaptivePressureSource::Both;
+        settings
+            .adaptive_engine_process
+            .foreground_cpu_threshold_percent = Some(35);
         settings.adaptive_engine_process.exclude_service_hosts = true;
         settings.adaptive_engine_process.cpu_allocation_method =
             CpuAllocationMethod::ReduceAffinity;

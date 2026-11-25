@@ -821,11 +821,16 @@ fn invalid_zone_configuration_is_rejected_before_save_or_deserialization() {
 
 #[test]
 fn omitted_cpu_behaviour_settings_use_defaults_independent_of_sampling_interval() {
-    let mut settings = toml::Value::try_from(AdaptiveEngineProcessSettings::default()).unwrap();
+    let process = AdaptiveEngineProcessSettings {
+        foreground_cpu_threshold_percent: Some(35),
+        ..Default::default()
+    };
+    let mut settings = toml::Value::try_from(process).unwrap();
     let fields = settings.as_table_mut().unwrap();
     fields.insert("reaction_time_ms".into(), toml::Value::Integer(750));
     for key in [
         "pressure_source",
+        "foreground_cpu_threshold_percent",
         "exclude_service_hosts",
         "preserve_custom_affinity",
         "processors_to_remove",
@@ -854,21 +859,25 @@ fn omitted_cpu_behaviour_settings_use_defaults_independent_of_sampling_interval(
 fn invalid_cpu_behaviour_values_are_rejected_for_live_profiles_and_presets() {
     let maximum_error = rust_i18n::t!("adaptive_engine_process.maximum_restraint_time_invalid");
     let removal_error = rust_i18n::t!("adaptive_engine_process.processors_to_remove_invalid");
-    for (trigger, idle, maximum, remove, field) in [
-        (249, 300, 0, 1, "time above threshold"),
-        (60_001, 300, 0, 1, "time above threshold"),
-        (1_000, 0, 0, 1, "idle timeout"),
-        (1_000, 3_601, 0, 1, "idle timeout"),
-        (1_000, 300, 2, 1, maximum_error.as_ref()),
-        (1_000, 300, 3_601, 1, maximum_error.as_ref()),
-        (1_000, 300, 0, 0, removal_error.as_ref()),
-        (1_000, 300, 0, 64, removal_error.as_ref()),
+    let threshold_error = rust_i18n::t!("adaptive_engine_process.foreground_cpu_threshold_invalid");
+    for (trigger, idle, maximum, remove, foreground, field) in [
+        (249, 300, 0, 1, None, "time above threshold"),
+        (60_001, 300, 0, 1, None, "time above threshold"),
+        (1_000, 0, 0, 1, None, "idle timeout"),
+        (1_000, 3_601, 0, 1, None, "idle timeout"),
+        (1_000, 300, 2, 1, None, maximum_error.as_ref()),
+        (1_000, 300, 3_601, 1, None, maximum_error.as_ref()),
+        (1_000, 300, 0, 0, None, removal_error.as_ref()),
+        (1_000, 300, 0, 64, None, removal_error.as_ref()),
+        (1_000, 300, 0, 1, Some(0), threshold_error.as_ref()),
+        (1_000, 300, 0, 1, Some(101), threshold_error.as_ref()),
     ] {
         let process = AdaptiveEngineProcessSettings {
             restraint_trigger_time_ms: trigger,
             restraint_idle_timeout_seconds: idle,
             maximum_restraint_time_seconds: maximum,
             processors_to_remove: remove,
+            foreground_cpu_threshold_percent: foreground,
             ..Default::default()
         };
         let root = Settings {
@@ -1396,6 +1405,7 @@ fn toml_round_trip_preserves_settings() {
             pressure_source: AdaptivePressureSource::Both,
             exclude_service_hosts: true,
             foreground_or_system_cpu_threshold_percent: 70,
+            foreground_cpu_threshold_percent: Some(35),
             background_app_cpu_threshold_percent: 25,
             cpu_recovery_threshold_percent: 5,
             reaction_time_ms: 750,
@@ -1555,6 +1565,7 @@ fn toml_round_trip_preserves_settings() {
     settings.battery_profile_mut().sleep_prevention.enabled = false;
     let battery_restraint = &mut settings.battery_profile_mut().adaptive_engine_process;
     battery_restraint.pressure_source = AdaptivePressureSource::System;
+    battery_restraint.foreground_cpu_threshold_percent = Some(50);
     battery_restraint.exclude_service_hosts = false;
     battery_restraint.restraint_priority = AdaptiveRestraintPriority::BelowNormal;
     battery_restraint.restraint_io_priority = AdaptiveRestraintIoPriority::VeryLow;

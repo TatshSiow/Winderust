@@ -3943,6 +3943,47 @@ fn adaptive_engine_source_selection_checks_pressure_and_restraint_actions() {
 }
 
 #[test]
+fn adaptive_engine_source_selection_checks_only_effective_foreground_thresholds() {
+    use crate::config::AdaptivePressureSource;
+
+    let mut settings = Settings::default();
+    settings.adaptive_engine.enabled = true;
+    settings
+        .adaptive_engine_process
+        .cpu_pressure_restraint_enabled = true;
+    settings
+        .adaptive_engine_process
+        .foreground_or_system_cpu_threshold_percent = 70;
+    settings
+        .battery_profile_mut()
+        .adaptive_engine_process
+        .foreground_cpu_threshold_percent = Some(35);
+
+    for source in [
+        AdaptivePressureSource::System,
+        AdaptivePressureSource::Foreground,
+        AdaptivePressureSource::Either,
+        AdaptivePressureSource::Both,
+    ] {
+        settings.adaptive_engine_process.pressure_source = source;
+        settings
+            .battery_profile_mut()
+            .adaptive_engine_process
+            .pressure_source = source;
+        assert_eq!(
+            adaptive_engine_process_waits_for_source(&settings, None),
+            source.supports_separate_foreground_threshold()
+        );
+    }
+
+    settings
+        .battery_profile_mut()
+        .adaptive_engine_process
+        .foreground_cpu_threshold_percent = Some(70);
+    assert!(!adaptive_engine_process_waits_for_source(&settings, None));
+}
+
+#[test]
 fn adaptive_engine_source_selection_checks_effective_affinity_and_service_guard() {
     use crate::config::{BackgroundProcessorSelection, CpuAllocationMethod};
 
