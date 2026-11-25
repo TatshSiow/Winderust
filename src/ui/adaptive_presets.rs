@@ -177,6 +177,9 @@ pub(super) fn apply_adaptive_engine_process_preset(
     settings.restraint_priority = AdaptiveRestraintPriority::default();
     settings.restraint_io_priority = AdaptiveRestraintIoPriority::default();
     settings.restraint_energy_efficient_scheduling = false;
+    settings.protect_focused_app = true;
+    settings.protect_focused_children = true;
+    settings.protect_non_normal_priority = true;
     settings.minimum_restraint_time_ms = values.minimum_restraint_time_ms;
     settings.maximum_restraint_time_ms = 0;
     settings.cpu_recovery_time_seconds = values.cpu_recovery_time_seconds;
@@ -456,6 +459,9 @@ mod tests {
                 restraint_priority: AdaptiveRestraintPriority::ProcessorPlacementOnly,
                 restraint_io_priority: AdaptiveRestraintIoPriority::Low,
                 restraint_energy_efficient_scheduling: true,
+                protect_focused_app: false,
+                protect_focused_children: false,
+                protect_non_normal_priority: false,
                 minimum_restraint_time_ms: 2_100,
                 maximum_restraint_time_ms: 10_000,
                 cpu_allocation_method: CpuAllocationMethod::ReduceAffinity,
@@ -491,6 +497,9 @@ mod tests {
                 AdaptiveRestraintIoPriority::Unchanged
             );
             assert!(!settings.restraint_energy_efficient_scheduling);
+            assert!(settings.protect_focused_app);
+            assert!(settings.protect_focused_children);
+            assert!(settings.protect_non_normal_priority);
         }
     }
 
@@ -521,6 +530,9 @@ mod tests {
         settings
             .adaptive_engine_process
             .restraint_energy_efficient_scheduling = true;
+        settings.adaptive_engine_process.protect_focused_app = false;
+        settings.adaptive_engine_process.protect_focused_children = false;
+        settings.adaptive_engine_process.protect_non_normal_priority = false;
         settings.adaptive_engine_process.minimum_restraint_time_ms = 2_100;
         settings.adaptive_engine_process.maximum_restraint_time_ms = 10_000;
         settings

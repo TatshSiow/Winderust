@@ -35,19 +35,14 @@ pub(super) fn should_skip_process(
     process_id: u32,
     process_name: &str,
     current_process_id: u32,
-    foreground_process_id: Option<u32>,
-    foreground_process_group_ids: &BTreeSet<u32>,
+    focus_protected: bool,
     excluded_process_id: Option<u32>,
 ) -> bool {
     process_id == 0
         || process_id == current_process_id
         || excluded_process_id == Some(process_id)
         || is_builtin_excluded(process_name)
-        || should_skip_foreground_process(
-            process_id,
-            foreground_process_id,
-            foreground_process_group_ids,
-        )
+        || focus_protected
 }
 
 pub(super) fn cpu_pressure_restraint_should_run(

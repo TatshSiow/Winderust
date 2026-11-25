@@ -1236,6 +1236,9 @@ pub struct AdaptiveEngineProcessSettings {
     pub restraint_priority: AdaptiveRestraintPriority,
     pub restraint_io_priority: AdaptiveRestraintIoPriority,
     pub restraint_energy_efficient_scheduling: bool,
+    pub protect_focused_app: bool,
+    pub protect_focused_children: bool,
+    pub protect_non_normal_priority: bool,
     #[serde(rename = "cpu_restraint_time_seconds", with = "restraint_time_seconds")]
     pub minimum_restraint_time_ms: u64,
     #[serde(
@@ -1328,6 +1331,12 @@ struct AdaptiveEngineProcessSettingsWire {
     pub restraint_io_priority: AdaptiveRestraintIoPriority,
     #[serde(default)]
     pub restraint_energy_efficient_scheduling: bool,
+    #[serde(default = "default_true")]
+    pub protect_focused_app: bool,
+    #[serde(default = "default_true")]
+    pub protect_focused_children: bool,
+    #[serde(default = "default_true")]
+    pub protect_non_normal_priority: bool,
     #[serde(rename = "cpu_restraint_time_seconds", with = "restraint_time_seconds")]
     pub minimum_restraint_time_ms: u64,
     #[serde(
@@ -1413,6 +1422,9 @@ impl TryFrom<AdaptiveEngineProcessSettingsWire> for AdaptiveEngineProcessSetting
             restraint_priority: wire.restraint_priority,
             restraint_io_priority: wire.restraint_io_priority,
             restraint_energy_efficient_scheduling: wire.restraint_energy_efficient_scheduling,
+            protect_focused_app: wire.protect_focused_app,
+            protect_focused_children: wire.protect_focused_children,
+            protect_non_normal_priority: wire.protect_non_normal_priority,
             minimum_restraint_time_ms: wire.minimum_restraint_time_ms,
             maximum_restraint_time_ms: wire.maximum_restraint_time_ms,
             cpu_recovery_time_seconds: wire.cpu_recovery_time_seconds,
@@ -2624,6 +2636,9 @@ impl Default for AdaptiveEngineProcessSettings {
             restraint_priority: AdaptiveRestraintPriority::default(),
             restraint_io_priority: AdaptiveRestraintIoPriority::default(),
             restraint_energy_efficient_scheduling: false,
+            protect_focused_app: true,
+            protect_focused_children: true,
+            protect_non_normal_priority: true,
             minimum_restraint_time_ms: 3_000,
             maximum_restraint_time_ms: 0,
             cpu_recovery_time_seconds: 6,
@@ -3047,6 +3062,9 @@ impl AdaptiveEngineProcessSettings {
         self.restraint_priority = defaults.restraint_priority;
         self.restraint_io_priority = defaults.restraint_io_priority;
         self.restraint_energy_efficient_scheduling = defaults.restraint_energy_efficient_scheduling;
+        self.protect_focused_app = defaults.protect_focused_app;
+        self.protect_focused_children = defaults.protect_focused_children;
+        self.protect_non_normal_priority = defaults.protect_non_normal_priority;
         self.minimum_restraint_time_ms = defaults.minimum_restraint_time_ms;
         self.maximum_restraint_time_ms = defaults.maximum_restraint_time_ms;
         self.cpu_recovery_time_seconds = defaults.cpu_recovery_time_seconds;

@@ -135,6 +135,11 @@ pub(super) fn adaptive_engine_process_waits_for_source(
             policy.cpu_pressure_restraint_enabled.then_some((
                 policy.restraint_trigger_time_ms,
                 policy.restraint_priority,
+                (
+                    policy.protect_focused_app,
+                    policy.protect_focused_children,
+                    policy.protect_non_normal_priority,
+                ),
                 (!policy.placement_only_restraint_enabled()).then_some((
                     policy.restraint_io_priority,
                     policy.restraint_energy_efficient_scheduling,

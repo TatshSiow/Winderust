@@ -346,7 +346,7 @@ fn stored_priority_shadows_restraint_and_hands_back_to_it_when_released() {
         )
         .unwrap();
     assert_eq!(
-        controller.can_apply_adaptive_restraint(&target(7, 1), true),
+        controller.can_apply_adaptive_restraint(&target(7, 1), true, None, true),
         Ok(false)
     );
     assert_eq!(
@@ -482,7 +482,7 @@ fn process_list_priority_yields_restraint_for_the_current_target_episode() {
         PriorityEfficiencyController::with_platform(platform_with(7, 1, NORMAL_PRIORITY_CLASS));
     let restraint = restraint_claim(7, 1);
     assert_eq!(
-        controller.can_apply_adaptive_restraint(&restraint.target, true),
+        controller.can_apply_adaptive_restraint(&restraint.target, true, None, true),
         Ok(true)
     );
     assert_eq!(
@@ -497,7 +497,7 @@ fn process_list_priority_yields_restraint_for_the_current_target_episode() {
         &BTreeSet::from([restraint.target.key()]),
     );
     assert_eq!(
-        controller.can_apply_adaptive_restraint(&restraint.target, true),
+        controller.can_apply_adaptive_restraint(&restraint.target, true, None, true),
         Ok(false)
     );
     assert_eq!(
@@ -592,7 +592,7 @@ fn restraint_does_not_write_a_priority_class_other_than_normal() {
         let mut controller =
             PriorityEfficiencyController::with_platform(platform_with(7, 1, original));
         assert_eq!(
-            controller.can_apply_adaptive_restraint(&target(7, 1), true),
+            controller.can_apply_adaptive_restraint(&target(7, 1), true, None, true),
             Ok(false)
         );
         assert_eq!(
@@ -608,6 +608,115 @@ fn restraint_does_not_write_a_priority_class_other_than_normal() {
 }
 
 #[test]
+fn opt_in_restraint_lowers_known_priority_and_restores_the_exact_baseline() {
+    for original in [
+        NORMAL_PRIORITY_CLASS,
+        ABOVE_NORMAL_PRIORITY_CLASS,
+        HIGH_PRIORITY_CLASS,
+        BELOW_NORMAL_PRIORITY_CLASS,
+        IDLE_PRIORITY_CLASS,
+        REALTIME_PRIORITY_CLASS,
+        0,
+    ] {
+        let mut controller =
+            PriorityEfficiencyController::with_platform(platform_with(7, 1, original));
+        let mut claim = restraint_claim(7, 1);
+        claim.preservation = PriorityClassPreservation::LowerKnownClass;
+        let target = claim.target.clone();
+        let can_lower = [
+            NORMAL_PRIORITY_CLASS,
+            ABOVE_NORMAL_PRIORITY_CLASS,
+            HIGH_PRIORITY_CLASS,
+        ]
+        .contains(&original);
+
+        assert_eq!(
+            controller.can_apply_adaptive_restraint(&target, true, Some(claim.priority), false),
+            Ok(can_lower)
+        );
+        assert_eq!(
+            controller.can_apply_adaptive_restraint(&target, true, None, false),
+            Ok(original != REALTIME_PRIORITY_CLASS && original != 0)
+        );
+        assert_eq!(
+            controller.apply_priority_claim(claim.clone(), true),
+            Ok(if can_lower {
+                ProcessPropertyApplyOutcome::Applied
+            } else {
+                ProcessPropertyApplyOutcome::Preserved
+            })
+        );
+        if can_lower {
+            assert_eq!(
+                controller.adaptive_restraint_processes().next(),
+                Some((&identity(7, 1), AdaptiveRestraintState::Verified))
+            );
+            assert_eq!(
+                controller.can_apply_adaptive_restraint(&target, true, Some(claim.priority), true),
+                Ok(original == NORMAL_PRIORITY_CLASS)
+            );
+        } else {
+            assert!(controller.adaptive_restraint_processes().next().is_none());
+        }
+        controller.release_all_priority_policy(ControlOwner::AdaptiveEngine);
+        assert_eq!(controller.platform.processes[&7].priority, original);
+    }
+}
+
+#[test]
+fn external_priority_change_yields_until_the_current_qualification_ends() {
+    for change_after_preflight in [false, true] {
+        let mut controller = PriorityEfficiencyController::with_platform(platform_with(
+            7,
+            1,
+            ABOVE_NORMAL_PRIORITY_CLASS,
+        ));
+        let mut claim = restraint_claim(7, 1);
+        claim.preservation = PriorityClassPreservation::LowerKnownClass;
+        assert_eq!(
+            controller.apply_priority_claim(claim.clone(), true),
+            Ok(ProcessPropertyApplyOutcome::Applied)
+        );
+
+        let check = |controller: &mut PriorityEfficiencyController<_>| {
+            controller.can_apply_adaptive_restraint(
+                &claim.target,
+                true,
+                Some(claim.priority),
+                false,
+            )
+        };
+        if change_after_preflight {
+            assert_eq!(check(&mut controller), Ok(true));
+        }
+        controller.platform.processes.get_mut(&7).unwrap().priority = HIGH_PRIORITY_CLASS;
+        if change_after_preflight {
+            assert_eq!(
+                controller.apply_priority_claim(claim.clone(), true),
+                Ok(ProcessPropertyApplyOutcome::Preserved)
+            );
+        } else {
+            assert_eq!(check(&mut controller), Ok(false));
+        }
+
+        let release = controller.reconcile_adaptive_restraint_targets(
+            &BTreeSet::new(),
+            &BTreeSet::from([claim.target.key()]),
+        );
+        assert!(release.failures.is_empty());
+        assert_eq!(
+            controller.platform.processes[&7].priority,
+            HIGH_PRIORITY_CLASS
+        );
+        assert!(controller.adaptive_restraint_processes().next().is_none());
+        assert_eq!(check(&mut controller), Ok(false));
+
+        controller.reconcile_adaptive_restraint_targets(&BTreeSet::new(), &BTreeSet::new());
+        assert_eq!(check(&mut controller), Ok(true));
+    }
+}
+
+#[test]
 fn idle_restraint_remains_eligible_and_verified_until_restored() {
     let mut controller =
         PriorityEfficiencyController::with_platform(platform_with(7, 1, NORMAL_PRIORITY_CLASS));
@@ -616,7 +725,7 @@ fn idle_restraint_remains_eligible_and_verified_until_restored() {
     let target = claim.target.clone();
 
     assert_eq!(
-        controller.can_apply_adaptive_restraint(&target, true),
+        controller.can_apply_adaptive_restraint(&target, true, None, true),
         Ok(true)
     );
     assert_eq!(
@@ -625,7 +734,7 @@ fn idle_restraint_remains_eligible_and_verified_until_restored() {
     );
     claim.priority = PriorityClassValue::Idle;
     assert_eq!(
-        controller.can_apply_adaptive_restraint(&target, true),
+        controller.can_apply_adaptive_restraint(&target, true, None, true),
         Ok(true)
     );
     assert_eq!(
@@ -637,7 +746,7 @@ fn idle_restraint_remains_eligible_and_verified_until_restored() {
         IDLE_PRIORITY_CLASS
     );
     assert_eq!(
-        controller.can_apply_adaptive_restraint(&target, true),
+        controller.can_apply_adaptive_restraint(&target, true, None, true),
         Ok(true)
     );
     assert_eq!(
@@ -662,7 +771,7 @@ fn idle_restraint_remains_eligible_and_verified_until_restored() {
         &target.executable_path
     ));
     assert_eq!(
-        controller.can_apply_adaptive_restraint(&target, true),
+        controller.can_apply_adaptive_restraint(&target, true, None, true),
         Ok(false)
     );
     assert_eq!(
@@ -678,13 +787,13 @@ fn idle_restraint_remains_eligible_and_verified_until_restored() {
     );
     assert!(controller.adaptive_restraint_processes().next().is_none());
     assert_eq!(
-        controller.can_apply_adaptive_restraint(&target, true),
+        controller.can_apply_adaptive_restraint(&target, true, None, true),
         Ok(true)
     );
 
     controller.platform.processes.get_mut(&7).unwrap().priority = IDLE_PRIORITY_CLASS;
     assert_eq!(
-        controller.can_apply_adaptive_restraint(&target, true),
+        controller.can_apply_adaptive_restraint(&target, true, None, true),
         Ok(false)
     );
 }

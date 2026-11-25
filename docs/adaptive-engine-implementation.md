@@ -141,15 +141,20 @@ migration or copying from the limiter is performed.
   Restraint requires at least two valid hot observations for the same process
   instance and a continuous Time above threshold. Reaction time controls
   sampling. The default for both is one second. Restraint submits a temporary
-  priority claim for a process at Normal priority. Below Normal is the default and Idle is optional.
+  priority claim for a process at Normal priority by default. Below Normal is the
+  default action and Idle is optional. Turning off Protect non-Normal priority
+  allows lowering a known priority above the selected action and restores the
+  captured priority at release. Realtime and unknown priorities remain protected.
   Processor placement only starts a hold once the shared CPU coordinator confirms the
   selected placement for that exact process. Explicit allocation and Dynamic Resource Zones
   retain precedence. Placement alone leaves CPU and I/O priority, scheduling hints and
   the restraint parking floor untouched.
   Windows can pass Idle priority to children launched while the parent is restrained.
-  Focused apps and their process groups,
-  apps with visible windows, active audio, and exclusions are protected. Saved
-  Process Priority and Efficiency Mode take precedence.
+  Protect focused app and Protect focused app’s children are on by default and
+  can be changed separately for CPU Pressure Restraint. Independent background
+  placement and zoning keep their existing focus eligibility. Other visible app
+  groups, active audio, and exclusions remain protected. Saved Process Priority
+  and Efficiency Mode take precedence.
 - Pause when idle is off by default. When enabled, its Idle timeout uses the
   last input in Winderust's Windows session. After the timeout or when the idle
   observation is unavailable, release restraint claims and start a fresh

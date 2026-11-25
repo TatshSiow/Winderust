@@ -882,10 +882,16 @@ Read the relevant section before changing feature policy, ownership, restoration
   an older generation cannot rearm it. Other CPU features retain their own
   reapplication contracts. Guard failure withdraws balancing ownership through
   the existing reconciliation/restoration paths without losing pending cleanup.
-- CPU Pressure Restraint qualifies sustained CPU use per exact background process
-  while aggregate pressure is high. It skips the focused group, visible windows,
-  active audio, and exclusions. Restraint writes temporary Below Normal or optional
-  Idle priority for a process whose baseline is Normal. Efficiency Mode
+- CPU Pressure Restraint qualifies sustained CPU use per exact process while
+  aggregate pressure is high. Protect focused app and Protect focused app’s
+  children are independent and default on. Turning either off admits that
+  part of the observed focus group to CPU Pressure Restraint only. Other visible
+  window groups, active audio, and exclusions stay protected. With Protect
+  non-Normal priority on, a temporary Below Normal or Idle claim requires a
+  Normal baseline. Turning it off allows lowering known non-Realtime priorities
+  and restores the captured value at release. Placement-only restraint uses the
+  same protection settings. A priority change observed from outside Winderust
+  ends priority ownership for the current qualified episode. Efficiency Mode
   and saved Process Priority take precedence on the same process.
   Status lists the exact process instances whose priority or placement restraint is
   verified, whose priority restoration is pending, or whose priority ownership is unconfirmed.

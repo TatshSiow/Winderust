@@ -97,6 +97,7 @@ impl PriorityClassValue {
 pub(crate) enum PriorityClassPreservation {
     Exact,
     OnlyNormal,
+    LowerKnownClass,
     PreserveHigher,
     PreserveLower,
 }
@@ -383,7 +384,7 @@ pub(crate) struct PriorityEfficiencyController<
 > {
     platform: P,
     priority_claims: BTreeMap<ControlOwner, BTreeMap<ProcessTargetKey, PriorityClassClaim>>,
-    adaptive_priority_manual_yields: BTreeSet<ProcessTargetKey>,
+    adaptive_priority_yields: BTreeSet<ProcessTargetKey>,
     adaptive_power_external_yields: BTreeSet<ProcessTargetKey>,
     adaptive_power_needs_reconciliation: bool,
     power_claims: BTreeMap<ControlOwner, BTreeMap<ProcessTargetKey, PowerThrottlingClaim>>,
@@ -406,7 +407,7 @@ impl<P: PriorityEfficiencyPlatform> PriorityEfficiencyController<P> {
         Self {
             platform,
             priority_claims: BTreeMap::new(),
-            adaptive_priority_manual_yields: BTreeSet::new(),
+            adaptive_priority_yields: BTreeSet::new(),
             adaptive_power_external_yields: BTreeSet::new(),
             adaptive_power_needs_reconciliation: false,
             power_claims: BTreeMap::new(),
@@ -429,12 +430,14 @@ impl<P: PriorityEfficiencyPlatform> PriorityEfficiencyController<P> {
         &mut self,
         target: &ProcessControlTarget,
         allow_cross_session_process_control: bool,
+        desired: Option<PriorityClassValue>,
+        protect_non_normal_priority: bool,
     ) -> Result<bool, ProcessControlError> {
         let key = target.key();
         let effective = self
             .effective_priority_claim(&key)
             .map(|claim| (claim.owner, claim.priority));
-        if self.adaptive_priority_manual_yields.contains(&key)
+        if self.adaptive_priority_yields.contains(&key)
             || self.pending_priority_releases.contains_key(&key)
             || effective.is_some_and(|(owner, _)| owner != ControlOwner::AdaptiveEngine)
         {
@@ -444,17 +447,34 @@ impl<P: PriorityEfficiencyPlatform> PriorityEfficiencyController<P> {
             .platform
             .open(target, allow_cross_session_process_control)?;
         let current = self.platform.query_priority(&process)?;
+        if self.adaptive_priority_changed(&identity, current) {
+            self.adaptive_priority_yields.insert(key);
+            return Ok(false);
+        }
         let normal = PriorityClassValue::Normal.raw();
+        let eligible = |baseline| {
+            if protect_non_normal_priority {
+                baseline == normal
+            } else {
+                adaptive_baseline_eligible(PriorityClassValue::from_raw(baseline), desired)
+            }
+        };
         Ok(self
             .managed_priorities
             .get(&identity)
             .filter(|managed| managed.expected == current)
-            .map_or(current == normal, |managed| {
-                managed.baseline == normal
-                    && (current == normal
-                        || (managed.owner == ControlOwner::AdaptiveEngine
-                            && managed.verified
-                            && effective.is_some_and(|(_, priority)| priority.raw() == current)))
+            .map_or(eligible(current), |managed| {
+                eligible(managed.baseline)
+                    && match managed.owner {
+                        ControlOwner::ProcessList => {
+                            current == normal && managed.baseline == normal
+                        }
+                        ControlOwner::AdaptiveEngine => {
+                            managed.verified
+                                && effective.is_some_and(|(_, priority)| priority.raw() == current)
+                        }
+                        _ => false,
+                    }
             }))
     }
 
@@ -545,7 +565,7 @@ impl<P: PriorityEfficiencyPlatform> PriorityEfficiencyController<P> {
     }
 
     fn expected_adaptive_priority(&self, key: &ProcessTargetKey) -> Option<u32> {
-        if self.adaptive_priority_manual_yields.contains(key)
+        if self.adaptive_priority_yields.contains(key)
             || self.pending_priority_releases.contains_key(key)
         {
             return None;
@@ -561,8 +581,8 @@ impl<P: PriorityEfficiencyPlatform> PriorityEfficiencyController<P> {
             .is_some_and(|managed| {
                 managed.owner == ControlOwner::AdaptiveEngine
                     && managed.verified
-                    && managed.baseline == PriorityClassValue::Normal.raw()
                     && managed.expected == expected
+                    && verified_priority_reduction(managed.baseline, expected)
             })
     }
 
@@ -783,7 +803,7 @@ impl<P: PriorityEfficiencyPlatform> PriorityEfficiencyController<P> {
             .get(&ControlOwner::AdaptiveEngine)
             .is_some_and(|claims| claims.contains_key(&key))
         {
-            self.adaptive_priority_manual_yields.insert(key);
+            self.adaptive_priority_yields.insert(key);
         }
     }
 
@@ -986,9 +1006,7 @@ impl<P: PriorityEfficiencyPlatform> PriorityEfficiencyController<P> {
         allow_cross_session_process_control: bool,
     ) -> Result<ProcessPropertyApplyOutcome, ProcessControlError> {
         if claim.owner == ControlOwner::AdaptiveEngine
-            && self
-                .adaptive_priority_manual_yields
-                .contains(&claim.target.key())
+            && self.adaptive_priority_yields.contains(&claim.target.key())
         {
             return Ok(ProcessPropertyApplyOutcome::Preserved);
         }
@@ -997,8 +1015,15 @@ impl<P: PriorityEfficiencyPlatform> PriorityEfficiencyController<P> {
             .open(&claim.target, allow_cross_session_process_control)?;
         self.relinquish_stale_priority_identities(&identity)?;
         let current = self.platform.query_priority(&process)?;
+        if claim.owner == ControlOwner::AdaptiveEngine
+            && self.adaptive_priority_changed(&identity, current)
+        {
+            self.adaptive_priority_yields.insert(claim.target.key());
+            self.rebase_broken_priority(&identity, current)?;
+            return Ok(ProcessPropertyApplyOutcome::Preserved);
+        }
         self.rebase_broken_priority(&identity, current)?;
-        if claim.preservation == PriorityClassPreservation::OnlyNormal
+        if claim.owner == ControlOwner::AdaptiveEngine
             && self
                 .managed_priorities
                 .get(&identity)
@@ -1212,6 +1237,14 @@ impl<P: PriorityEfficiencyPlatform> PriorityEfficiencyController<P> {
         failure.error
     }
 
+    fn adaptive_priority_changed(&self, identity: &ProcessIdentity, current: u32) -> bool {
+        self.managed_priorities
+            .get(identity)
+            .is_some_and(|managed| {
+                managed.owner == ControlOwner::AdaptiveEngine && managed.expected != current
+            })
+    }
+
     fn rebase_broken_priority(
         &mut self,
         identity: &ProcessIdentity,
@@ -1304,7 +1337,7 @@ impl<P: PriorityEfficiencyPlatform> PriorityEfficiencyController<P> {
         active_targets: &BTreeSet<ProcessTargetKey>,
         qualified_episodes: &BTreeSet<ProcessTargetKey>,
     ) -> PriorityEfficiencyReleaseSummary {
-        self.adaptive_priority_manual_yields
+        self.adaptive_priority_yields
             .retain(|key| qualified_episodes.contains(key));
         self.release_priority_policy_except(ControlOwner::AdaptiveEngine, active_targets)
     }
@@ -1408,7 +1441,7 @@ impl<P: PriorityEfficiencyPlatform> PriorityEfficiencyController<P> {
         owner: ControlOwner,
     ) -> PriorityEfficiencyReleaseSummary {
         if owner == ControlOwner::AdaptiveEngine {
-            self.adaptive_priority_manual_yields.clear();
+            self.adaptive_priority_yields.clear();
         }
         self.release_priority_policy_except(owner, &BTreeSet::new())
     }
@@ -1784,8 +1817,8 @@ impl<P: PriorityEfficiencyPlatform> PriorityEfficiencyController<P> {
                     .iter()
                     .find_map(|owner| identity.target_entry(self.priority_claims.get(owner)?))?;
                 (effective.owner == ControlOwner::AdaptiveEngine
-                    && managed.baseline == PriorityClassValue::Normal.raw()
-                    && managed.expected == effective.priority.raw())
+                    && managed.expected == effective.priority.raw()
+                    && verified_priority_reduction(managed.baseline, managed.expected))
                 .then_some((identity, AdaptiveRestraintState::Verified))
             });
         pending.chain(managed)
@@ -1936,7 +1969,7 @@ impl<P: PriorityEfficiencyPlatform> PriorityEfficiencyController<P> {
         self.pending_power_releases.clear();
         self.release_retry_at = None;
         self.priority_claims.clear();
-        self.adaptive_priority_manual_yields.clear();
+        self.adaptive_priority_yields.clear();
         self.adaptive_power_external_yields.clear();
         self.adaptive_power_needs_reconciliation = false;
         self.power_claims.clear();
@@ -2238,6 +2271,9 @@ fn priority_is_preserved(
     match preservation {
         PriorityClassPreservation::Exact => false,
         PriorityClassPreservation::OnlyNormal => baseline != Some(PriorityClassValue::Normal),
+        PriorityClassPreservation::LowerKnownClass => {
+            desired.is_none_or(|desired| !adaptive_baseline_eligible(baseline, Some(desired)))
+        }
         PriorityClassPreservation::PreserveHigher => baseline
             .zip(desired)
             .is_some_and(|(baseline, desired)| baseline.rank() >= desired.rank()),
@@ -2245,6 +2281,22 @@ fn priority_is_preserved(
             .zip(desired)
             .is_some_and(|(baseline, desired)| baseline.rank() <= desired.rank()),
     }
+}
+
+fn adaptive_baseline_eligible(
+    baseline: Option<PriorityClassValue>,
+    desired: Option<PriorityClassValue>,
+) -> bool {
+    baseline.is_some_and(|baseline| {
+        baseline != PriorityClassValue::Realtime
+            && desired.is_none_or(|desired| baseline.rank() > desired.rank())
+    })
+}
+
+fn verified_priority_reduction(baseline: u32, expected: u32) -> bool {
+    PriorityClassValue::from_raw(expected).is_some_and(|expected| {
+        adaptive_baseline_eligible(PriorityClassValue::from_raw(baseline), Some(expected))
+    })
 }
 
 fn priority_owner_precedence() -> &'static [ControlOwner] {

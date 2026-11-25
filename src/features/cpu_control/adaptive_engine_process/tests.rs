@@ -1366,11 +1366,8 @@ fn disposable_restraint_target(
     }
 }
 
-fn restraint_target_observations(
-    target: &crate::foreground::ProcessActionTarget,
-) -> CycleObservations {
-    let foreground_id = std::process::id();
-    let worker = ProcessInfo {
+fn restraint_target_process_info(target: &crate::foreground::ProcessActionTarget) -> ProcessInfo {
+    ProcessInfo {
         id: target.id,
         name: target.name.clone(),
         creation_time: Some(target.creation_time),
@@ -1381,7 +1378,14 @@ fn restraint_target_observations(
         is_critical: Some(false),
         can_set_information: true,
         image_path: Some(target.executable_path.clone()),
-    };
+    }
+}
+
+fn restraint_target_observations(
+    target: &crate::foreground::ProcessActionTarget,
+) -> CycleObservations {
+    let foreground_id = std::process::id();
+    let worker = restraint_target_process_info(target);
     let foreground = ProcessInfo {
         id: foreground_id,
         name: "foreground.exe".into(),
@@ -1431,7 +1435,12 @@ fn native_pressure_restraint_idle_restores_priority() -> Result<(), String> {
         assert_eq!(outcome, ProcessPropertyApplyOutcome::Applied);
         assert_eq!(read_priority()?, priority_class.setting());
         assert_eq!(
-            priority.can_apply_adaptive_restraint(&control_target, false),
+            priority.can_apply_adaptive_restraint(
+                &control_target,
+                false,
+                Some(priority_class),
+                true,
+            ),
             Ok(true)
         );
 
@@ -1482,6 +1491,104 @@ fn native_pressure_restraint_idle_restores_priority() -> Result<(), String> {
         assert_eq!(snapshot.failed_processes, 0);
         assert_eq!(read_priority()?, ProcessPrioritySetting::Normal);
         assert!(priority.adaptive_restraint_processes().next().is_none());
+    }
+    Ok(())
+}
+
+#[test]
+#[ignore = "modifies and restores priority on a disposable Windows process"]
+fn native_pressure_restraint_focus_protections_are_independent() -> Result<(), String> {
+    use crate::{
+        config::ProcessPrioritySetting, control::priority_efficiency::current_process_priority,
+    };
+
+    let (_child, target) = disposable_restraint_target()?;
+    for (is_focused, playing_audio, protect_app, protect_children, should_restrain) in [
+        (true, false, true, false, false),
+        (true, false, false, true, true),
+        (false, false, false, true, false),
+        (false, false, true, false, true),
+        (true, true, false, true, false),
+    ] {
+        let mut worker = restraint_target_process_info(&target);
+        let (processes, foreground_id) = if is_focused {
+            (vec![worker], target.id)
+        } else {
+            let foreground_id = std::process::id();
+            worker.parent_id = Some(foreground_id);
+            let foreground = ProcessInfo {
+                id: foreground_id,
+                name: "foreground.exe".into(),
+                creation_time: Some(1),
+                image_path: None,
+                parent_id: None,
+                ..worker.clone()
+            };
+            (vec![foreground, worker], foreground_id)
+        };
+        let mut settings = AdaptiveEngineProcessSettings {
+            cpu_pressure_restraint_enabled: true,
+            protect_focused_app: protect_app,
+            protect_focused_children: protect_children,
+            background_app_cpu_threshold_percent: 25,
+            pressure_source: AdaptivePressureSource::System,
+            restraint_trigger_time_ms: 250,
+            ..Default::default()
+        };
+        let mut manager = AdaptiveEngineProcessManager::default();
+        let mut allocation = CpuAllocationCoordinator::default();
+        let mut priority = PriorityEfficiencyController::default();
+        let mut log = ActionLog::default();
+        let started_at = Instant::now();
+        for elapsed_ms in [0, 250, 500, 750] {
+            if elapsed_ms == 750 {
+                settings.protect_focused_app = true;
+                settings.protect_focused_children = true;
+            }
+            let mut observations = CycleObservations::with_adaptive_cpu_sample(
+                processes.clone(),
+                Some(foreground_id),
+                None,
+            )
+            .with_visible_windows(BTreeSet::from([target.id]));
+            let status = manager.update_with_activity(
+                AdaptiveEngineProcessUpdate {
+                    settings: &settings,
+                    automation_enabled: true,
+                    allow_cross_session_process_control: false,
+                    foreground_process_id: Some(foreground_id),
+                    total_cpu_usage_percent: Some(100.0),
+                    user_idle_for: Some(Duration::ZERO),
+                    excluded_process_id: None,
+                    explicit_cpu_allocation_paths: &[],
+                    observations: &mut observations,
+                },
+                &mut allocation,
+                &mut priority,
+                &mut log,
+                |id, _| {
+                    (id == target.id).then_some((
+                        ProcessCpuSample {
+                            cpu_time_100ns: elapsed_ms * 10_000,
+                            sampled_at: started_at + Duration::from_millis(elapsed_ms),
+                        },
+                        target.creation_time,
+                    ))
+                },
+                || Ok(playing_audio.then_some(target.id).into_iter().collect()),
+            );
+            assert!(!status.observation_paused, "{status:?}");
+            assert_eq!(status.failed_processes, 0, "{status:?}");
+            assert_eq!(
+                current_process_priority(&target, false).map_err(|error| error.to_string())?,
+                if elapsed_ms == 500 && should_restrain {
+                    ProcessPrioritySetting::BelowNormal
+                } else {
+                    ProcessPrioritySetting::Normal
+                },
+                "at {elapsed_ms} ms: focused {is_focused}, playing audio {playing_audio}, protect app {protect_app}, protect children {protect_children}"
+            );
+        }
     }
     Ok(())
 }

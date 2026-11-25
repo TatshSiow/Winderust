@@ -195,6 +195,7 @@ enum AdaptiveEngineProcessDecision {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AdaptiveEngineProcessTier {
+    Focused,
     VisibleWindow,
     Background,
 }
@@ -629,6 +630,7 @@ impl AdaptiveEngineProcessManager {
                 || previous.reaction_time_ms != settings.reaction_time_ms
                 || previous.restraint_trigger_time_ms != settings.restraint_trigger_time_ms
                 || previous.pause_restraint_when_idle != settings.pause_restraint_when_idle
+                || previous.protect_non_normal_priority != settings.protect_non_normal_priority
                 || previous.restraint_idle_timeout_seconds
                     != settings.restraint_idle_timeout_seconds
                 || previous.minimum_restraint_time_ms != settings.minimum_restraint_time_ms
@@ -648,6 +650,9 @@ impl AdaptiveEngineProcessManager {
             // Changes to restraint-only controls do not reset CPU placement selections.
             previous.restraint_trigger_time_ms = settings.restraint_trigger_time_ms;
             previous.pause_restraint_when_idle = settings.pause_restraint_when_idle;
+            previous.protect_focused_app = settings.protect_focused_app;
+            previous.protect_focused_children = settings.protect_focused_children;
+            previous.protect_non_normal_priority = settings.protect_non_normal_priority;
             previous.restraint_idle_timeout_seconds = settings.restraint_idle_timeout_seconds;
             previous.maximum_restraint_time_ms = settings.maximum_restraint_time_ms;
             previous.restraint_priority = settings.restraint_priority;
@@ -731,6 +736,16 @@ impl AdaptiveEngineProcessManager {
         };
         let mut restrainable_processes = BTreeMap::new();
         for process in processes.iter() {
+            let focused_workload = should_skip_foreground_process(
+                process.id,
+                foreground_process_id,
+                &foreground_group,
+            );
+            let protect_focus = if process.id == foreground_id {
+                settings.protect_focused_app
+            } else {
+                settings.protect_focused_children
+            };
             if process.is_critical != Some(false)
                 || !process.can_set_information
                 || excluded_service_host(process)
@@ -739,8 +754,7 @@ impl AdaptiveEngineProcessManager {
                     process.id,
                     &process.name,
                     current_process_id,
-                    foreground_process_id,
-                    &foreground_group,
+                    focused_workload && (protect_focus || !cpu_pressure_restraint_applies),
                     excluded_process_id,
                 )
             {
@@ -753,7 +767,9 @@ impl AdaptiveEngineProcessManager {
                 continue;
             }
 
-            let tier = if visible_window_process_group_ids.contains(&process.id) {
+            let tier = if focused_workload {
+                AdaptiveEngineProcessTier::Focused
+            } else if visible_window_process_group_ids.contains(&process.id) {
                 AdaptiveEngineProcessTier::VisibleWindow
             } else {
                 AdaptiveEngineProcessTier::Background
@@ -927,7 +943,7 @@ impl AdaptiveEngineProcessManager {
             let mut actionable_process_ids = BTreeSet::new();
             let mut adaptive_engine_process_candidates = Vec::new();
             for (process_id, (process_name, tier)) in &restrainable_processes {
-                if *tier != AdaptiveEngineProcessTier::Background {
+                if *tier == AdaptiveEngineProcessTier::VisibleWindow {
                     continue;
                 }
                 let Some(process) = processes_by_id.get(process_id) else {
@@ -952,7 +968,10 @@ impl AdaptiveEngineProcessManager {
                         *tier,
                         sample,
                     )
-                    .filter(|_| independent_placement_applies)
+                    .filter(|_| {
+                        independent_placement_applies
+                            && *tier == AdaptiveEngineProcessTier::Background
+                    })
                 {
                     adaptive_engine_process_candidates.push(candidate);
                 }
@@ -1167,6 +1186,17 @@ impl AdaptiveEngineProcessManager {
         let mut skipped_processes = 0;
         let mut selected_candidates = Vec::new();
         let target_limit = usize::from(settings.maximum_restrained_apps.max(1));
+        let priority_action = match settings.restraint_priority {
+            AdaptiveRestraintPriority::BelowNormal => Some((
+                PriorityClassValue::BelowNormal,
+                "Lowered process priority to Below Normal during sustained CPU pressure.",
+            )),
+            AdaptiveRestraintPriority::Idle => Some((
+                PriorityClassValue::Idle,
+                "Lowered process priority to Idle during sustained CPU pressure.",
+            )),
+            AdaptiveRestraintPriority::ProcessorPlacementOnly => None,
+        };
         for (_, sampled_at, target) in restraint_candidates {
             if !placement_only && selected_candidates.len() == target_limit {
                 break;
@@ -1191,9 +1221,12 @@ impl AdaptiveEngineProcessManager {
                 skipped_processes += 1;
                 continue;
             }
-            match priority_efficiency_controller
-                .can_apply_adaptive_restraint(&target, allow_cross_session_process_control)
-            {
+            match priority_efficiency_controller.can_apply_adaptive_restraint(
+                &target,
+                allow_cross_session_process_control,
+                priority_action.map(|(class, _)| class),
+                settings.protect_non_normal_priority,
+            ) {
                 Ok(true) => selected_candidates.push((sampled_at, target)),
                 Ok(false) => self.clear_process_failure(&executable_path),
                 Err(error) => {
@@ -1273,16 +1306,10 @@ impl AdaptiveEngineProcessManager {
                 action_log,
             );
         }
-        let priority_action = match settings.restraint_priority {
-            AdaptiveRestraintPriority::BelowNormal => Some((
-                PriorityClassValue::BelowNormal,
-                "Lowered process priority to Below Normal during sustained background CPU pressure.",
-            )),
-            AdaptiveRestraintPriority::Idle => Some((
-                PriorityClassValue::Idle,
-                "Lowered process priority to Idle during sustained background CPU pressure.",
-            )),
-            AdaptiveRestraintPriority::ProcessorPlacementOnly => None,
+        let priority_preservation = if settings.protect_non_normal_priority {
+            PriorityClassPreservation::OnlyNormal
+        } else {
+            PriorityClassPreservation::LowerKnownClass
         };
         let mut successful_priority_targets = BTreeSet::new();
         let mut placement_attempts = Vec::new();
@@ -1308,7 +1335,7 @@ impl AdaptiveEngineProcessManager {
                     target: target.clone(),
                     owner: ControlOwner::AdaptiveEngine,
                     priority: restraint_priority,
-                    preservation: PriorityClassPreservation::OnlyNormal,
+                    preservation: priority_preservation,
                 },
                 allow_cross_session_process_control,
             );

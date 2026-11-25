@@ -925,6 +925,9 @@ fn omitted_cpu_behaviour_settings_use_defaults_independent_of_sampling_interval(
         limit_background_processors_enabled: true,
         limit_background_processors_during_restraint: true,
         restore_affinity_before_managed_restart: true,
+        protect_focused_app: false,
+        protect_focused_children: false,
+        protect_non_normal_priority: false,
         ..Default::default()
     };
     let mut settings = toml::Value::try_from(process).unwrap();
@@ -944,6 +947,9 @@ fn omitted_cpu_behaviour_settings_use_defaults_independent_of_sampling_interval(
         "restraint_priority",
         "restraint_io_priority",
         "restraint_energy_efficient_scheduling",
+        "protect_focused_app",
+        "protect_focused_children",
+        "protect_non_normal_priority",
         "maximum_restraint_time_seconds",
     ] {
         assert!(fields.remove(key).is_some());
@@ -1611,6 +1617,9 @@ fn toml_round_trip_preserves_settings() {
             restraint_priority: AdaptiveRestraintPriority::Idle,
             restraint_io_priority: AdaptiveRestraintIoPriority::Low,
             restraint_energy_efficient_scheduling: true,
+            protect_focused_app: false,
+            protect_focused_children: false,
+            protect_non_normal_priority: false,
             minimum_restraint_time_ms: 4_000,
             maximum_restraint_time_ms: crate::config::ADAPTIVE_RESTRAINT_MAX_TIME_MS,
             cpu_recovery_time_seconds: 10,

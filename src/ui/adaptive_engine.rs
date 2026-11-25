@@ -987,10 +987,35 @@ impl Editor {
                         .into(),
                     ]
                 });
+                let protection = |key, is_on, set: fn(&mut Settings, bool)| {
+                    super::widgets::setting_row(
+                        key,
+                        super::widgets::switch(
+                            is_on,
+                            editable.then_some(move |value| Message::Toggle(set, value)),
+                        ),
+                    )
+                    .into()
+                };
                 let restraint = super::widgets::settings_rows(
                     std::iter::once(restraint_action.into())
                         .chain(priority_effects.into_iter().flatten())
                         .chain([
+                            protection(
+                                "adaptive_engine_process.protect_focused_app",
+                                cpu.protect_focused_app,
+                                |s, v| s.adaptive_engine_process.protect_focused_app = v,
+                            ),
+                            protection(
+                                "adaptive_engine_process.protect_focused_children",
+                                cpu.protect_focused_children,
+                                |s, v| s.adaptive_engine_process.protect_focused_children = v,
+                            ),
+                            protection(
+                                "adaptive_engine_process.protect_non_normal_priority",
+                                cpu.protect_non_normal_priority,
+                                |s, v| s.adaptive_engine_process.protect_non_normal_priority = v,
+                            ),
                             number!(
                                 "adaptive_engine_process.restraint_trigger_time",
                                 ADAPTIVE_RESTRAINT_TRIGGER_MIN_MS,

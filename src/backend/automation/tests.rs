@@ -3918,6 +3918,9 @@ fn adaptive_engine_source_selection_checks_pressure_and_restraint_actions() {
     battery.restraint_io_priority = AdaptiveRestraintIoPriority::VeryLow;
     battery.restraint_energy_efficient_scheduling = true;
     battery.maximum_restraint_time_ms = 30_000;
+    battery.protect_focused_app = false;
+    battery.protect_focused_children = false;
+    battery.protect_non_normal_priority = false;
     assert!(!adaptive_engine_process_waits_for_source(&settings, None));
 
     settings
@@ -3945,6 +3948,12 @@ fn adaptive_engine_source_selection_checks_pressure_and_restraint_actions() {
         .restraint_energy_efficient_scheduling = true;
     assert!(adaptive_engine_process_waits_for_source(&settings, None));
     settings.adaptive_engine_process.maximum_restraint_time_ms = 30_000;
+    assert!(adaptive_engine_process_waits_for_source(&settings, None));
+    settings.adaptive_engine_process.protect_focused_app = false;
+    assert!(adaptive_engine_process_waits_for_source(&settings, None));
+    settings.adaptive_engine_process.protect_focused_children = false;
+    assert!(adaptive_engine_process_waits_for_source(&settings, None));
+    settings.adaptive_engine_process.protect_non_normal_priority = false;
     assert!(!adaptive_engine_process_waits_for_source(&settings, None));
 
     let placement_only = AdaptiveRestraintPriority::ProcessorPlacementOnly;

@@ -535,6 +535,8 @@ hover/press; background shading supplies feedback.
 - Restraint action, Restraint I/O priority, and Energy-efficient scheduling sit together in
   CPU Pressure Restraint. Processor placement only shows its allocation method and
   selection through Limit Background Processors and hides the priority adjuncts.
+  The same CPU Pressure Restraint card groups the independent protections for the
+  focused app, its child processes, and non-Normal priorities for every action.
 - Separate foreground CPU threshold is available in the shared detection card when the source
   combines system and foreground CPU. Enabling it reveals separate System CPU threshold and
   Foreground CPU threshold sliders. The foreground help states that its unit is whole-system
