@@ -762,6 +762,19 @@ impl Editor {
                         adaptive_engine_process.restraint_priority
                     )
                     .into(),
+                    choice!(
+                        s,
+                        "adaptive_engine_process.restraint_io_priority",
+                        AdaptiveRestraintIoPriority,
+                        &[
+                            AdaptiveRestraintIoPriority::Unchanged,
+                            AdaptiveRestraintIoPriority::Low,
+                            AdaptiveRestraintIoPriority::VeryLow,
+                        ],
+                        restraint_io_priority_label,
+                        adaptive_engine_process.restraint_io_priority
+                    )
+                    .into(),
                     number!(
                         "adaptive_engine_process.restraint_trigger_time",
                         ADAPTIVE_RESTRAINT_TRIGGER_MIN_MS,
@@ -1119,6 +1132,16 @@ fn restraint_priority_label(priority: AdaptiveRestraintPriority) -> String {
     t!(match priority {
         AdaptiveRestraintPriority::BelowNormal => "process_priority.priority_below_normal",
         AdaptiveRestraintPriority::Idle => "process_priority.priority_idle",
+    })
+    .to_string()
+}
+fn restraint_io_priority_label(priority: AdaptiveRestraintIoPriority) -> String {
+    t!(match priority {
+        AdaptiveRestraintIoPriority::Unchanged => {
+            "adaptive_engine_process.restraint_io_priority_unchanged"
+        }
+        AdaptiveRestraintIoPriority::Low => "io_priority.priority_low",
+        AdaptiveRestraintIoPriority::VeryLow => "io_priority.priority_very_low",
     })
     .to_string()
 }

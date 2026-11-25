@@ -249,7 +249,7 @@ impl IoPriorityManager {
                     self.failure_suppression
                         .clear_process_failure(&executable_path);
                 }
-                Ok(IoPriorityApplyOutcome::Preserved) => {
+                Ok(IoPriorityApplyOutcome::Preserved | IoPriorityApplyOutcome::Shadowed) => {
                     skipped_processes += 1;
                     self.failure_suppression
                         .clear_process_failure(&executable_path);
@@ -299,7 +299,7 @@ impl IoPriorityManager {
         IoPrioritySnapshot {
             enabled: true,
             scanned_processes,
-            adjusted_processes: controller.policy_managed_process_count(),
+            adjusted_processes: controller.policy_managed_process_count(ControlOwner::IoPriority),
             skipped_processes,
             failed_processes: release_failures.count + self.non_release_failures.count,
             auto_excluded_processes: auto_excluded_processes.into_iter().collect(),
@@ -348,7 +348,7 @@ impl IoPriorityManager {
         action_log: &mut ActionLog,
         reason: &str,
     ) -> IoPriorityFailures {
-        let summary = controller.release_policy_except(active_targets);
+        let summary = controller.release_policy_except(ControlOwner::IoPriority, active_targets);
         self.record_policy_release(summary, action_log, reason)
     }
 
@@ -358,7 +358,7 @@ impl IoPriorityManager {
         action_log: &mut ActionLog,
         reason: &str,
     ) -> IoPriorityFailures {
-        let summary = controller.release_all_policy();
+        let summary = controller.release_all_policy(ControlOwner::IoPriority);
         self.record_policy_release(summary, action_log, reason)
     }
 
@@ -377,7 +377,8 @@ impl IoPriorityManager {
             .last_error
             .or_else(|| self.non_release_failures.last_error.clone());
         if status.enabled {
-            status.adjusted_processes = controller.policy_managed_process_count();
+            status.adjusted_processes =
+                controller.policy_managed_process_count(ControlOwner::IoPriority);
         }
         status
     }

@@ -137,6 +137,10 @@ migration or copying from the limiter is performed.
 - Maximum restraint time limits a continuous priority adjustment even if its process remains hot.
   Zero leaves the adjustment uncapped. After expiration, the process must build fresh qualification
   before being restrained again. Pending restoration retains its existing retry path.
+- Restraint I/O priority can apply Low or Very Low only while an exact process has a verified CPU
+  priority restraint. The default is Unchanged. The shared I/O Priority controller preserves a
+  lower baseline and yields to saved I/O policies and manual changes. It releases the Adaptive
+  adjustment when restraint ends or the option changes to Unchanged.
 - Missing per-process samples or invalid CPU deltas discard that target's old
   baseline and restraint/recovery episode. Re-entry requires a fresh valid interval;
   skipped/excluded targets cannot retain stale candidate tracking.

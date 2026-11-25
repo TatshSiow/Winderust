@@ -1121,6 +1121,15 @@ pub enum AdaptiveRestraintPriority {
     Idle,
 }
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AdaptiveRestraintIoPriority {
+    #[default]
+    Unchanged,
+    Low,
+    VeryLow,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "AdaptiveEngineProcessSettingsWire")]
 pub struct AdaptiveEngineProcessSettings {
@@ -1182,6 +1191,7 @@ pub struct AdaptiveEngineProcessSettings {
     pub pause_restraint_when_idle: bool,
     pub restraint_idle_timeout_seconds: u64,
     pub restraint_priority: AdaptiveRestraintPriority,
+    pub restraint_io_priority: AdaptiveRestraintIoPriority,
     pub cpu_restraint_time_seconds: u64,
     pub maximum_restraint_time_seconds: u64,
     pub cpu_recovery_time_seconds: u64,
@@ -1259,6 +1269,8 @@ struct AdaptiveEngineProcessSettingsWire {
     pub restraint_idle_timeout_seconds: u64,
     #[serde(default)]
     pub restraint_priority: AdaptiveRestraintPriority,
+    #[serde(default)]
+    pub restraint_io_priority: AdaptiveRestraintIoPriority,
     pub cpu_restraint_time_seconds: u64,
     #[serde(default)]
     pub maximum_restraint_time_seconds: u64,
@@ -1333,6 +1345,7 @@ impl TryFrom<AdaptiveEngineProcessSettingsWire> for AdaptiveEngineProcessSetting
             pause_restraint_when_idle: wire.pause_restraint_when_idle,
             restraint_idle_timeout_seconds: wire.restraint_idle_timeout_seconds,
             restraint_priority: wire.restraint_priority,
+            restraint_io_priority: wire.restraint_io_priority,
             cpu_restraint_time_seconds: wire.cpu_restraint_time_seconds,
             maximum_restraint_time_seconds: wire.maximum_restraint_time_seconds,
             cpu_recovery_time_seconds: wire.cpu_recovery_time_seconds,
@@ -2539,6 +2552,7 @@ impl Default for AdaptiveEngineProcessSettings {
             pause_restraint_when_idle: false,
             restraint_idle_timeout_seconds: default_restraint_idle_timeout_seconds(),
             restraint_priority: AdaptiveRestraintPriority::default(),
+            restraint_io_priority: AdaptiveRestraintIoPriority::default(),
             cpu_restraint_time_seconds: 3,
             maximum_restraint_time_seconds: 0,
             cpu_recovery_time_seconds: 6,

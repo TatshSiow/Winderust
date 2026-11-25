@@ -39,6 +39,7 @@ pub(crate) enum IoPriorityApplyOutcome {
     Applied,
     Unchanged,
     Preserved,
+    Shadowed,
 }
 
 #[derive(Debug)]
@@ -53,6 +54,24 @@ pub(crate) struct IoPriorityReleaseFailure {
 pub(crate) struct IoPriorityReleaseSummary {
     pub(crate) restored_processes: usize,
     pub(crate) failures: Vec<IoPriorityReleaseFailure>,
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct IoPriorityReleaseRetries {
+    pub(crate) static_policy: IoPriorityReleaseSummary,
+    pub(crate) adaptive_engine: IoPriorityReleaseSummary,
+}
+
+struct PendingIoPriorityRelease {
+    identity: ProcessIdentity,
+    owner: ControlOwner,
+    error: ProcessControlError,
+}
+
+#[derive(Default)]
+struct AdaptiveIoEpisode {
+    eligible: bool,
+    manual_yield: bool,
 }
 
 struct ManagedIoPriority {
@@ -142,9 +161,11 @@ impl IoPriorityPlatform for WindowsIoPriorityPlatform {
 
 pub(crate) struct IoPriorityController<P: IoPriorityPlatform = WindowsIoPriorityPlatform> {
     platform: P,
+    static_targets: BTreeSet<ProcessTargetKey>,
+    adaptive_episodes: BTreeMap<ProcessTargetKey, AdaptiveIoEpisode>,
     managed: BTreeMap<ProcessIdentity, ManagedIoPriority>,
     next_apply_sequence: u64,
-    pending_releases: BTreeSet<ProcessIdentity>,
+    pending_releases: BTreeMap<ProcessTargetKey, PendingIoPriorityRelease>,
     next_release_retry: Option<Instant>,
 }
 
@@ -158,9 +179,11 @@ impl<P: IoPriorityPlatform> IoPriorityController<P> {
     fn with_platform(platform: P) -> Self {
         Self {
             platform,
+            static_targets: BTreeSet::new(),
+            adaptive_episodes: BTreeMap::new(),
             managed: BTreeMap::new(),
             next_apply_sequence: 1,
-            pending_releases: BTreeSet::new(),
+            pending_releases: BTreeMap::new(),
             next_release_retry: None,
         }
     }
@@ -170,13 +193,37 @@ impl<P: IoPriorityPlatform> IoPriorityController<P> {
         claim: IoPriorityClaim,
         allow_cross_session_process_control: bool,
     ) -> Result<IoPriorityApplyOutcome, ProcessControlError> {
-        if !matches!(
-            claim.owner,
-            ControlOwner::IoPriority | ControlOwner::AdaptiveEngine
-        ) {
-            return Err(ProcessControlError::Failed(
-                "This owner cannot control I/O Priority policy.".to_owned(),
-            ));
+        let key = claim.target.key();
+        match claim.owner {
+            ControlOwner::IoPriority => {
+                self.static_targets.insert(key);
+            }
+            ControlOwner::AdaptiveEngine => {
+                if !matches!(
+                    claim.priority,
+                    ProcessIoPriority::VeryLow | ProcessIoPriority::Low
+                ) || claim.preservation != IoPriorityPreservation::PreserveLower
+                {
+                    return Err(ProcessControlError::Failed(
+                        "Adaptive Engine can only lower I/O priority to Low or Very Low."
+                            .to_owned(),
+                    ));
+                }
+                if !self
+                    .adaptive_episodes
+                    .get(&key)
+                    .is_some_and(|episode| episode.eligible && !episode.manual_yield)
+                    || self.static_targets.contains(&key)
+                    || self.pending_releases.contains_key(&key)
+                {
+                    return Ok(IoPriorityApplyOutcome::Shadowed);
+                }
+            }
+            _ => {
+                return Err(ProcessControlError::Failed(
+                    "This owner cannot control I/O Priority policy.".to_owned(),
+                ));
+            }
         }
         self.apply_claim(claim, allow_cross_session_process_control)
     }
@@ -187,15 +234,21 @@ impl<P: IoPriorityPlatform> IoPriorityController<P> {
         priority: ProcessIoPriority,
         allow_cross_session_process_control: bool,
     ) -> Result<IoPriorityApplyOutcome, ProcessControlError> {
-        self.apply_claim(
+        let target = ProcessControlTarget::from_action_target(target);
+        let key = target.key();
+        let outcome = self.apply_claim(
             IoPriorityClaim {
-                target: ProcessControlTarget::from_action_target(target),
+                target,
                 owner: ControlOwner::ProcessList,
                 priority,
                 preservation: IoPriorityPreservation::Exact,
             },
             allow_cross_session_process_control,
-        )
+        )?;
+        if let Some(episode) = self.adaptive_episodes.get_mut(&key) {
+            episode.manual_yield = true;
+        }
+        Ok(outcome)
     }
 
     fn apply_claim(
@@ -206,6 +259,7 @@ impl<P: IoPriorityPlatform> IoPriorityController<P> {
         let (identity, process) = self
             .platform
             .open(&claim.target, allow_cross_session_process_control)?;
+        let key = identity.key();
         let stale_identities = self
             .managed
             .keys()
@@ -217,7 +271,7 @@ impl<P: IoPriorityPlatform> IoPriorityController<P> {
         for stale_identity in stale_identities {
             self.platform.relinquish(&stale_identity)?;
             self.managed.remove(&stale_identity);
-            self.pending_releases.remove(&stale_identity);
+            self.pending_releases.remove(&stale_identity.key());
         }
 
         let mut managed = self.managed.remove(&identity);
@@ -240,8 +294,22 @@ impl<P: IoPriorityPlatform> IoPriorityController<P> {
                 }
                 return Err(error);
             }
-            self.pending_releases.remove(&identity);
+            self.pending_releases.remove(&key);
             managed = None;
+        }
+
+        managed = match managed {
+            Some(managed)
+                if claim.owner == ControlOwner::AdaptiveEngine
+                    && managed.owner == ControlOwner::ProcessList =>
+            {
+                self.managed.insert(identity, managed);
+                return Ok(IoPriorityApplyOutcome::Shadowed);
+            }
+            managed => managed,
+        };
+        if claim.owner == ControlOwner::AdaptiveEngine && io_priority_from_raw(current).is_none() {
+            return Ok(IoPriorityApplyOutcome::Preserved);
         }
 
         let desired = io_priority_raw(claim.priority);
@@ -251,16 +319,16 @@ impl<P: IoPriorityPlatform> IoPriorityController<P> {
                 self.managed.insert(identity.clone(), managed);
                 self.release_identity(&identity)?;
                 self.managed.remove(&identity);
-                self.pending_releases.remove(&identity);
+                self.pending_releases.remove(&key);
             }
             return Ok(IoPriorityApplyOutcome::Preserved);
         }
 
         if current == desired {
             if let Some(mut managed) = managed {
-                if claim.owner.is_automatic() || managed.owner == ControlOwner::ProcessList {
+                if claim.owner.is_automatic() || managed.owner != ControlOwner::IoPriority {
                     managed.owner = claim.owner;
-                    self.pending_releases.remove(&identity);
+                    self.pending_releases.remove(&key);
                 }
                 managed.expected = current;
                 self.managed.insert(identity, managed);
@@ -278,7 +346,7 @@ impl<P: IoPriorityPlatform> IoPriorityController<P> {
             CommitFailureBehavior::RetainOwnership,
         ) {
             Ok(()) => {
-                self.pending_releases.remove(&identity);
+                self.pending_releases.remove(&key);
                 self.managed.insert(
                     identity,
                     ManagedIoPriority {
@@ -301,6 +369,14 @@ impl<P: IoPriorityPlatform> IoPriorityController<P> {
                     }
                 }
                 if failure.uncertain {
+                    if claim.owner == ControlOwner::AdaptiveEngine {
+                        self.defer_release(
+                            key,
+                            identity.clone(),
+                            claim.owner,
+                            failure.error.clone(),
+                        );
+                    }
                     self.managed.insert(
                         identity,
                         ManagedIoPriority {
@@ -320,29 +396,79 @@ impl<P: IoPriorityPlatform> IoPriorityController<P> {
 
     pub(crate) fn release_policy_except(
         &mut self,
+        owner: ControlOwner,
         active_targets: &BTreeSet<ProcessTargetKey>,
     ) -> IoPriorityReleaseSummary {
-        if self.pending_releases.is_empty() {
-            self.next_release_retry = None;
+        match owner {
+            ControlOwner::IoPriority => {
+                if &self.static_targets != active_targets {
+                    self.static_targets.clone_from(active_targets);
+                }
+            }
+            ControlOwner::AdaptiveEngine => {}
+            _ => {
+                return IoPriorityReleaseSummary {
+                    failures: vec![IoPriorityReleaseFailure {
+                        process_id: 0,
+                        process_name: "I/O Priority".to_owned(),
+                        executable_path: PathBuf::new(),
+                        error: ProcessControlError::Failed(
+                            "This owner cannot release I/O Priority policy.".to_owned(),
+                        ),
+                    }],
+                    ..Default::default()
+                };
+            }
         }
         let identities = self
             .managed
             .iter()
-            .filter(|(identity, managed)| {
-                managed.owner.is_automatic() && !active_targets.contains(&identity.key())
+            .filter_map(|(identity, managed)| {
+                if managed.owner != owner {
+                    return None;
+                }
+                let key = identity.key();
+                if self.pending_releases.get(&key).is_some_and(|pending| {
+                    owner == ControlOwner::AdaptiveEngine || pending.owner != owner
+                }) {
+                    return None;
+                }
+                let shadowed = owner == ControlOwner::AdaptiveEngine
+                    && (self.static_targets.contains(&key)
+                        || !self.adaptive_episodes.contains_key(&key));
+                (shadowed || !active_targets.contains(&key))
+                    .then(|| (managed.apply_sequence, identity.clone()))
             })
-            .map(|(identity, managed)| (managed.apply_sequence, identity.clone()))
             .collect::<Vec<_>>();
-        self.pending_releases
-            .extend(identities.iter().map(|(_, identity)| identity.clone()));
-        let summary = self.release_identities(identities);
+        let summary = self.release_identities(identities, Some(owner));
         if self.pending_releases.is_empty() {
             self.next_release_retry = None;
-        } else {
-            self.next_release_retry
-                .get_or_insert_with(|| Instant::now() + Duration::from_secs(1));
         }
         summary
+    }
+
+    pub(crate) fn reconcile_adaptive_restraint_targets(
+        &mut self,
+        eligible_targets: &BTreeSet<ProcessTargetKey>,
+        verified_episodes: &BTreeSet<ProcessTargetKey>,
+    ) -> IoPriorityReleaseSummary {
+        self.adaptive_episodes
+            .retain(|key, _| verified_episodes.contains(key));
+        for key in verified_episodes {
+            self.adaptive_episodes
+                .entry(key.clone())
+                .or_default()
+                .eligible = eligible_targets.contains(key);
+        }
+        self.release_policy_except(ControlOwner::AdaptiveEngine, eligible_targets)
+    }
+
+    pub(crate) fn has_adaptive_restraint_state(&self) -> bool {
+        !self.adaptive_episodes.is_empty()
+            || self
+                .pending_releases
+                .values()
+                .any(|entry| entry.owner == ControlOwner::AdaptiveEngine)
     }
 
     pub(crate) fn release_retry_delay(&self, now: Instant) -> Option<Duration> {
@@ -352,38 +478,55 @@ impl<P: IoPriorityPlatform> IoPriorityController<P> {
         })
     }
 
-    pub(crate) fn retry_pending_releases(&mut self, now: Instant) -> IoPriorityReleaseSummary {
+    pub(crate) fn retry_pending_releases(&mut self, now: Instant) -> IoPriorityReleaseRetries {
         if self.release_retry_delay(now) != Some(Duration::ZERO) {
-            return IoPriorityReleaseSummary::default();
+            return IoPriorityReleaseRetries::default();
         }
-        let identities = self
-            .pending_releases
-            .iter()
-            .filter_map(|identity| {
-                self.managed
-                    .get(identity)
-                    .map(|managed| (managed.apply_sequence, identity.clone()))
-            })
-            .collect();
-        let summary = self.release_identities(identities);
+        let mut static_identities = Vec::new();
+        let mut adaptive_identities = Vec::new();
+        for pending in self.pending_releases.values() {
+            if let Some(managed) = self.managed.get(&pending.identity) {
+                let identities = match pending.owner {
+                    ControlOwner::IoPriority => &mut static_identities,
+                    ControlOwner::AdaptiveEngine => &mut adaptive_identities,
+                    // Only policy withdrawal can queue an automatic release.
+                    _ => continue,
+                };
+                identities.push((managed.apply_sequence, pending.identity.clone()));
+            }
+        }
+        let static_policy =
+            self.release_identities(static_identities, Some(ControlOwner::IoPriority));
+        let adaptive_engine =
+            self.release_identities(adaptive_identities, Some(ControlOwner::AdaptiveEngine));
         self.pending_releases
-            .retain(|identity| self.managed.contains_key(identity));
+            .retain(|_, pending| self.managed.contains_key(&pending.identity));
         self.next_release_retry =
             (!self.pending_releases.is_empty()).then(|| now + Duration::from_secs(1));
-        summary
+        IoPriorityReleaseRetries {
+            static_policy,
+            adaptive_engine,
+        }
     }
 
-    pub(crate) fn release_all_policy(&mut self) -> IoPriorityReleaseSummary {
-        self.release_policy_except(&BTreeSet::new())
+    pub(crate) fn release_all_policy(&mut self, owner: ControlOwner) -> IoPriorityReleaseSummary {
+        let active_targets = BTreeSet::new();
+        if owner == ControlOwner::AdaptiveEngine {
+            self.reconcile_adaptive_restraint_targets(&active_targets, &active_targets)
+        } else {
+            self.release_policy_except(owner, &active_targets)
+        }
     }
 
     pub(crate) fn shutdown(&mut self) -> Result<(), String> {
+        self.static_targets.clear();
+        self.adaptive_episodes.clear();
         let identities = self
             .managed
             .iter()
             .map(|(identity, managed)| (managed.apply_sequence, identity.clone()))
             .collect::<Vec<_>>();
-        let summary = self.release_identities(identities);
+        let summary = self.release_identities(identities, None);
         if summary.failures.is_empty() {
             Ok(())
         } else {
@@ -404,39 +547,62 @@ impl<P: IoPriorityPlatform> IoPriorityController<P> {
     fn release_identities(
         &mut self,
         mut identities: Vec<(u64, ProcessIdentity)>,
+        release_owner: Option<ControlOwner>,
     ) -> IoPriorityReleaseSummary {
         identities.sort_by_key(|identity| std::cmp::Reverse(identity.0));
         let mut summary = IoPriorityReleaseSummary::default();
         for (_, identity) in identities {
-            match self.release_identity(&identity) {
+            let released = match self.release_identity(&identity) {
+                Err(ProcessControlError::ProcessExited) => {
+                    self.platform.relinquish(&identity).map(|()| false)
+                }
+                released => released,
+            };
+            let key = identity.key();
+            match released {
                 Ok(restored) => {
                     summary.restored_processes += usize::from(restored);
                     self.managed.remove(&identity);
-                    self.pending_releases.remove(&identity);
+                    self.pending_releases.remove(&key);
                 }
-                Err(ProcessControlError::ProcessExited) => {
-                    match self.platform.relinquish(&identity) {
-                        Ok(()) => {
-                            self.managed.remove(&identity);
-                            self.pending_releases.remove(&identity);
-                        }
-                        Err(error) => summary.failures.push(IoPriorityReleaseFailure {
-                            process_id: identity.id,
-                            process_name: identity.name.clone(),
-                            executable_path: identity.executable_path.clone(),
-                            error,
-                        }),
+                Err(error) => {
+                    if let Some(owner) = release_owner {
+                        self.defer_release(key, identity.clone(), owner, error.clone());
                     }
+                    summary.failures.push(IoPriorityReleaseFailure {
+                        process_id: identity.id,
+                        process_name: identity.name,
+                        executable_path: identity.executable_path,
+                        error,
+                    });
                 }
-                Err(error) => summary.failures.push(IoPriorityReleaseFailure {
-                    process_id: identity.id,
-                    process_name: identity.name.clone(),
-                    executable_path: identity.executable_path.clone(),
-                    error,
-                }),
             }
         }
         summary
+    }
+
+    fn defer_release(
+        &mut self,
+        key: ProcessTargetKey,
+        identity: ProcessIdentity,
+        owner: ControlOwner,
+        error: ProcessControlError,
+    ) {
+        if self.pending_releases.is_empty() {
+            self.next_release_retry = Some(Instant::now() + Duration::from_secs(1));
+        }
+        match self.pending_releases.entry(key) {
+            std::collections::btree_map::Entry::Occupied(mut existing) => {
+                existing.get_mut().error = error;
+            }
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                entry.insert(PendingIoPriorityRelease {
+                    identity,
+                    owner,
+                    error,
+                });
+            }
+        }
     }
 
     fn release_identity(
@@ -490,11 +656,25 @@ impl<P: IoPriorityPlatform> IoPriorityController<P> {
         }
     }
 
-    pub(crate) fn policy_managed_process_count(&self) -> usize {
+    pub(crate) fn policy_managed_process_count(&self, owner: ControlOwner) -> usize {
         self.managed
-            .values()
-            .filter(|managed| managed.owner.is_automatic())
+            .iter()
+            .filter(|(identity, managed)| {
+                managed.owner == owner
+                    && (owner != ControlOwner::AdaptiveEngine
+                        || !self.pending_releases.contains_key(&identity.key()))
+            })
             .count()
+    }
+
+    pub(crate) fn policy_release_failures(
+        &self,
+        owner: ControlOwner,
+    ) -> impl Iterator<Item = (&ProcessIdentity, &ProcessControlError)> {
+        self.pending_releases
+            .values()
+            .filter(move |pending| pending.owner == owner)
+            .map(|pending| (&pending.identity, &pending.error))
     }
 
     pub(crate) fn has_managed_state(&self) -> bool {
@@ -689,6 +869,8 @@ fn io_priority_error(error: IoPriorityError) -> ProcessControlError {
 
 #[cfg(test)]
 mod tests {
+    mod adaptive;
+
     use std::{
         collections::VecDeque,
         path::PathBuf,
@@ -934,11 +1116,13 @@ mod tests {
 
         controller.apply_policy_claim(request, true).unwrap();
         controller.platform.fail_next(FakeFailure::Privilege);
-        let summary = controller.release_all_policy();
+        let summary = controller.release_all_policy(ControlOwner::IoPriority);
         assert_eq!(summary.failures.len(), 1);
         assert!(controller.has_managed_state());
         assert_eq!(controller.pending_releases.len(), 1);
-        let summary = controller.retry_pending_releases(Instant::now() + Duration::from_secs(2));
+        let summary = controller
+            .retry_pending_releases(Instant::now() + Duration::from_secs(2))
+            .static_policy;
         assert_eq!(summary.restored_processes, 1);
         assert!(!controller.has_managed_state());
         assert_eq!(controller.platform.processes[&42].priority, 2);
@@ -993,7 +1177,13 @@ mod tests {
                 )
                 .unwrap();
             controller.platform.fail_next(FakeFailure::Open);
-            assert_eq!(controller.release_all_policy().failures.len(), 1);
+            assert_eq!(
+                controller
+                    .release_all_policy(ControlOwner::IoPriority)
+                    .failures
+                    .len(),
+                1
+            );
             for failure in [
                 FakeFailure::Open,
                 FakeFailure::QueryDenied,
@@ -1008,15 +1198,31 @@ mod tests {
             let due = controller.next_release_retry.unwrap();
             for _ in 0..8 {
                 assert!(controller
-                    .release_policy_except(&BTreeSet::from([target(42, 7).key()]))
+                    .release_policy_except(
+                        ControlOwner::IoPriority,
+                        &BTreeSet::from([target(42, 7).key()])
+                    )
                     .failures
                     .is_empty());
                 assert_eq!(controller.next_release_retry, Some(due));
             }
             let now = due - Duration::from_millis(1);
-            assert_eq!(controller.retry_pending_releases(now).restored_processes, 0);
+            assert_eq!(
+                controller
+                    .retry_pending_releases(now)
+                    .static_policy
+                    .restored_processes,
+                0
+            );
             controller.platform.fail_next(FakeFailure::Open);
-            assert_eq!(controller.retry_pending_releases(due).failures.len(), 1);
+            assert_eq!(
+                controller
+                    .retry_pending_releases(due)
+                    .static_policy
+                    .failures
+                    .len(),
+                1
+            );
             assert_eq!(
                 controller.release_retry_delay(due),
                 Some(Duration::from_secs(1))
@@ -1029,6 +1235,7 @@ mod tests {
             assert_eq!(
                 controller
                     .retry_pending_releases(due + Duration::from_secs(1))
+                    .static_policy
                     .restored_processes,
                 usize::from(!replace)
             );
@@ -1037,7 +1244,7 @@ mod tests {
                 if replace { 1 } else { 2 }
             );
             assert!(controller.release_retry_delay(now).is_none());
-            controller.release_all_policy();
+            controller.release_all_policy(ControlOwner::IoPriority);
             assert_eq!(
                 controller.platform.processes[&42].priority,
                 if replace { 1 } else { 2 }
@@ -1102,36 +1309,6 @@ mod tests {
     }
 
     #[test]
-    fn static_to_adaptive_replacement_keeps_the_first_baseline() {
-        let platform = FakePlatform::new(2);
-        let mut controller = IoPriorityController::with_platform(platform);
-        controller
-            .apply_policy_claim(
-                claim(
-                    ControlOwner::IoPriority,
-                    ProcessIoPriority::Low,
-                    IoPriorityPreservation::Exact,
-                ),
-                true,
-            )
-            .unwrap();
-        controller
-            .apply_policy_claim(
-                claim(
-                    ControlOwner::AdaptiveEngine,
-                    ProcessIoPriority::VeryLow,
-                    IoPriorityPreservation::Exact,
-                ),
-                true,
-            )
-            .unwrap();
-
-        let managed = controller.managed.values().next().unwrap();
-        assert_eq!(managed.baseline, 2);
-        assert_eq!(managed.owner, ControlOwner::AdaptiveEngine);
-    }
-
-    #[test]
     fn identity_metadata_drift_preserves_the_existing_baseline() {
         let platform = FakePlatform::new(2);
         let mut controller = IoPriorityController::with_platform(platform);
@@ -1192,7 +1369,7 @@ mod tests {
             controller
                 .apply_policy_claim(
                     claim(
-                        ControlOwner::AdaptiveEngine,
+                        ControlOwner::IoPriority,
                         ProcessIoPriority::Low,
                         IoPriorityPreservation::PreserveHigher,
                     ),
@@ -1277,7 +1454,7 @@ mod tests {
             .unwrap();
         controller.platform.processes.get_mut(&42).unwrap().priority = 3;
 
-        let summary = controller.release_all_policy();
+        let summary = controller.release_all_policy(ControlOwner::IoPriority);
         assert!(summary.failures.is_empty());
         assert_eq!(summary.restored_processes, 0);
         assert_eq!(controller.platform.processes[&42].priority, 3);
@@ -1506,7 +1683,7 @@ mod tests {
             .unwrap();
         controller.platform.fail_next(FakeFailure::Commit);
 
-        let summary = controller.release_all_policy();
+        let summary = controller.release_all_policy(ControlOwner::IoPriority);
         assert!(summary.failures.is_empty());
         assert_eq!(summary.restored_processes, 1);
         assert_eq!(controller.platform.processes[&42].priority, 2);
@@ -1529,7 +1706,7 @@ mod tests {
             .unwrap();
         controller.platform.fail_next(FakeFailure::Commit);
         controller.platform.fail_next(FakeFailure::Relinquish);
-        let first = controller.release_all_policy();
+        let first = controller.release_all_policy(ControlOwner::IoPriority);
         assert_eq!(first.failures.len(), 1);
         assert_eq!(controller.platform.processes[&42].priority, 2);
         let apply_count = controller
@@ -1541,7 +1718,7 @@ mod tests {
             .filter(|event| event.starts_with("apply:"))
             .count();
 
-        let second = controller.release_all_policy();
+        let second = controller.release_all_policy(ControlOwner::IoPriority);
         assert!(second.failures.is_empty());
         assert_eq!(
             controller
@@ -1630,9 +1807,35 @@ mod tests {
         };
         let mut controller = IoPriorityController::default();
 
-        controller
-            .apply_process_list_action(&target, expected, true)
-            .map_err(|error| error.to_string())?;
+        if baseline == ProcessIoPriority::VeryLow {
+            controller
+                .apply_process_list_action(&target, expected, true)
+                .map_err(|error| error.to_string())?;
+        } else {
+            let control_target = ProcessControlTarget::from_action_target(&target);
+            let active = BTreeSet::from([control_target.key()]);
+            controller.reconcile_adaptive_restraint_targets(&active, &active);
+            let outcome = controller
+                .apply_policy_claim(
+                    IoPriorityClaim {
+                        target: control_target,
+                        owner: ControlOwner::AdaptiveEngine,
+                        priority: expected,
+                        preservation: IoPriorityPreservation::PreserveLower,
+                    },
+                    true,
+                )
+                .map_err(|error| error.to_string())?;
+            assert_eq!(outcome, IoPriorityApplyOutcome::Applied);
+            assert_eq!(current_process_io_priority(&target, true)?, expected);
+            let outcome = controller
+                .apply_process_list_action(&target, expected, true)
+                .map_err(|error| error.to_string())?;
+            assert_eq!(outcome, IoPriorityApplyOutcome::Unchanged);
+            let release = controller.release_all_policy(ControlOwner::AdaptiveEngine);
+            assert!(release.failures.is_empty());
+            assert_eq!(release.restored_processes, 0);
+        }
         assert_eq!(current_process_io_priority(&target, true)?, expected);
         controller.shutdown()?;
         assert_eq!(current_process_io_priority(&target, true)?, baseline);

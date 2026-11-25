@@ -523,6 +523,8 @@ hover/press; background shading supplies feedback.
   In Limit Background Processors, place the CPU allocation method first. Reduce affinity (Hard)
   shows a removal count in place of all fixed processor-selection controls. The two hard methods
   show Preserve custom affinity inside the same expandable card.
+- Restraint CPU priority and Restraint I/O priority sit together in CPU Pressure Restraint.
+  The I/O selector defaults to Unchanged and uses the same Low and Very Low labels as I/O Priority.
 
 ## Current reference layout
 

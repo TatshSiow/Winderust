@@ -872,8 +872,11 @@ Read the relevant section before changing feature policy, ownership, restoration
   The list follows existing controller transitions and retries without querying
   Windows again. Pending and unconfirmed entries remain visible while paused or
   disabled.
-  Thread, I/O, GPU, and Memory Priority and Dynamic Priority Boost use their
-  dedicated settings.
+  Thread, GPU, and Memory Priority and Dynamic Priority Boost use their dedicated settings.
+  An optional Low or Very Low I/O Priority claim is gated on an exact verified restraint
+  episode. The dedicated I/O Priority policy reserves applicable targets even when its
+  requested value requires no write. Process List manual choices also make Adaptive yield.
+  The shared I/O controller keeps release and retry ownership separate for the two producers.
 - CPU Pressure Restraint qualifies a process after at least two valid hot samples
   and the configured Time above threshold. Reaction time sets sampling
   cadence independently. The pressure source determines which aggregate CPU readings

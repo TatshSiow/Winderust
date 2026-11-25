@@ -401,19 +401,19 @@ fn invalid_by_time_clock_values_fail_load_and_import_without_rewriting() {
 
 use crate::config::{
     AccentSettings, ActionLogMode, AdaptiveEnginePreset, AdaptiveEngineProcessSettings,
-    AdaptiveEngineSettings, AdaptivePressureSource, AdaptiveRestraintPriority,
-    AdvancedPowerPlanTuningPreset, AdvancedSettings, AppLanguage, AppSuspensionRule,
-    AppSuspensionSettings, AppThemeMode, BackgroundProcessorSelection, ByActivitySettings,
-    ByCpuLoadRule, ByCpuLoadSettings, ByFocusRule, ByFocusSettings, ByRunningAppRule,
-    ByRunningAppSettings, ByTimeRule, ByTimeSettings, CpuAllocationMethod, CpuAllocationPreset,
-    CpuAllocationRule, CpuAllocationSettings, CpuLimiterRule, CpuLimiterSettings,
-    CpuUsageComparison, DynamicPriorityBoostSettings, EfficiencyModeRule, EfficiencyModeSettings,
-    GeneralSettings, GpuPrioritySettings, InputDetectionSettings, IoPrioritySettings,
-    MemoryPrioritySettings, MemoryTrimSettings, NetworkThresholdUnit, PowerPlanSettings,
-    ProcessDynamicPriorityBoostSetting, ProcessExclusionRule, ProcessGpuPrioritySetting,
-    ProcessIoPrioritySetting, ProcessMemoryPrioritySetting, ProcessPrioritySetting,
-    ProcessPrioritySettings, ProcessRuleMode, ProcessThreadPrioritySetting, ThreadPrioritySettings,
-    TimerResolutionRule, TimerResolutionSettings, WeekdaySetting,
+    AdaptiveEngineSettings, AdaptivePressureSource, AdaptiveRestraintIoPriority,
+    AdaptiveRestraintPriority, AdvancedPowerPlanTuningPreset, AdvancedSettings, AppLanguage,
+    AppSuspensionRule, AppSuspensionSettings, AppThemeMode, BackgroundProcessorSelection,
+    ByActivitySettings, ByCpuLoadRule, ByCpuLoadSettings, ByFocusRule, ByFocusSettings,
+    ByRunningAppRule, ByRunningAppSettings, ByTimeRule, ByTimeSettings, CpuAllocationMethod,
+    CpuAllocationPreset, CpuAllocationRule, CpuAllocationSettings, CpuLimiterRule,
+    CpuLimiterSettings, CpuUsageComparison, DynamicPriorityBoostSettings, EfficiencyModeRule,
+    EfficiencyModeSettings, GeneralSettings, GpuPrioritySettings, InputDetectionSettings,
+    IoPrioritySettings, MemoryPrioritySettings, MemoryTrimSettings, NetworkThresholdUnit,
+    PowerPlanSettings, ProcessDynamicPriorityBoostSetting, ProcessExclusionRule,
+    ProcessGpuPrioritySetting, ProcessIoPrioritySetting, ProcessMemoryPrioritySetting,
+    ProcessPrioritySetting, ProcessPrioritySettings, ProcessRuleMode, ProcessThreadPrioritySetting,
+    ThreadPrioritySettings, TimerResolutionRule, TimerResolutionSettings, WeekdaySetting,
 };
 
 fn set_cpu_allocation_selections(settings: &mut Settings, mask: u64) {
@@ -807,6 +807,7 @@ fn omitted_cpu_behaviour_settings_use_defaults_independent_of_sampling_interval(
         "pause_restraint_when_idle",
         "restraint_idle_timeout_seconds",
         "restraint_priority",
+        "restraint_io_priority",
         "maximum_restraint_time_seconds",
     ] {
         assert!(fields.remove(key).is_some());
@@ -1375,6 +1376,7 @@ fn toml_round_trip_preserves_settings() {
             pause_restraint_when_idle: true,
             restraint_idle_timeout_seconds: 120,
             restraint_priority: AdaptiveRestraintPriority::Idle,
+            restraint_io_priority: AdaptiveRestraintIoPriority::Low,
             cpu_restraint_time_seconds: 4,
             maximum_restraint_time_seconds: crate::config::ADAPTIVE_RESTRAINT_MAX_TIME_SECONDS,
             cpu_recovery_time_seconds: 10,
@@ -1527,6 +1529,7 @@ fn toml_round_trip_preserves_settings() {
     battery_restraint.pressure_source = AdaptivePressureSource::System;
     battery_restraint.exclude_service_hosts = false;
     battery_restraint.restraint_priority = AdaptiveRestraintPriority::BelowNormal;
+    battery_restraint.restraint_io_priority = AdaptiveRestraintIoPriority::VeryLow;
     battery_restraint.maximum_restraint_time_seconds = battery_restraint.cpu_restraint_time_seconds;
     battery_restraint.cpu_allocation_method = CpuAllocationMethod::ProcessorAffinityHard;
     battery_restraint.preserve_custom_affinity = false;

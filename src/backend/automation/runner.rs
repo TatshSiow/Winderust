@@ -5,16 +5,22 @@ use crate::runtime::observations::{CycleObservations, ForegroundCpuHistory};
 use crate::{
     action_log::{ActionLogFeature, ActionLogResult},
     adaptive_engine_process::{focus_and_launch_profile_eligible, focus_process_priority_eligible},
+    config::{AdaptiveRestraintIoPriority, ProcessIoPriority},
     control::{
+        io_priority::{
+            IoPriorityApplyOutcome, IoPriorityClaim, IoPriorityPreservation,
+            IoPriorityReleaseSummary,
+        },
         memory_priority::MemoryPriorityReleaseOwner,
         power_plan::{AdaptiveProcessorPowerError, PowerPlanOwner},
-        priority_efficiency::AdaptiveRestraintProcess,
+        priority_efficiency::{AdaptiveRestraintProcess, AdaptiveRestraintState},
+        process::{ProcessControlError, ProcessControlTarget},
     },
     features::cpu_control::cpu_limiter::{
         has_affinity_rules, has_duty_cycle_limits, AffinityLimiter, AffinityLimiterCycle,
         DutyLimiterCycle,
     },
-    foreground::{list_process_ids, process_session_id, ProcessInfo},
+    foreground::{list_process_ids, process_count_label, process_session_id, ProcessInfo},
     platform::windows::process::current_process_id,
     rules::decision_engine::{matching_by_focus_rules, ordinary_power_plan_stop},
 };
@@ -1263,6 +1269,7 @@ impl RuntimeCore {
         &mut self,
         shared: &SharedAutomationState,
         source: PowerSourceProfile,
+        io_settings: Option<&Settings>,
         status: Option<AdaptiveEngineProcessSnapshot>,
     ) {
         if status.is_none()
@@ -1274,27 +1281,32 @@ impl RuntimeCore {
             return;
         }
 
-        let processes = self
-            .priority_efficiency_controller
-            .adaptive_restraint_processes();
-        let previous = self
-            .adaptive_restraint_processes
-            .as_deref()
-            .unwrap_or_default();
-        let audit_changed = !processes
-            .clone()
-            .eq(previous.iter().map(|row| (&row.process, row.state)));
-        if audit_changed {
-            let mut processes = processes.peekable();
-            self.adaptive_restraint_processes = processes.peek().is_some().then(|| {
-                processes
-                    .map(|(process, state)| AdaptiveRestraintProcess {
-                        process: process.clone(),
-                        state,
-                    })
-                    .collect::<Arc<[_]>>()
-            });
-        }
+        let audit_changed = {
+            let processes = self
+                .priority_efficiency_controller
+                .adaptive_restraint_processes();
+            let previous = self
+                .adaptive_restraint_processes
+                .as_deref()
+                .unwrap_or_default();
+            let changed = !processes
+                .clone()
+                .eq(previous.iter().map(|row| (&row.process, row.state)));
+            if changed {
+                let mut processes = processes.peekable();
+                self.adaptive_restraint_processes = processes.peek().is_some().then(|| {
+                    processes
+                        .map(|(process, state)| AdaptiveRestraintProcess {
+                            process: process.clone(),
+                            state,
+                        })
+                        .collect::<Arc<[_]>>()
+                });
+            }
+            changed
+        };
+        let io_failures = (audit_changed || status.is_some())
+            .then(|| self.reconcile_adaptive_restraint_io(io_settings));
         let Some(mut status) = status else {
             if audit_changed {
                 update_feature_status(
@@ -1308,6 +1320,10 @@ impl RuntimeCore {
         };
         status.restraint_processes = self.adaptive_restraint_processes.clone();
         status.source = (!status.waiting_for_power_source).then_some(source);
+        if let Some((count, error)) = io_failures {
+            status.failed_processes += count;
+            status.last_error = status.last_error.or(error);
+        }
         if status.enabled && !status.observation_paused {
             let owner = ControlOwner::AdaptiveEngine;
             status.adjusted_processes = self
@@ -1321,6 +1337,111 @@ impl RuntimeCore {
                 .len();
         }
         update_adaptive_engine_process_status(shared, status);
+    }
+
+    fn reconcile_adaptive_restraint_io(
+        &mut self,
+        settings: Option<&Settings>,
+    ) -> (usize, Option<String>) {
+        let selection = settings.and_then(|settings| {
+            if !settings.general.enabled || !settings.adaptive_engine.enabled {
+                return None;
+            }
+            let priority = match settings.adaptive_engine_process.restraint_io_priority {
+                AdaptiveRestraintIoPriority::Unchanged => return None,
+                AdaptiveRestraintIoPriority::Low => ProcessIoPriority::Low,
+                AdaptiveRestraintIoPriority::VeryLow => ProcessIoPriority::VeryLow,
+            };
+            Some((
+                priority,
+                settings.general.allow_cross_session_process_control,
+            ))
+        });
+        if selection.is_none() && !self.io_priority_controller.has_adaptive_restraint_state() {
+            return (0, None);
+        }
+        let verified = self
+            .adaptive_restraint_processes
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .filter(|row| row.state == AdaptiveRestraintState::Verified);
+        let episodes = verified.clone().map(|row| row.process.key()).collect();
+        let empty = BTreeSet::new();
+        let eligible = if selection.is_some() {
+            &episodes
+        } else {
+            &empty
+        };
+        let summary = self
+            .io_priority_controller
+            .reconcile_adaptive_restraint_targets(eligible, &episodes);
+        Self::record_adaptive_io_releases(&mut self.action_log, summary);
+
+        let owner = ControlOwner::AdaptiveEngine;
+        let mut pending = self.io_priority_controller.policy_release_failures(owner);
+        let mut last_error = pending.next().map(|(_, error)| error.to_string());
+        let mut failed = usize::from(last_error.is_some()) + pending.count();
+        if let Some((priority, allow_cross_session)) = selection {
+            for row in verified {
+                let process = &row.process;
+                let claim = IoPriorityClaim {
+                    target: ProcessControlTarget::automatic(
+                        process.id,
+                        process.name.clone(),
+                        process.executable_path.clone(),
+                        process.creation_time,
+                    ),
+                    owner,
+                    priority,
+                    preservation: IoPriorityPreservation::PreserveLower,
+                };
+                match self
+                    .io_priority_controller
+                    .apply_policy_claim(claim, allow_cross_session)
+                {
+                    Ok(IoPriorityApplyOutcome::Applied) => self.action_log.record(
+                        ActionLogFeature::AdaptiveEngine,
+                        Some(process.id),
+                        &process.name,
+                        ActionLogResult::Applied,
+                        "Lowered I/O priority during CPU Pressure Restraint.",
+                    ),
+                    Ok(_) | Err(ProcessControlError::ProcessExited) => {}
+                    Err(error) => {
+                        failed += 1;
+                        last_error.get_or_insert_with(|| {
+                            format!("Could not lower I/O priority for {}: {error}", process.name)
+                        });
+                    }
+                }
+            }
+        }
+        (failed, last_error)
+    }
+
+    fn record_adaptive_io_releases(action_log: &mut ActionLog, summary: IoPriorityReleaseSummary) {
+        if summary.restored_processes > 0 {
+            action_log.record(
+                ActionLogFeature::AdaptiveEngine,
+                None,
+                "",
+                ActionLogResult::Restored,
+                format!(
+                    "Restored I/O priority for {}.",
+                    process_count_label(summary.restored_processes)
+                ),
+            );
+        }
+        for failure in summary.failures {
+            action_log.record(
+                ActionLogFeature::AdaptiveEngine,
+                Some(failure.process_id),
+                failure.process_name,
+                ActionLogResult::Failed,
+                format!("Could not restore I/O priority: {}", failure.error),
+            );
+        }
     }
 
     pub(super) fn reset_bottleneck_classifier(&mut self) -> BottleneckSnapshot {
@@ -1919,13 +2040,14 @@ impl RuntimeCore {
             );
         }
         if self.io_priority_controller.release_retry_delay(now) == Some(Duration::ZERO) {
-            let summary = self.io_priority_controller.retry_pending_releases(now);
+            let retries = self.io_priority_controller.retry_pending_releases(now);
+            Self::record_adaptive_io_releases(&mut self.action_log, retries.adaptive_engine);
             let status = current_feature_status(shared, |features| &features.io_priority);
             update_io_priority_status(
                 shared,
                 self.io_priority_manager.report_release_retry(
                     &self.io_priority_controller,
-                    summary,
+                    retries.static_policy,
                     status,
                     &mut self.action_log,
                 ),

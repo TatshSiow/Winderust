@@ -135,6 +135,7 @@ pub(super) fn adaptive_engine_process_waits_for_source(
             policy.cpu_pressure_restraint_enabled.then_some((
                 policy.restraint_trigger_time_ms,
                 policy.restraint_priority,
+                policy.restraint_io_priority,
                 policy.maximum_restraint_time_seconds,
                 policy
                     .pause_restraint_when_idle

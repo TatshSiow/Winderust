@@ -2284,6 +2284,7 @@ fn run_background_automation(
         runner.publish_adaptive_engine_process_status(
             &shared,
             active_power_source(plugged_in),
+            (!adaptive_engine_process_waits_for_source).then_some(settings),
             adaptive_engine_process_status,
         );
         let wait_now = Instant::now();
