@@ -62,6 +62,9 @@ CPU Behaviour has shared detection/timing followed by three independent policies
   The option requires CPU Pressure Restraint and defaults off.
   Processor placement only selects this scope automatically and preserves the stored
   standalone limiter preferences for switching back.
+  Restore affinity before restart optionally releases the exact parent’s Adaptive Engine
+  hard-affinity assignment before Resource Thresholds creates a replacement. The replacement
+  can inherit the parent’s restored affinity. This applies to Winderust-managed restarts.
 - **Dynamic Resource Zones (Experimental)** uses separate settings and complementary CPU Sets (Soft).
   The Performance preset enables zoning; Speed, Balanced, and Power Save leave it off.
 

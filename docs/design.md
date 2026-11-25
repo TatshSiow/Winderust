@@ -528,7 +528,8 @@ hover/press; background shading supplies feedback.
 - Exclude service hosts belongs in Shared Detection and Timing because it covers all three policies.
   In Limit Background Processors, place the CPU allocation method first. Reduce affinity (Hard)
   shows a removal count in place of all fixed processor-selection controls. The two hard methods
-  show Preserve custom affinity inside the same expandable card.
+  show Preserve custom affinity and Restore affinity before restart inside the same expandable
+  card. The restart control describes its scope under Resource Thresholds.
   Place Only during CPU Pressure Restraint in that card, with its prerequisite visible in the
   setting description in live and preset editors.
 - Restraint action, Restraint I/O priority, and Energy-efficient scheduling sit together in

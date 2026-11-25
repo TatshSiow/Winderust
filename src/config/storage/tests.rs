@@ -924,6 +924,7 @@ fn omitted_cpu_behaviour_settings_use_defaults_independent_of_sampling_interval(
         foreground_cpu_threshold_percent: Some(35),
         limit_background_processors_enabled: true,
         limit_background_processors_during_restraint: true,
+        restore_affinity_before_managed_restart: true,
         ..Default::default()
     };
     let mut settings = toml::Value::try_from(process).unwrap();
@@ -935,6 +936,7 @@ fn omitted_cpu_behaviour_settings_use_defaults_independent_of_sampling_interval(
         "exclude_service_hosts",
         "limit_background_processors_during_restraint",
         "preserve_custom_affinity",
+        "restore_affinity_before_managed_restart",
         "processors_to_remove",
         "restraint_trigger_time_ms",
         "pause_restraint_when_idle",
@@ -1591,6 +1593,7 @@ fn toml_round_trip_preserves_settings() {
             dynamic_resource_zone_settings: Default::default(),
             cpu_allocation_method: CpuAllocationMethod::ReduceAffinity,
             preserve_custom_affinity: true,
+            restore_affinity_before_managed_restart: true,
             processors_to_remove: crate::config::ADAPTIVE_AFFINITY_REMOVAL_MAX,
             background_processor_selection: BackgroundProcessorSelection::Custom,
             processor_limit_percent: 50,

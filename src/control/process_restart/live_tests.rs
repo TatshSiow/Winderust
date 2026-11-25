@@ -1,4 +1,16 @@
 use super::*;
+use crate::{
+    control::{
+        cpu_allocation::{
+            CpuAllocationApplyOutcome, CpuAllocationClaim, CpuAllocationCoordinator,
+            CpuAllocationPlatform, CpuAllocationRequest, CpuSetInventory,
+            WindowsCpuAllocationPlatform,
+        },
+        process::ControlOwner,
+    },
+    cpu_topology::CpuSelection,
+    features::cpu_control::cpu_allocation::processor_topology,
+};
 use std::{
     fs,
     os::windows::process::CommandExt,
@@ -17,11 +29,21 @@ impl Drop for ChildGuard {
 #[test]
 #[ignore = "compiles and restarts only its owned disposable fixture; run in Windows integration QA"]
 fn live_restart_preserves_context_and_rejects_stale_identity() -> Result<(), String> {
+    restart_owned_fixture(false)
+}
+
+#[test]
+#[ignore = "requires two available processors in group 0 and changes only its disposable fixture"]
+fn live_restart_inherits_restored_adaptive_affinity() -> Result<(), String> {
+    restart_owned_fixture(true)
+}
+
+fn restart_owned_fixture(restore_affinity: bool) -> Result<(), String> {
     let directory = std::env::current_dir()
         .map_err(|e| e.to_string())?
         .join("target")
         .join(format!(
-            "resource-thresholds-restart-{}",
+            "resource-thresholds-restart-{}-{restore_affinity}",
             std::process::id()
         ));
     fs::create_dir_all(&directory).map_err(|e| e.to_string())?;
@@ -86,7 +108,7 @@ fn main() {
         .map_err(|e| e.to_string())?;
     let mut stale = target.clone();
     stale.creation_time = stale.creation_time.wrapping_add(1);
-    let rejected = restart_app(vec![target.clone(), stale], false);
+    let rejected = restart_app(vec![target.clone(), stale], false, |_| Ok(()));
     assert!(rejected.result.is_err());
     assert!(rejected.termination_handled.is_empty());
     assert!(child.0.try_wait().map_err(|e| e.to_string())?.is_none());
@@ -117,7 +139,46 @@ fn main() {
     let other_target =
         crate::foreground::capture_process_action_target(other.0.id(), &executable, false)
             .map_err(|e| e.to_string())?;
-    let restarted = restart_app(vec![other_target, target], false);
+    let mut coordinator = CpuAllocationCoordinator::default();
+    let original_affinity = if restore_affinity {
+        let baseline = fixture_affinity(&target)?;
+        if baseline.count_ones() < 2 {
+            return Err("The restart fixture requires two available processors in group 0.".into());
+        }
+        let mask = 1_usize << baseline.trailing_zeros();
+        let topology = processor_topology()?;
+        let selection = CpuSelection::from_group_zero_mask(&topology, mask as u64)
+            .map_err(|error| error.to_string())?;
+        let outcome = coordinator
+            .apply_adaptive_episode_claim(
+                &mut CpuSetInventory::default(),
+                Ok(&topology),
+                CpuAllocationClaim {
+                    target: ProcessControlTarget::from_action_target(&target),
+                    owner: ControlOwner::AdaptiveEngine,
+                    request: CpuAllocationRequest::AffinityLimit { selection },
+                    balancing_generation: None,
+                },
+                false,
+            )
+            .map_err(|error| error.to_string())?;
+        assert_eq!(outcome, CpuAllocationApplyOutcome::Applied);
+        assert_eq!(fixture_affinity(&target)?, mask);
+        Some(baseline)
+    } else {
+        None
+    };
+    let restarted = restart_app(vec![other_target, target], false, |parent| {
+        if restore_affinity {
+            assert_eq!(parent.id, child.0.id());
+            if !coordinator.restore_adaptive_affinity_before_restart(parent, false)? {
+                return Err(
+                    "The fixture's Adaptive Engine processor affinity was not restored.".into(),
+                );
+            }
+        }
+        Ok(())
+    });
     restarted.result?;
     assert_eq!(restarted.termination_handled.len(), 2);
     other.0.wait().map_err(|e| e.to_string())?;
@@ -130,6 +191,8 @@ fn main() {
     let replacement =
         crate::foreground::capture_process_action_target(replacement_id, &executable, false)
             .map_err(|e| e.to_string())?;
+    let replacement_affinity =
+        original_affinity.map(|baseline| (baseline, fixture_affinity(&replacement)));
     // Clean up only the verified replacement from this fixture before asserting its launch context.
     super::super::process_termination::ProcessTerminationController::default()
         .terminate_batch(vec![replacement], false)
@@ -137,5 +200,22 @@ fn main() {
     assert_ne!(first[0], second[0]);
     assert_eq!(first[1..], second[1..]);
     assert_eq!(second[3], "1");
+    if let Some((baseline, actual)) = replacement_affinity {
+        assert_eq!(actual?, baseline);
+    }
     Ok(())
+}
+
+fn fixture_affinity(target: &ProcessActionTarget) -> Result<usize, String> {
+    let mut platform = WindowsCpuAllocationPlatform;
+    let (_, process) = platform
+        .open(&ProcessControlTarget::from_action_target(target), false)
+        .map_err(|error| error.to_string())?;
+    platform
+        .validate_group_zero_affinity(&process)
+        .map_err(|error| error.to_string())?;
+    platform
+        .query_affinity(&process)
+        .map(|(affinity, _)| affinity)
+        .map_err(|error| error.to_string())
 }

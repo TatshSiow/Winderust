@@ -159,6 +159,7 @@ pub(super) fn apply_adaptive_engine_process_preset(
     settings.dynamic_resource_zones_enabled = values.dynamic_resource_zones_enabled;
     settings.dynamic_resource_zone_settings = DynamicResourceZoneSettings::default();
     settings.preserve_custom_affinity = false;
+    settings.restore_affinity_before_managed_restart = false;
     settings.processors_to_remove = default_processors_to_remove();
     settings.background_processor_selection = values.background_processor_selection;
     settings.processor_limit_percent = values.processor_limit_percent;
@@ -460,6 +461,7 @@ mod tests {
                 cpu_allocation_method: CpuAllocationMethod::ReduceAffinity,
                 limit_background_processors_during_restraint: true,
                 preserve_custom_affinity: true,
+                restore_affinity_before_managed_restart: true,
                 processors_to_remove: 4,
                 ..Default::default()
             };
@@ -475,6 +477,7 @@ mod tests {
                 CpuAllocationMethod::ReduceAffinity
             );
             assert!(!settings.preserve_custom_affinity);
+            assert!(!settings.restore_affinity_before_managed_restart);
             assert_eq!(settings.processors_to_remove, 1);
             assert_eq!(
                 settings.restraint_priority,
@@ -507,6 +510,9 @@ mod tests {
         settings.adaptive_engine_process.cpu_allocation_method =
             CpuAllocationMethod::ReduceAffinity;
         settings.adaptive_engine_process.preserve_custom_affinity = true;
+        settings
+            .adaptive_engine_process
+            .restore_affinity_before_managed_restart = true;
         settings.adaptive_engine_process.processors_to_remove = 4;
         settings.adaptive_engine_process.restraint_priority =
             AdaptiveRestraintPriority::ProcessorPlacementOnly;

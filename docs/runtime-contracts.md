@@ -336,6 +336,10 @@ Read the relevant section before changing feature policy, ownership, restoration
   failures. Restart events run before simultaneous termination events and share
   accepted termination requests and confirmed exits with them for deduplication.
   Restart is irreversible and has no recovery or restore path.
+- Restore affinity before restart runs after restart preflight validates all exact
+  targets and before the replacement is prepared. It restores only a confirmed
+  hard-affinity assignment owned by Adaptive Engine on the selected parent. A
+  restoration failure stops the restart before any original is terminated.
 - Resource Thresholds starts a 60-second cooldown per exact executable path when
   a Restart attempt begins, including attempts that fail. The cooldown survives PID changes
   within the same automation worker. A Restart suppressed by the cooldown counts

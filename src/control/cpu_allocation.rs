@@ -22,6 +22,7 @@ use windows_cpu_allocation::CpuSetRecord;
 
 mod eligibility;
 mod instance_balancing;
+mod restart_affinity;
 pub(crate) use eligibility::EligibilityError as InstanceBalancingSelectionError;
 pub(crate) use instance_balancing::InstanceBalancingEligibilityError;
 

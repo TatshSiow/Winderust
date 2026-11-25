@@ -1218,6 +1218,7 @@ pub struct AdaptiveEngineProcessSettings {
     pub dynamic_resource_zone_settings: DynamicResourceZoneSettings,
     pub cpu_allocation_method: CpuAllocationMethod,
     pub preserve_custom_affinity: bool,
+    pub restore_affinity_before_managed_restart: bool,
     pub processors_to_remove: u8,
     pub background_processor_selection: BackgroundProcessorSelection,
     pub processor_limit_percent: u8,
@@ -1298,6 +1299,8 @@ struct AdaptiveEngineProcessSettingsWire {
     pub cpu_allocation_method: CpuAllocationMethod,
     #[serde(default)]
     pub preserve_custom_affinity: bool,
+    #[serde(default)]
+    pub restore_affinity_before_managed_restart: bool,
     #[serde(default = "default_processors_to_remove")]
     pub processors_to_remove: u8,
     pub background_processor_selection: BackgroundProcessorSelection,
@@ -1391,6 +1394,7 @@ impl TryFrom<AdaptiveEngineProcessSettingsWire> for AdaptiveEngineProcessSetting
             dynamic_resource_zones_enabled: wire.dynamic_resource_zones_enabled,
             cpu_allocation_method: wire.cpu_allocation_method,
             preserve_custom_affinity: wire.preserve_custom_affinity,
+            restore_affinity_before_managed_restart: wire.restore_affinity_before_managed_restart,
             processors_to_remove: wire.processors_to_remove,
             background_processor_selection: wire.background_processor_selection,
             processor_limit_percent: wire.processor_limit_percent,
@@ -2602,6 +2606,7 @@ impl Default for AdaptiveEngineProcessSettings {
             dynamic_resource_zone_settings: DynamicResourceZoneSettings::default(),
             cpu_allocation_method: CpuAllocationMethod::CpuSetsSoft,
             preserve_custom_affinity: false,
+            restore_affinity_before_managed_restart: false,
             processors_to_remove: default_processors_to_remove(),
             background_processor_selection: BackgroundProcessorSelection::LeastUsed,
             processor_limit_percent: 75,
@@ -3022,6 +3027,8 @@ impl AdaptiveEngineProcessSettings {
         self.dynamic_resource_zone_settings = defaults.dynamic_resource_zone_settings;
         self.cpu_allocation_method = defaults.cpu_allocation_method;
         self.preserve_custom_affinity = defaults.preserve_custom_affinity;
+        self.restore_affinity_before_managed_restart =
+            defaults.restore_affinity_before_managed_restart;
         self.processors_to_remove = defaults.processors_to_remove;
         self.background_processor_selection = defaults.background_processor_selection;
         self.processor_limit_percent = defaults.processor_limit_percent;

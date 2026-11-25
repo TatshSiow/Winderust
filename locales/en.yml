@@ -975,6 +975,8 @@ adaptive_engine_process:
   processors_to_remove_invalid: "Enter a whole number from 1 to 63 for Processors to remove."
   preserve_custom_affinity: "Preserve custom affinity"
   preserve_custom_affinity_help: "Skip apps with narrower processor affinity or custom CPU Sets. Reduce affinity always skips apps with custom CPU Sets."
+  restore_affinity_before_managed_restart: "Restore affinity before restart"
+  restore_affinity_before_managed_restart_help: "When Resource Thresholds restarts an app, restore the affinity Adaptive Engine changed so the replacement inherits the app’s original affinity."
   custom_rules_help: "Exclude matching processes from CPU Pressure Restraint and processor placement. Executable name matches across installation paths."
   custom_rule_name_invalid: "Adaptive Engine Custom Rules require an exact executable name."
 

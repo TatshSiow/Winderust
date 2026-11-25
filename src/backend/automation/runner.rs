@@ -324,6 +324,7 @@ impl RuntimeCore {
         &mut self,
         shared: &SharedAutomationState,
         settings: &Settings,
+        restore_affinity_before_restart: bool,
         observations: &mut CycleObservations,
     ) -> ResourceThresholdsSnapshot {
         use crate::config::{ResourceThresholdsAction, ResourceThresholdsScope};
@@ -404,6 +405,23 @@ impl RuntimeCore {
                                 crate::control::process_restart::restart_app(
                                     event.targets.clone(),
                                     settings.general.allow_cross_session_process_control,
+                                    |parent| {
+                                        if restore_affinity_before_restart
+                                            && self.cpu_allocation_coordinator.restore_adaptive_affinity_before_restart(
+                                                parent,
+                                                settings.general.allow_cross_session_process_control,
+                                            )?
+                                        {
+                                            self.action_log.record(
+                                                ActionLogFeature::AdaptiveEngine,
+                                                Some(parent.id),
+                                                &parent.name,
+                                                ActionLogResult::Restored,
+                                                "Restored the original processor affinity before restarting the app.",
+                                            );
+                                        }
+                                        Ok(())
+                                    },
                                 )
                             },
                         )

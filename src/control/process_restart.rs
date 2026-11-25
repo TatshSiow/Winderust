@@ -72,14 +72,21 @@ impl RestartPlatform for WindowsRestartPlatform {
 pub(crate) fn restart_app(
     targets: Vec<ProcessActionTarget>,
     allow_cross_session: bool,
+    before_prepare: impl FnOnce(&ProcessActionTarget) -> Result<(), String>,
 ) -> RestartResult {
-    restart_with_platform(&mut WindowsRestartPlatform, targets, allow_cross_session)
+    restart_with_platform(
+        &mut WindowsRestartPlatform,
+        targets,
+        allow_cross_session,
+        before_prepare,
+    )
 }
 
 fn restart_with_platform<P: RestartPlatform>(
     platform: &mut P,
     mut targets: Vec<ProcessActionTarget>,
     allow_cross_session: bool,
+    before_prepare: impl FnOnce(&ProcessActionTarget) -> Result<(), String>,
 ) -> RestartResult {
     let mut termination_handled = Vec::new();
     let mut confirmed = 0;
@@ -99,6 +106,7 @@ fn restart_with_platform<P: RestartPlatform>(
             .iter()
             .map(|target| platform.open(target, allow_cross_session))
             .collect::<Result<Vec<_>, _>>()?;
+        before_prepare(first)?;
         let launch = platform.prepare(&processes, first)?;
         let mut failure = None;
         let mut pending_exits = Vec::new();
@@ -228,7 +236,12 @@ mod tests {
     #[test]
     fn validates_prepares_stops_waits_then_launches_once() {
         let mut platform = FakePlatform::default();
-        let result = restart_with_platform(&mut platform, targets(), false);
+        let mut launch_parent = None;
+        let result = restart_with_platform(&mut platform, targets(), false, |parent| {
+            launch_parent = Some((parent.id, parent.creation_time));
+            Ok(())
+        });
+        assert_eq!(launch_parent, Some((1, 1)));
         assert_eq!(result.result, Ok(()));
         assert_eq!(result.termination_handled, [(1, 1), (2, 2)]);
         assert_eq!(
@@ -244,7 +257,12 @@ mod tests {
                 fail: Some(fail),
                 ..Default::default()
             };
-            let result = restart_with_platform(&mut platform, targets(), false);
+            let mut preflights = 0;
+            let result = restart_with_platform(&mut platform, targets(), false, |_| {
+                preflights += 1;
+                Ok(())
+            });
+            assert_eq!(preflights, usize::from(fail == "prepare"));
             assert!(result.result.is_err());
             assert!(result.termination_handled.is_empty());
             assert!(!platform
@@ -252,6 +270,21 @@ mod tests {
                 .iter()
                 .any(|call| call.starts_with("stop") || call == "launch"));
         }
+    }
+
+    #[test]
+    fn failed_parent_preparation_stops_before_creating_a_replacement() {
+        let mut platform = FakePlatform::default();
+        let result = restart_with_platform(&mut platform, targets(), false, |parent| {
+            assert_eq!((parent.id, parent.creation_time), (1, 1));
+            Err("Parent affinity could not be restored.".to_owned())
+        });
+        assert!(result.termination_handled.is_empty());
+        assert!(result
+            .result
+            .unwrap_err()
+            .contains("Parent affinity could not be restored."));
+        assert_eq!(platform.calls, ["open1", "open2"]);
     }
 
     #[test]
@@ -268,7 +301,7 @@ mod tests {
                 exited_on_poll,
                 ..Default::default()
             };
-            let result = restart_with_platform(&mut platform, targets(), false);
+            let result = restart_with_platform(&mut platform, targets(), false, |_| Ok(()));
             let error = result.result.unwrap_err();
             assert!(error.contains(fail));
             assert!(error.starts_with(&format!("Confirmed exit for {confirmed} of 2")));
@@ -294,7 +327,7 @@ mod tests {
                 exited_on_poll: Some(exited),
                 ..Default::default()
             };
-            let result = restart_with_platform(&mut platform, targets(), false);
+            let result = restart_with_platform(&mut platform, targets(), false, |_| Ok(()));
             assert_eq!(result.result, Ok(()));
             assert_eq!(result.termination_handled, [(1, 1), (2, 2)]);
             assert_eq!(platform.calls.last().map(String::as_str), Some("launch"));
@@ -307,9 +340,11 @@ mod tests {
         mixed[0].executable_path = r"C:\Other\app.exe".into();
         for targets in [Vec::new(), mixed] {
             let mut platform = FakePlatform::default();
-            assert!(restart_with_platform(&mut platform, targets, false)
-                .result
-                .is_err());
+            assert!(
+                restart_with_platform(&mut platform, targets, false, |_| Ok(()))
+                    .result
+                    .is_err()
+            );
             assert!(platform.calls.is_empty());
         }
     }

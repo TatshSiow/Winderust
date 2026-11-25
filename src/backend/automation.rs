@@ -2120,9 +2120,22 @@ fn run_background_automation(
         if resource_thresholds_refresh_required
             && scheduler.is_due(RefreshDomain::ResourceThresholds, now)
         {
+            let restores_affinity = |profile: &Settings| {
+                let policy = &profile.adaptive_engine_process;
+                profile.adaptive_engine.enabled
+                    && policy.cpu_allocation_method.is_hard_affinity()
+                    && policy.restore_affinity_before_managed_restart
+            };
+            let restore_affinity_before_restart = restores_affinity(settings)
+                && (plugged_in.is_some()
+                    || configured_settings
+                        .on_battery
+                        .as_deref()
+                        .is_none_or(restores_affinity));
             let status = runner.run_resource_thresholds_update(
                 &shared,
                 configured_settings.as_ref(),
+                restore_affinity_before_restart,
                 &mut observations,
             );
             update_feature_status(

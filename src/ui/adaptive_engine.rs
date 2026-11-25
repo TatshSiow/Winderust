@@ -1124,6 +1124,24 @@ impl Editor {
                             ),
                         ),
                     );
+                    allocation = allocation.push(super::widgets::settings_divider()).push(
+                        super::widgets::setting_row(
+                            "adaptive_engine_process.restore_affinity_before_managed_restart",
+                            super::widgets::switch(
+                                cpu.restore_affinity_before_managed_restart,
+                                editable.then_some(|value| {
+                                    Message::Toggle(
+                                        |settings, enabled| {
+                                            settings
+                                                .adaptive_engine_process
+                                                .restore_affinity_before_managed_restart = enabled
+                                        },
+                                        value,
+                                    )
+                                }),
+                            ),
+                        ),
+                    );
                 }
                 let allocation_action: Element<'_, Message> = if placement_only {
                     let scope = if cpu.placement_only_restraint_enabled() {
