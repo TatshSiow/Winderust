@@ -30,6 +30,10 @@ const SHARED_THRESHOLD_FIELD: &str =
     stringify!(adaptive_engine_process.foreground_or_system_cpu_threshold_percent);
 const SHARED_THRESHOLD_LABEL: &str = "adaptive_engine_process.pressure_threshold";
 const SYSTEM_THRESHOLD_LABEL: &str = "adaptive_engine_process.system_cpu_threshold";
+const MINIMUM_RESTRAINT_TIME_FIELD: &str =
+    stringify!(adaptive_engine_process.minimum_restraint_time_ms);
+const MAXIMUM_RESTRAINT_TIME_FIELD: &str =
+    stringify!(adaptive_engine_process.maximum_restraint_time_ms);
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(super) enum TuningTab {
@@ -363,6 +367,12 @@ impl Editor {
                     }
                     Message::Number(f, v, min, max, key, label) => {
                         let numbers = if self.draft.is_some() {
+                            if matches!(
+                                key,
+                                MINIMUM_RESTRAINT_TIME_FIELD | MAXIMUM_RESTRAINT_TIME_FIELD
+                            ) {
+                                self.error.clear();
+                            }
                             &mut self.preset_numbers
                         } else {
                             &mut self.live_numbers
@@ -586,8 +596,12 @@ impl Editor {
             ));
         }
         body = body.push(self.tuning_view(live, candidates, None, false));
-        if !self.error.is_empty() {
-            body = body.push(text(self.error.clone()).style(text::danger));
+        let error = self
+            .preset_numbers
+            .validation_error()
+            .unwrap_or_else(|| self.error.clone());
+        if !error.is_empty() {
+            body = body.push(text(error).style(text::danger));
         }
         let frame = super::widgets::modal_frame(header, body, footer, (1200, 850));
         if read_only {
@@ -828,10 +842,10 @@ impl Editor {
                             adaptive_engine_process.reaction_time_ms
                         ),
                         number!(
-                            "adaptive_engine_process.cpu_restraint_time",
-                            1,
-                            3600,
-                            adaptive_engine_process.cpu_restraint_time_seconds
+                            "adaptive_engine_process.minimum_restraint_time",
+                            0,
+                            ADAPTIVE_RESTRAINT_MAX_TIME_MS,
+                            adaptive_engine_process.minimum_restraint_time_ms
                         ),
                         number!(
                             "adaptive_engine_process.cpu_recovery_threshold",
@@ -918,8 +932,8 @@ impl Editor {
                     number!(
                         "adaptive_engine_process.maximum_restraint_time",
                         0,
-                        ADAPTIVE_RESTRAINT_MAX_TIME_SECONDS,
-                        adaptive_engine_process.maximum_restraint_time_seconds
+                        ADAPTIVE_RESTRAINT_MAX_TIME_MS,
+                        adaptive_engine_process.maximum_restraint_time_ms
                     ),
                     super::widgets::setting_row(
                         "adaptive_engine_process.pause_restraint_when_idle",
@@ -1177,11 +1191,13 @@ impl Editor {
             body = body.push(super::widgets::process_rules_table([], rules, false));
         }
 
-        if let Some(error) = numbers.validation_error() {
-            body = body.push(text(error));
-        }
-        if !preset && !self.error.is_empty() {
-            body = body.push(text(self.error.clone()).style(text::danger));
+        if !preset {
+            if let Some(error) = numbers.validation_error() {
+                body = body.push(text(error));
+            }
+            if !self.error.is_empty() {
+                body = body.push(text(self.error.clone()).style(text::danger));
+            }
         }
         let body = super::motion::wrap(body, true, super::motion::Effect::Content(tab as u64));
         if scroll_live_header {
@@ -1838,11 +1854,11 @@ mod tests {
         let mut editor = Editor::default();
         let maximum = |value: &str| {
             Message::Number(
-                |s, n| s.adaptive_engine_process.maximum_restraint_time_seconds = n,
+                |s, n| s.adaptive_engine_process.maximum_restraint_time_ms = n,
                 value.into(),
                 0,
-                ADAPTIVE_RESTRAINT_MAX_TIME_SECONDS,
-                "maximum_restraint_time_seconds",
+                ADAPTIVE_RESTRAINT_MAX_TIME_MS,
+                MAXIMUM_RESTRAINT_TIME_FIELD,
                 "adaptive_engine_process.maximum_restraint_time",
             )
         };
@@ -1859,7 +1875,15 @@ mod tests {
                 },
                 0,
             ),
-            maximum("1"),
+            Message::Number(
+                |s, n| s.adaptive_engine_process.minimum_restraint_time_ms = n,
+                "2100".into(),
+                0,
+                ADAPTIVE_RESTRAINT_MAX_TIME_MS,
+                MINIMUM_RESTRAINT_TIME_FIELD,
+                "adaptive_engine_process.minimum_restraint_time",
+            ),
+            maximum("2099"),
             Message::Save,
         ] {
             editor.update(&mut settings, message);
@@ -1870,14 +1894,13 @@ mod tests {
             t!("adaptive_engine_process.maximum_restraint_time_invalid").to_string()
         );
 
-        editor.update(&mut settings, maximum("11"));
+        editor.update(&mut settings, maximum("2100"));
+        assert!(editor.error.is_empty());
         editor.update(&mut settings, Message::Save);
         assert!(editor.draft.is_none());
         assert!(editor.error.is_empty());
         assert_eq!(
-            settings
-                .adaptive_engine_process
-                .maximum_restraint_time_seconds,
+            settings.adaptive_engine_process.maximum_restraint_time_ms,
             0
         );
 
@@ -1885,7 +1908,8 @@ mod tests {
         let cpu = &settings.adaptive_engine_process;
         assert_eq!(cpu.pressure_source, AdaptivePressureSource::Both);
         assert_eq!(cpu.restraint_priority, AdaptiveRestraintPriority::Idle);
-        assert_eq!(cpu.maximum_restraint_time_seconds, 11);
+        assert_eq!(cpu.minimum_restraint_time_ms, 2100);
+        assert_eq!(cpu.maximum_restraint_time_ms, 2100);
     }
 
     #[test]

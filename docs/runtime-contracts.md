@@ -894,9 +894,11 @@ Read the relevant section before changing feature policy, ownership, restoration
   thresholds, with a five-point release band per signal. Zero CPU usage cannot
   sustain pressure. An override is dormant in single-signal modes. Foreground identity
   is still required for safe targeting.
-  A nonzero Maximum restraint time ends the current adjustment and requires fresh
-  qualification. Optional Pause when idle uses the current Windows
-  session's last input and withdraws CPU restraint and its optional effects. Missing idle
+  The editor accepts Minimum and Maximum restraint times in milliseconds up to one hour.
+  The settings file stores these times in seconds and accepts fractional seconds
+  at millisecond precision. A nonzero maximum ends the current adjustment at
+  evaluation and requires fresh qualification. Optional Pause when idle uses the
+  current Windows session's last input and withdraws CPU restraint and its optional effects. Missing idle
   evidence pauses restraint while this option is enabled. Resumption requires
   fresh qualification, and restoration entries stay visible during the pause.
 - Adaptive Engine pauses its process policies and releases their claims when the

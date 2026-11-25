@@ -860,22 +860,40 @@ fn invalid_cpu_behaviour_values_are_rejected_for_live_profiles_and_presets() {
     let maximum_error = rust_i18n::t!("adaptive_engine_process.maximum_restraint_time_invalid");
     let removal_error = rust_i18n::t!("adaptive_engine_process.processors_to_remove_invalid");
     let threshold_error = rust_i18n::t!("adaptive_engine_process.foreground_cpu_threshold_invalid");
-    for (trigger, idle, maximum, remove, foreground, field) in [
-        (249, 300, 0, 1, None, "time above threshold"),
-        (60_001, 300, 0, 1, None, "time above threshold"),
-        (1_000, 0, 0, 1, None, "idle timeout"),
-        (1_000, 3_601, 0, 1, None, "idle timeout"),
-        (1_000, 300, 2, 1, None, maximum_error.as_ref()),
-        (1_000, 300, 3_601, 1, None, maximum_error.as_ref()),
-        (1_000, 300, 0, 0, None, removal_error.as_ref()),
-        (1_000, 300, 0, 64, None, removal_error.as_ref()),
-        (1_000, 300, 0, 1, Some(0), threshold_error.as_ref()),
-        (1_000, 300, 0, 1, Some(101), threshold_error.as_ref()),
+    for (trigger, idle, minimum, maximum, remove, foreground, field) in [
+        (249, 300, 3_000, 0, 1, None, "time above threshold"),
+        (60_001, 300, 3_000, 0, 1, None, "time above threshold"),
+        (1_000, 0, 3_000, 0, 1, None, "idle timeout"),
+        (1_000, 3_601, 3_000, 0, 1, None, "idle timeout"),
+        (1_000, 300, 2_100, 2_099, 1, None, maximum_error.as_ref()),
+        (
+            1_000,
+            300,
+            3_601_000,
+            3_600_000,
+            1,
+            None,
+            maximum_error.as_ref(),
+        ),
+        (
+            1_000,
+            300,
+            3_000,
+            3_600_001,
+            1,
+            None,
+            maximum_error.as_ref(),
+        ),
+        (1_000, 300, 3_000, 0, 0, None, removal_error.as_ref()),
+        (1_000, 300, 3_000, 0, 64, None, removal_error.as_ref()),
+        (1_000, 300, 3_000, 0, 1, Some(0), threshold_error.as_ref()),
+        (1_000, 300, 3_000, 0, 1, Some(101), threshold_error.as_ref()),
     ] {
         let process = AdaptiveEngineProcessSettings {
             restraint_trigger_time_ms: trigger,
             restraint_idle_timeout_seconds: idle,
-            maximum_restraint_time_seconds: maximum,
+            minimum_restraint_time_ms: minimum,
+            maximum_restraint_time_ms: maximum,
             processors_to_remove: remove,
             foreground_cpu_threshold_percent: foreground,
             ..Default::default()
@@ -902,6 +920,73 @@ fn invalid_cpu_behaviour_values_are_rejected_for_live_profiles_and_presets() {
                 .unwrap_err()
                 .to_string()
                 .contains(field));
+        }
+    }
+}
+
+#[test]
+fn restraint_hold_times_round_trip_as_seconds_for_live_profiles_and_presets() {
+    let mut settings = Settings::default();
+    settings.adaptive_engine_process.minimum_restraint_time_ms = 2_100;
+    let battery = &mut settings.battery_profile_mut().adaptive_engine_process;
+    battery.minimum_restraint_time_ms = 0;
+    battery.maximum_restraint_time_ms = 4_501;
+    settings.adaptive_engine_presets.push(AdaptiveEnginePreset {
+        name: "Hold time tuning".into(),
+        processor_power_policy_enabled: false,
+        base_processor_policy: settings.adaptive_engine.base_processor_policy,
+        background_pressure_profile: settings.adaptive_engine.background_pressure_profile,
+        focus_and_launch_profile: settings.adaptive_engine.focus_and_launch_profile,
+        adaptive_engine_process: AdaptiveEngineProcessSettings {
+            minimum_restraint_time_ms: 3_601_000,
+            ..Default::default()
+        },
+    });
+
+    let raw = toml::to_string(&settings).unwrap();
+    let saved: toml::Value = toml::from_str(&raw).unwrap();
+    let ac = &saved["adaptive_engine_process"];
+    let battery = &saved["on_battery"]["adaptive_engine_process"];
+    let preset = &saved["adaptive_engine_presets"][0]["adaptive_engine_process"];
+    assert_eq!(ac["cpu_restraint_time_seconds"].as_float(), Some(2.1));
+    assert_eq!(ac["maximum_restraint_time_seconds"].as_integer(), Some(0));
+    assert_eq!(battery["cpu_restraint_time_seconds"].as_integer(), Some(0));
+    assert_eq!(
+        battery["maximum_restraint_time_seconds"].as_float(),
+        Some(4.501)
+    );
+    assert_eq!(
+        preset["cpu_restraint_time_seconds"].as_integer(),
+        Some(3_601)
+    );
+    assert_eq!(
+        preset["maximum_restraint_time_seconds"].as_integer(),
+        Some(0)
+    );
+    assert_eq!(toml::from_str::<Settings>(&raw).unwrap(), settings);
+}
+
+#[test]
+fn invalid_saved_restraint_hold_times_fail_to_parse() {
+    let settings = toml::Value::try_from(AdaptiveEngineProcessSettings::default()).unwrap();
+    for key in [
+        "cpu_restraint_time_seconds",
+        "maximum_restraint_time_seconds",
+    ] {
+        for value in [
+            toml::Value::Integer(-1),
+            toml::Value::Float(-0.001),
+            toml::Value::Float(3.1001),
+            toml::Value::Float(f64::NAN),
+            toml::Value::Float(f64::INFINITY),
+        ] {
+            let mut saved = settings.clone();
+            saved.as_table_mut().unwrap().insert(key.to_owned(), value);
+            let raw = toml::to_string(&saved).unwrap();
+            assert!(toml::from_str::<AdaptiveEngineProcessSettings>(&raw)
+                .unwrap_err()
+                .to_string()
+                .contains("nonnegative seconds with millisecond precision"));
         }
     }
 }
@@ -1415,8 +1500,8 @@ fn toml_round_trip_preserves_settings() {
             restraint_priority: AdaptiveRestraintPriority::Idle,
             restraint_io_priority: AdaptiveRestraintIoPriority::Low,
             restraint_energy_efficient_scheduling: true,
-            cpu_restraint_time_seconds: 4,
-            maximum_restraint_time_seconds: crate::config::ADAPTIVE_RESTRAINT_MAX_TIME_SECONDS,
+            minimum_restraint_time_ms: 4_000,
+            maximum_restraint_time_ms: crate::config::ADAPTIVE_RESTRAINT_MAX_TIME_MS,
             cpu_recovery_time_seconds: 10,
             maximum_restrained_apps: 6,
             custom_rules: vec![ProcessExclusionRule {
@@ -1570,7 +1655,7 @@ fn toml_round_trip_preserves_settings() {
     battery_restraint.restraint_priority = AdaptiveRestraintPriority::BelowNormal;
     battery_restraint.restraint_io_priority = AdaptiveRestraintIoPriority::VeryLow;
     battery_restraint.restraint_energy_efficient_scheduling = false;
-    battery_restraint.maximum_restraint_time_seconds = battery_restraint.cpu_restraint_time_seconds;
+    battery_restraint.maximum_restraint_time_ms = battery_restraint.minimum_restraint_time_ms;
     battery_restraint.cpu_allocation_method = CpuAllocationMethod::ProcessorAffinityHard;
     battery_restraint.preserve_custom_affinity = false;
     battery_restraint.processors_to_remove = 1;

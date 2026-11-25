@@ -16,6 +16,7 @@ use crate::rules::{
 };
 
 mod adaptive_processor_power;
+mod restraint_time_seconds;
 mod validation;
 
 pub use adaptive_processor_power::AdaptiveProcessorPowerPreset;
@@ -28,7 +29,7 @@ pub const ADAPTIVE_RESTRAINT_TRIGGER_MIN_MS: u64 = 250;
 pub const ADAPTIVE_RESTRAINT_TRIGGER_MAX_MS: u64 = 60_000;
 pub const ADAPTIVE_RESTRAINT_IDLE_MIN_SECONDS: u64 = 1;
 pub const ADAPTIVE_RESTRAINT_IDLE_MAX_SECONDS: u64 = 3_600;
-pub const ADAPTIVE_RESTRAINT_MAX_TIME_SECONDS: u64 = 3_600;
+pub const ADAPTIVE_RESTRAINT_MAX_TIME_MS: u64 = 3_600_000;
 pub const ADAPTIVE_AFFINITY_REMOVAL_MAX: u8 = 63;
 pub(crate) const DEFAULT_ADAPTIVE_RESTRAINT_IDLE_TIMEOUT_SECONDS: u64 = 300;
 
@@ -1203,8 +1204,13 @@ pub struct AdaptiveEngineProcessSettings {
     pub restraint_priority: AdaptiveRestraintPriority,
     pub restraint_io_priority: AdaptiveRestraintIoPriority,
     pub restraint_energy_efficient_scheduling: bool,
-    pub cpu_restraint_time_seconds: u64,
-    pub maximum_restraint_time_seconds: u64,
+    #[serde(rename = "cpu_restraint_time_seconds", with = "restraint_time_seconds")]
+    pub minimum_restraint_time_ms: u64,
+    #[serde(
+        rename = "maximum_restraint_time_seconds",
+        with = "restraint_time_seconds"
+    )]
+    pub maximum_restraint_time_ms: u64,
     pub cpu_recovery_time_seconds: u64,
     pub maximum_restrained_apps: u8,
     pub custom_rules: Vec<ProcessExclusionRule>,
@@ -1286,9 +1292,14 @@ struct AdaptiveEngineProcessSettingsWire {
     pub restraint_io_priority: AdaptiveRestraintIoPriority,
     #[serde(default)]
     pub restraint_energy_efficient_scheduling: bool,
-    pub cpu_restraint_time_seconds: u64,
-    #[serde(default)]
-    pub maximum_restraint_time_seconds: u64,
+    #[serde(rename = "cpu_restraint_time_seconds", with = "restraint_time_seconds")]
+    pub minimum_restraint_time_ms: u64,
+    #[serde(
+        default,
+        rename = "maximum_restraint_time_seconds",
+        with = "restraint_time_seconds"
+    )]
+    pub maximum_restraint_time_ms: u64,
     pub cpu_recovery_time_seconds: u64,
     pub maximum_restrained_apps: u8,
     pub custom_rules: Vec<ProcessExclusionRule>,
@@ -1363,8 +1374,8 @@ impl TryFrom<AdaptiveEngineProcessSettingsWire> for AdaptiveEngineProcessSetting
             restraint_priority: wire.restraint_priority,
             restraint_io_priority: wire.restraint_io_priority,
             restraint_energy_efficient_scheduling: wire.restraint_energy_efficient_scheduling,
-            cpu_restraint_time_seconds: wire.cpu_restraint_time_seconds,
-            maximum_restraint_time_seconds: wire.maximum_restraint_time_seconds,
+            minimum_restraint_time_ms: wire.minimum_restraint_time_ms,
+            maximum_restraint_time_ms: wire.maximum_restraint_time_ms,
             cpu_recovery_time_seconds: wire.cpu_recovery_time_seconds,
             maximum_restrained_apps: wire.maximum_restrained_apps,
             custom_rules: wire.custom_rules,
@@ -2572,8 +2583,8 @@ impl Default for AdaptiveEngineProcessSettings {
             restraint_priority: AdaptiveRestraintPriority::default(),
             restraint_io_priority: AdaptiveRestraintIoPriority::default(),
             restraint_energy_efficient_scheduling: false,
-            cpu_restraint_time_seconds: 3,
-            maximum_restraint_time_seconds: 0,
+            minimum_restraint_time_ms: 3_000,
+            maximum_restraint_time_ms: 0,
             cpu_recovery_time_seconds: 6,
             maximum_restrained_apps: 4,
             custom_rules: Vec::new(),

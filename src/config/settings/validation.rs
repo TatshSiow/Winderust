@@ -2,7 +2,7 @@ use super::{
     AdaptiveEngineProcessSettings, AppSuspensionSettings, ByCpuLoadRule, CpuLoadPercent,
     CpuUsageComparison, Settings, SleepPreventionSettings, ADAPTIVE_AFFINITY_REMOVAL_MAX,
     ADAPTIVE_RESTRAINT_IDLE_MAX_SECONDS, ADAPTIVE_RESTRAINT_IDLE_MIN_SECONDS,
-    ADAPTIVE_RESTRAINT_MAX_TIME_SECONDS, ADAPTIVE_RESTRAINT_TRIGGER_MAX_MS,
+    ADAPTIVE_RESTRAINT_MAX_TIME_MS, ADAPTIVE_RESTRAINT_TRIGGER_MAX_MS,
     ADAPTIVE_RESTRAINT_TRIGGER_MIN_MS, NESTED_BATTERY_PROFILE_ERROR,
 };
 use crate::config::{is_valid_executable_name, ExecutableSelector};
@@ -189,11 +189,9 @@ impl AdaptiveEngineProcessSettings {
                 "CPU Pressure Restraint idle timeout must be between {ADAPTIVE_RESTRAINT_IDLE_MIN_SECONDS} and {ADAPTIVE_RESTRAINT_IDLE_MAX_SECONDS} seconds."
             ));
         }
-        let maximum = self.maximum_restraint_time_seconds;
-        if maximum != 0
-            && !(self.cpu_restraint_time_seconds..=ADAPTIVE_RESTRAINT_MAX_TIME_SECONDS)
-                .contains(&maximum)
-        {
+        let minimum = self.minimum_restraint_time_ms;
+        let maximum = self.maximum_restraint_time_ms;
+        if maximum != 0 && !(minimum..=ADAPTIVE_RESTRAINT_MAX_TIME_MS).contains(&maximum) {
             return Err(
                 rust_i18n::t!("adaptive_engine_process.maximum_restraint_time_invalid")
                     .into_owned(),

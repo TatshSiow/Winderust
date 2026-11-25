@@ -175,8 +175,8 @@ pub(super) fn apply_adaptive_engine_process_preset(
     settings.restraint_priority = AdaptiveRestraintPriority::default();
     settings.restraint_io_priority = AdaptiveRestraintIoPriority::default();
     settings.restraint_energy_efficient_scheduling = false;
-    settings.cpu_restraint_time_seconds = values.cpu_restraint_time_seconds;
-    settings.maximum_restraint_time_seconds = 0;
+    settings.minimum_restraint_time_ms = values.minimum_restraint_time_ms;
+    settings.maximum_restraint_time_ms = 0;
     settings.cpu_recovery_time_seconds = values.cpu_recovery_time_seconds;
     settings.maximum_restrained_apps = values.maximum_restrained_apps;
 }
@@ -206,7 +206,7 @@ pub(super) struct AdaptiveEngineProcessPresetValues {
     pub(super) cpu_recovery_threshold_percent: u8,
     pub(super) reaction_time_ms: u64,
     pub(super) restraint_trigger_time_ms: u64,
-    pub(super) cpu_restraint_time_seconds: u64,
+    pub(super) minimum_restraint_time_ms: u64,
     pub(super) cpu_recovery_time_seconds: u64,
     pub(super) maximum_restrained_apps: u8,
 }
@@ -240,7 +240,7 @@ pub(super) fn adaptive_engine_process_preset_values(
                 cpu_recovery_threshold_percent: 5,
                 reaction_time_ms: 1_500,
                 restraint_trigger_time_ms: 1_500,
-                cpu_restraint_time_seconds: 2,
+                minimum_restraint_time_ms: 2_000,
                 cpu_recovery_time_seconds: 4,
                 maximum_restrained_apps: 4,
             }
@@ -269,7 +269,7 @@ pub(super) fn adaptive_engine_process_preset_values(
             cpu_recovery_threshold_percent: 4,
             reaction_time_ms: 750,
             restraint_trigger_time_ms: 750,
-            cpu_restraint_time_seconds: 3,
+            minimum_restraint_time_ms: 3_000,
             cpu_recovery_time_seconds: 5,
             maximum_restrained_apps: 8,
         },
@@ -297,7 +297,7 @@ pub(super) fn adaptive_engine_process_preset_values(
             cpu_recovery_threshold_percent: 2,
             reaction_time_ms: 500,
             restraint_trigger_time_ms: 500,
-            cpu_restraint_time_seconds: 5,
+            minimum_restraint_time_ms: 5_000,
             cpu_recovery_time_seconds: 8,
             maximum_restrained_apps: 12,
         },
@@ -439,10 +439,12 @@ mod tests {
 
     #[test]
     fn built_in_presets_set_restraint_timing_and_reset_advanced_controls() {
-        for (preset, dwell_ms) in BuiltInAdaptiveEnginePreset::ALL
-            .into_iter()
-            .zip([1_500, 1_500, 750, 500])
-        {
+        for (preset, (dwell_ms, minimum_ms)) in BuiltInAdaptiveEnginePreset::ALL.into_iter().zip([
+            (1_500, 2_000),
+            (1_500, 2_000),
+            (750, 3_000),
+            (500, 5_000),
+        ]) {
             let mut settings = AdaptiveEngineProcessSettings {
                 pause_restraint_when_idle: true,
                 restraint_idle_timeout_seconds: 120,
@@ -452,7 +454,8 @@ mod tests {
                 restraint_priority: AdaptiveRestraintPriority::Idle,
                 restraint_io_priority: AdaptiveRestraintIoPriority::Low,
                 restraint_energy_efficient_scheduling: true,
-                maximum_restraint_time_seconds: 10,
+                minimum_restraint_time_ms: 2_100,
+                maximum_restraint_time_ms: 10_000,
                 cpu_allocation_method: CpuAllocationMethod::ReduceAffinity,
                 preserve_custom_affinity: true,
                 processors_to_remove: 4,
@@ -475,7 +478,8 @@ mod tests {
                 settings.restraint_priority,
                 AdaptiveRestraintPriority::BelowNormal
             );
-            assert_eq!(settings.maximum_restraint_time_seconds, 0);
+            assert_eq!(settings.minimum_restraint_time_ms, minimum_ms);
+            assert_eq!(settings.maximum_restraint_time_ms, 0);
             assert_eq!(
                 settings.restraint_io_priority,
                 AdaptiveRestraintIoPriority::Unchanged
@@ -504,9 +508,8 @@ mod tests {
         settings
             .adaptive_engine_process
             .restraint_energy_efficient_scheduling = true;
-        settings
-            .adaptive_engine_process
-            .maximum_restraint_time_seconds = 10;
+        settings.adaptive_engine_process.minimum_restraint_time_ms = 2_100;
+        settings.adaptive_engine_process.maximum_restraint_time_ms = 10_000;
         settings
             .adaptive_engine_process
             .restraint_idle_timeout_seconds = 120;

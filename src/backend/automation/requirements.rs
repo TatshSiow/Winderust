@@ -137,7 +137,7 @@ pub(super) fn adaptive_engine_process_waits_for_source(
                 policy.restraint_priority,
                 policy.restraint_io_priority,
                 policy.restraint_energy_efficient_scheduling,
-                policy.maximum_restraint_time_seconds,
+                policy.maximum_restraint_time_ms,
                 policy
                     .pause_restraint_when_idle
                     .then_some(policy.restraint_idle_timeout_seconds),
@@ -150,7 +150,7 @@ pub(super) fn adaptive_engine_process_waits_for_source(
             policy.background_app_cpu_threshold_percent,
             policy.cpu_recovery_threshold_percent,
             policy.reaction_time_ms,
-            policy.cpu_restraint_time_seconds,
+            policy.minimum_restraint_time_ms,
             policy.cpu_recovery_time_seconds,
             policy.maximum_restrained_apps,
         )

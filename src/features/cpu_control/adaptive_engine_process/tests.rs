@@ -771,7 +771,7 @@ fn pressure_restraint_requires_sustained_hot_samples_and_clears_after_cooling() 
         cpu_recovery_threshold_percent: 10,
         reaction_time_ms: 500,
         restraint_trigger_time_ms: 1_500,
-        cpu_restraint_time_seconds: 1,
+        minimum_restraint_time_ms: 2_100,
         cpu_recovery_time_seconds: 1,
         ..Default::default()
     };
@@ -792,15 +792,19 @@ fn pressure_restraint_requires_sustained_hot_samples_and_clears_after_cooling() 
     assert!(episode.qualifies(&settings, at(3500), 0));
     assert!(episode.qualifies(&settings, at(4000), 600));
     assert!(episode.qualifies(&settings, at(4500), 0));
-    assert!(episode.qualifies(&settings, at(5000), 0));
-    assert!(!episode.qualifies(&settings, at(5500), 0));
+    assert!(episode.qualifies(&settings, at(4599), 0));
+    assert!(episode.below_since.is_none());
+    assert!(episode.qualifies(&settings, at(4600), 0));
+    assert_eq!(episode.below_since, Some(at(4600)));
+    assert!(episode.qualifies(&settings, at(5599), 0));
+    assert!(!episode.qualifies(&settings, at(5600), 0));
     assert!(!episode.qualifies(&settings, at(6000), 600));
 }
 
 #[test]
 fn elapsed_restraint_cap_releases_hot_process_and_requires_new_hot_interval() {
     let mut settings = AdaptiveEngineProcessSettings {
-        cpu_restraint_time_seconds: 1,
+        minimum_restraint_time_ms: 1_000,
         restraint_trigger_time_ms: 500,
         ..Default::default()
     };
@@ -811,14 +815,15 @@ fn elapsed_restraint_cap_releases_hot_process_and_requires_new_hot_interval() {
     assert!(!episode.qualifies(&settings, at(0), 1000));
     assert!(episode.qualifies(&settings, at(500), 1000));
     episode.selected_since = Some(at(500));
-    assert!(episode.qualifies(&settings, at(1499), 1000));
+    assert!(episode.qualifies(&settings, at(2000), 1000));
     // A live cap uses the elapsed time of the current claim.
-    settings.maximum_restraint_time_seconds = 1;
-    assert!(!episode.qualifies(&settings, at(1500), 1000));
+    settings.maximum_restraint_time_ms = 2_100;
+    assert!(episode.qualifies(&settings, at(2599), 1000));
+    assert!(!episode.qualifies(&settings, at(2600), 1000));
     assert!(episode.selected_since.is_none());
-    assert!(!episode.qualifies(&settings, at(1600), 1000));
-    assert!(!episode.qualifies(&settings, at(2099), 1000));
-    assert!(episode.qualifies(&settings, at(2100), 1000));
+    assert!(!episode.qualifies(&settings, at(2700), 1000));
+    assert!(!episode.qualifies(&settings, at(3199), 1000));
+    assert!(episode.qualifies(&settings, at(3200), 1000));
 }
 
 #[test]
@@ -895,7 +900,7 @@ fn reset_pressure_observations_requires_fresh_cpu_intervals() {
         limit_background_processors_enabled: true,
         foreground_or_system_cpu_threshold_percent: 70,
         background_app_cpu_threshold_percent: 70,
-        cpu_restraint_time_seconds: 5,
+        minimum_restraint_time_ms: 5_000,
         ..Default::default()
     });
     let started_at = observations.started_at;
@@ -948,7 +953,7 @@ fn adaptive_cpu_sample_gap_discards_only_the_targets_baseline_and_recovery() {
         limit_background_processors_enabled: true,
         background_app_cpu_threshold_percent: 70,
         cpu_recovery_threshold_percent: 20,
-        cpu_restraint_time_seconds: 0,
+        minimum_restraint_time_ms: 0,
         cpu_recovery_time_seconds: 10,
         ..Default::default()
     });
@@ -1072,7 +1077,7 @@ fn adaptive_role_changes_require_a_fresh_hot_interval() {
             limit_background_processors_enabled: true,
             background_app_cpu_threshold_percent: 70,
             cpu_recovery_threshold_percent: 20,
-            cpu_restraint_time_seconds: 10,
+            minimum_restraint_time_ms: 10_000,
             ..Default::default()
         });
         observations.tier = from;
@@ -1113,7 +1118,7 @@ fn adaptive_complete_cpu_intervals_preserve_hold_then_priority_only_recovery() {
         limit_background_processors_enabled: true,
         background_app_cpu_threshold_percent: 70,
         cpu_recovery_threshold_percent: 20,
-        cpu_restraint_time_seconds: 3,
+        minimum_restraint_time_ms: 2_100,
         cpu_recovery_time_seconds: 2,
         ..Default::default()
     });
@@ -1125,15 +1130,23 @@ fn adaptive_complete_cpu_intervals_preserve_hold_then_priority_only_recovery() {
         .get_mut(&42)
         .unwrap()
         .selected = true;
-    for (seconds, expected) in [
-        (2, Some(AdaptiveEngineProcessDecision::LimitProcessors)),
-        (4, Some(AdaptiveEngineProcessDecision::LowerPriority)),
-        (5, Some(AdaptiveEngineProcessDecision::LowerPriority)),
-        (6, None),
+    let started_at = observations.started_at;
+    let creation_time = observations.creation_time;
+    for (milliseconds, expected) in [
+        (3_099, Some(AdaptiveEngineProcessDecision::LimitProcessors)),
+        (3_100, Some(AdaptiveEngineProcessDecision::LowerPriority)),
+        (5_099, Some(AdaptiveEngineProcessDecision::LowerPriority)),
+        (5_100, None),
     ] {
         assert_eq!(
             observations
-                .sample(seconds, 10_000_000)
+                .observe(Some((
+                    ProcessCpuSample {
+                        cpu_time_100ns: 10_000_000,
+                        sampled_at: started_at + Duration::from_millis(milliseconds),
+                    },
+                    creation_time,
+                )))
                 .map(|candidate| candidate.decision),
             expected
         );

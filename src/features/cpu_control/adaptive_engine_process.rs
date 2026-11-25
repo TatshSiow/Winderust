@@ -228,10 +228,10 @@ impl PressureRestraintEpisode {
         now: Instant,
         usage_tenths: u16,
     ) -> bool {
-        if settings.maximum_restraint_time_seconds != 0
+        if settings.maximum_restraint_time_ms != 0
             && self.selected_since.is_some_and(|selected_since| {
                 now.duration_since(selected_since)
-                    >= Duration::from_secs(settings.maximum_restraint_time_seconds)
+                    >= Duration::from_millis(settings.maximum_restraint_time_ms)
             })
         {
             *self = Self::default();
@@ -255,7 +255,7 @@ impl PressureRestraintEpisode {
             (u16::from(settings.cpu_recovery_threshold_percent) * 10).min(threshold);
         if usage_tenths > recovery_threshold
             || now.duration_since(selected_since)
-                < Duration::from_secs(settings.cpu_restraint_time_seconds)
+                < Duration::from_millis(settings.minimum_restraint_time_ms)
         {
             self.below_since = None;
             return true;
@@ -595,7 +595,7 @@ impl AdaptiveEngineProcessManager {
                 || previous.pause_restraint_when_idle != settings.pause_restraint_when_idle
                 || previous.restraint_idle_timeout_seconds
                     != settings.restraint_idle_timeout_seconds
-                || previous.cpu_restraint_time_seconds != settings.cpu_restraint_time_seconds
+                || previous.minimum_restraint_time_ms != settings.minimum_restraint_time_ms
                 || previous.cpu_recovery_threshold_percent
                     != settings.cpu_recovery_threshold_percent
                 || previous.cpu_recovery_time_seconds != settings.cpu_recovery_time_seconds
@@ -613,7 +613,7 @@ impl AdaptiveEngineProcessManager {
             previous.restraint_trigger_time_ms = settings.restraint_trigger_time_ms;
             previous.pause_restraint_when_idle = settings.pause_restraint_when_idle;
             previous.restraint_idle_timeout_seconds = settings.restraint_idle_timeout_seconds;
-            previous.maximum_restraint_time_seconds = settings.maximum_restraint_time_seconds;
+            previous.maximum_restraint_time_ms = settings.maximum_restraint_time_ms;
             previous.restraint_priority = settings.restraint_priority;
             if previous.pressure_thresholds() == settings.pressure_thresholds() {
                 previous.foreground_cpu_threshold_percent =
@@ -1598,7 +1598,7 @@ impl AdaptiveEngineProcessManager {
                 .min(settings.background_app_cpu_threshold_percent)
                 .min(100),
         );
-        let cpu_restraint_time = Duration::from_secs(settings.cpu_restraint_time_seconds);
+        let minimum_restraint_time = Duration::from_millis(settings.minimum_restraint_time_ms);
         let cpu_recovery_time = Duration::from_secs(settings.cpu_recovery_time_seconds);
         if self
             .tracked_processes
@@ -1658,7 +1658,7 @@ impl AdaptiveEngineProcessManager {
             return None;
         };
 
-        if usage > recovery_threshold || now.duration_since(active_since) < cpu_restraint_time {
+        if usage > recovery_threshold || now.duration_since(active_since) < minimum_restraint_time {
             state.below_since = None;
             let decision = adaptive_engine_process_process_decision(settings, tier);
             return Some(adaptive_engine_process_candidate(

@@ -56,7 +56,9 @@ reading is a share of total system CPU capacity. Background-app CPU demand is me
 one logical processor.
 Optional Exclude service hosts protects detected active service processes, Session 0,
 and processes whose session could not be determined. It applies to all three policies.
-Reaction time, candidate cap, restraint hold, and recovery values retain their existing units.
+Minimum restraint time is shared by CPU Pressure Restraint and Limit Background
+Processors. It is entered in milliseconds, with zero allowing recovery without
+a minimum hold. Recovery time still controls how long low CPU use must persist.
 
 Zoning requires fresh foreground observations outside startup grace and current hot eligible
 background competition. Excluded, protected, unavailable, overridden, and suppressed targets do
@@ -137,8 +139,10 @@ migration or copying from the limiter is performed.
   required observations withdraw the priority claim. The background processor
   limit yields when its candidate enters recovery.
 - Maximum restraint time limits a continuous priority adjustment even if its process remains hot.
-  Zero leaves the adjustment uncapped. After expiration, the process must build fresh qualification
-  before being restrained again. Pending restoration retains its existing retry path.
+  It is entered in milliseconds and checked at the next evaluation. Zero leaves the adjustment
+  uncapped. A positive maximum must be at least the minimum. After expiration, the process must
+  build fresh qualification before being restrained again. Pending restoration retains its existing
+  retry path.
 - Restraint I/O priority can apply Low or Very Low only while an exact process has a verified CPU
   priority restraint. The default is Unchanged. The shared I/O Priority controller preserves a
   lower baseline and yields to saved I/O policies and manual changes. It releases the Adaptive

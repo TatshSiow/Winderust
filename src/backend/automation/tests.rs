@@ -3884,6 +3884,11 @@ fn adaptive_engine_source_selection_uses_effective_restraint_timing() {
     assert!(!adaptive_engine_process_waits_for_source(&settings, None));
     settings.adaptive_engine_process.restraint_trigger_time_ms = 2_700;
     assert!(adaptive_engine_process_waits_for_source(&settings, None));
+    let battery = &mut settings.battery_profile_mut().adaptive_engine_process;
+    battery.restraint_trigger_time_ms = 2_700;
+    battery.minimum_restraint_time_ms = 2_100;
+    settings.adaptive_engine_process.minimum_restraint_time_ms = 2_101;
+    assert!(adaptive_engine_process_waits_for_source(&settings, None));
     assert!(!adaptive_engine_process_waits_for_source(
         &settings,
         Some(true)
@@ -3892,6 +3897,8 @@ fn adaptive_engine_source_selection_uses_effective_restraint_timing() {
         &settings,
         Some(false)
     ));
+    settings.adaptive_engine_process.minimum_restraint_time_ms = 2_100;
+    assert!(!adaptive_engine_process_waits_for_source(&settings, None));
 }
 
 #[test]
@@ -3909,7 +3916,7 @@ fn adaptive_engine_source_selection_checks_pressure_and_restraint_actions() {
     battery.restraint_priority = AdaptiveRestraintPriority::Idle;
     battery.restraint_io_priority = AdaptiveRestraintIoPriority::VeryLow;
     battery.restraint_energy_efficient_scheduling = true;
-    battery.maximum_restraint_time_seconds = 30;
+    battery.maximum_restraint_time_ms = 30_000;
     assert!(!adaptive_engine_process_waits_for_source(&settings, None));
 
     settings
@@ -3936,9 +3943,7 @@ fn adaptive_engine_source_selection_checks_pressure_and_restraint_actions() {
         .adaptive_engine_process
         .restraint_energy_efficient_scheduling = true;
     assert!(adaptive_engine_process_waits_for_source(&settings, None));
-    settings
-        .adaptive_engine_process
-        .maximum_restraint_time_seconds = 30;
+    settings.adaptive_engine_process.maximum_restraint_time_ms = 30_000;
     assert!(!adaptive_engine_process_waits_for_source(&settings, None));
 }
 
