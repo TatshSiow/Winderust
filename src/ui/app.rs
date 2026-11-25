@@ -76,12 +76,7 @@ fn page_header<'a>(
     breadcrumb: Element<'a, Message>,
     profiles: Option<Element<'a, Message>>,
     panel_button: Option<Element<'a, Message>>,
-    save_controls: Option<Element<'a, Message>>,
 ) -> Element<'a, Message> {
-    let trail = row![container(breadcrumb).width(Fill)]
-        .extend(save_controls)
-        .spacing(design::space::SMALL)
-        .align_y(iced::Center);
     let mut toolbar = row![profiles.unwrap_or_else(|| iced::widget::Space::new().into())]
         .push(iced::widget::Space::new().width(Fill))
         .height(design::BUTTON_HEIGHT)
@@ -90,13 +85,21 @@ fn page_header<'a>(
         toolbar = toolbar.push(button);
     }
     column![
-        container(trail).center_y(design::PAGE_BREADCRUMB_HEIGHT),
+        container(breadcrumb).center_y(design::PAGE_BREADCRUMB_HEIGHT),
         toolbar,
     ]
     .spacing(design::space::SMALL)
     .width(Fill)
     .into()
 }
+
+const SAVE_BUTTON_HEIGHT: u32 = design::space::SECTION;
+const SAVE_CARD_PADDING: u32 = design::space::TINY;
+const SAVE_CARD_BOTTOM_INSET: u32 = design::space::CONTROL;
+const PAGE_BOTTOM_INSET: u32 =
+    SAVE_BUTTON_HEIGHT + 2 * SAVE_CARD_PADDING + SAVE_CARD_BOTTOM_INSET + design::space::TIGHT;
+// Share the same vertical margin between the two edges so the editor keeps its height.
+const PAGE_TOP_INSET: u32 = 2 * design::space::SECTION - PAGE_BOTTOM_INSET;
 
 fn page_canvas<'a>(
     heading: Element<'a, Message>,
@@ -106,13 +109,18 @@ fn page_canvas<'a>(
     let mut layers = iced::widget::Stack::new().push(
         column![heading, content]
             .spacing(design::space::WIDE)
+            .padding(iced::Padding {
+                top: PAGE_TOP_INSET as f32,
+                bottom: PAGE_BOTTOM_INSET as f32,
+                ..iced::Padding::ZERO
+            })
             .height(Fill),
     );
     if let Some(card) = save_card {
         layers = layers.push(
             container(iced::widget::opaque(repaint_popup(card)))
                 .padding(iced::Padding {
-                    bottom: SCROLLBAR_GUTTER,
+                    bottom: SAVE_CARD_BOTTOM_INSET as f32,
                     right: SCROLLBAR_GUTTER,
                     ..iced::Padding::ZERO
                 })
@@ -135,58 +143,28 @@ fn page_canvas<'a>(
 
 const SIDE_PANEL_TOGGLE: &str = "side-panel-toggle";
 const SIDE_PANEL_CLOSE: &str = "side-panel-close";
-const SAVE_PLACEMENT_BUTTON: &str = "save-placement";
-
-fn save_placement_button(in_header: bool) -> super::animated_controls::Button<'static, Message> {
-    let key = if in_header {
-        "unsaved.float_controls"
-    } else {
-        "unsaved.move_to_header"
-    };
-    action_button(t!(key).into_owned())
-        .style(widgets::tertiary_button)
-        .focus_id(SAVE_PLACEMENT_BUTTON)
-        .on_press(Message::ToggleSavePlacement)
-}
-
-fn save_actions(switching_plan: bool) -> iced::widget::Row<'static, Message> {
-    row![
-        action_button(t!("common.discard").into_owned())
-            .style(widgets::tertiary_button)
-            .on_press(Message::Cancel),
-        action_button(t!("common.save").into_owned())
-            .style(widgets::primary_button)
-            .on_press_maybe((!switching_plan).then_some(Message::Save)),
-    ]
-    .spacing(design::space::SMALL)
-}
-
-fn header_save_controls(switching_plan: bool) -> Element<'static, Message> {
-    row![save_placement_button(true), save_actions(switching_plan)]
-        .spacing(design::space::SMALL)
-        .into()
-}
 
 fn floating_save_card(switching_plan: bool) -> Element<'static, Message> {
-    widgets::settings_card(
-        column![
-            row![
-                widgets::heading(t!("unsaved.title").into_owned(), design::typography::BODY)
-                    .width(Fill),
-                save_placement_button(false),
-            ]
-            .spacing(design::space::SMALL)
-            .align_y(iced::Center),
-            row![
-                iced::widget::Space::new().width(Fill),
-                save_actions(switching_plan)
-            ],
+    container(
+        row![
+            widgets::heading(
+                t!("unsaved.title").into_owned(),
+                design::typography::SECONDARY
+            ),
+            action_button(t!("common.discard").into_owned())
+                .height(SAVE_BUTTON_HEIGHT)
+                .style(widgets::tertiary_button)
+                .on_press(Message::Cancel),
+            action_button(t!("common.save").into_owned())
+                .height(SAVE_BUTTON_HEIGHT)
+                .style(widgets::primary_button)
+                .on_press_maybe((!switching_plan).then_some(Message::Save)),
         ]
-        .spacing(design::space::SMALL),
+        .spacing(design::space::SMALL)
+        .align_y(iced::Center),
     )
-    .width(Fill)
-    .max_width(320)
-    .id(super::keyboard_focus::SAVE_CARD)
+    .padding([SAVE_CARD_PADDING as u16, design::space::SMALL as u16])
+    .style(widgets::surface)
     .into()
 }
 
@@ -366,7 +344,6 @@ pub(crate) fn run(
                 navigation: navigation::Flyout::default(),
                 side_panel_open: false,
                 side_panel_tab: SidePanelTab::Info,
-                save_controls_in_header: false,
                 preferences: settings_pages::Editor::default(),
                 home: home::Model::default(),
                 action_log: action_log::Editor::default(),
@@ -680,7 +657,6 @@ struct WinderustApp {
     navigation: navigation::Flyout,
     side_panel_open: bool,
     side_panel_tab: SidePanelTab,
-    save_controls_in_header: bool,
     preferences: settings_pages::Editor,
     home: home::Model,
     action_log: action_log::Editor,
@@ -809,8 +785,6 @@ enum Message {
     WindowCloseRequested(iced::window::Id),
     WindowClose,
     Close,
-    ToggleSavePlacement,
-    MoveSaveControlsToHeader,
     Save,
     Cancel,
     PausePowerPlans(bool),
@@ -1060,13 +1034,6 @@ impl WinderustApp {
                 return self.update_navigation(navigation::Event::Key(key, modifiers.shift()));
             }
             if tab {
-                if !self.save_controls_in_header && self.pending_settings_changes() {
-                    return super::keyboard_focus::move_focus_with_save_card(
-                        !modifiers.shift(),
-                        wrap_focus,
-                        Message::MoveSaveControlsToHeader,
-                    );
-                }
                 return move_focus();
             }
         }
@@ -1509,9 +1476,6 @@ impl WinderustApp {
                 );
             }
             Message::ActionLog(action_log::Message::KeyboardScroll(direction, height)) => {
-                if self.pending_settings_changes() {
-                    self.save_controls_in_header = true;
-                }
                 return self.action_log.keyboard_scroll(
                     &self.status.action_log_entries,
                     direction,
@@ -2164,14 +2128,6 @@ impl WinderustApp {
                 return self.load_power_plans();
             }
             Message::Processes(message) => {
-                if matches!(
-                    message,
-                    process_list::Message::MoveRowFocus(..)
-                        | process_list::Message::ExpandFocused(Some(_))
-                ) && self.pending_settings_changes()
-                {
-                    self.save_controls_in_header = true;
-                }
                 let load_plans = matches!(
                     message,
                     process_list::Message::ProcessTab(process_list::ProcessTab::Rulesets)
@@ -2370,16 +2326,6 @@ impl WinderustApp {
                 }
                 self.closing = true;
                 return self.show_window();
-            }
-            Message::ToggleSavePlacement if self.pending_settings_changes() => {
-                self.save_controls_in_header = !self.save_controls_in_header;
-                return iced::widget::operation::focus(SAVE_PLACEMENT_BUTTON);
-            }
-            Message::ToggleSavePlacement => {}
-            Message::MoveSaveControlsToHeader => {
-                if self.pending_settings_changes() {
-                    self.save_controls_in_header = true;
-                }
             }
             Message::Save
                 if self.power_plan_control.pending
@@ -3598,17 +3544,13 @@ impl WinderustApp {
         }
         let panel_button = side_panel_available.then(|| side_panel_button(self.side_panel_open));
         let settings_are_pending = self.pending_settings_changes();
-        let show_save_controls = settings_are_pending && !process_actions_open;
-        let switching_plan = self.power_plan_control.pending;
         let heading = page_header(
             breadcrumb.into(),
             profile_controls.map(Into::into),
             panel_button,
-            (show_save_controls && self.save_controls_in_header)
-                .then(|| header_save_controls(switching_plan)),
         );
-        let save_card = (show_save_controls && !self.save_controls_in_header)
-            .then(|| floating_save_card(switching_plan));
+        let save_card = (settings_are_pending && !process_actions_open)
+            .then(|| floating_save_card(self.power_plan_control.pending));
         let content = container(super::motion::wrap(
             super::motion::wrap(
                 super::scrolling::repaint_group(self.page_view(
@@ -3628,7 +3570,7 @@ impl WinderustApp {
         let layout = row![
             navigation,
             container(body)
-                .padding([design::space::SECTION as u16, page_padding])
+                .padding([0, page_padding])
                 .width(Fill)
                 .height(Fill),
         ]
@@ -4510,9 +4452,8 @@ mod tests {
         for width in [780.0, 1440.0, 1800.0] {
             let size = iced::Size::new(width, 600.0);
             let mut expected = None;
-            for (profiles, placement) in [false, true]
-                .into_iter()
-                .flat_map(|profiles| [None, Some(false), Some(true)].map(|pos| (profiles, pos)))
+            for (profiles, has_save_card) in
+                [(false, false), (true, false), (false, true), (true, true)]
             {
                 for available in [false, true] {
                     for open in [false, true] {
@@ -4521,14 +4462,13 @@ mod tests {
                             profiles
                                 .then(|| button(text("Plugged In / On Battery")).height(32).into()),
                             available.then(|| button(text("Side panel")).height(32).into()),
-                            (placement == Some(true)).then(|| header_save_controls(false)),
                         );
                         let workspace = page_canvas(
                             heading,
                             scrollable(iced::widget::Space::new().width(Fill).height(930))
                                 .height(Fill)
                                 .into(),
-                            (placement == Some(false)).then(|| floating_save_card(false)),
+                            has_save_card.then(|| floating_save_card(false)),
                         );
                         let panel = (available && open)
                             .then(|| iced::widget::Space::new().height(Fill).into());
@@ -4549,12 +4489,25 @@ mod tests {
                         let layers = &canvas.children()[0];
                         let column = &layers.children()[0];
                         let mut bounds = column.children()[1].bounds();
-                        assert_eq!(bounds.y + bounds.height, size.height);
+                        assert_eq!(
+                            bounds.y + bounds.height,
+                            size.height - PAGE_BOTTOM_INSET as f32
+                        );
+                        assert_eq!(
+                            bounds.height,
+                            size.height
+                                - 2.0 * design::space::SECTION as f32
+                                - column.children()[0].size().height
+                                - design::space::WIDE as f32
+                        );
                         assert_eq!(column.children()[1].children()[0].size().height, 930.0);
-                        if placement == Some(false) {
+                        if has_save_card {
                             let card = layers.children()[1].children()[0].bounds();
-                            assert!(card.y > bounds.y);
-                            assert_eq!(card.y + card.height, size.height - SCROLLBAR_GUTTER);
+                            assert!(card.y > bounds.y + bounds.height);
+                            assert_eq!(
+                                card.y + card.height,
+                                size.height - SAVE_CARD_BOTTOM_INSET as f32
+                            );
                             assert_eq!(card.x + card.width, bounds.width - SCROLLBAR_GUTTER);
                             assert!(card.width < bounds.width);
                         }
@@ -4575,13 +4528,13 @@ mod tests {
     }
 
     #[test]
-    fn save_card_blocks_pointer_input_only_within_its_bounds() {
+    fn save_card_buttons_and_dock_are_interactive() {
         use iced::advanced::{layout, widget::Tree, Layout, Shell};
         let renderer = iced::Renderer::new(iced::Font::DEFAULT, iced::Pixels(14.0));
         let workspace: Element<'_, Message> = button(text("Background action"))
             .width(Fill)
             .height(Fill)
-            .on_press(Message::Save)
+            .on_press(Message::Tick)
             .into();
         let panel = button(text("Panel action"))
             .width(Fill)
@@ -4601,10 +4554,22 @@ mod tests {
             &renderer,
             &layout::Limits::new(iced::Size::ZERO, size),
         );
+        let mut card = Layout::new(&node);
+        for index in [0, 0, 0, 0, 1, 0] {
+            card = card.children().nth(index).unwrap();
+        }
+        let controls = card
+            .children()
+            .next()
+            .unwrap()
+            .children()
+            .collect::<Vec<_>>();
         for (cursor, expected) in [
-            (iced::Point::new(100.0, 560.0), Some(Message::Save)),
-            (iced::Point::new(400.0, 550.0), None),
+            (iced::Point::new(100.0, 560.0), Some(Message::Tick)),
             (iced::Point::new(800.0, 560.0), Some(Message::Cancel)),
+            (controls[0].bounds().center(), None),
+            (controls[1].bounds().center(), Some(Message::Cancel)),
+            (controls[2].bounds().center(), Some(Message::Save)),
         ] {
             let mut messages = Vec::new();
             for event in [
@@ -4624,7 +4589,8 @@ mod tests {
             }
             assert!(matches!(
                 (messages.as_slice(), expected),
-                ([Message::Save], Some(Message::Save))
+                ([Message::Tick], Some(Message::Tick))
+                    | ([Message::Save], Some(Message::Save))
                     | ([Message::Cancel], Some(Message::Cancel))
                     | ([], None)
             ));
@@ -4645,12 +4611,7 @@ mod tests {
         let limits = layout::Limits::new(iced::Size::ZERO, viewport.size());
         let dock = |open: bool| {
             let workspace = iced::widget::column![
-                page_header(
-                    text("Editor").into(),
-                    None,
-                    Some(side_panel_button(open)),
-                    None
-                ),
+                page_header(text("Editor").into(), None, Some(side_panel_button(open))),
                 button(text("Editor action")).on_press(Message::Save),
             ];
             let panel = open.then(|| iced::widget::Space::new().height(Fill).into());

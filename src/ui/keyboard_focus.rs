@@ -7,29 +7,8 @@ use iced::{
     keyboard, keyboard::key::Named, mouse, touch, Event, Rectangle, Renderer, Theme, Vector,
 };
 
-pub(super) const SAVE_CARD: &str = "floating-save-card";
-
 pub(super) fn move_focus<M: Send + 'static>(forward: bool, wrap: bool) -> iced::Task<M> {
-    focus_step(forward, wrap).chain(reveal(None))
-}
-
-pub(super) fn move_focus_with_save_card<M: Send + 'static>(
-    forward: bool,
-    wrap: bool,
-    move_to_header: M,
-) -> iced::Task<M> {
-    let mut move_to_header = Some(move_to_header);
-    focus_step(forward, wrap).chain(iced::advanced::widget::operate(Reveal::default()).then(
-        move |()| {
-            move_to_header
-                .take()
-                .map_or_else(iced::Task::none, iced::Task::done)
-        },
-    ))
-}
-
-fn focus_step<M: Send + 'static>(forward: bool, wrap: bool) -> iced::Task<M> {
-    if wrap {
+    let focus = if wrap {
         let target = operation::map(operation::focusable::count(), move |count| {
             FocusAt::wrapping(count, forward)
         });
@@ -38,7 +17,8 @@ fn focus_step<M: Send + 'static>(forward: bool, wrap: bool) -> iced::Task<M> {
         iced::widget::operation::focus_next()
     } else {
         iced::widget::operation::focus_previous()
-    }
+    };
+    focus.chain(reveal(None))
 }
 
 pub(super) fn reveal<M: Send + 'static>(target: Option<Id>) -> iced::Task<M> {
@@ -46,7 +26,6 @@ pub(super) fn reveal<M: Send + 'static>(target: Option<Id>) -> iced::Task<M> {
         target,
         ..Reveal::default()
     })
-    .then(|()| iced::Task::none())
 }
 
 pub(super) fn reveal_within<M: Send + 'static>(scope: Id, fallback: Option<Id>) -> iced::Task<M> {
@@ -55,7 +34,6 @@ pub(super) fn reveal_within<M: Send + 'static>(scope: Id, fallback: Option<Id>) 
         focus_scope: Some(scope),
         ..Reveal::default()
     })
-    .then(|()| iced::Task::none())
 }
 
 struct FocusAt {
@@ -110,37 +88,20 @@ struct Reveal {
     ordinal: usize,
     pending: Option<Scroll>,
     ancestors: Vec<Scroll>,
-    targets: Vec<(Rectangle, Vec<Scroll>)>,
-    save_card: Option<Rectangle>,
-    entering_save_card: bool,
-    in_save_card: bool,
     changes: Vec<(usize, Vector)>,
     apply: bool,
-    covered: bool,
 }
 
-impl Operation for Reveal {
-    fn traverse(&mut self, visit: &mut dyn FnMut(&mut dyn Operation)) {
+impl<T: Send + 'static> Operation<T> for Reveal {
+    fn traverse(&mut self, visit: &mut dyn FnMut(&mut dyn Operation<T>)) {
         // Native Scrollable registers itself immediately before traversing its content.
         let entered = self.pending.take();
         if let Some(scroll) = entered {
             self.ancestors.push(scroll);
         }
-        let entered_save_card = std::mem::take(&mut self.entering_save_card);
-        self.in_save_card |= entered_save_card;
         visit(self);
-        if entered_save_card {
-            self.in_save_card = false;
-        }
         if entered.is_some() {
             self.ancestors.pop();
-        }
-    }
-
-    fn container(&mut self, id: Option<&Id>, bounds: Rectangle) {
-        if id == Some(&Id::new(SAVE_CARD)) {
-            self.save_card = Some(bounds);
-            self.entering_save_card = true;
         }
     }
 
@@ -179,14 +140,14 @@ impl Operation for Reveal {
         }
     }
 
-    fn focusable(&mut self, id: Option<&Id>, target: Rectangle, state: &mut dyn Focusable) {
-        if self.apply || self.in_save_card {
+    fn focusable(&mut self, id: Option<&Id>, mut target: Rectangle, state: &mut dyn Focusable) {
+        if self.apply {
             return;
         }
         let focused = state.is_focused();
         if focused && self.ancestors.iter().any(|scroll| scroll.is_focus_scope) {
             self.found_scoped_focus = true;
-            self.targets.clear();
+            self.changes.clear();
         } else if self.found_scoped_focus
             || !self.target.as_ref().map_or_else(
                 || self.focus_scope.is_none() && focused,
@@ -195,95 +156,46 @@ impl Operation for Reveal {
         {
             return;
         }
-        self.targets.push((target, self.ancestors.clone()));
+        for scroll in self.ancestors.iter().rev() {
+            target.x -= scroll.translation.x;
+            target.y -= scroll.translation.y;
+            let delta = Vector::new(
+                reveal_axis(
+                    target.x,
+                    target.width,
+                    scroll.bounds.x,
+                    scroll.bounds.width,
+                    scroll.translation.x,
+                    scroll.content.width,
+                ),
+                reveal_axis(
+                    target.y,
+                    target.height,
+                    scroll.bounds.y,
+                    scroll.bounds.height,
+                    scroll.translation.y,
+                    scroll.content.height,
+                ),
+            );
+            if delta != Vector::ZERO {
+                self.changes.push((scroll.ordinal, delta));
+            }
+            target.x -= delta.x;
+            target.y -= delta.y;
+        }
     }
 
-    fn finish(&self) -> operation::Outcome<()> {
-        if self.apply {
-            return cover_result(self.covered);
-        }
-        let mut changes = Vec::new();
-        let mut covered = false;
-        for (target, ancestors) in &self.targets {
-            let visible = reveal_changes(*target, ancestors, self.save_card, &mut changes);
-            covered |= visible
-                .zip(self.save_card)
-                .is_some_and(|(target, card)| target.intersects(&card));
-        }
-        if changes.is_empty() {
-            cover_result(covered)
+    fn finish(&self) -> operation::Outcome<T> {
+        if self.apply || self.changes.is_empty() {
+            operation::Outcome::None
         } else {
             operation::Outcome::Chain(Box::new(Self {
-                changes,
+                changes: self.changes.clone(),
                 apply: true,
-                covered,
                 ..Self::default()
             }))
         }
     }
-}
-
-fn cover_result(covered: bool) -> operation::Outcome<()> {
-    if covered {
-        operation::Outcome::Some(())
-    } else {
-        operation::Outcome::None
-    }
-}
-
-fn reveal_changes(
-    mut target: Rectangle,
-    ancestors: &[Scroll],
-    save_card: Option<Rectangle>,
-    changes: &mut Vec<(usize, Vector)>,
-) -> Option<Rectangle> {
-    // The card is fixed to the page. Only its outermost vertical scroller moves
-    // a nested target clear of it.
-    let covered = save_card.and_then(|card| {
-        let scroll = ancestors
-            .iter()
-            .find(|scroll| scroll.content.height > scroll.bounds.height)?;
-        Some((scroll.ordinal, scroll.bounds.intersection(&card)?))
-    });
-    let mut visible = Some(target);
-    for scroll in ancestors.iter().rev() {
-        target = target - scroll.translation;
-        let x = reveal_axis(
-            target.x,
-            target.width,
-            scroll.bounds.x,
-            scroll.bounds.width,
-            scroll.translation.x,
-            scroll.content.width - scroll.bounds.width,
-        );
-        let visible_height = match covered {
-            Some((ordinal, card))
-                if ordinal == scroll.ordinal
-                    && target.x - x < card.x + card.width
-                    && target.x - x + target.width > card.x
-                    && target.height <= card.y - scroll.bounds.y =>
-            {
-                card.y - scroll.bounds.y
-            }
-            _ => scroll.bounds.height,
-        };
-        let y = reveal_axis(
-            target.y,
-            target.height,
-            scroll.bounds.y,
-            visible_height,
-            scroll.translation.y,
-            scroll.content.height - scroll.bounds.height,
-        );
-        let delta = Vector::new(x, y);
-        target = target - delta;
-        visible = visible
-            .and_then(|rect| (rect - scroll.translation - delta).intersection(&scroll.bounds));
-        if delta != Vector::ZERO {
-            changes.push((scroll.ordinal, delta));
-        }
-    }
-    visible
 }
 
 fn reveal_axis(
@@ -292,12 +204,12 @@ fn reveal_axis(
     viewport: f32,
     visible: f32,
     offset: f32,
-    max_offset: f32,
+    content: f32,
 ) -> f32 {
     let delta = (start + size - viewport - visible)
         .max(0.0)
         .min(start - viewport);
-    (offset + delta).clamp(0.0, max_offset.max(0.0)) - offset
+    (offset + delta).clamp(0.0, (content - visible).max(0.0)) - offset
 }
 
 #[derive(Default)]
@@ -412,24 +324,6 @@ mod tests {
     use iced::advanced::{layout, widget::Tree, Layout};
     use iced::{Element, Size};
 
-    fn run(
-        view: &mut Element<'_, ()>,
-        tree: &mut Tree,
-        node: &layout::Node,
-        renderer: &Renderer,
-        mut operation: Box<dyn Operation>,
-    ) -> bool {
-        loop {
-            view.as_widget_mut()
-                .operate(tree, Layout::new(node), renderer, operation.as_mut());
-            match operation.finish() {
-                operation::Outcome::Chain(next) => operation = next,
-                operation::Outcome::Some(()) => return true,
-                operation::Outcome::None => return false,
-            }
-        }
-    }
-
     #[test]
     fn wrapped_focus_handles_zero_and_one_control() {
         use operation::focusable::Count;
@@ -479,6 +373,22 @@ mod tests {
             ) {
                 assert!(id.is_none() || id == Some(&Id::from(FOCUS_SCOPE)));
                 self.scrolls.push((bounds, translation));
+            }
+        }
+        fn run(
+            view: &mut Element<'_, ()>,
+            tree: &mut Tree,
+            node: &layout::Node,
+            renderer: &Renderer,
+            mut operation: Box<dyn Operation>,
+        ) {
+            loop {
+                view.as_widget_mut()
+                    .operate(tree, Layout::new(node), renderer, operation.as_mut());
+                match operation.finish() {
+                    operation::Outcome::Chain(next) => operation = next,
+                    _ => break,
+                }
             }
         }
         fn snapshot(
@@ -635,91 +545,6 @@ mod tests {
             assert_eq!(after.focused.unwrap().0, 1);
             assert_eq!(after.scrolls[0], before.scrolls[0]);
             assert_eq!(after.scrolls[2].1.y, 0.0);
-        }
-    }
-
-    #[test]
-    fn focus_moves_the_save_card_when_natural_scrolling_leaves_the_control_covered() {
-        use iced::widget::{column, container, row, stack, text, Space};
-        use iced::{Bottom, Fill, Right};
-
-        let renderer = Renderer::new(design::typography::FONT, iced::Pixels(14.0));
-        let size = Size::new(500.0, 180.0);
-        for (remaining_height, expected_offset, should_move) in
-            [(0, 0.0, true), (50, 20.0, true), (100, 50.0, false)]
-        {
-            let other_pane = crate::ui::scrolling::scrollable(column![
-                Space::new().height(118),
-                widgets::action_button("Other pane").on_press(()),
-                Space::new().height(100),
-            ])
-            .width(120)
-            .height(Fill);
-            let mut body = column![
-                Space::new().height(118),
-                row![
-                    widgets::action_button("Left action").on_press(()),
-                    Space::new().width(Fill),
-                    widgets::action_button("Right action").on_press(()),
-                ],
-            ];
-            if remaining_height > 0 {
-                body = body.push(container(text("More settings")).height(remaining_height));
-            }
-            let editor = crate::ui::scrolling::scrollable(body)
-                .width(Fill)
-                .height(Fill);
-            let card = container(
-                container(widgets::action_button("Save").on_press(()))
-                    .center_x(180)
-                    .center_y(80)
-                    .id(SAVE_CARD),
-            )
-            .width(Fill)
-            .height(Fill)
-            .align_x(Right)
-            .align_y(Bottom);
-            let mut view: Element<'_, ()> = stack![row![other_pane, editor], card].into();
-            let mut tree = Tree::new(&view);
-            let node = view.as_widget_mut().layout(
-                &mut tree,
-                &renderer,
-                &layout::Limits::new(Size::ZERO, size),
-            );
-            for index in 0..4 {
-                run(
-                    &mut view,
-                    &mut tree,
-                    &node,
-                    &renderer,
-                    Box::new(operation::focusable::focus_next::<()>()),
-                );
-                let moved = run(
-                    &mut view,
-                    &mut tree,
-                    &node,
-                    &renderer,
-                    Box::new(Reveal::default()),
-                );
-                let mut snapshot = Reveal::default();
-                view.as_widget_mut().operate(
-                    &mut tree,
-                    Layout::new(&node),
-                    &renderer,
-                    &mut snapshot,
-                );
-                assert_eq!(moved, index == 2 && should_move);
-                if index == 3 {
-                    assert!(snapshot.targets.is_empty());
-                } else {
-                    let card = snapshot.save_card.unwrap();
-                    let (target, scrolls) = &snapshot.targets[0];
-                    let offset = scrolls[0].translation.y;
-                    assert_eq!(offset, if index == 2 { expected_offset } else { 0.0 });
-                    let screen_bounds = *target - Vector::new(0.0, offset);
-                    assert_eq!(screen_bounds.intersects(&card), moved);
-                }
-            }
         }
     }
 
