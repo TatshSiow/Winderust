@@ -93,13 +93,10 @@ fn page_header<'a>(
     .into()
 }
 
-const SAVE_BUTTON_HEIGHT: u32 = design::space::SECTION;
-const SAVE_CARD_PADDING: u32 = design::space::TINY;
 const SAVE_CARD_BOTTOM_INSET: u32 = design::space::CONTROL;
-const PAGE_BOTTOM_INSET: u32 =
-    SAVE_BUTTON_HEIGHT + 2 * SAVE_CARD_PADDING + SAVE_CARD_BOTTOM_INSET + design::space::TIGHT;
+const PAGE_BOTTOM_INSET: f32 = 38.0;
 // Share the same vertical margin between the two edges so the editor keeps its height.
-const PAGE_TOP_INSET: u32 = 2 * design::space::SECTION - PAGE_BOTTOM_INSET;
+const PAGE_TOP_INSET: f32 = 2.0 * design::space::SECTION as f32 - PAGE_BOTTOM_INSET;
 
 fn page_canvas<'a>(
     heading: Element<'a, Message>,
@@ -110,8 +107,8 @@ fn page_canvas<'a>(
         column![heading, content]
             .spacing(design::space::WIDE)
             .padding(iced::Padding {
-                top: PAGE_TOP_INSET as f32,
-                bottom: PAGE_BOTTOM_INSET as f32,
+                top: PAGE_TOP_INSET,
+                bottom: PAGE_BOTTOM_INSET,
                 ..iced::Padding::ZERO
             })
             .height(Fill),
@@ -146,25 +143,29 @@ const SIDE_PANEL_CLOSE: &str = "side-panel-close";
 
 fn floating_save_card(switching_plan: bool) -> Element<'static, Message> {
     container(
-        row![
-            widgets::heading(
+        column![
+            container(widgets::heading(
                 t!("unsaved.title").into_owned(),
-                design::typography::SECONDARY
-            ),
-            action_button(t!("common.discard").into_owned())
-                .height(SAVE_BUTTON_HEIGHT)
-                .style(widgets::tertiary_button)
-                .on_press(Message::Cancel),
-            action_button(t!("common.save").into_owned())
-                .height(SAVE_BUTTON_HEIGHT)
-                .style(widgets::primary_button)
-                .on_press_maybe((!switching_plan).then_some(Message::Save)),
+                design::typography::BODY
+            ))
+            .center_y(design::space::SECTION),
+            row![
+                iced::widget::Space::new().width(Fill),
+                action_button(t!("common.discard").into_owned())
+                    .style(widgets::tertiary_button)
+                    .on_press(Message::Cancel),
+                action_button(t!("common.save").into_owned())
+                    .style(widgets::primary_button)
+                    .on_press_maybe((!switching_plan).then_some(Message::Save)),
+            ]
+            .spacing(design::space::SMALL),
         ]
-        .spacing(design::space::SMALL)
-        .align_y(iced::Center),
+        .spacing(design::space::SMALL),
     )
-    .padding([SAVE_CARD_PADDING as u16, design::space::SMALL as u16])
+    .padding(widgets::CARD_PADDING as u16)
     .style(widgets::surface)
+    .width(Fill)
+    .max_width(320)
     .into()
 }
 
@@ -4489,10 +4490,7 @@ mod tests {
                         let layers = &canvas.children()[0];
                         let column = &layers.children()[0];
                         let mut bounds = column.children()[1].bounds();
-                        assert_eq!(
-                            bounds.y + bounds.height,
-                            size.height - PAGE_BOTTOM_INSET as f32
-                        );
+                        assert_eq!(bounds.y + bounds.height, size.height - PAGE_BOTTOM_INSET);
                         assert_eq!(
                             bounds.height,
                             size.height
@@ -4503,13 +4501,12 @@ mod tests {
                         assert_eq!(column.children()[1].children()[0].size().height, 930.0);
                         if has_save_card {
                             let card = layers.children()[1].children()[0].bounds();
-                            assert!(card.y > bounds.y + bounds.height);
                             assert_eq!(
                                 card.y + card.height,
                                 size.height - SAVE_CARD_BOTTOM_INSET as f32
                             );
                             assert_eq!(card.x + card.width, bounds.width - SCROLLBAR_GUTTER);
-                            assert!(card.width < bounds.width);
+                            assert_eq!(card.size(), iced::Size::new(320.0, 96.0));
                         }
                         assert_eq!(column.children()[0].bounds().x, bounds.x);
                         bounds.x += canvas.bounds().x;
@@ -4558,18 +4555,17 @@ mod tests {
         for index in [0, 0, 0, 0, 1, 0] {
             card = card.children().nth(index).unwrap();
         }
-        let controls = card
-            .children()
-            .next()
-            .unwrap()
-            .children()
-            .collect::<Vec<_>>();
+        let mut rows = card.children().next().unwrap().children();
+        let title = rows.next().unwrap();
+        let mut actions = rows.next().unwrap().children().skip(1);
+        let discard = actions.next().unwrap();
+        let save = actions.next().unwrap();
         for (cursor, expected) in [
             (iced::Point::new(100.0, 560.0), Some(Message::Tick)),
             (iced::Point::new(800.0, 560.0), Some(Message::Cancel)),
-            (controls[0].bounds().center(), None),
-            (controls[1].bounds().center(), Some(Message::Cancel)),
-            (controls[2].bounds().center(), Some(Message::Save)),
+            (title.bounds().center(), None),
+            (discard.bounds().center(), Some(Message::Cancel)),
+            (save.bounds().center(), Some(Message::Save)),
         ] {
             let mut messages = Vec::new();
             for event in [

@@ -74,11 +74,11 @@ Prefer visible state, compact controls, and predictable rows. Use restrained acc
 - Rows and table headers should have stable heights across state changes.
 - Rules tables fill the same canvas width as settings cards. Use fixed or computed minimum widths for dense tables and policy columns, with horizontal scrolling when the dock leaves too little room. Do not let dynamic labels resize the process list.
 - Keep the last rule reachable with the dock open at the minimum window size,
-  including when both scrollbars are needed. Float the compact Save card in
-  the bottom-right page margin with 24px actions, clear of the editor and window
-  resize edge. Keep the same editor height and scroll range during edits.
-  Process List hides the card while its context menu or dialog is open and
-  keeps the draft.
+  including when both scrollbars are needed. Float the two-row Save card at
+  the bottom right with standard-height actions. It can overlap the editor
+  within its own bounds. Keep the same editor height and scroll range during
+  edits. Process List hides the card while its context menu or dialog is open
+  and keeps the draft.
 - Constrain long process names, labels, and status values so they do not resize adjacent columns.
 - Group related settings beneath each section heading in one card, with shared internal dividers between complete rows. Every grouped card needs a concise, localized category heading outside its outline. Apply this to pages, preset editors, rule dialogs, and process details; independent collapsible groups use their own headers. Keep each label, description, and control together; avoid a separate card for every setting. Preserve independent collapsible feature groups.
 - Avoid nested cards. Cards are for repeated rows, setting groups, status blocks, popovers, and tool surfaces.
