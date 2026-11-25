@@ -58,6 +58,7 @@ pub(crate) mod dynamic_priority_boost;
 pub(crate) mod gpu_memory;
 pub(crate) mod gpu_priority;
 pub(crate) mod gpu_usage;
+pub(crate) mod input_idle;
 pub(crate) mod instance_limits;
 pub(crate) mod interrupt_timing;
 pub(crate) mod io_priority;

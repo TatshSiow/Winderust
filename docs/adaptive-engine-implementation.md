@@ -110,11 +110,17 @@ migration or copying from the limiter is performed.
   for background candidates under pressure. Quiet passes still reconcile existing claims.
   Foreground and process lifecycle events may schedule an immediate safety pass to release
   obsolete foreground roles.
-  Restraint requires two continuous hot observations at least one reaction
-  interval apart for the same process instance. It submits a temporary Normal to
-  Below Normal priority claim. Focused apps and their process groups, apps with
-  visible windows, active audio, and exclusions are protected. Saved Process
-  Priority and Efficiency Mode take precedence.
+  Restraint requires at least two valid hot observations for the same process
+  instance and a continuous Time above threshold. Reaction time controls
+  sampling. The default for both is one second. Restraint submits a temporary
+  Normal to Below Normal priority claim. Focused apps and their process groups,
+  apps with visible windows, active audio, and exclusions are protected. Saved
+  Process Priority and Efficiency Mode take precedence.
+- Pause when idle is off by default. When enabled, its Idle timeout uses the
+  last input in Winderust's Windows session. After the timeout or when the idle
+  observation is unavailable, restore restrained priorities and start a fresh
+  qualification interval on resumption. The placement policies keep their own
+  eligibility.
 - Each policy ranks its own eligible candidates within the configured limit.
   Priority restoration follows the app's minimum hold and recovery settings
   during continued aggregate pressure. A higher-ranked candidate can take an

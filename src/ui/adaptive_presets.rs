@@ -164,6 +164,9 @@ pub(super) fn apply_adaptive_engine_process_preset(
     settings.background_app_cpu_threshold_percent = values.background_app_cpu_threshold_percent;
     settings.cpu_recovery_threshold_percent = values.cpu_recovery_threshold_percent;
     settings.reaction_time_ms = values.reaction_time_ms;
+    settings.restraint_trigger_time_ms = values.restraint_trigger_time_ms;
+    settings.pause_restraint_when_idle = false;
+    settings.restraint_idle_timeout_seconds = DEFAULT_ADAPTIVE_RESTRAINT_IDLE_TIMEOUT_SECONDS;
     settings.cpu_restraint_time_seconds = values.cpu_restraint_time_seconds;
     settings.cpu_recovery_time_seconds = values.cpu_recovery_time_seconds;
     settings.maximum_restrained_apps = values.maximum_restrained_apps;
@@ -193,6 +196,7 @@ pub(super) struct AdaptiveEngineProcessPresetValues {
     pub(super) background_app_cpu_threshold_percent: u8,
     pub(super) cpu_recovery_threshold_percent: u8,
     pub(super) reaction_time_ms: u64,
+    pub(super) restraint_trigger_time_ms: u64,
     pub(super) cpu_restraint_time_seconds: u64,
     pub(super) cpu_recovery_time_seconds: u64,
     pub(super) maximum_restrained_apps: u8,
@@ -226,6 +230,7 @@ pub(super) fn adaptive_engine_process_preset_values(
                 background_app_cpu_threshold_percent: 10,
                 cpu_recovery_threshold_percent: 5,
                 reaction_time_ms: 1_500,
+                restraint_trigger_time_ms: 1_500,
                 cpu_restraint_time_seconds: 2,
                 cpu_recovery_time_seconds: 4,
                 maximum_restrained_apps: 4,
@@ -254,6 +259,7 @@ pub(super) fn adaptive_engine_process_preset_values(
             background_app_cpu_threshold_percent: 8,
             cpu_recovery_threshold_percent: 4,
             reaction_time_ms: 750,
+            restraint_trigger_time_ms: 750,
             cpu_restraint_time_seconds: 3,
             cpu_recovery_time_seconds: 5,
             maximum_restrained_apps: 8,
@@ -281,6 +287,7 @@ pub(super) fn adaptive_engine_process_preset_values(
             background_app_cpu_threshold_percent: 4,
             cpu_recovery_threshold_percent: 2,
             reaction_time_ms: 500,
+            restraint_trigger_time_ms: 500,
             cpu_restraint_time_seconds: 5,
             cpu_recovery_time_seconds: 8,
             maximum_restrained_apps: 12,
@@ -422,8 +429,31 @@ mod tests {
     }
 
     #[test]
-    fn process_and_memory_options_round_trip_in_custom_presets() {
+    fn built_in_presets_set_restraint_timing_and_leave_idle_pause_off() {
+        let mut settings = AdaptiveEngineProcessSettings {
+            pause_restraint_when_idle: true,
+            restraint_idle_timeout_seconds: 120,
+            ..Default::default()
+        };
+        for (preset, dwell_ms) in BuiltInAdaptiveEnginePreset::ALL
+            .into_iter()
+            .zip([1_500, 1_500, 750, 500])
+        {
+            apply_adaptive_engine_process_preset(&mut settings, preset);
+            assert_eq!(settings.restraint_trigger_time_ms, dwell_ms);
+            assert!(!settings.pause_restraint_when_idle);
+            assert_eq!(settings.restraint_idle_timeout_seconds, 300);
+        }
+    }
+
+    #[test]
+    fn custom_presets_round_trip_process_options() {
         let mut settings = Settings::default();
+        settings.adaptive_engine_process.restraint_trigger_time_ms = 2_700;
+        settings.adaptive_engine_process.pause_restraint_when_idle = true;
+        settings
+            .adaptive_engine_process
+            .restraint_idle_timeout_seconds = 120;
         settings
             .adaptive_engine_process
             .process_priority_foreground_detection_enabled = false;

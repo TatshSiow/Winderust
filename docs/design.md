@@ -518,7 +518,7 @@ hover/press; background shading supplies feedback.
 - Quit confirmation is centered over a dimmed window. With unsaved changes show Cancel, Save and quit, and Quit without saving; otherwise show Cancel and Quit. Shutdown errors stay visible.
 - Avoid duplicated help text between inline descriptions, info popovers, and sidebar Feature info.
 
-- Adaptive Engine CPU Behaviour presents Shared Detection and Timing once as a collapsible group. CPU Pressure Restraint uses a toggle card with a visible description. Limit Background Processors and Dynamic Resource Zones keep their controls under independent toggle headers with visible descriptions. Keep disclosure state separate for the live and preset editors. Zoning keeps its 1-99 foreground share and visible throughput warning. The limiter percentage always refers to background capacity, and its allocation method remains editable when zones are enabled. Show verified zoning status and counts.
+- Adaptive Engine CPU Behaviour presents Shared Detection and Timing once as a collapsible group. CPU Pressure Restraint keeps Time above threshold, Pause when idle, and Idle timeout inside its expandable toggle card. Limit Background Processors and Dynamic Resource Zones keep their controls under independent toggle headers with visible descriptions. Keep disclosure state separate for the live and preset editors. Zoning keeps its 1-99 foreground share and visible throughput warning. The limiter percentage always refers to background capacity, and its allocation method remains editable when zones are enabled. Show verified zoning status and counts.
 
 ## Current reference layout
 

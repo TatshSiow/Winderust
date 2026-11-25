@@ -24,6 +24,11 @@ pub const CHECK_INTERVAL_MIN_MS: u64 = 250;
 pub const CHECK_INTERVAL_MAX_MS: u64 = 60 * 1000;
 pub const ADAPTIVE_ENGINE_PROCESS_REACTION_INTERVAL_MIN_MS: u64 = 250;
 pub const ADAPTIVE_ENGINE_PROCESS_REACTION_INTERVAL_MAX_MS: u64 = 5_000;
+pub const ADAPTIVE_RESTRAINT_TRIGGER_MIN_MS: u64 = 250;
+pub const ADAPTIVE_RESTRAINT_TRIGGER_MAX_MS: u64 = 60_000;
+pub const ADAPTIVE_RESTRAINT_IDLE_MIN_SECONDS: u64 = 1;
+pub const ADAPTIVE_RESTRAINT_IDLE_MAX_SECONDS: u64 = 3_600;
+pub(crate) const DEFAULT_ADAPTIVE_RESTRAINT_IDLE_TIMEOUT_SECONDS: u64 = 300;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Settings {
@@ -1136,6 +1141,9 @@ pub struct AdaptiveEngineProcessSettings {
     pub background_app_cpu_threshold_percent: u8,
     pub cpu_recovery_threshold_percent: u8,
     pub reaction_time_ms: u64,
+    pub restraint_trigger_time_ms: u64,
+    pub pause_restraint_when_idle: bool,
+    pub restraint_idle_timeout_seconds: u64,
     pub cpu_restraint_time_seconds: u64,
     pub cpu_recovery_time_seconds: u64,
     pub maximum_restrained_apps: u8,
@@ -1196,6 +1204,12 @@ struct AdaptiveEngineProcessSettingsWire {
     pub background_app_cpu_threshold_percent: u8,
     pub cpu_recovery_threshold_percent: u8,
     pub reaction_time_ms: u64,
+    #[serde(default = "default_restraint_trigger_time_ms")]
+    pub restraint_trigger_time_ms: u64,
+    #[serde(default)]
+    pub pause_restraint_when_idle: bool,
+    #[serde(default = "default_restraint_idle_timeout_seconds")]
+    pub restraint_idle_timeout_seconds: u64,
     pub cpu_restraint_time_seconds: u64,
     pub cpu_recovery_time_seconds: u64,
     pub maximum_restrained_apps: u8,
@@ -1211,7 +1225,7 @@ impl TryFrom<AdaptiveEngineProcessSettingsWire> for AdaptiveEngineProcessSetting
             None => return Err("Dynamic Resource Zones requires an explicit dynamic_resource_zone_settings block. Disable dynamic_resource_zones_enabled or provide foreground_share_percent, background_processor_selection and specific_processors.".into()),
         };
         zones.validate(wire.dynamic_resource_zones_enabled)?;
-        Ok(Self {
+        let settings = Self {
             dynamic_resource_zone_settings: zones,
             process_priority_enabled: wire.process_priority_enabled,
             process_priority_foreground_detection_enabled: wire
@@ -1260,11 +1274,16 @@ impl TryFrom<AdaptiveEngineProcessSettingsWire> for AdaptiveEngineProcessSetting
             background_app_cpu_threshold_percent: wire.background_app_cpu_threshold_percent,
             cpu_recovery_threshold_percent: wire.cpu_recovery_threshold_percent,
             reaction_time_ms: wire.reaction_time_ms,
+            restraint_trigger_time_ms: wire.restraint_trigger_time_ms,
+            pause_restraint_when_idle: wire.pause_restraint_when_idle,
+            restraint_idle_timeout_seconds: wire.restraint_idle_timeout_seconds,
             cpu_restraint_time_seconds: wire.cpu_restraint_time_seconds,
             cpu_recovery_time_seconds: wire.cpu_recovery_time_seconds,
             maximum_restrained_apps: wire.maximum_restrained_apps,
             custom_rules: wire.custom_rules,
-        })
+        };
+        settings.validate_cpu_pressure_restraint()?;
+        Ok(settings)
     }
 }
 
@@ -2400,6 +2419,14 @@ impl Default for CpuLimiterSettings {
     }
 }
 
+const fn default_restraint_trigger_time_ms() -> u64 {
+    1_000
+}
+
+const fn default_restraint_idle_timeout_seconds() -> u64 {
+    DEFAULT_ADAPTIVE_RESTRAINT_IDLE_TIMEOUT_SECONDS
+}
+
 impl Default for AdaptiveEngineProcessSettings {
     fn default() -> Self {
         Self {
@@ -2443,6 +2470,9 @@ impl Default for AdaptiveEngineProcessSettings {
             background_app_cpu_threshold_percent: 30,
             cpu_recovery_threshold_percent: 10,
             reaction_time_ms: 1_000,
+            restraint_trigger_time_ms: default_restraint_trigger_time_ms(),
+            pause_restraint_when_idle: false,
+            restraint_idle_timeout_seconds: default_restraint_idle_timeout_seconds(),
             cpu_restraint_time_seconds: 3,
             cpu_recovery_time_seconds: 6,
             maximum_restrained_apps: 4,

@@ -3854,3 +3854,41 @@ fn adaptive_engine_waits_for_source_dependent_running_app_exclusions() {
     settings.battery_profile_mut().adaptive_engine.enabled = false;
     assert!(!adaptive_engine_process_waits_for_source(&settings, None));
 }
+
+#[test]
+fn adaptive_engine_source_selection_uses_effective_restraint_timing() {
+    let mut settings = Settings::default();
+    settings.adaptive_engine.enabled = true;
+    settings
+        .adaptive_engine_process
+        .cpu_pressure_restraint_enabled = true;
+
+    settings
+        .battery_profile_mut()
+        .adaptive_engine_process
+        .restraint_idle_timeout_seconds = 60;
+    assert!(!adaptive_engine_process_waits_for_source(&settings, None));
+
+    settings
+        .battery_profile_mut()
+        .adaptive_engine_process
+        .pause_restraint_when_idle = true;
+    assert!(adaptive_engine_process_waits_for_source(&settings, None));
+    settings.adaptive_engine_process.pause_restraint_when_idle = true;
+    assert!(adaptive_engine_process_waits_for_source(&settings, None));
+
+    settings
+        .adaptive_engine_process
+        .restraint_idle_timeout_seconds = 60;
+    assert!(!adaptive_engine_process_waits_for_source(&settings, None));
+    settings.adaptive_engine_process.restraint_trigger_time_ms = 2_700;
+    assert!(adaptive_engine_process_waits_for_source(&settings, None));
+    assert!(!adaptive_engine_process_waits_for_source(
+        &settings,
+        Some(true)
+    ));
+    assert!(!adaptive_engine_process_waits_for_source(
+        &settings,
+        Some(false)
+    ));
+}

@@ -262,6 +262,17 @@ By Activity requests the selected physical input hooks only from enabled power
 profiles with a configured plan that can run. App Suspension requests both hooks
 while enabled so switch and click events can release manually suspended apps.
 
+### CPU Pressure Restraint Idle Detection
+
+`src/platform/windows/input_idle.rs` samples [GetLastInputInfo](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getlastinputinfo)
+for the session Winderust is running in. The runtime reads it at the existing
+Adaptive Engine cadence while CPU Pressure Restraint and Pause when idle are
+enabled. It computes elapsed input time with the wrapping 32-bit
+[GetTickCount](https://learn.microsoft.com/en-us/windows/win32/api/sysinfoapi/nf-sysinfoapi-gettickcount)
+clock. Failed reads, future ticks, and deltas outside the unambiguous half-range
+produce an unavailable observation. Windows can report non-incrementing ticks
+and can include input submitted through SendInput.
+
 ## System Tray Lifecycle
 
 `src/platform/windows/menu_theme.rs` prepares the native tray menu before each opening. It follows Windows' app light/dark preference using private UxTheme ordinals 135 (`SetPreferredAppMode`, Default=0 / AllowDark=1), 133 (`AllowDarkModeForWindow`), 104 (`RefreshImmersiveColorPolicyState`), and 136 (`FlushMenuThemes`), as used by [Microsoft PowerToys](https://github.com/microsoft/PowerToys/blob/main/src/modules/ZoomIt/ZoomIt/Utility.cpp). These are undocumented exports, not stable SDK contracts. [RtlGetVersion](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdm/nf-wdm-rtlgetversion) gates the changed ordinal-135 signature to Windows 10 build 18362 or later; all exports must resolve from a System32-only `LoadLibraryExW` load retained for the process lifetime. Missing support preserves the standard menu. [SystemParametersInfoW](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-systemparametersinfow) with `SPI_GETHIGHCONTRAST` preserves native high-contrast rendering; failed accessibility queries also select Default. No owner-drawn menu or persistent Windows preference change is used.

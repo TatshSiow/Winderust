@@ -4,7 +4,7 @@ use super::{design, power_plan_control};
 use crate::ui::scrolling::scrollable;
 use crate::{
     action_log::{ActionLogEntry, ActionLogFeature},
-    adaptive_engine_process::AdaptiveEngineProcessSnapshot,
+    adaptive_engine_process::{AdaptiveEngineProcessSnapshot, RestraintIdlePause},
     automation::RuntimeStatusSnapshot,
     config::{PowerSourceProfile, Settings},
     control::{
@@ -447,13 +447,17 @@ pub(super) fn view<'a>(
             && settings
                 .adaptive_engine_process
                 .cpu_pressure_restraint_enabled;
-        let verified_available = available
-            && configured
-            && adaptive.is_some_and(|status| status.enabled && !status.observation_paused);
+        let observed = adaptive.filter(|status| available && configured && status.enabled);
+        let idle_pause = observed
+            .filter(|_| settings.adaptive_engine_process.pause_restraint_when_idle)
+            .and_then(|status| status.restraint_idle_pause);
+        let verified_available =
+            idle_pause.is_none() && observed.is_some_and(|status| !status.observation_paused);
         body = body.extend(adaptive_restraint_section(
             &runtime.feature_status.adaptive_engine_process,
             configured,
             verified_available,
+            idle_pause,
         ));
     }
     body = body
@@ -620,6 +624,7 @@ fn adaptive_restraint_section(
     snapshot: &AdaptiveEngineProcessSnapshot,
     configured: bool,
     verified_available: bool,
+    idle_pause: Option<RestraintIdlePause>,
 ) -> Option<Element<'static, Message>> {
     let mut rows = snapshot
         .restraint_processes
@@ -629,7 +634,15 @@ fn adaptive_restraint_section(
         .filter(|row| row.state != AdaptiveRestraintState::Verified || verified_available)
         .peekable();
     let mut details = column![].spacing(design::space::CONTROL);
-    if rows.peek().is_none() {
+    if let Some(pause) = idle_pause {
+        let key = match pause {
+            RestraintIdlePause::Idle => "adaptive_engine_process.restraint_paused_idle",
+            RestraintIdlePause::Unavailable => {
+                "adaptive_engine_process.restraint_paused_input_unavailable"
+            }
+        };
+        details = details.push(text(t!(key).into_owned()).size(design::typography::CAPTION));
+    } else if rows.peek().is_none() {
         if !configured {
             return None;
         }
@@ -1695,7 +1708,7 @@ mod tests {
     }
 
     #[test]
-    fn adaptive_engine_restraint_rail_preserves_only_pending_rows_across_sources() {
+    fn adaptive_engine_restraint_rail_keeps_pending_rows_across_sources_and_pauses() {
         use crate::control::{
             priority_efficiency::AdaptiveRestraintProcess, process::ProcessIdentity,
         };
@@ -1735,14 +1748,14 @@ mod tests {
                 ])),
                 ..Default::default()
             };
-        let render = |settings, plugged_in| {
-            rail_text(view(Page::AdaptiveEngine, settings, &runtime, &[], plugged_in).unwrap())
+        let render = |settings: &Settings, runtime: &RuntimeStatusSnapshot, plugged_in| {
+            rail_text(view(Page::AdaptiveEngine, settings, runtime, &[], plugged_in).unwrap())
         };
-        let live = render(&settings, Some(true));
-        let mismatched = render(&settings, Some(false));
+        let live = render(&settings, &runtime, Some(true));
+        let mismatched = render(&settings, &runtime, Some(false));
         let mut disabled = settings.clone();
         disabled.adaptive_engine.enabled = false;
-        let inactive = render(&disabled, Some(true));
+        let inactive = render(&disabled, &runtime, Some(true));
 
         let item_visible = |rail: &[String], name: &str, key: &str| {
             rail.windows(2)
@@ -1767,6 +1780,32 @@ mod tests {
         }
         for rail in [mismatched, inactive] {
             assert!(!rail.iter().any(|line| line == "verified.exe (1)"));
+        }
+
+        settings.adaptive_engine_process.pause_restraint_when_idle = true;
+        for (pause, key) in [
+            (
+                RestraintIdlePause::Idle,
+                "adaptive_engine_process.restraint_paused_idle",
+            ),
+            (
+                RestraintIdlePause::Unavailable,
+                "adaptive_engine_process.restraint_paused_input_unavailable",
+            ),
+        ] {
+            Arc::make_mut(&mut runtime.feature_status)
+                .adaptive_engine_process
+                .restraint_idle_pause = Some(pause);
+            let live = render(&settings, &runtime, Some(true));
+            assert!(live.iter().any(|line| line == t!(key).as_ref()));
+            assert!(item_visible(
+                &live,
+                "restore.exe (2)",
+                "adaptive_engine_process.restraint_restoration_pending",
+            ));
+            assert!(!live.iter().any(|line| line == "verified.exe (1)"));
+            let mismatched = render(&settings, &runtime, Some(false));
+            assert!(!mismatched.iter().any(|line| line == t!(key).as_ref()));
         }
     }
 

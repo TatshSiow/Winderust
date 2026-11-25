@@ -793,6 +793,68 @@ fn invalid_zone_configuration_is_rejected_before_save_or_deserialization() {
 }
 
 #[test]
+fn omitted_restraint_settings_use_defaults_independent_of_sampling_interval() {
+    let mut settings = toml::Value::try_from(AdaptiveEngineProcessSettings::default()).unwrap();
+    let fields = settings.as_table_mut().unwrap();
+    fields.insert("reaction_time_ms".into(), toml::Value::Integer(750));
+    for key in [
+        "restraint_trigger_time_ms",
+        "pause_restraint_when_idle",
+        "restraint_idle_timeout_seconds",
+    ] {
+        assert!(fields.remove(key).is_some());
+    }
+    assert_eq!(
+        settings
+            .try_into::<AdaptiveEngineProcessSettings>()
+            .unwrap(),
+        AdaptiveEngineProcessSettings {
+            reaction_time_ms: 750,
+            ..Default::default()
+        }
+    );
+}
+
+#[test]
+fn invalid_restraint_durations_are_rejected_for_live_profiles_and_presets() {
+    for (trigger, idle, field) in [
+        (249, 300, "time above threshold"),
+        (60_001, 300, "time above threshold"),
+        (1_000, 0, "idle timeout"),
+        (1_000, 3_601, "idle timeout"),
+    ] {
+        let process = AdaptiveEngineProcessSettings {
+            restraint_trigger_time_ms: trigger,
+            restraint_idle_timeout_seconds: idle,
+            ..Default::default()
+        };
+        let root = Settings {
+            adaptive_engine_process: process.clone(),
+            ..Default::default()
+        };
+        let mut battery = Settings::default();
+        battery.battery_profile_mut().adaptive_engine_process = process.clone();
+        let mut preset = Settings::default();
+        preset.adaptive_engine_presets.push(AdaptiveEnginePreset {
+            name: "Invalid tuning".into(),
+            processor_power_policy_enabled: false,
+            base_processor_policy: preset.adaptive_engine.base_processor_policy,
+            background_pressure_profile: preset.adaptive_engine.background_pressure_profile,
+            focus_and_launch_profile: preset.adaptive_engine.focus_and_launch_profile,
+            adaptive_engine_process: process,
+        });
+        for settings in [root, battery, preset] {
+            assert!(settings.validate().unwrap_err().contains(field));
+            let raw = toml::to_string(&settings).unwrap();
+            assert!(toml::from_str::<Settings>(&raw)
+                .unwrap_err()
+                .to_string()
+                .contains(field));
+        }
+    }
+}
+
+#[test]
 fn load_and_import_normalize_saved_colors_without_rewriting_the_file() {
     let path = std::env::temp_dir().join(format!("winderust-palette-{}.toml", std::process::id()));
     let mut settings = Settings::default();
@@ -1290,6 +1352,9 @@ fn toml_round_trip_preserves_settings() {
             background_app_cpu_threshold_percent: 25,
             cpu_recovery_threshold_percent: 5,
             reaction_time_ms: 750,
+            restraint_trigger_time_ms: 2_700,
+            pause_restraint_when_idle: true,
+            restraint_idle_timeout_seconds: 120,
             cpu_restraint_time_seconds: 4,
             cpu_recovery_time_seconds: 10,
             maximum_restrained_apps: 6,

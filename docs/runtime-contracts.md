@@ -868,6 +868,12 @@ Read the relevant section before changing feature policy, ownership, restoration
   disabled.
   Thread, I/O, GPU, and Memory Priority and Dynamic Priority Boost use their
   dedicated settings.
+- CPU Pressure Restraint qualifies a process after at least two valid hot samples
+  and the configured Time above threshold. Reaction time sets sampling
+  cadence independently. Optional Pause when idle uses the current Windows
+  session's last input and withdraws only restraint priority claims. Missing idle
+  evidence pauses restraint while this option is enabled. Resumption requires
+  fresh qualification, and restoration entries stay visible during the pause.
 - Adaptive Engine pauses its process policies and releases their claims when the
   focused process ID or creation time is unavailable. Saved settings, manual
   ownership, and Adaptive Processor Power retain their own state.

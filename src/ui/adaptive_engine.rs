@@ -44,6 +44,11 @@ pub(super) enum TuningGroup {
     SharedDetection,
     BackgroundProcessors,
     ResourceZones,
+    CpuPressureRestraint,
+}
+
+impl TuningGroup {
+    const COUNT: usize = Self::CpuPressureRestraint as usize + 1;
 }
 
 fn can_add_exclusion(settings: &AdaptiveEngineProcessSettings, path: &str) -> bool {
@@ -67,7 +72,7 @@ pub(super) struct Editor {
     editing: Option<usize>,
     preview: Option<(PowerSourceProfile, usize)>,
     tuning_tabs: [TuningTab; 2],
-    expanded: [[bool; 3]; 2],
+    expanded: [[bool; TuningGroup::COUNT]; 2],
     path: String,
     error: String,
     live_numbers: NumberInputs,
@@ -630,7 +635,9 @@ impl Editor {
         let mut body = column![].spacing(super::widgets::CARD_GAP);
         match tab {
             TuningTab::CpuBehaviour => {
-                use TuningGroup::{BackgroundProcessors, ResourceZones, SharedDetection};
+                use TuningGroup::{
+                    BackgroundProcessors, CpuPressureRestraint, ResourceZones, SharedDetection,
+                };
 
                 let custom_selection = editable
                     && (s.adaptive_engine_process.background_processor_selection
@@ -695,15 +702,47 @@ impl Editor {
                     iced::widget::Space::new(),
                     pressure,
                 ));
-                body = body.push(super::widgets::toggle_card(
-                    "adaptive_engine.cpu_pressure",
-                    s.adaptive_engine_process.cpu_pressure_restraint_enabled,
-                    editable.then_some(|v| {
-                        Message::Toggle(
-                            |s, v| s.adaptive_engine_process.cpu_pressure_restraint_enabled = v,
-                            v,
-                        )
-                    }),
+                let restraint = super::widgets::settings_rows([
+                    number!(
+                        "adaptive_engine_process.restraint_trigger_time",
+                        ADAPTIVE_RESTRAINT_TRIGGER_MIN_MS,
+                        ADAPTIVE_RESTRAINT_TRIGGER_MAX_MS,
+                        adaptive_engine_process.restraint_trigger_time_ms
+                    ),
+                    super::widgets::setting_row(
+                        "adaptive_engine_process.pause_restraint_when_idle",
+                        super::widgets::switch(
+                            s.adaptive_engine_process.pause_restraint_when_idle,
+                            editable.then_some(|v| {
+                                Message::Toggle(
+                                    |s, v| s.adaptive_engine_process.pause_restraint_when_idle = v,
+                                    v,
+                                )
+                            }),
+                        ),
+                    )
+                    .into(),
+                    number!(
+                        "adaptive_engine_process.restraint_idle_timeout",
+                        ADAPTIVE_RESTRAINT_IDLE_MIN_SECONDS,
+                        ADAPTIVE_RESTRAINT_IDLE_MAX_SECONDS,
+                        adaptive_engine_process.restraint_idle_timeout_seconds
+                    ),
+                ]);
+                body = body.push(super::widgets::setting_group(
+                    "adaptive_engine.cpu_pressure".to_string(),
+                    self.expanded[usize::from(preset)][CpuPressureRestraint as usize],
+                    Message::Collapse(CpuPressureRestraint),
+                    super::widgets::switch(
+                        s.adaptive_engine_process.cpu_pressure_restraint_enabled,
+                        editable.then_some(|v| {
+                            Message::Toggle(
+                                |s, v| s.adaptive_engine_process.cpu_pressure_restraint_enabled = v,
+                                v,
+                            )
+                        }),
+                    ),
+                    restraint,
                 ));
                 let mut allocation = super::widgets::settings_rows([
                     choice!(
@@ -1092,7 +1131,7 @@ mod tests {
                 .specific_processors,
             crate::cpu_topology::test_selection(10)
         );
-        assert_eq!(editor.expanded[0], [false; 3]);
+        assert_eq!(editor.expanded[0], [false; TuningGroup::COUNT]);
         let preset = capture_adaptive_engine_preset(draft, "Zones".into());
         let mut applied = settings.clone();
         apply_adaptive_engine_preset(&mut applied, &preset);
@@ -1436,7 +1475,7 @@ mod tests {
         editor.update(&mut settings, Message::TuningTab(TuningTab::CustomRules));
         editor.update(
             &mut settings,
-            Message::Collapse(TuningGroup::SharedDetection),
+            Message::Collapse(TuningGroup::CpuPressureRestraint),
         );
         assert_eq!(settings.global(), &before);
         editor.update(
@@ -1444,16 +1483,16 @@ mod tests {
             Message::ViewBuiltIn(BuiltInAdaptiveEnginePreset::Balanced),
         );
         assert_eq!(editor.tuning_tabs[1], TuningTab::CpuBehaviour);
-        assert_eq!(editor.expanded[1], [false; 3]);
+        assert_eq!(editor.expanded[1], [false; TuningGroup::COUNT]);
         editor.update(&mut settings, Message::TuningTab(TuningTab::CustomRules));
         assert_eq!(editor.tuning_tabs[1], TuningTab::CpuBehaviour);
         editor.update(
             &mut settings,
-            Message::Collapse(TuningGroup::BackgroundProcessors),
+            Message::Collapse(TuningGroup::CpuPressureRestraint),
         );
         editor.update(&mut settings, Message::Cancel);
         assert_eq!(editor.tuning_tabs[0], TuningTab::CustomRules);
-        assert_eq!(editor.expanded[0], [true, false, false]);
+        assert_eq!(editor.expanded[0], [false, false, false, true]);
         assert_eq!(settings.global(), &before);
     }
 

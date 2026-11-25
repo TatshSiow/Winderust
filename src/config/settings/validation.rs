@@ -1,6 +1,8 @@
 use super::{
-    AppSuspensionSettings, ByCpuLoadRule, CpuLoadPercent, CpuUsageComparison, Settings,
-    SleepPreventionSettings, NESTED_BATTERY_PROFILE_ERROR,
+    AdaptiveEngineProcessSettings, AppSuspensionSettings, ByCpuLoadRule, CpuLoadPercent,
+    CpuUsageComparison, Settings, SleepPreventionSettings, ADAPTIVE_RESTRAINT_IDLE_MAX_SECONDS,
+    ADAPTIVE_RESTRAINT_IDLE_MIN_SECONDS, ADAPTIVE_RESTRAINT_TRIGGER_MAX_MS,
+    ADAPTIVE_RESTRAINT_TRIGGER_MIN_MS, NESTED_BATTERY_PROFILE_ERROR,
 };
 use crate::config::{is_valid_executable_name, ExecutableSelector};
 use std::collections::HashSet;
@@ -15,6 +17,15 @@ impl Settings {
         self.validate_dynamic_resource_zones()?;
         self.validate_by_cpu_load_rules()?;
         for profile in self.profiles() {
+            profile
+                .adaptive_engine_process
+                .validate_cpu_pressure_restraint()?;
+            for preset in &profile.adaptive_engine_presets {
+                preset
+                    .adaptive_engine_process
+                    .validate_cpu_pressure_restraint()
+                    .map_err(|error| format!("Preset '{}': {error}", preset.name))?;
+            }
             if profile
                 .general
                 .show_winderust_shortcut
@@ -143,6 +154,26 @@ impl Settings {
                     .validate(process.dynamic_resource_zones_enabled)
                     .map_err(|error| format!("Preset '{}': {error}", preset.name))?;
             }
+        }
+        Ok(())
+    }
+}
+
+impl AdaptiveEngineProcessSettings {
+    pub(crate) fn validate_cpu_pressure_restraint(&self) -> Result<(), String> {
+        if !(ADAPTIVE_RESTRAINT_TRIGGER_MIN_MS..=ADAPTIVE_RESTRAINT_TRIGGER_MAX_MS)
+            .contains(&self.restraint_trigger_time_ms)
+        {
+            return Err(format!(
+                "CPU Pressure Restraint time above threshold must be between {ADAPTIVE_RESTRAINT_TRIGGER_MIN_MS} and {ADAPTIVE_RESTRAINT_TRIGGER_MAX_MS} milliseconds."
+            ));
+        }
+        if !(ADAPTIVE_RESTRAINT_IDLE_MIN_SECONDS..=ADAPTIVE_RESTRAINT_IDLE_MAX_SECONDS)
+            .contains(&self.restraint_idle_timeout_seconds)
+        {
+            return Err(format!(
+                "CPU Pressure Restraint idle timeout must be between {ADAPTIVE_RESTRAINT_IDLE_MIN_SECONDS} and {ADAPTIVE_RESTRAINT_IDLE_MAX_SECONDS} seconds."
+            ));
         }
         Ok(())
     }

@@ -1234,15 +1234,23 @@ impl RuntimeCore {
         let foreground_process_id = observations.foreground_process_id();
         let explicit_cpu_allocation_paths =
             explicit_cpu_allocation_paths(settings, alternate_cpu_allocation_profile);
+        let policy = &settings.adaptive_engine_process;
+        let automation_enabled = settings.general.enabled && settings.adaptive_engine.enabled;
+        let user_idle_for = (automation_enabled
+            && policy.cpu_pressure_restraint_enabled
+            && policy.pause_restraint_when_idle)
+            .then(crate::platform::windows::input_idle::idle_for)
+            .flatten();
         self.adaptive_engine_process_manager.update(
             AdaptiveEngineProcessUpdate {
-                settings: &settings.adaptive_engine_process,
-                automation_enabled: settings.general.enabled && settings.adaptive_engine.enabled,
+                settings: policy,
+                automation_enabled,
                 allow_cross_session_process_control: settings
                     .general
                     .allow_cross_session_process_control,
                 foreground_process_id,
                 total_cpu_usage_percent: self.cpu_usage.percent,
+                user_idle_for,
                 excluded_process_id: self.by_running_app_manager.active_process_id(),
                 explicit_cpu_allocation_paths: &explicit_cpu_allocation_paths,
                 observations,

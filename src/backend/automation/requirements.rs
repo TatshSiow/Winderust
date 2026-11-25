@@ -132,7 +132,12 @@ pub(super) fn adaptive_engine_process_waits_for_source(
     let dc = &battery.adaptive_engine_process;
     let shared_policy = |policy: &crate::config::AdaptiveEngineProcessSettings| {
         (
-            policy.cpu_pressure_restraint_enabled,
+            policy.cpu_pressure_restraint_enabled.then_some((
+                policy.restraint_trigger_time_ms,
+                policy
+                    .pause_restraint_when_idle
+                    .then_some(policy.restraint_idle_timeout_seconds),
+            )),
             policy.limit_background_processors_enabled,
             policy.dynamic_resource_zones_enabled,
             policy.foreground_or_system_cpu_threshold_percent,

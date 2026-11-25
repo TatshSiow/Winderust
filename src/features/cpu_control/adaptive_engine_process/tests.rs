@@ -600,6 +600,7 @@ fn pressure_restraint_requires_sustained_hot_samples_and_clears_after_cooling() 
         background_app_cpu_threshold_percent: 30,
         cpu_recovery_threshold_percent: 10,
         reaction_time_ms: 500,
+        restraint_trigger_time_ms: 1_500,
         cpu_restraint_time_seconds: 1,
         cpu_recovery_time_seconds: 1,
         ..Default::default()
@@ -611,17 +612,46 @@ fn pressure_restraint_requires_sustained_hot_samples_and_clears_after_cooling() 
     assert!(!episode.qualifies(&settings, at(0), 600));
     assert!(!episode.qualifies(&settings, at(500), 0));
     assert!(!episode.qualifies(&settings, at(1000), 600));
-    assert!(!episode.qualifies(&settings, at(1499), 600));
-    assert!(episode.qualifies(&settings, at(1500), 600));
-    episode.selected_since = Some(at(1500));
+    assert!(!episode.qualifies(&settings, at(1500), 600));
+    assert!(!episode.qualifies(&settings, at(2000), 600));
+    assert!(!episode.qualifies(&settings, at(2499), 600));
+    assert!(episode.qualifies(&settings, at(2500), 600));
+    episode.selected_since = Some(at(2500));
 
-    assert!(episode.qualifies(&settings, at(2000), 0));
-    assert!(episode.qualifies(&settings, at(2500), 0));
-    assert!(episode.qualifies(&settings, at(3000), 600));
+    assert!(episode.qualifies(&settings, at(3000), 0));
     assert!(episode.qualifies(&settings, at(3500), 0));
-    assert!(episode.qualifies(&settings, at(4000), 0));
-    assert!(!episode.qualifies(&settings, at(4500), 0));
-    assert!(!episode.qualifies(&settings, at(5000), 600));
+    assert!(episode.qualifies(&settings, at(4000), 600));
+    assert!(episode.qualifies(&settings, at(4500), 0));
+    assert!(episode.qualifies(&settings, at(5000), 0));
+    assert!(!episode.qualifies(&settings, at(5500), 0));
+    assert!(!episode.qualifies(&settings, at(6000), 600));
+}
+
+#[test]
+fn restraint_idle_pause_distinguishes_inactivity_from_unavailable_input() {
+    let mut settings = AdaptiveEngineProcessSettings {
+        cpu_pressure_restraint_enabled: true,
+        pause_restraint_when_idle: true,
+        restraint_idle_timeout_seconds: 30,
+        ..Default::default()
+    };
+    assert_eq!(
+        RestraintIdlePause::detect(&settings, Some(Duration::from_millis(29_999))),
+        None
+    );
+    assert_eq!(
+        RestraintIdlePause::detect(&settings, Some(Duration::from_secs(30))),
+        Some(RestraintIdlePause::Idle)
+    );
+    assert_eq!(
+        RestraintIdlePause::detect(&settings, None),
+        Some(RestraintIdlePause::Unavailable)
+    );
+    settings.pause_restraint_when_idle = false;
+    assert_eq!(RestraintIdlePause::detect(&settings, None), None);
+    settings.pause_restraint_when_idle = true;
+    settings.cpu_pressure_restraint_enabled = false;
+    assert_eq!(RestraintIdlePause::detect(&settings, None), None);
 }
 
 impl AdaptiveCpuObservations {
@@ -983,6 +1013,7 @@ fn adaptive_engine_source_wait_clears_qualification_and_rearms_after_update() {
     let mut log = ActionLog::new(8);
     let settings = AdaptiveEngineProcessSettings {
         reaction_time_ms: 250,
+        restraint_trigger_time_ms: 250,
         ..AdaptiveEngineProcessSettings::default()
     };
     let now = Instant::now();
@@ -1021,6 +1052,7 @@ fn adaptive_engine_source_wait_clears_qualification_and_rearms_after_update() {
             allow_cross_session_process_control: false,
             foreground_process_id: None,
             total_cpu_usage_percent: None,
+            user_idle_for: None,
             excluded_process_id: None,
             explicit_cpu_allocation_paths: &[],
             observations: &mut CycleObservations::default(),
@@ -1036,4 +1068,101 @@ fn adaptive_engine_source_wait_clears_qualification_and_rearms_after_update() {
         now + Duration::from_secs(1),
         950,
     ));
+}
+
+#[test]
+#[ignore = "modifies and restores a disposable Windows process; run in explicit integration QA"]
+fn native_pressure_restraint_idle_restores_priority() -> Result<(), String> {
+    use std::{
+        os::windows::process::CommandExt,
+        process::{Child, Command},
+    };
+    use windows_sys::Win32::System::Threading::{CREATE_NO_WINDOW, NORMAL_PRIORITY_CLASS};
+
+    use crate::config::ProcessPrioritySetting;
+    use crate::control::priority_efficiency::current_process_priority;
+
+    struct DisposableProcess(Child);
+
+    impl Drop for DisposableProcess {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    let executable_path = std::env::var_os("SystemRoot")
+        .map(|path| PathBuf::from(path).join(r"System32\PING.EXE"))
+        .ok_or_else(|| "SystemRoot is unavailable.".to_owned())?;
+    let child = DisposableProcess(
+        Command::new(&executable_path)
+            .args(["-t", "127.0.0.1"])
+            .creation_flags(CREATE_NO_WINDOW | NORMAL_PRIORITY_CLASS)
+            .spawn()
+            .map_err(|error| format!("Could not start disposable process: {error}"))?,
+    );
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let target = loop {
+        match crate::foreground::capture_process_action_target(
+            child.0.id(),
+            &executable_path,
+            false,
+        ) {
+            Ok(target) => break target,
+            Err(_) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            Err(error) => return Err(error.to_string()),
+        }
+    };
+    let read_priority =
+        || current_process_priority(&target, false).map_err(|error| error.to_string());
+    assert_eq!(read_priority()?, ProcessPrioritySetting::Normal);
+
+    let mut priority = PriorityEfficiencyController::default();
+    let outcome = priority
+        .apply_priority_claim(
+            PriorityClassClaim {
+                target: ProcessControlTarget::from_action_target(&target),
+                owner: ControlOwner::AdaptiveEngine,
+                priority: PriorityClassValue::BelowNormal,
+                preservation: PriorityClassPreservation::OnlyNormal,
+            },
+            false,
+        )
+        .map_err(|error| error.to_string())?;
+    assert_eq!(outcome, ProcessPropertyApplyOutcome::Applied);
+    assert_eq!(read_priority()?, ProcessPrioritySetting::BelowNormal);
+
+    let settings = AdaptiveEngineProcessSettings {
+        cpu_pressure_restraint_enabled: true,
+        pause_restraint_when_idle: true,
+        restraint_idle_timeout_seconds: 30,
+        ..Default::default()
+    };
+    let snapshot = AdaptiveEngineProcessManager::default().update(
+        AdaptiveEngineProcessUpdate {
+            settings: &settings,
+            automation_enabled: true,
+            allow_cross_session_process_control: false,
+            foreground_process_id: None,
+            total_cpu_usage_percent: Some(100.0),
+            user_idle_for: Some(Duration::from_secs(30)),
+            excluded_process_id: None,
+            explicit_cpu_allocation_paths: &[],
+            observations: &mut CycleObservations::default(),
+        },
+        &mut CpuAllocationCoordinator::default(),
+        &mut priority,
+        &mut ActionLog::default(),
+    );
+    assert_eq!(
+        snapshot.restraint_idle_pause,
+        Some(RestraintIdlePause::Idle)
+    );
+    assert!(!snapshot.cpu_pressure_restraint_active);
+    assert_eq!(snapshot.failed_processes, 0);
+    assert_eq!(read_priority()?, ProcessPrioritySetting::Normal);
+    assert!(priority.adaptive_restraint_processes().next().is_none());
+    Ok(())
 }

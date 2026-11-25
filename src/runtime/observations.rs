@@ -618,6 +618,7 @@ mod tests {
                     allow_cross_session_process_control: true,
                     foreground_process_id: Some(42),
                     total_cpu_usage_percent: Some(0.0),
+                    user_idle_for: None,
                     excluded_process_id: None,
                     explicit_cpu_allocation_paths: &[],
                     observations: &mut observations,
@@ -639,6 +640,68 @@ mod tests {
                     status.foreground_cpu_usage_tenths,
                     (seconds > 0).then_some(0)
                 );
+                assert_eq!(
+                    observations.availability().processes,
+                    ObservationAvailability::NotRequested
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn idle_restraint_still_scans_for_independently_enabled_placement() {
+        use crate::{
+            config::AdaptiveEngineProcessSettings,
+            features::cpu_control::adaptive_engine_process::{
+                AdaptiveEngineProcessManager, AdaptiveEngineProcessUpdate, RestraintIdlePause,
+            },
+        };
+        use std::time::Duration;
+
+        for placement_enabled in [false, true] {
+            let settings = AdaptiveEngineProcessSettings {
+                cpu_pressure_restraint_enabled: true,
+                pause_restraint_when_idle: true,
+                limit_background_processors_enabled: placement_enabled,
+                ..Default::default()
+            };
+            let mut observations = CycleObservations {
+                sources: ObservationSources {
+                    process_entries: || Err("background list requested".into()),
+                    ..ObservationSources::default()
+                },
+                ..CycleObservations::default()
+            };
+            let snapshot = AdaptiveEngineProcessManager::default().update(
+                AdaptiveEngineProcessUpdate {
+                    settings: &settings,
+                    automation_enabled: true,
+                    allow_cross_session_process_control: true,
+                    foreground_process_id: Some(42),
+                    total_cpu_usage_percent: Some(100.0),
+                    user_idle_for: Some(Duration::from_secs(
+                        settings.restraint_idle_timeout_seconds,
+                    )),
+                    excluded_process_id: None,
+                    explicit_cpu_allocation_paths: &[],
+                    observations: &mut observations,
+                },
+                &mut Default::default(),
+                &mut Default::default(),
+                &mut ActionLog::default(),
+            );
+            assert!(snapshot.enabled);
+            assert!(!snapshot.cpu_pressure_restraint_active);
+            assert_eq!(
+                snapshot.restraint_idle_pause,
+                Some(RestraintIdlePause::Idle)
+            );
+            if placement_enabled {
+                assert_eq!(
+                    snapshot.last_error.as_deref(),
+                    Some("background list requested")
+                );
+            } else {
                 assert_eq!(
                     observations.availability().processes,
                     ObservationAvailability::NotRequested

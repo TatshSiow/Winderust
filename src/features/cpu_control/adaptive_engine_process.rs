@@ -66,12 +66,46 @@ pub struct AdaptiveEngineProcessSnapshot {
     pub scanned_processes: usize,
     pub adjusted_processes: usize,
     pub cpu_pressure_restraint_active: bool,
+    pub(crate) restraint_idle_pause: Option<RestraintIdlePause>,
     pub(crate) restraint_processes: Option<Arc<[AdaptiveRestraintProcess]>>,
     pub foreground_cpu_usage_tenths: Option<u16>,
     pub skipped_processes: usize,
     pub failed_processes: usize,
     pub auto_excluded_processes: Vec<String>,
     pub last_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RestraintIdlePause {
+    Idle,
+    Unavailable,
+}
+
+impl RestraintIdlePause {
+    fn detect(
+        settings: &AdaptiveEngineProcessSettings,
+        user_idle_for: Option<Duration>,
+    ) -> Option<Self> {
+        if !settings.cpu_pressure_restraint_enabled || !settings.pause_restraint_when_idle {
+            return None;
+        }
+        match user_idle_for {
+            Some(idle_for)
+                if idle_for >= Duration::from_secs(settings.restraint_idle_timeout_seconds) =>
+            {
+                Some(Self::Idle)
+            }
+            Some(_) => None,
+            None => Some(Self::Unavailable),
+        }
+    }
+
+    fn release_reason(self) -> &'static str {
+        match self {
+            Self::Idle => "CPU Pressure Restraint paused after user inactivity",
+            Self::Unavailable => "user activity is unavailable",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -201,7 +235,7 @@ impl PressureRestraintEpisode {
             return self.selected_since.is_some()
                 || (now > hot_since
                     && now.duration_since(hot_since)
-                        >= Duration::from_millis(settings.reaction_time_ms));
+                        >= Duration::from_millis(settings.restraint_trigger_time_ms));
         }
 
         self.hot_since = None;
@@ -234,6 +268,7 @@ pub struct AdaptiveEngineProcessUpdate<'a> {
     pub allow_cross_session_process_control: bool,
     pub foreground_process_id: Option<u32>,
     pub total_cpu_usage_percent: Option<f32>,
+    pub user_idle_for: Option<Duration>,
     pub excluded_process_id: Option<u32>,
     pub explicit_cpu_allocation_paths: &'a [String],
     pub observations: &'a mut CycleObservations,
@@ -301,6 +336,7 @@ impl AdaptiveEngineProcessManager {
             allow_cross_session_process_control,
             foreground_process_id,
             total_cpu_usage_percent,
+            user_idle_for,
             excluded_process_id,
             explicit_cpu_allocation_paths,
             observations,
@@ -356,9 +392,30 @@ impl AdaptiveEngineProcessManager {
             };
         }
 
+        let restraint_idle_pause = RestraintIdlePause::detect(settings, user_idle_for);
+        if let Some(pause) = restraint_idle_pause.filter(|_| {
+            !settings.limit_background_processors_enabled
+                && !settings.dynamic_resource_zones_enabled
+        }) {
+            let failed = self.clear_all(
+                cpu_allocation_coordinator,
+                priority_efficiency_controller,
+                action_log,
+                pause.release_reason(),
+            );
+            return AdaptiveEngineProcessSnapshot {
+                enabled: true,
+                restraint_idle_pause,
+                failed_processes: failed.count,
+                last_error: failed.last_error,
+                ..Default::default()
+            };
+        }
+
         let Some(foreground_id) = foreground_process_id else {
             return self.pause_for_unknown_focus(
                 settings.dynamic_resource_zones_enabled,
+                restraint_idle_pause,
                 cpu_allocation_coordinator,
                 priority_efficiency_controller,
                 action_log,
@@ -387,6 +444,7 @@ impl AdaptiveEngineProcessManager {
                 enabled: true,
                 failed_processes: failed.count,
                 observation_paused: true,
+                restraint_idle_pause,
                 last_error: failed.last_error,
                 ..Default::default()
             };
@@ -413,6 +471,7 @@ impl AdaptiveEngineProcessManager {
                 Err(error) => {
                     let mut status = self.pause_for_unknown_focus(
                         settings.dynamic_resource_zones_enabled,
+                        restraint_idle_pause,
                         cpu_allocation_coordinator,
                         priority_efficiency_controller,
                         action_log,
@@ -425,6 +484,7 @@ impl AdaptiveEngineProcessManager {
         if foreground_workload.is_empty() {
             return self.pause_for_unknown_focus(
                 settings.dynamic_resource_zones_enabled,
+                restraint_idle_pause,
                 cpu_allocation_coordinator,
                 priority_efficiency_controller,
                 action_log,
@@ -456,14 +516,14 @@ impl AdaptiveEngineProcessManager {
                 });
             match background_observations {
                 Ok(observations) => Some(observations),
-                Err((reason, error)) => {
+                Err(failure) => {
                     return self.pause_for_observation_failure(
                         settings.dynamic_resource_zones_enabled,
+                        restraint_idle_pause,
                         cpu_allocation_coordinator,
                         priority_efficiency_controller,
                         action_log,
-                        reason,
-                        error,
+                        failure,
                     );
                 }
             }
@@ -489,6 +549,7 @@ impl AdaptiveEngineProcessManager {
             {
                 return self.pause_for_unknown_focus(
                     settings.dynamic_resource_zones_enabled,
+                    restraint_idle_pause,
                     cpu_allocation_coordinator,
                     priority_efficiency_controller,
                     action_log,
@@ -514,21 +575,30 @@ impl AdaptiveEngineProcessManager {
                 )
             })
             .unwrap_or_default();
-        if self.allocation_settings.as_ref().is_some_and(|previous| {
-            previous.cpu_pressure_restraint_enabled != settings.cpu_pressure_restraint_enabled
+        if let Some(previous) = self.allocation_settings.as_mut() {
+            if previous.cpu_pressure_restraint_enabled != settings.cpu_pressure_restraint_enabled
                 || previous.background_app_cpu_threshold_percent
                     != settings.background_app_cpu_threshold_percent
                 || previous.foreground_or_system_cpu_threshold_percent
                     != settings.foreground_or_system_cpu_threshold_percent
                 || previous.reaction_time_ms != settings.reaction_time_ms
+                || previous.restraint_trigger_time_ms != settings.restraint_trigger_time_ms
+                || previous.pause_restraint_when_idle != settings.pause_restraint_when_idle
+                || previous.restraint_idle_timeout_seconds
+                    != settings.restraint_idle_timeout_seconds
                 || previous.cpu_restraint_time_seconds != settings.cpu_restraint_time_seconds
                 || previous.cpu_recovery_threshold_percent
                     != settings.cpu_recovery_threshold_percent
                 || previous.cpu_recovery_time_seconds != settings.cpu_recovery_time_seconds
-        }) {
-            for process in self.tracked_processes.values_mut() {
-                process.pressure_restraint = PressureRestraintEpisode::default();
+            {
+                for process in self.tracked_processes.values_mut() {
+                    process.pressure_restraint = PressureRestraintEpisode::default();
+                }
             }
+            // Changes to restraint-only controls do not reset CPU placement selections.
+            previous.restraint_trigger_time_ms = settings.restraint_trigger_time_ms;
+            previous.pause_restraint_when_idle = settings.pause_restraint_when_idle;
+            previous.restraint_idle_timeout_seconds = settings.restraint_idle_timeout_seconds;
         }
         if self.allocation_settings.as_ref() != Some(settings) || foreground_changed {
             self.invalidate_allocation_selection();
@@ -584,6 +654,7 @@ impl AdaptiveEngineProcessManager {
                         .is_some_and(|path| settings.custom_rule_enabled_for(&path))
             });
         let cpu_pressure_restraint_applies = settings.cpu_pressure_restraint_enabled
+            && restraint_idle_pause.is_none()
             && background_pressure_triggered
             && (foreground_cpu_usage_percent.is_some() || total_cpu_usage_percent.is_some());
         let cpu_allocation_applies = settings.limit_background_processors_enabled
@@ -1093,7 +1164,10 @@ impl AdaptiveEngineProcessManager {
         self.merge_controller_release(
             release,
             action_log,
-            "process no longer qualifies for CPU Pressure Restraint",
+            restraint_idle_pause.map_or(
+                "process no longer qualifies for CPU Pressure Restraint",
+                RestraintIdlePause::release_reason,
+            ),
             "process priority",
             &mut failures,
         );
@@ -1160,6 +1234,7 @@ impl AdaptiveEngineProcessManager {
             scanned_processes,
             adjusted_processes: 0,
             cpu_pressure_restraint_active: cpu_pressure_restraint_applies,
+            restraint_idle_pause,
             restraint_processes: None,
             foreground_cpu_usage_tenths,
             skipped_processes,
@@ -1172,28 +1247,29 @@ impl AdaptiveEngineProcessManager {
     fn pause_for_unknown_focus(
         &mut self,
         zones_enabled: bool,
+        restraint_idle_pause: Option<RestraintIdlePause>,
         cpu_allocation_coordinator: &mut CpuAllocationCoordinator,
         priority_efficiency_controller: &mut PriorityEfficiencyController,
         action_log: &mut ActionLog,
     ) -> AdaptiveEngineProcessSnapshot {
         self.pause_for_observation_failure(
             zones_enabled,
+            restraint_idle_pause,
             cpu_allocation_coordinator,
             priority_efficiency_controller,
             action_log,
-            "foreground app is unknown",
-            None,
+            ("foreground app is unknown", None),
         )
     }
 
     fn pause_for_observation_failure(
         &mut self,
         zones_enabled: bool,
+        restraint_idle_pause: Option<RestraintIdlePause>,
         cpu_allocation_coordinator: &mut CpuAllocationCoordinator,
         priority_efficiency_controller: &mut PriorityEfficiencyController,
         action_log: &mut ActionLog,
-        reason: &str,
-        error: Option<String>,
+        (reason, error): (&str, Option<String>),
     ) -> AdaptiveEngineProcessSnapshot {
         let failed = self.clear_all(
             cpu_allocation_coordinator,
@@ -1217,6 +1293,7 @@ impl AdaptiveEngineProcessManager {
             enabled: true,
             failed_processes: failed.count,
             observation_paused: true,
+            restraint_idle_pause,
             last_error: failed.last_error.or(error),
             ..Default::default()
         }
