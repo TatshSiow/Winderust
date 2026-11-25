@@ -72,7 +72,7 @@ Prefer visible state, compact controls, and predictable rows. Use restrained acc
 
 - Use Iced rows and columns with explicit `Fill`, `Shrink`, and constrained widths for flexible children.
 - Rows and table headers should have stable heights across state changes.
-- Rules tables fill the same canvas width as settings cards. Use fixed or computed minimum widths for dense tables and policy columns, with horizontal scrolling when the dock leaves too little room; slider labels sit above their controls. Do not let dynamic labels resize the process list.
+- Rules tables fill the same canvas width as settings cards. Use fixed or computed minimum widths for dense tables and policy columns, with horizontal scrolling when the dock leaves too little room. Do not let dynamic labels resize the process list.
 - Reserve room below scrollable rule editors where the Save notice would cover
   their controls. Verify the last rule is reachable with the dock open at the
   minimum window size, including when both scrollbars are needed.
@@ -322,8 +322,10 @@ hover/press; background shading supplies feedback.
   Visible Window, and Background columns. Profile Limit uses Winderust's configured
   limit for the selected power profile and app state. No Time Cap turns off the cap for
   that state. The Enable CPU Limiter card starts collapsed and expands directly to
-  the selected profile's three default limit controls. Custom tiers show a 1% to 100%
-  Allowed CPU Time slider. At 100%, Winderust applies no CPU time cap. Inactive
+  the selected profile's three default limit controls. Align the slider, stepper
+  buttons, and value together at the right edge. Stack the label above the controls
+  when the card is narrow. Custom tiers show a 1% to 100% Allowed CPU Time slider.
+  At 100%, Winderust applies no CPU time cap. Inactive
   rules retain their selections.
   Explain both methods beside the selector. The Load-triggered affinity form
   shows the CPU trigger, sustained duration, and selected processor count.
