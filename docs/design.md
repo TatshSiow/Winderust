@@ -322,14 +322,17 @@ hover/press; background shading supplies feedback.
   Window, and Background columns. The CPU time limits card keeps the page defaults
   visible below the master switch. Custom tiers show a 1% to 100% Allowed CPU Time
   slider, and a 100% target is Unlimited. Inactive rules retain their selections.
-  Load-triggered affinity rules show the CPU trigger, sustained duration, and
-  processor selection in the same rule editor. They use the shared verified
-  processor picker. Only the selected method's controls are actionable.
+  Explain both methods beside the selector. The Load-triggered affinity form
+  shows the CPU trigger, sustained duration, and selected processor count.
+  Choose processors opens the shared verified picker in the same dialog, with
+  group, core, and cache details contained in the picker. A live preview describes
+  the threshold, duration, and configured selection. An all-processor selection
+  explains how to narrow the rule. Only the selected method's controls are actionable.
   CPU Limiter rule status follows the published observation for the selected live power source.
   With the other profile selected or the source unconfirmed, enabled rules show Unknown.
-  The applied rule's editor shows its current duty-cycle target and whether it uses an app
-  group, inherits another app group's target, or uses thread fallback. The editor indicates
-  when the target or method varies by process.
+  Keep observed status compact in the editor. The applied rule shows its current duty-cycle
+  target and whether it uses an app group, inherits another app group's target, or uses thread
+  fallback. The editor indicates when the target or method varies by process.
 
 ### Advanced Power Plan Tuning
 

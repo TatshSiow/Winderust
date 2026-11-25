@@ -1,6 +1,8 @@
 //! Opt-in native render check; compiled only with the render-smoke feature.
 use super::*;
 use crate::backend::power_source::is_plugged_in;
+use iced::advanced::widget::{operation, Id, Operation};
+use iced::{Rectangle, Vector};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 static REQUESTED: AtomicBool = AtomicBool::new(false);
@@ -28,7 +30,8 @@ const GPU_MEMORY_WIDE: usize = 114;
 const GPU_MEMORY_COMPACT: usize = 115;
 const CPU_LIMITER_AFFINITY_WIDE: usize = 116;
 const CPU_LIMITER_AFFINITY_COMPACT: usize = 117;
-const EXTRA_STATES: usize = 118;
+const CPU_LIMITER_PROCESSORS_COMPACT: usize = 118;
+const EXTRA_STATES: usize = 119;
 pub(super) struct Run {
     pages: Vec<Page>,
     index: usize,
@@ -118,13 +121,18 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                     | KEEP_AWAKE_ACTIVE
                     | GPU_MEMORY_COMPACT
                     | CPU_LIMITER_AFFINITY_COMPACT
+                    | CPU_LIMITER_PROCESSORS_COMPACT
             )
         });
         let page = match extra {
             Some(0) => Page::EfficiencyMode,
-            Some(1 | 89..=91 | CPU_LIMITER_AFFINITY_WIDE | CPU_LIMITER_AFFINITY_COMPACT) => {
-                Page::CpuLimiter
-            }
+            Some(
+                1
+                | 89..=91
+                | CPU_LIMITER_AFFINITY_WIDE
+                | CPU_LIMITER_AFFINITY_COMPACT
+                | CPU_LIMITER_PROCESSORS_COMPACT,
+            ) => Page::CpuLimiter,
             Some(2) => Page::SettingsHome,
             Some(3) => Page::Home,
             Some(4 | 6..=10) => Page::AdaptiveEngine,
@@ -1216,12 +1224,18 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             let _ = app.update(Message::SidePanelTab(SidePanelTab::Status));
             assert_eq!(app.side_panel_tab, SidePanelTab::Status);
         }
-        if matches!(
+        let limiter_affinity = matches!(
             extra,
-            Some(89..=91 | CPU_LIMITER_AFFINITY_WIDE | CPU_LIMITER_AFFINITY_COMPACT)
-        ) {
+            Some(
+                CPU_LIMITER_AFFINITY_WIDE
+                    | CPU_LIMITER_AFFINITY_COMPACT
+                    | CPU_LIMITER_PROCESSORS_COMPACT
+            )
+        );
+        if matches!(extra, Some(89..=91)) || limiter_affinity {
             use crate::config::{CpuLimiterAffinityLimit, Settings};
             use crate::control::cpu_limiter::CpuLimiterActivation;
+            use crate::cpu_topology::CpuSelection;
             use crate::features::cpu_control::cpu_limiter::CpuLimiterAffinityStatus;
 
             let path = r"C:\Apps\example.exe";
@@ -1232,13 +1246,17 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             settings.general.enabled = true;
             settings.cpu_limiter.enabled = true;
             let mut rule = super::super::process_rules::new_cpu_limiter_rule(path);
-            if matches!(
-                extra,
-                Some(CPU_LIMITER_AFFINITY_WIDE | CPU_LIMITER_AFFINITY_COMPACT)
-            ) {
-                let catalog = cpu_allocation::SelectionCatalog::capture(cpu_allocation::Kind::Hard);
+            if limiter_affinity {
+                let selection = crate::cpu_allocation::processor_topology()
+                    .ok()
+                    .and_then(|topology| {
+                        let processor =
+                            topology.processors().iter().find(|cpu| cpu.id.group == 0)?;
+                        CpuSelection::bind(&topology, vec![processor.id]).ok()
+                    })
+                    .unwrap_or_default();
                 rule.affinity_limit = Some(CpuLimiterAffinityLimit {
-                    selection: catalog.all_selection().unwrap_or_default(),
+                    selection,
                     ..CpuLimiterAffinityLimit::default()
                 });
             }
@@ -1412,7 +1430,8 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                 | MEMORY_TRIM_UNKNOWN
                 | KEEP_AWAKE_ACTIVE
                 | GPU_MEMORY_COMPACT
-                | CPU_LIMITER_AFFINITY_COMPACT,
+                | CPU_LIMITER_AFFINITY_COMPACT
+                | CPU_LIMITER_PROCESSORS_COMPACT,
             ) => iced::Size::new(900.0, 620.0),
             Some(RESOURCE_PREVIEW_INSTANCE) => iced::Size::new(900.0, 620.0),
             Some(
@@ -1469,6 +1488,16 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
     }
     if run.ticks == 3 {
         match extra {
+            Some(CPU_LIMITER_AFFINITY_COMPACT) => {
+                return Some(iced::advanced::widget::operate(
+                    ProcessorPickerVisibility::default(),
+                ));
+            }
+            Some(CPU_LIMITER_PROCESSORS_COMPACT) => {
+                return Some(
+                    app.update(Message::CpuLimiter(cpu_limiter::Message::ChooseProcessors)),
+                );
+            }
             Some(CONTRAST_DARK_APPEARANCE) => {
                 return Some(iced::widget::operation::focus(navigation::rail_id(Some(
                     Page::SettingsHome,
@@ -1569,6 +1598,44 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
         Some(iced::window::screenshot(window).map(Message::SmokeScreenshot))
     } else {
         Some(Task::none())
+    }
+}
+
+#[derive(Default)]
+struct ProcessorPickerVisibility {
+    viewport: Option<(Rectangle, Vector)>,
+    button: Option<Rectangle>,
+}
+
+impl Operation<Message> for ProcessorPickerVisibility {
+    fn traverse(&mut self, visit: &mut dyn FnMut(&mut dyn Operation<Message>)) {
+        visit(self);
+    }
+
+    fn scrollable(
+        &mut self,
+        id: Option<&Id>,
+        bounds: Rectangle,
+        _: Rectangle,
+        translation: Vector,
+        _: &mut dyn operation::Scrollable,
+    ) {
+        if id == Some(&Id::from("cpu-limiter-rule-details")) {
+            self.viewport = Some((bounds, translation));
+        }
+    }
+
+    fn focusable(&mut self, id: Option<&Id>, bounds: Rectangle, _: &mut dyn operation::Focusable) {
+        if id == Some(&Id::from(cpu_limiter::CHOOSE_PROCESSORS_ID)) {
+            self.button = Some(bounds);
+        }
+    }
+
+    fn finish(&self) -> operation::Outcome<Message> {
+        let (viewport, translation) = self.viewport.expect("CPU Limiter rule scroll area");
+        let button = self.button.expect("Choose processors is focusable");
+        assert!((button - translation).is_within(&viewport));
+        operation::Outcome::None
     }
 }
 

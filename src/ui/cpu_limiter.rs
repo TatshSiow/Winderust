@@ -1,6 +1,6 @@
 use super::cpu_allocation::{self, Kind, SelectionCatalog};
 use super::design;
-use super::widgets::{checkbox, icon_button, pick_list, slider, text_input};
+use super::widgets::{self, checkbox, icon_button, pick_list, slider, text_input};
 use crate::ui::scrolling::scrollable;
 use iced::widget::{column, row, text, Row};
 use iced::{Element, Fill};
@@ -19,6 +19,8 @@ use crate::features::cpu_control::cpu_limiter::{CpuLimiterAffinityStatus, CpuLim
 use crate::ui::process_rules::{
     can_add_cpu_limiter_process, exact_path_input, new_cpu_limiter_rule, picked_path_input,
 };
+
+pub(super) const CHOOSE_PROCESSORS_ID: &str = "cpu-limiter-choose-processors";
 
 pub(super) fn limit_slider<'a, M: Clone + 'a>(
     value: u8,
@@ -51,6 +53,7 @@ struct AffinityEditor {
     catalog: SelectionCatalog,
     trigger: String,
     sustain: String,
+    selection: Option<CpuSelection>,
 }
 
 impl AffinityEditor {
@@ -59,6 +62,7 @@ impl AffinityEditor {
             catalog: SelectionCatalog::capture(Kind::Hard),
             trigger: limit.trigger_percent.to_string(),
             sustain: limit.sustain_seconds.to_string(),
+            selection: None,
         }
     }
 
@@ -185,7 +189,10 @@ pub(super) enum Message {
     Method(Method),
     AffinityTrigger(String),
     AffinitySustain(String),
+    ChooseProcessors,
     AffinitySelection(CpuSelection),
+    CancelProcessorSelection,
+    ConfirmProcessorSelection,
     Add,
     Default(Tier, u8),
     RuleEnabled(usize, bool),
@@ -197,6 +204,18 @@ pub(super) enum Message {
 impl CpuLimiter {
     pub(super) fn has_pending_editor(&self) -> bool {
         self.draft.is_some()
+    }
+
+    pub(super) fn dismiss_message(&self) -> Message {
+        if self
+            .affinity
+            .as_ref()
+            .is_some_and(|editor| editor.selection.is_some())
+        {
+            Message::CancelProcessorSelection
+        } else {
+            Message::CancelRule
+        }
     }
 
     pub(super) fn update_profile(&mut self, settings: &mut SettingsEditor, message: Message) {
@@ -233,6 +252,9 @@ impl CpuLimiter {
                     let Some(editor) = &mut self.affinity else {
                         return;
                     };
+                    if editor.selection.is_some() {
+                        return;
+                    }
                     let Some((trigger, sustain)) = editor.values() else {
                         return;
                     };
@@ -284,10 +306,42 @@ impl CpuLimiter {
                 }
                 return;
             }
+            Message::ChooseProcessors => {
+                if let (Some((index, draft)), Some(editor)) = (&self.draft, &mut self.affinity) {
+                    if let Some(limit) = &draft.rules[*index].affinity_limit {
+                        editor
+                            .selection
+                            .get_or_insert_with(|| limit.selection.clone());
+                    }
+                }
+                return;
+            }
             Message::AffinitySelection(selection) => {
-                if let Some((index, draft)) = &mut self.draft {
-                    if let Some(limit) = &mut draft.rules[*index].affinity_limit {
-                        limit.selection = selection;
+                if let Some(pending) = self
+                    .affinity
+                    .as_mut()
+                    .and_then(|editor| editor.selection.as_mut())
+                {
+                    *pending = selection;
+                }
+                return;
+            }
+            Message::CancelProcessorSelection => {
+                if let Some(editor) = &mut self.affinity {
+                    editor.selection = None;
+                }
+                return;
+            }
+            Message::ConfirmProcessorSelection => {
+                if let (Some((index, draft)), Some(editor)) = (&mut self.draft, &mut self.affinity)
+                {
+                    if let (Some(limit), Some(selection)) =
+                        (&mut draft.rules[*index].affinity_limit, &editor.selection)
+                    {
+                        if !selection.is_empty() && editor.catalog.error(selection).is_none() {
+                            limit.selection = selection.clone();
+                            editor.selection = None;
+                        }
                     }
                 }
                 return;
@@ -323,7 +377,10 @@ impl CpuLimiter {
             | Message::Method(_)
             | Message::AffinityTrigger(_)
             | Message::AffinitySustain(_)
-            | Message::AffinitySelection(_) => {}
+            | Message::ChooseProcessors
+            | Message::AffinitySelection(_)
+            | Message::CancelProcessorSelection
+            | Message::ConfirmProcessorSelection => {}
             Message::Number(index, tier, raw) => {
                 let path = match index {
                     Some(index) => match settings.rules.get(index) {
@@ -574,11 +631,38 @@ impl CpuLimiter {
         let (index, settings) = self.draft.as_ref()?;
         let index = *index;
         let rule = settings.rules.get(index)?;
+        if let Some(editor) = &self.affinity {
+            if let Some(selection) = &editor.selection {
+                return Some(widgets::rule_dialog(
+                    t!("cpu_limiter.choose_processors").into_owned(),
+                    scrollable(
+                        column![
+                            widgets::setting_title("cpu_limiter.affinity_processors"),
+                            cpu_allocation::mask_selector(
+                                selection,
+                                &editor.catalog,
+                                presets,
+                                Message::AffinitySelection,
+                            ),
+                        ]
+                        .spacing(widgets::CARD_GAP),
+                    )
+                    .id("cpu-limiter-processor-picker")
+                    .height(Fill),
+                    Message::CancelProcessorSelection,
+                    (!selection.is_empty() && editor.catalog.error(selection).is_none())
+                        .then_some(Message::ConfirmProcessorSelection),
+                    (900, 680),
+                ));
+            }
+        }
         let key = rule_status(rule, master_enabled && settings.enabled, status);
         let chip = iced::widget::container(text(t!(key).to_string()))
             .padding([4, 8])
-            .style(move |theme| super::widgets::rule_status_chip(theme, key));
-        let mut status_rows = vec![super::widgets::setting_row("common.status", chip).into()];
+            .style(move |theme| widgets::rule_status_chip(theme, key));
+        let mut live_status = row![chip]
+            .spacing(design::space::SMALL)
+            .align_y(iced::Center);
         let method = Method::of(rule);
         if let Some(status) = status.filter(|_| key == "common.applied") {
             let path = rule.executable_path.trim_start();
@@ -593,7 +677,11 @@ impl CpuLimiter {
                 ),
             };
             if let Some(value) = value {
-                status_rows.push(super::widgets::setting_row(key, text(value)).into());
+                live_status = live_status.push(
+                    text(format!("{}  {value}", t!(key)))
+                        .style(text::secondary)
+                        .wrapping(text::Wrapping::WordOrGlyph),
+                );
             }
         }
         let mut details = column![
@@ -601,11 +689,10 @@ impl CpuLimiter {
             text(rule.executable_path.as_str())
                 .style(text::secondary)
                 .wrapping(text::Wrapping::WordOrGlyph),
-            super::widgets::setting_title("common.rule_details"),
-            super::widgets::settings_card(super::widgets::settings_rows(status_rows)),
+            live_status,
         ]
-        .spacing(super::widgets::CARD_GAP);
-        let mut limits = vec![super::widgets::setting_row(
+        .spacing(design::space::SMALL);
+        let mut limits = vec![widgets::setting_row(
             "cpu_limiter.limit_method",
             pick_list(
                 [Method::CpuTime, Method::Affinity],
@@ -618,11 +705,9 @@ impl CpuLimiter {
 
         let valid = match (&rule.affinity_limit, &self.affinity) {
             (Some(limit), Some(editor)) => {
-                let numeric_valid = editor.values().is_some();
-                let selection_valid =
-                    !limit.selection.is_empty() && editor.catalog.error(&limit.selection).is_none();
-                limits.extend(affinity_rows(limit, editor, presets));
-                numeric_valid && selection_valid
+                let (rows, valid) = affinity_rows(limit, editor);
+                limits.extend(rows);
+                valid
             }
             (None, _) => {
                 limits.extend(self.cpu_time_rows(rule, index));
@@ -630,12 +715,12 @@ impl CpuLimiter {
             }
             _ => false,
         };
-        details = details.push(super::widgets::settings_card(
-            super::widgets::settings_rows(limits),
-        ));
-        Some(super::widgets::rule_dialog(
+        details = details.push(widgets::settings_card(widgets::settings_rows(limits)));
+        Some(widgets::rule_dialog(
             t!("common.edit_rule").to_string(),
-            scrollable(details).height(Fill),
+            scrollable(details)
+                .id("cpu-limiter-rule-details")
+                .height(Fill),
             Message::CancelRule,
             valid.then_some(Message::SaveRule),
             (900, 680),
@@ -681,10 +766,32 @@ impl CpuLimiter {
 fn affinity_rows<'a>(
     limit: &CpuLimiterAffinityLimit,
     editor: &AffinityEditor,
-    presets: &[CpuAllocationPreset],
-) -> Vec<Element<'a, Message>> {
+) -> (Vec<Element<'a, Message>>, bool) {
+    let total = editor.catalog.processor_count();
+    let count = limit.selection.processors().len();
+    let selection_error = editor.catalog.error(&limit.selection);
+    let mut choose = row![].spacing(design::space::SMALL).align_y(iced::Center);
+    if selection_error.is_none() && total > 0 {
+        choose = choose.push(
+            text(
+                t!(
+                    "cpu_limiter.affinity_selected_count",
+                    count = count,
+                    total = total
+                )
+                .into_owned(),
+            )
+            .style(text::secondary),
+        );
+    }
+    let choose = choose.push(
+        widgets::action_button(t!("cpu_limiter.choose_processors").into_owned())
+            .focus_id(CHOOSE_PROCESSORS_ID)
+            .on_press(Message::ChooseProcessors),
+    );
     let mut rows = vec![
-        super::widgets::setting_row_with_unit(
+        widgets::setting_row("cpu_allocation.selected_logical_cpus", choose).into(),
+        widgets::setting_row_with_unit(
             "cpu_limiter.affinity_trigger",
             "%",
             text_input("1–100", &editor.trigger)
@@ -692,7 +799,7 @@ fn affinity_rows<'a>(
                 .width(design::NUMERIC_WIDTH),
         )
         .into(),
-        super::widgets::setting_row(
+        widgets::setting_row(
             "cpu_limiter.affinity_sustain",
             text_input("1–600", &editor.sustain)
                 .on_input(Message::AffinitySustain)
@@ -700,27 +807,46 @@ fn affinity_rows<'a>(
         )
         .into(),
     ];
-    if editor.values().is_none() {
+    let values = editor.values();
+    let selection_valid = selection_error.is_none() && count > 0;
+    let notice = if let Some(error) = selection_error {
+        Some((error, true))
+    } else if let Some((trigger, duration)) = values {
+        selection_valid.then(|| (affinity_preview(trigger, duration, count, total), false))
+    } else {
+        Some((
+            t!("cpu_limiter.invalid_affinity_trigger").into_owned(),
+            true,
+        ))
+    };
+    if let Some((notice, invalid)) = notice {
         rows.push(
-            text(t!("cpu_limiter.invalid_affinity_trigger").to_string())
-                .style(text::danger)
+            text(notice)
+                .style(if invalid {
+                    text::danger
+                } else {
+                    text::secondary
+                })
+                .wrapping(text::Wrapping::WordOrGlyph)
                 .into(),
         );
     }
-    rows.push(
-        column![
-            super::widgets::setting_title("cpu_limiter.affinity_processors"),
-            cpu_allocation::mask_selector(
-                &limit.selection,
-                &editor.catalog,
-                presets,
-                Message::AffinitySelection
-            ),
-        ]
-        .spacing(design::space::SMALL)
-        .into(),
-    );
-    rows
+    (rows, values.is_some() && selection_valid)
+}
+
+fn affinity_preview(trigger: u8, duration: u64, count: usize, total: usize) -> String {
+    if count == total {
+        t!("cpu_limiter.affinity_all_selected").into_owned()
+    } else {
+        t!(
+            "cpu_limiter.affinity_preview",
+            trigger = trigger,
+            duration = duration,
+            count = count,
+            total = total
+        )
+        .into_owned()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1012,7 +1138,27 @@ mod tests {
             .catalog
             .all_selection()
             .unwrap();
+        editor.update(&mut settings, Message::ChooseProcessors);
+        assert!(matches!(
+            editor.dismiss_message(),
+            Message::CancelProcessorSelection
+        ));
         editor.update(&mut settings, Message::AffinitySelection(selection.clone()));
+        editor.update(&mut settings, Message::SaveRule);
+        editor.update(&mut settings, editor.dismiss_message());
+        assert_eq!(settings, before);
+        assert!(matches!(editor.dismiss_message(), Message::CancelRule));
+        editor.update(&mut settings, Message::SaveRule);
+        assert!(editor.has_pending_editor());
+
+        editor.update(&mut settings, Message::ChooseProcessors);
+        editor.update(&mut settings, Message::AffinitySelection(selection.clone()));
+        editor.update(&mut settings, Message::ConfirmProcessorSelection);
+        assert_eq!(settings, before);
+        assert_eq!(
+            affinity_preview(25, 5, 12, 12),
+            t!("cpu_limiter.affinity_all_selected")
+        );
         editor.update(&mut settings, Message::AffinitySustain("601".into()));
         editor.update(&mut settings, Message::SaveRule);
         assert!(editor.has_pending_editor());

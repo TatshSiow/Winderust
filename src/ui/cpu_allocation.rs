@@ -788,6 +788,10 @@ impl SelectionCatalog {
         .map_err(|error| error.to_string())
     }
 
+    pub(super) fn processor_count(&self) -> usize {
+        self.processors.len()
+    }
+
     pub(super) fn error(&self, selection: &CpuSelection) -> Option<String> {
         match &self.topology {
             Ok(_) => verify_selection_against(selection, &self.topology, self.kind).err(),

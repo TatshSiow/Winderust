@@ -939,7 +939,7 @@ impl WinderustApp {
                 power_rules::Message::Cancel,
             )),
             Page::CpuLimiter if self.cpu_limiter.has_pending_editor() && modifiers.is_empty() => {
-                Some(Message::CpuLimiter(cpu_limiter::Message::CancelRule))
+                Some(Message::CpuLimiter(self.cpu_limiter.dismiss_message()))
             }
             _ => self.preset_close_message(),
         };
@@ -1917,7 +1917,22 @@ impl WinderustApp {
                 return self.browse(Page::CpuLimiter);
             }
             Message::CpuLimiter(message) => {
-                self.cpu_limiter.update_profile(&mut self.settings, message)
+                let was_choosing = matches!(
+                    self.cpu_limiter.dismiss_message(),
+                    cpu_limiter::Message::CancelProcessorSelection
+                );
+                self.cpu_limiter.update_profile(&mut self.settings, message);
+                if was_choosing
+                    && self.cpu_limiter.has_pending_editor()
+                    && matches!(
+                        self.cpu_limiter.dismiss_message(),
+                        cpu_limiter::Message::CancelRule
+                    )
+                {
+                    let id = cpu_limiter::CHOOSE_PROCESSORS_ID;
+                    return iced::widget::operation::focus(id)
+                        .chain(super::keyboard_focus::reveal(Some(id.into())));
+                }
             }
             Message::PowerSource(source) => {
                 self.select_power_source(source);
