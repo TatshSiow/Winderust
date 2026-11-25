@@ -32,7 +32,7 @@ Prefer visible state, compact controls, and predictable rows. Use restrained acc
   beside the control and longer explanations in Info.
 - Distinguish a switch's configured state, an unsaved edit, and the last verified
   result from Windows. Direct commands apply when invoked. Configuration edits
-  use the compact Save / Discard card floating at the bottom right of the work area.
+  use the Save / Discard card floating at the bottom right of the work area.
   Save commits the draft. Discard clears pending edits.
 - Make core tasks keyboard-operable with visible focus and predictable focus return.
   Give controls meaningful Windows UI Automation names and states. Use at least
@@ -436,12 +436,15 @@ hover/press; background shading supplies feedback.
 - Appearance groups Language, Theme, and Animation under Interface, keeps Accent
   independently expandable, and groups navigation and feature-card display settings.
   Use square color swatches and shared select widths. About groups identity and
-  updates into separate surfaces; unsaved settings stay in the lower-right notice.
+  updates into separate surfaces.
 - About shows the author name without inspiration or license prose. Its external-link
   buttons use GitHub and Discord marks, a book for Documentation, and scales for
   License, with icon and label centered within the button. The Updates card retains
   its controls and version rows, with update status immediately below Update channel.
   The result stays visible until another check or a change to the update channel.
+- A startup update uses the same lower-right floating card as Save / Discard.
+  The card shows the latest version, Close, and Open release page. A pending
+  draft takes priority in the shared slot until it is saved or discarded.
 - Accent palettes wrap to the available width. Time and color pickers use the
   shared application surface, border, accent colors, and labeled Cancel / OK
   actions. By Time keeps editable `HH:MM` fields alongside a 24-hour analog picker.

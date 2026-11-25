@@ -93,7 +93,7 @@ fn page_header<'a>(
     .into()
 }
 
-const SAVE_CARD_BOTTOM_INSET: u32 = design::space::CONTROL;
+const FLOATING_CARD_BOTTOM_INSET: u32 = design::space::CONTROL;
 const PAGE_BOTTOM_INSET: f32 = 38.0;
 // Share the same vertical margin between the two edges so the editor keeps its height.
 const PAGE_TOP_INSET: f32 = 2.0 * design::space::SECTION as f32 - PAGE_BOTTOM_INSET;
@@ -101,7 +101,7 @@ const PAGE_TOP_INSET: f32 = 2.0 * design::space::SECTION as f32 - PAGE_BOTTOM_IN
 fn page_canvas<'a>(
     heading: Element<'a, Message>,
     content: Element<'a, Message>,
-    save_card: Option<Element<'a, Message>>,
+    floating_card: Option<Element<'a, Message>>,
 ) -> Element<'a, Message> {
     let mut layers = iced::widget::Stack::new().push(
         column![heading, content]
@@ -113,11 +113,11 @@ fn page_canvas<'a>(
             })
             .height(Fill),
     );
-    if let Some(card) = save_card {
+    if let Some(card) = floating_card {
         layers = layers.push(
             container(iced::widget::opaque(repaint_popup(card)))
                 .padding(iced::Padding {
-                    bottom: SAVE_CARD_BOTTOM_INSET as f32,
+                    bottom: FLOATING_CARD_BOTTOM_INSET as f32,
                     right: SCROLLBAR_GUTTER,
                     ..iced::Padding::ZERO
                 })
@@ -141,25 +141,23 @@ fn page_canvas<'a>(
 const SIDE_PANEL_TOGGLE: &str = "side-panel-toggle";
 const SIDE_PANEL_CLOSE: &str = "side-panel-close";
 
-fn floating_save_card(switching_plan: bool) -> Element<'static, Message> {
+fn floating_card<'a>(
+    title: String,
+    detail: Option<Element<'a, Message>>,
+    [secondary, primary]: [super::animated_controls::Button<'a, Message>; 2],
+) -> Element<'a, Message> {
     container(
-        column![
-            container(widgets::heading(
-                t!("unsaved.title").into_owned(),
-                design::typography::BODY
-            ))
-            .center_y(design::space::SECTION),
+        column![container(widgets::heading(title, design::typography::BODY))
+            .center_y(design::space::SECTION)]
+        .extend(detail)
+        .push(
             row![
                 iced::widget::Space::new().width(Fill),
-                action_button(t!("common.discard").into_owned())
-                    .style(widgets::tertiary_button)
-                    .on_press(Message::Cancel),
-                action_button(t!("common.save").into_owned())
-                    .style(widgets::primary_button)
-                    .on_press_maybe((!switching_plan).then_some(Message::Save)),
+                secondary.style(widgets::tertiary_button),
+                primary.style(widgets::primary_button),
             ]
             .spacing(design::space::SMALL),
-        ]
+        )
         .spacing(design::space::SMALL),
     )
     .padding(widgets::CARD_PADDING as u16)
@@ -167,6 +165,46 @@ fn floating_save_card(switching_plan: bool) -> Element<'static, Message> {
     .width(Fill)
     .max_width(320)
     .into()
+}
+
+fn floating_save_card(switching_plan: bool) -> Element<'static, Message> {
+    floating_card(
+        t!("unsaved.title").into_owned(),
+        None,
+        [
+            action_button(t!("common.discard").into_owned()).on_press(Message::Cancel),
+            action_button(t!("common.save").into_owned())
+                .on_press_maybe((!switching_plan).then_some(Message::Save)),
+        ],
+    )
+}
+
+fn floating_update_card(preferences: &settings_pages::Editor) -> Element<'_, Message> {
+    let version = row![
+        text(t!("about.latest_version").into_owned())
+            .size(design::typography::SECONDARY)
+            .style(text::secondary),
+        text(preferences.latest.as_deref().unwrap_or_default())
+            .size(design::typography::SECONDARY)
+            .wrapping(text::Wrapping::WordOrGlyph),
+    ]
+    .spacing(design::space::SMALL)
+    .wrap()
+    .vertical_spacing(design::space::TIGHT);
+    floating_card(
+        t!("about.update_available").into_owned(),
+        Some(version.into()),
+        [
+            action_button(t!("common.close").into_owned())
+                .on_press(Message::Preferences(settings_pages::Message::DismissUpdate)),
+            action_button(t!("about.open_release_page").into_owned()).on_press_maybe(
+                preferences
+                    .download
+                    .clone()
+                    .map(|url| Message::Preferences(settings_pages::Message::OpenUpdate(url))),
+            ),
+        ],
+    )
 }
 
 fn side_panel_button(open: bool) -> Element<'static, Message> {
@@ -867,8 +905,7 @@ impl WinderustApp {
         if !review_open
             && (self.closing
                 || !self.error_message.is_empty()
-                || self.preferences.replace_settings_open
-                || self.preferences.show_update && self.process_power_plan_preview().is_none())
+                || self.preferences.replace_settings_open)
         {
             if tab {
                 return move_focus();
@@ -885,10 +922,8 @@ impl WinderustApp {
                 Message::Stay
             } else if !self.error_message.is_empty() {
                 Message::DismissError
-            } else if self.preferences.replace_settings_open {
-                Message::Preferences(settings_pages::Message::ReplaceSettingsPrompt(false))
             } else {
-                Message::Preferences(settings_pages::Message::DismissUpdate)
+                Message::Preferences(settings_pages::Message::ReplaceSettingsPrompt(false))
             });
         }
         if !review_open && self.page == Page::WinderustBehaviour {
@@ -1033,6 +1068,15 @@ impl WinderustApp {
             }
             if self.navigation.selected.is_some() && self.navigation.section.is_some() {
                 return self.update_navigation(navigation::Event::Key(key, modifiers.shift()));
+            }
+            if self.preferences.show_update
+                && key == Key::Named(Named::Escape)
+                && modifiers.is_empty()
+                && !repeat
+                && !wrap_focus
+                && !self.pending_settings_changes()
+            {
+                return self.update(Message::Preferences(settings_pages::Message::DismissUpdate));
             }
             if tab {
                 return move_focus();
@@ -3077,7 +3121,6 @@ impl WinderustApp {
     fn picker_open(&self) -> bool {
         !self.navigation_search_open
             && !self.closing
-            && !self.preferences.show_update
             && self.power_tuning.review_origin().is_none()
             && self.error_message.is_empty()
             && match self.page {
@@ -3225,42 +3268,6 @@ impl WinderustApp {
                     preview.map(move |message| Message::ProcessPowerPlans(kind, message)),
                 );
             }
-        }
-        if self.preferences.show_update {
-            let dialog = container(
-                column![
-                    widgets::heading(
-                        t!("about.update_available").to_string(),
-                        design::typography::DIALOG_TITLE,
-                    ),
-                    column![
-                        text(t!("about.latest_version").to_string())
-                            .size(design::typography::SECONDARY)
-                            .style(text::secondary),
-                        text(self.preferences.latest.as_deref().unwrap_or_default())
-                            .wrapping(text::Wrapping::WordOrGlyph),
-                    ]
-                    .spacing(design::space::TIGHT),
-                    row![
-                        iced::widget::Space::new().width(Fill),
-                        action_button(t!("common.cancel").to_string())
-                            .style(widgets::tertiary_button)
-                            .on_press(Message::Preferences(settings_pages::Message::DismissUpdate)),
-                        action_button(t!("about.open_release_page").to_string())
-                            .style(widgets::primary_button)
-                            .on_press_maybe(self.preferences.download.clone().map(|url| {
-                                Message::Preferences(settings_pages::Message::OpenUpdate(url))
-                            })),
-                    ]
-                    .spacing(design::space::SMALL),
-                ]
-                .spacing(design::space::LARGE),
-            )
-            .padding(design::space::LARGE as u16)
-            .width(Fill)
-            .max_width(460)
-            .style(widgets::surface);
-            return centered_modal(content, dialog.into());
         }
         if self.process_context_open() {
             iced::widget::stack![
@@ -3550,8 +3557,15 @@ impl WinderustApp {
             profile_controls.map(Into::into),
             panel_button,
         );
-        let save_card = (settings_are_pending && !process_actions_open)
-            .then(|| floating_save_card(self.power_plan_control.pending));
+        let floating_card = if process_actions_open {
+            None
+        } else if settings_are_pending {
+            Some(floating_save_card(self.power_plan_control.pending))
+        } else {
+            self.preferences
+                .show_update
+                .then(|| floating_update_card(&self.preferences))
+        };
         let content = container(super::motion::wrap(
             super::motion::wrap(
                 super::scrolling::repaint_group(self.page_view(
@@ -3567,7 +3581,7 @@ impl WinderustApp {
         ))
         .width(Fill)
         .height(Fill);
-        let body = page_canvas(shield(heading), content.into(), save_card);
+        let body = page_canvas(shield(heading), content.into(), floating_card);
         let layout = row![
             navigation,
             container(body)
@@ -4503,7 +4517,7 @@ mod tests {
                             let card = layers.children()[1].children()[0].bounds();
                             assert_eq!(
                                 card.y + card.height,
-                                size.height - SAVE_CARD_BOTTOM_INSET as f32
+                                size.height - FLOATING_CARD_BOTTOM_INSET as f32
                             );
                             assert_eq!(card.x + card.width, bounds.width - SCROLLBAR_GUTTER);
                             assert_eq!(card.size(), iced::Size::new(320.0, 96.0));
@@ -4525,71 +4539,94 @@ mod tests {
     }
 
     #[test]
-    fn save_card_buttons_and_dock_are_interactive() {
+    fn floating_card_buttons_and_dock_are_interactive() {
         use iced::advanced::{layout, widget::Tree, Layout, Shell};
+        use settings_pages::Message::{DismissUpdate, OpenUpdate};
+
+        let mut preferences = settings_pages::Editor::default();
+        let release = "https://example.com/releases/1.0.0";
+        preferences.latest = Some("1.0.0".into());
+        preferences.download = Some(release.into());
         let renderer = iced::Renderer::new(iced::Font::DEFAULT, iced::Pixels(14.0));
-        let workspace: Element<'_, Message> = button(text("Background action"))
-            .width(Fill)
-            .height(Fill)
-            .on_press(Message::Tick)
-            .into();
-        let panel = button(text("Panel action"))
-            .width(Fill)
-            .height(Fill)
-            .on_press(Message::Cancel)
-            .into();
-        let workspace = page_canvas(
-            text("Editor").into(),
-            workspace,
-            Some(floating_save_card(false)),
-        );
-        let mut view = side_panel_dock(workspace, Some(panel), 320.0);
-        let mut tree = Tree::new(&view);
-        let size = iced::Size::new(900.0, 620.0);
-        let node = view.as_widget_mut().layout(
-            &mut tree,
-            &renderer,
-            &layout::Limits::new(iced::Size::ZERO, size),
-        );
-        let mut card = Layout::new(&node);
-        for index in [0, 0, 0, 0, 1, 0] {
-            card = card.children().nth(index).unwrap();
-        }
-        let mut rows = card.children().next().unwrap().children();
-        let title = rows.next().unwrap();
-        let mut actions = rows.next().unwrap().children().skip(1);
-        let discard = actions.next().unwrap();
-        let save = actions.next().unwrap();
-        for (cursor, expected) in [
-            (iced::Point::new(100.0, 560.0), Some(Message::Tick)),
-            (iced::Point::new(800.0, 560.0), Some(Message::Cancel)),
-            (title.bounds().center(), None),
-            (discard.bounds().center(), Some(Message::Cancel)),
-            (save.bounds().center(), Some(Message::Save)),
+        for (card, secondary_action, primary_action) in [
+            (floating_save_card(false), Message::Cancel, Message::Save),
+            (
+                floating_update_card(&preferences),
+                Message::Preferences(DismissUpdate),
+                Message::Preferences(OpenUpdate(release.into())),
+            ),
         ] {
-            let mut messages = Vec::new();
-            for event in [
-                iced::mouse::Event::ButtonPressed(iced::mouse::Button::Left),
-                iced::mouse::Event::ButtonReleased(iced::mouse::Button::Left),
-            ] {
-                view.as_widget_mut().update(
-                    &mut tree,
-                    &iced::Event::Mouse(event),
-                    Layout::new(&node),
-                    iced::mouse::Cursor::Available(cursor),
-                    &renderer,
-                    &mut iced::advanced::clipboard::Null,
-                    &mut Shell::new(&mut messages),
-                    &node.bounds(),
-                );
+            let workspace: Element<'_, Message> = button(text("Background action"))
+                .width(Fill)
+                .height(Fill)
+                .on_press(Message::Tick)
+                .into();
+            let panel = button(text("Panel action"))
+                .width(Fill)
+                .height(Fill)
+                .on_press(Message::Cancel)
+                .into();
+            let workspace = page_canvas(text("Editor").into(), workspace, Some(card));
+            let mut view = side_panel_dock(workspace, Some(panel), 320.0);
+            let mut tree = Tree::new(&view);
+            let size = iced::Size::new(900.0, 620.0);
+            let node = view.as_widget_mut().layout(
+                &mut tree,
+                &renderer,
+                &layout::Limits::new(iced::Size::ZERO, size),
+            );
+            let mut card = Layout::new(&node);
+            for index in [0, 0, 0, 0, 1, 0] {
+                card = card.children().nth(index).unwrap();
             }
-            assert!(matches!(
-                (messages.as_slice(), expected),
-                ([Message::Tick], Some(Message::Tick))
+            let mut rows = card.children().next().unwrap().children();
+            let title = rows.next().unwrap();
+            let mut actions = rows.last().unwrap().children().skip(1);
+            let secondary = actions.next().unwrap();
+            let primary = actions.next().unwrap();
+            for (cursor, expected) in [
+                (iced::Point::new(100.0, 560.0), Some(Message::Tick)),
+                (iced::Point::new(800.0, 560.0), Some(Message::Cancel)),
+                (title.bounds().center(), None),
+                (secondary.bounds().center(), Some(secondary_action)),
+                (primary.bounds().center(), Some(primary_action)),
+            ] {
+                let mut messages = Vec::new();
+                for event in [
+                    iced::mouse::Event::ButtonPressed(iced::mouse::Button::Left),
+                    iced::mouse::Event::ButtonReleased(iced::mouse::Button::Left),
+                ] {
+                    view.as_widget_mut().update(
+                        &mut tree,
+                        &iced::Event::Mouse(event),
+                        Layout::new(&node),
+                        iced::mouse::Cursor::Available(cursor),
+                        &renderer,
+                        &mut iced::advanced::clipboard::Null,
+                        &mut Shell::new(&mut messages),
+                        &node.bounds(),
+                    );
+                }
+                match (messages.as_slice(), expected) {
+                    (
+                        [Message::Preferences(OpenUpdate(actual))],
+                        Some(Message::Preferences(OpenUpdate(expected))),
+                    ) => {
+                        assert_eq!(*actual, expected);
+                    }
+                    ([Message::Tick], Some(Message::Tick))
                     | ([Message::Save], Some(Message::Save))
                     | ([Message::Cancel], Some(Message::Cancel))
-                    | ([], None)
-            ));
+                    | (
+                        [Message::Preferences(DismissUpdate)],
+                        Some(Message::Preferences(DismissUpdate)),
+                    )
+                    | ([], None) => {}
+                    (actual, expected) => {
+                        panic!("Expected {expected:?} from {cursor:?}, got {actual:?}")
+                    }
+                }
+            }
         }
     }
 
