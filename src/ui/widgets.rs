@@ -1485,13 +1485,7 @@ mod picker_tests {
                 );
                 let messages = preview(
                     super::super::modal::picker(
-                        editor.view(
-                            Page::LanguageAndAppearance,
-                            &settings,
-                            false,
-                            None,
-                            crate::ui::scrolling::PageScroll::default(),
-                        ),
+                        editor.view(Page::LanguageAndAppearance, &settings, false, None),
                         true,
                         settings_pages::Message::CancelColorPicker,
                     ),

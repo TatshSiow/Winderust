@@ -7,7 +7,7 @@ use crate::foreground::process_list::normalize_path_slashes;
 use crate::ui::process_rules::{
     can_add_exact_process_candidate, exact_path_input, picked_path_input,
 };
-use crate::ui::scrolling::PageScroll;
+use crate::ui::scrolling::scrollable;
 use iced::widget::column;
 use iced::{Element, Fill};
 use rust_i18n::t;
@@ -125,7 +125,6 @@ impl Editor {
         &'a self,
         settings: &'a Settings,
         candidates: &'a [super::app_picker::Candidate],
-        page_scroll: PageScroll,
     ) -> Element<'a, Message> {
         let settings = &settings.efficiency_mode;
         let enabled = settings.enabled;
@@ -226,7 +225,7 @@ impl Editor {
             rule_cards,
             false,
         ));
-        page_scroll.scrollable(body).height(Fill).into()
+        scrollable(body).height(Fill).into()
     }
 }
 fn rule_mode(rule: &EfficiencyModeRule, tier: Tier) -> ProcessRuleMode {

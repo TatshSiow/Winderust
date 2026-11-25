@@ -6,12 +6,11 @@ use super::{
     app_picker, design,
     widgets::{self, checkbox},
 };
-use crate::ui::scrolling::PageScroll;
+use crate::ui::scrolling::scrollable;
 use crate::{
     application::SettingsEditor,
     config::{ByFocusRule, ByRunningAppRule, ExecutableSelector, Settings},
     control::instance_limits::validate_path,
-    control::power_plan::PowerPlanStatus,
     power::PowerPlan,
     ui::process_rules::*,
 };
@@ -23,11 +22,6 @@ use rust_i18n::t;
 pub(super) enum Kind {
     Focus,
     RunningApp,
-}
-
-pub(super) struct RuntimeRules<'a> {
-    pub(super) settings: Option<&'a Settings>,
-    pub(super) status: &'a PowerPlanStatus,
 }
 
 #[derive(Debug, Clone)]
@@ -194,8 +188,8 @@ impl Editor {
         settings: &'a Settings,
         plans: &[PowerPlan],
         candidates: &'a [app_picker::Candidate],
-        runtime: RuntimeRules<'_>,
-        page_scroll: PageScroll,
+        runtime_settings: Option<&Settings>,
+        status: &crate::control::power_plan::PowerPlanStatus,
     ) -> Element<'a, Message> {
         let master_enabled = settings.general.enabled;
         let state = match kind {
@@ -206,11 +200,9 @@ impl Editor {
             ($field:ident, $addable_path:ident, $can_add_name:ident, $enable:literal) => {{
                 let feature = &settings.$field;
                 let selected_index = super::power_rules::runtime_rule_index_in_draft(
-                    runtime
-                        .settings
-                        .map(|settings| settings.$field.rules.as_slice()),
+                    runtime_settings.map(|settings| settings.$field.rules.as_slice()),
                     &feature.rules,
-                    runtime.status.rule_index,
+                    status.rule_index,
                 );
                 let mut body = column![super::widgets::toggle_card(
                     $enable,
@@ -268,7 +260,7 @@ impl Editor {
                         selected_index == Some(index),
                         state,
                         [rule.power_plan_guid.as_deref(), None],
-                        runtime.status,
+                        status,
                     );
                     let chip = iced::widget::container(iced::widget::text(t!(key).to_string()))
                         .padding([4, 8])
@@ -319,7 +311,7 @@ impl Editor {
                         ),
                 );
                 body = body.push(heading).push(rules_body);
-                page_scroll.scrollable(body).height(Fill).into()
+                scrollable(body).height(Fill).into()
             }};
         }
         match kind {

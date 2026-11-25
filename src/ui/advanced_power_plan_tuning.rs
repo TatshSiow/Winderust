@@ -16,7 +16,7 @@ use crate::power::{
     ProcessorBoostMode, ProcessorPowerApplyError, ProcessorPowerPreset, ProcessorPowerValues,
     ProcessorSchedulingPolicy, ADAPTIVE_PLAN_NAME,
 };
-use crate::ui::scrolling::{scrollable, PageScroll};
+use crate::ui::scrolling::scrollable;
 use iced::widget::{column, row, text};
 use iced::{Element, Fill};
 use rust_i18n::t;
@@ -1005,7 +1005,6 @@ impl Editor {
         plans: &[PowerPlan],
         status: &PowerPlanStatus,
         mode: EffectivePowerMode,
-        page_scroll: PageScroll,
     ) -> Element<'a, Message> {
         let target_plan = self.selected_plan(plans);
         let choices = tuning_plans(plans)
@@ -1204,7 +1203,7 @@ impl Editor {
         body = body
             .push(super::widgets::settings_card(actions))
             .push(text(self.status_for_plan(target_plan)).wrapping(text::Wrapping::WordOrGlyph));
-        page_scroll.scrollable(body).height(Fill).width(Fill).into()
+        scrollable(body).height(Fill).width(Fill).into()
     }
     pub(super) fn apply_review_modal(
         &self,

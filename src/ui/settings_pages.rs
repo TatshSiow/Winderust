@@ -4,7 +4,7 @@ use super::widgets::{action_button, button, pick_list, text_input};
 use crate::rules::execution_failure::{
     MAX_EXECUTION_FAILURE_SUPPRESSION_THRESHOLD, MIN_EXECUTION_FAILURE_SUPPRESSION_THRESHOLD,
 };
-use crate::ui::scrolling::PageScroll;
+use crate::ui::scrolling::scrollable;
 use crate::{config::*, ui::Page};
 use iced::widget::{column, row, text};
 use iced::{Color, Element, Fill, Theme};
@@ -459,7 +459,6 @@ impl Editor {
         s: &'a Settings,
         can_replace_settings: bool,
         show_shortcut_error: Option<crate::backend::tray::ShortcutError>,
-        page_scroll: PageScroll,
     ) -> Element<'a, Message> {
         let flag_row = |key: &str, value, flag| {
             widgets::setting_row(
@@ -941,11 +940,7 @@ impl Editor {
             }
             _ => column![],
         };
-        let body = page_scroll
-            .scrollable(body)
-            .id("settings-content")
-            .height(Fill)
-            .into();
+        let body = scrollable(body).id("settings-content").height(Fill).into();
         if page != Page::LanguageAndAppearance {
             return body;
         }
@@ -1299,7 +1294,7 @@ mod tests {
         let settings = Settings::default();
         let renderer = iced::Renderer::new(design::typography::FONT, iced::Pixels(14.0));
         for width in [780.0, 1200.0] {
-            let mut view = editor.view(Page::About, &settings, false, None, PageScroll::default());
+            let mut view = editor.view(Page::About, &settings, false, None);
             let mut tree = Tree::new(&view);
             let bounds = Rectangle::with_size(Size::new(width, 540.0));
             let node = view.as_widget_mut().layout(

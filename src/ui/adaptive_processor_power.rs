@@ -4,7 +4,7 @@ use super::{design, widgets};
 use crate::application::SettingsEditor;
 use crate::config::{AdaptiveEngineSettings, PowerSourceProfile};
 use crate::power::{ProcessorBoostMode, ProcessorPowerValues};
-use crate::ui::scrolling::{scrollable, PageScroll};
+use crate::ui::scrolling::scrollable;
 use iced::widget::{column, container, row, text};
 use iced::{Element, Fill};
 use rust_i18n::t;
@@ -155,11 +155,7 @@ impl Editor {
         self.preset_dialog = None;
     }
 
-    pub(super) fn view<'a>(
-        &'a self,
-        s: &'a SettingsEditor,
-        page_scroll: PageScroll,
-    ) -> Element<'a, Message> {
+    pub(super) fn view<'a>(&'a self, s: &'a SettingsEditor) -> Element<'a, Message> {
         let numbers = &self.numbers;
         macro_rules! number {
             ($label:literal, $help:literal, $min:expr, adaptive_engine.$($field:ident).+) => {{
@@ -332,8 +328,7 @@ impl Editor {
         }) {
             body = body.push(text(error).style(text::danger));
         }
-        page_scroll
-            .scrollable(body)
+        scrollable(body)
             .id("adaptive-processor-power-settings")
             .width(Fill)
             .height(Fill)
@@ -470,7 +465,7 @@ mod tests {
                 ..Editor::default()
             };
             let messages = {
-                let mut view = editor.view(&settings, PageScroll::default());
+                let mut view = editor.view(&settings);
                 let mut tree = Tree::new(&view);
                 let node = view.as_widget_mut().layout(
                     &mut tree,

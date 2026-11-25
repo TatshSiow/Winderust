@@ -3,7 +3,6 @@ use std::{collections::BTreeMap, path::Path, sync::Arc};
 use super::{
     app_picker, design,
     process_rules::{exact_path_input, picked_path_input, MatchBy},
-    scrolling::PageScroll,
     widgets,
 };
 use crate::config::{
@@ -490,7 +489,6 @@ impl Editor {
         &'a self,
         settings: &'a ResourceThresholdsSettings,
         candidates: &'a [app_picker::Candidate],
-        page_scroll: PageScroll,
     ) -> Element<'a, Message> {
         let rules = settings
             .rules
@@ -577,39 +575,38 @@ impl Editor {
                 text(t!("resource_thresholds.invalid_duration").to_string()).style(text::danger),
             );
         }
-        page_scroll
-            .scrollable(
-                column![
-                    widgets::setting_group(
-                        "resource_thresholds.enable".to_string(),
-                        self.settings_expanded,
-                        Message::ToggleSettings,
-                        widgets::switch(settings.enabled, Some(Message::Enabled)),
-                        widgets::settings_rows([
-                            duration.into(),
-                            widgets::setting_row(
-                                "resource_thresholds.notify",
-                                widgets::switch(settings.notify, Some(Message::Notify)),
-                            )
-                            .into(),
-                        ]),
-                    ),
-                    widgets::setting_title("common.rules"),
-                    self.add_rule_card(settings, candidates),
-                    widgets::process_rules_table_with_notify(
-                        [
-                            "resource_thresholds.cpu_tab",
-                            "resource_thresholds.memory_tab"
-                        ]
-                        .map(|key| t!(key).to_string()),
-                        rules,
-                        false,
-                    ),
-                ]
-                .spacing(widgets::CARD_GAP),
-            )
-            .height(Fill)
-            .into()
+        super::scrolling::scrollable(
+            column![
+                widgets::setting_group(
+                    "resource_thresholds.enable".to_string(),
+                    self.settings_expanded,
+                    Message::ToggleSettings,
+                    widgets::switch(settings.enabled, Some(Message::Enabled)),
+                    widgets::settings_rows([
+                        duration.into(),
+                        widgets::setting_row(
+                            "resource_thresholds.notify",
+                            widgets::switch(settings.notify, Some(Message::Notify)),
+                        )
+                        .into(),
+                    ]),
+                ),
+                widgets::setting_title("common.rules"),
+                self.add_rule_card(settings, candidates),
+                widgets::process_rules_table_with_notify(
+                    [
+                        "resource_thresholds.cpu_tab",
+                        "resource_thresholds.memory_tab"
+                    ]
+                    .map(|key| t!(key).to_string()),
+                    rules,
+                    false,
+                ),
+            ]
+            .spacing(widgets::CARD_GAP),
+        )
+        .height(Fill)
+        .into()
     }
 
     fn add_rule_card<'a>(
@@ -1406,7 +1403,7 @@ mod tests {
                 Message::Tab(ResourceThresholdsResource::ALL[frame % 2]),
             );
             let mut view: Element<'_, Message> = iced::widget::stack![
-                editor.view(&settings, &[], PageScroll::default()),
+                editor.view(&settings, &[]),
                 super::super::scrolling::modal_backdrop(),
                 iced::widget::container(editor.modal(&[]).unwrap())
                     .padding(16)

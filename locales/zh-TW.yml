@@ -268,6 +268,8 @@ status:
 
 unsaved:
   title: "未儲存的設定"
+  move_to_header: "移至頁首"
+  float_controls: "浮動顯示"
   message: "請先完成或放棄目前的編輯。"
 
 admin_rights:

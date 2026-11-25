@@ -1,7 +1,7 @@
 use super::design;
 use super::widgets::{action_button, pick_list};
 use crate::application::{Win32PrioritySeparationError, Win32PrioritySeparationService};
-use crate::ui::scrolling::PageScroll;
+use crate::ui::scrolling::scrollable;
 use iced::widget::{column, row, text};
 use iced::{Element, Fill};
 use rust_i18n::t;
@@ -168,7 +168,7 @@ impl Editor {
             },
         }
     }
-    pub(super) fn view(&self, page_scroll: PageScroll) -> Element<'_, Message> {
+    pub(super) fn view(&self) -> Element<'_, Message> {
         let display = |value: String| {
             iced::widget::container(text(value))
                 .padding([8, 12])
@@ -246,7 +246,7 @@ impl Editor {
                 .align_y(iced::Center),
             )
             .push(text(&self.status).style(text::secondary));
-        page_scroll.scrollable(body).height(Fill).into()
+        scrollable(body).height(Fill).into()
     }
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

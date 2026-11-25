@@ -123,7 +123,6 @@ impl Editor {
         status: &'a KeepRunningSnapshot,
         candidates: &'a [app_picker::Candidate],
         settings_are_pending: bool,
-        page_scroll: super::scrolling::PageScroll,
     ) -> Element<'a, Message> {
         let rules = settings
             .rules
@@ -230,7 +229,7 @@ impl Editor {
         if let Some(error) = &status.last_error {
             body = body.push(text(error).style(text::danger));
         }
-        page_scroll.scrollable(body).height(Fill).into()
+        super::scrolling::scrollable(body).height(Fill).into()
     }
 
     pub(super) fn modal<'a>(

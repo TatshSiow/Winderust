@@ -1,6 +1,6 @@
 use super::design;
 use super::widgets::{self, checkbox, icon_button, pick_list, text_input, Choice};
-use crate::ui::scrolling::{scrollable, PageScroll};
+use crate::ui::scrolling::scrollable;
 use crate::{
     application::SettingsEditor,
     config::{
@@ -508,7 +508,6 @@ impl Editor {
         s: &'a Settings,
         runtime_settings: Option<&Settings>,
         status: &crate::control::power_plan::PowerPlanStatus,
-        page_scroll: PageScroll,
     ) -> Element<'a, Message> {
         let (enabled, label) = match kind {
             Kind::Time => (s.by_time.enabled, "by_time.enable"),
@@ -614,7 +613,7 @@ impl Editor {
             .push(widgets::setting_title("common.rules"))
             .push(widgets::settings_card(add_rule))
             .push(widgets::rules_table(header, rows, 600.0));
-        page_scroll.scrollable(body).height(Fill).into()
+        scrollable(body).height(Fill).into()
     }
     pub(super) fn modal<'a>(
         &'a self,

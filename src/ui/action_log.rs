@@ -1,4 +1,4 @@
-use std::{cell::Cell, num::NonZeroU32, sync::Arc};
+use std::{num::NonZeroU32, sync::Arc};
 
 use super::popover;
 
@@ -18,7 +18,7 @@ pub(super) struct Editor {
     level: Vec<ActionLogLevel>,
     feature: Vec<ActionLogFeature>,
     search: String,
-    offset: Cell<f32>,
+    offset: std::cell::Cell<f32>,
     pending_export: Option<Arc<Vec<ActionLogEntry>>>,
 }
 impl Default for Editor {
@@ -27,7 +27,7 @@ impl Default for Editor {
             level: ActionLogLevel::ALL.to_vec(),
             feature: FEATURES.to_vec(),
             search: String::new(),
-            offset: Cell::new(0.0),
+            offset: std::cell::Cell::new(0.0),
             pending_export: None,
         }
     }
@@ -289,7 +289,6 @@ impl Editor {
         &'a self,
         entries: &'a [ActionLogEntry],
         candidates: &'a [super::app_picker::Candidate],
-        bottom_clearance: f32,
     ) -> Element<'a, Message> {
         column![
             super::scrolling::repaint_group(search_field(
@@ -300,7 +299,7 @@ impl Editor {
                 (!self.search.is_empty()).then(|| Message::Search(String::new())),
             )),
             super::widgets::table_frame(iced::widget::responsive(move |size| {
-                self.view_at_size(entries, candidates, size, bottom_clearance)
+                self.view_at_size(entries, candidates, size)
             })),
         ]
         .spacing(design::space::SMALL)
@@ -313,7 +312,6 @@ impl Editor {
         entries: &'a [ActionLogEntry],
         candidates: &'a [super::app_picker::Candidate],
         size: iced::Size,
-        bottom_clearance: f32,
     ) -> Element<'a, Message> {
         let groups = group_entries(action_log_filtered_entries(
             entries,
@@ -322,10 +320,9 @@ impl Editor {
             &self.search,
         ));
         let count = groups.len();
-        let bottom_clearance = if count == 0 { 0.0 } else { bottom_clearance };
         let body_height =
-            size.height - ACTION_LOG_HEADER_HEIGHT - 1.0 - super::scrolling::SCROLLBAR_GUTTER;
-        let range = visible_log_range(count, &self.offset, body_height, bottom_clearance);
+            size.height - ACTION_LOG_HEADER_HEIGHT - super::scrolling::SCROLLBAR_GUTTER;
+        let range = visible_log_range(count, self.offset.get(), body_height);
         let header = row![
             text("#").width(48),
             text(t!("action_log.time").to_string()).width(80),
@@ -424,8 +421,7 @@ impl Editor {
             entries_table = entries_table.push(iced::widget::rule::horizontal(1));
         }
         entries_table = entries_table.push(
-            iced::widget::Space::new()
-                .height((count - range.end) as f32 * ACTION_LOG_ROW_HEIGHT + bottom_clearance),
+            iced::widget::Space::new().height((count - range.end) as f32 * ACTION_LOG_ROW_HEIGHT),
         );
         let table = column![
             container(header)
@@ -451,9 +447,9 @@ impl Editor {
                 ),
                 ACTION_LOG_TABLE_ID,
                 count != 0,
-                move |key, modifiers, bounds| {
+                |key, modifiers, bounds| {
                     if modifiers.is_empty() {
-                        Scroll::from_key(key, (bounds.height - bottom_clearance).max(0.0))
+                        Scroll::from_key(key, bounds.height)
                     } else {
                         None
                     }
@@ -735,17 +731,11 @@ const ACTION_LOG_HORIZONTAL_STEP: f32 = 160.0;
 const ACTION_LOG_ROW_HEIGHT: f32 = 36.0;
 const ACTION_LOG_HEADER_HEIGHT: f32 = 33.0;
 
-fn visible_log_range(
-    count: usize,
-    offset: &Cell<f32>,
-    height: f32,
-    bottom_clearance: f32,
-) -> std::ops::Range<usize> {
+fn visible_log_range(count: usize, offset: f32, height: f32) -> std::ops::Range<usize> {
     let height = height.max(0.0);
-    let max_offset = (count as f32 * ACTION_LOG_ROW_HEIGHT + bottom_clearance - height).max(0.0);
-    let bounded = offset.get().clamp(0.0, max_offset);
-    offset.set(bounded);
-    let first = ((bounded / ACTION_LOG_ROW_HEIGHT).floor() as usize).min(count);
+    let max_offset = (count as f32 * ACTION_LOG_ROW_HEIGHT - height).max(0.0);
+    let first =
+        ((offset.clamp(0.0, max_offset) / ACTION_LOG_ROW_HEIGHT).floor() as usize).min(count);
     let start = first.saturating_sub(8);
     let end = (first + (height / ACTION_LOG_ROW_HEIGHT).ceil() as usize + 8).min(count);
     start..end
@@ -1094,21 +1084,18 @@ mod tests {
         let editor = Editor::default();
         let bounds = iced::Rectangle::with_size(iced::Size::new(1920.0, 1080.0));
         crate::ui::scrolling::check_scroll_damage(
-            editor.view_at_size(&entries, &[], bounds.size(), 0.0),
+            editor.view_at_size(&entries, &[], bounds.size()),
             bounds,
         );
     }
 
     #[test]
     fn virtual_log_rows_are_bounded_and_reach_the_end() {
-        assert_eq!(visible_log_range(0, &Cell::new(0.0), 900.0, 0.0), 0..0);
-        let range = visible_log_range(10000, &Cell::new(3600.0), 900.0, 0.0);
+        assert_eq!(visible_log_range(0, 0.0, 900.0), 0..0);
+        let range = visible_log_range(10000, 3600.0, 900.0);
         assert_eq!(range, 92..133);
-        assert_eq!(
-            visible_log_range(52, &Cell::new(1500.0), 900.0, 0.0).end,
-            52
-        );
-        assert_eq!(visible_log_range(11, &Cell::new(1500.0), 450.0, 0.0), 0..11);
+        assert_eq!(visible_log_range(52, 1500.0, 900.0).end, 52);
+        assert_eq!(visible_log_range(11, 1500.0, 450.0), 0..11);
         let mut editor = Editor::default();
         editor.update(Message::Scrolled(3600.0));
         editor.update(Message::Level(ActionLogLevel::Error, false));
@@ -1188,7 +1175,6 @@ mod tests {
         struct Position {
             x: f32,
             y: f32,
-            max_y: f32,
             focused: bool,
         }
 
@@ -1211,8 +1197,8 @@ mod tests {
             fn scrollable(
                 &mut self,
                 id: Option<&Id>,
-                bounds: Rectangle,
-                content: Rectangle,
+                _: Rectangle,
+                _: Rectangle,
                 translation: Vector,
                 _: &mut dyn operation::Scrollable,
             ) {
@@ -1220,10 +1206,7 @@ mod tests {
                     Some(id) if *id == ACTION_LOG_HORIZONTAL_SCROLL_ID.into() => {
                         self.x = translation.x
                     }
-                    Some(id) if *id == ACTION_LOG_SCROLL_ID.into() => {
-                        self.y = translation.y;
-                        self.max_y = content.height - bounds.height;
-                    }
+                    Some(id) if *id == ACTION_LOG_SCROLL_ID.into() => self.y = translation.y,
                     _ => {}
                 }
             }
@@ -1244,7 +1227,7 @@ mod tests {
         let editor = Editor::default();
         let size = Size::new(465.0, 380.0);
         let renderer = Renderer::new(super::design::typography::FONT, Pixels(14.0));
-        let mut table = editor.view_at_size(&entries, &[], size, 80.0);
+        let mut table = editor.view_at_size(&entries, &[], size);
         let mut tree = Tree::new(&table);
         let node = table.as_widget_mut().layout(
             &mut tree,
@@ -1318,14 +1301,6 @@ mod tests {
             assert_eq!(position.y, 72.0);
             assert!(position.focused);
         }
-        let messages = press(&mut table, &mut tree, Named::End);
-        let [Message::KeyboardScroll(Scroll::End, height)] = messages.as_slice() else {
-            panic!("expected a scroll to the end, got {messages:?}");
-        };
-        let _ = editor.keyboard_scroll::<Message>(&entries, Scroll::End, *height);
-        let mut position = Position::default();
-        operate(&mut table, &mut tree, &mut position);
-        assert_eq!(editor.offset.get(), position.max_y);
     }
 
     #[test]

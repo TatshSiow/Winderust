@@ -74,11 +74,13 @@ Prefer visible state, compact controls, and predictable rows. Use restrained acc
 - Rows and table headers should have stable heights across state changes.
 - Rules tables fill the same canvas width as settings cards. Use fixed or computed minimum widths for dense tables and policy columns, with horizontal scrolling when the dock leaves too little room. Do not let dynamic labels resize the process list.
 - Keep the last rule reachable with the dock open at the minimum window size,
-  including when both scrollbars are needed. The Save card leaves the page at
-  its full height and intercepts pointer input within the card only. Keep it
-  clear of scrollbar gutters and add scroll room at the end of the content so
-  the last control can move above it. Process List hides the card while its
-  context menu or dialog is open and keeps the pending edits.
+  including when both scrollbars are needed. The floating Save card leaves the
+  page height and scroll range intact, and intercepts pointer input within the
+  card only. Move to header places Save and Discard in the breadcrumb row.
+  Float returns them to the bottom right. Move the controls to the header when
+  they cover keyboard focus during navigation. Keep placement for the session.
+  Process List hides the controls while its context menu or dialog is open and
+  keeps the pending edits.
 - Constrain long process names, labels, and status values so they do not resize adjacent columns.
 - Group related settings beneath each section heading in one card, with shared internal dividers between complete rows. Every grouped card needs a concise, localized category heading outside its outline. Apply this to pages, preset editors, rule dialogs, and process details; independent collapsible groups use their own headers. Keep each label, description, and control together; avoid a separate card for every setting. Preserve independent collapsible feature groups.
 - Avoid nested cards. Cards are for repeated rows, setting groups, status blocks, popovers, and tool surfaces.

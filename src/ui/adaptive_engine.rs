@@ -9,7 +9,7 @@ use crate::ui::process_rules::{
     can_add_exact_process_candidate, exact_path_input, new_process_exclusion_rule,
     picked_path_input,
 };
-use crate::ui::scrolling::PageScroll;
+use crate::ui::scrolling::scrollable;
 use iced::widget::{column, row, text};
 use iced::{Element, Fill};
 use rust_i18n::t;
@@ -430,7 +430,6 @@ impl Editor {
         candidates: &'a [super::app_picker::Candidate],
         interrupt_timing: &'a super::interrupt_timing::State,
         shell_height: f32,
-        page_scroll: PageScroll,
     ) -> Element<'a, Message> {
         const PINNED_HEADER_MIN_HEIGHT: f32 = 750.0;
         self.tuning_view(
@@ -438,7 +437,6 @@ impl Editor {
             candidates,
             Some(interrupt_timing),
             shell_height < PINNED_HEADER_MIN_HEIGHT,
-            page_scroll,
         )
     }
 
@@ -518,7 +516,7 @@ impl Editor {
                 .spacing(design::space::SMALL),
             ));
         }
-        body = body.push(self.tuning_view(live, candidates, None, false, PageScroll::default()));
+        body = body.push(self.tuning_view(live, candidates, None, false));
         if !self.error.is_empty() {
             body = body.push(text(self.error.clone()).style(text::danger));
         }
@@ -536,7 +534,6 @@ impl Editor {
         candidates: &'a [super::app_picker::Candidate],
         interrupt_timing: Option<&'a super::interrupt_timing::State>,
         scroll_live_header: bool,
-        page_scroll: PageScroll,
     ) -> Element<'a, Message> {
         let preset = interrupt_timing.is_none();
         let s = if preset {
@@ -917,8 +914,7 @@ impl Editor {
         }
         let body = super::motion::wrap(body, true, super::motion::Effect::Content(tab as u64));
         if scroll_live_header {
-            page_scroll
-                .scrollable(header.push(body))
+            scrollable(header.push(body))
                 .id("adaptive-engine-content")
                 .width(Fill)
                 .height(Fill)
@@ -926,8 +922,7 @@ impl Editor {
         } else {
             header
                 .push(
-                    page_scroll
-                        .scrollable(body)
+                    scrollable(body)
                         .id(if preset {
                             "adaptive-engine-preset-content"
                         } else {
@@ -1272,13 +1267,7 @@ mod tests {
                 settings
                     .adaptive_engine_process
                     .cpu_pressure_restraint_enabled = frame % 2 == 0;
-                let mut view = editor.view(
-                    &settings,
-                    &[],
-                    &interrupt_timing,
-                    860.0,
-                    PageScroll::default(),
-                );
+                let mut view = editor.view(&settings, &[], &interrupt_timing, 860.0);
                 tree.diff(view.as_widget());
                 let node = view.as_widget_mut().layout(
                     &mut tree,
@@ -1327,13 +1316,7 @@ mod tests {
             editor.expanded[0].fill(expanded);
             for width in [430.0, 1040.0] {
                 super::super::scrolling::check_scroll_damage(
-                    editor.view(
-                        &settings,
-                        &[],
-                        &interrupt_timing,
-                        860.0,
-                        PageScroll::default(),
-                    ),
+                    editor.view(&settings, &[], &interrupt_timing, 860.0),
                     iced::Rectangle::with_size(iced::Size::new(width, 700.0)),
                 );
             }
@@ -1416,13 +1399,7 @@ mod tests {
                 let checking_focus = matches!(editor_height, 527.0 | 421.0);
                 editor.expanded[0][TuningGroup::SharedDetection as usize] = checking_focus;
                 let workspace = Rectangle::with_size(Size::new(466.0, editor_height));
-                let mut view = editor.view(
-                    &settings,
-                    &[],
-                    &interrupt_timing,
-                    shell_height,
-                    PageScroll::default(),
-                );
+                let mut view = editor.view(&settings, &[], &interrupt_timing, shell_height);
                 tree.diff(view.as_widget());
                 let node = view.as_widget_mut().layout(
                     &mut tree,
