@@ -488,6 +488,12 @@ Read the relevant section before changing feature policy, ownership, restoration
   requires fresh observations after the wait. Turning off automation or both
   profiles still releases owned state. Equivalent profiles can run during an
   unknown reading.
+- Minimum unparked during CPU restraint is a per-source floor for the temporary
+  managed plan. It raises only the active source's normal class-0 minimum when
+  the source and at least one exact CPU priority restraint are verified. When
+  restraint ends or the source becomes unknown, the controller restores the
+  cached normal values, including while ordinary demand updates are waiting
+  for a source. A floor-only change leaves demand tier hysteresis intact.
 - Selecting an installed plan on the landing page submits a manual runtime
   command immediately. Save and Discard handle settings drafts independently.
   The worker uses saved policy, rechecks the target, and verifies the active plan

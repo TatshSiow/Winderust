@@ -1,14 +1,19 @@
 use super::*;
 
 #[test]
-fn adaptive_processor_power_presets_round_trip_and_reject_invalid_entries() {
+fn adaptive_processor_power_round_trips_and_rejects_invalid_entries() {
     use crate::config::{AdaptiveProcessorPowerPreset, PowerSourceProfile};
 
     let mut settings = Settings::default();
+    settings.adaptive_engine.restraint_core_parking_min = 85;
+    settings
+        .battery_profile_mut()
+        .adaptive_engine
+        .restraint_core_parking_min = 60;
     let preset = AdaptiveProcessorPowerPreset::capture(
         "Quiet".into(),
-        &settings.adaptive_engine,
-        PowerSourceProfile::PluggedIn,
+        &settings.battery_profile().adaptive_engine,
+        PowerSourceProfile::OnBattery,
     );
     settings
         .adaptive_processor_power_presets
@@ -20,7 +25,28 @@ fn adaptive_processor_power_presets_round_trip_and_reject_invalid_entries() {
     write_toml_settings(&path, &settings).unwrap();
     assert_eq!(load_from_path(&path).unwrap(), settings);
     fs::remove_file(&path).unwrap();
+
+    for battery in [false, true] {
+        let mut invalid = settings.clone();
+        let profile = if battery {
+            invalid.battery_profile_mut()
+        } else {
+            &mut invalid
+        };
+        profile.adaptive_engine.restraint_core_parking_min = 101;
+        assert_eq!(
+            parse_toml_settings(&path, &toml::to_string(&invalid).unwrap()).unwrap_err(),
+            rust_i18n::t!("adaptive_processor_power.restraint_core_parking_min_invalid")
+        );
+    }
     let mut invalid = toml::Value::try_from(&settings).unwrap();
+    invalid["adaptive_processor_power_presets"][0]["restraint_core_parking_min"] = 101.into();
+    assert!(
+        parse_toml_settings(&path, &toml::to_string(&invalid).unwrap())
+            .unwrap_err()
+            .contains("out-of-range processor settings")
+    );
+    invalid["adaptive_processor_power_presets"][0]["restraint_core_parking_min"] = 60.into();
     invalid["adaptive_processor_power_presets"][0]["background_pressure_profile"]["policy"] =
         101.into();
     assert!(

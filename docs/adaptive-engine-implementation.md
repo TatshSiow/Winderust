@@ -146,6 +146,11 @@ migration or copying from the limiter is performed.
   priority and efficiency controller captures and restores the original power throttling state.
   Saved Efficiency Mode, manual settings, and explicit Windows execution-speed settings take
   precedence.
+- Adaptive Processor Power can raise the minimum unparked percentage while CPU Pressure
+  Restraint has a verified process. Its per-source floor applies to Windows processor
+  efficiency class 0 on the temporary Winderust Adaptive plan. A value of 0% uses the
+  normal policy. The floor is withdrawn when the last verified restraint ends or the
+  current power source becomes unknown.
 - Missing per-process samples or invalid CPU deltas discard that target's old
   baseline and restraint/recovery episode. Re-entry requires a fresh valid interval;
   skipped/excluded targets cannot retain stale candidate tracking.

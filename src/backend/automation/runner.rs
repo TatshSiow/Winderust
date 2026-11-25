@@ -5,14 +5,14 @@ use crate::runtime::observations::{CycleObservations, ForegroundCpuHistory};
 use crate::{
     action_log::{ActionLogFeature, ActionLogResult},
     adaptive_engine_process::{focus_and_launch_profile_eligible, focus_process_priority_eligible},
-    config::{AdaptiveRestraintIoPriority, ProcessIoPriority},
+    config::{AdaptiveEngineSettings, AdaptiveRestraintIoPriority, ProcessIoPriority},
     control::{
         io_priority::{
             IoPriorityApplyOutcome, IoPriorityClaim, IoPriorityPreservation,
             IoPriorityReleaseSummary,
         },
         memory_priority::MemoryPriorityReleaseOwner,
-        power_plan::{AdaptiveProcessorPowerError, PowerPlanOwner},
+        power_plan::{AdaptiveProcessorPowerError, PowerPlanOwner, RestraintCoreParking},
         priority_efficiency::{
             AdaptiveRestraintProcess, AdaptiveRestraintState, PriorityEfficiencyReleaseSummary,
             ProcessPropertyApplyOutcome,
@@ -1559,18 +1559,35 @@ impl RuntimeCore {
     pub(super) fn run_adaptive_power_plan_update(
         &mut self,
         settings: &Settings,
+        restraint_source: Option<PowerSourceProfile>,
         observations: &mut CycleObservations,
     ) {
         let result = if adaptive_power_plan_required(settings) && settings.general.enabled {
             self.refresh_cpu_usage();
             let (focus_or_launch, foreground_cpu_percent) =
                 self.sample_adaptive_power_foreground(observations);
+            let minimum_percent = settings.adaptive_engine.restraint_core_parking_min;
+            let restraint_core_parking = restraint_source
+                .filter(|_| {
+                    minimum_percent > 0
+                        && settings.adaptive_engine.enabled
+                        && settings
+                            .adaptive_engine_process
+                            .cpu_pressure_restraint_enabled
+                        && self
+                            .priority_efficiency_controller
+                            .adaptive_restraint_processes()
+                            .any(|(_, state)| state == AdaptiveRestraintState::Verified)
+                })
+                .map(|source| RestraintCoreParking {
+                    source,
+                    minimum_percent,
+                });
             self.update_adaptive_power_plan(
-                settings.adaptive_engine.base_processor_policy.normalized(),
-                settings.adaptive_engine.background_pressure_profile,
-                settings.adaptive_engine.focus_and_launch_profile,
+                &settings.adaptive_engine,
                 focus_or_launch,
                 foreground_cpu_percent,
+                restraint_core_parking,
             )
         } else {
             self.reset_adaptive_power_demand();
@@ -1583,6 +1600,15 @@ impl RuntimeCore {
         };
         self.adaptive_processor_power_error =
             result.err().map(AdaptiveProcessorPowerError::Operation);
+    }
+
+    pub(super) fn wait_for_adaptive_power_plan_source(
+        &mut self,
+    ) -> Result<(), ActivePlanCheckError> {
+        self.power_plan_controller
+            .clear_adaptive_restraint_core_parking(Instant::now())
+            .map_err(ActivePlanCheckError::Operation)?;
+        self.refresh_active_plan(false)
     }
 
     fn reset_adaptive_power_demand(&mut self) {
@@ -1627,11 +1653,10 @@ impl RuntimeCore {
 
     fn update_adaptive_power_plan(
         &mut self,
-        baseline: ProcessorPowerValues,
-        background_pressure_profile: AdaptivePowerBoostValues,
-        focus_and_launch_profile: AdaptivePowerBoostValues,
+        settings: &AdaptiveEngineSettings,
         focus_or_launch: bool,
         foreground_cpu_percent: Option<f32>,
+        restraint_core_parking: Option<RestraintCoreParking>,
     ) -> Result<(), String> {
         let now = Instant::now();
         if self.adaptive_processor_topology.is_empty() {
@@ -1680,10 +1705,11 @@ impl RuntimeCore {
             .reconcile_adaptive(
                 AdaptivePowerPlanRequest {
                     profile: desired_profile,
-                    baseline,
+                    baseline: settings.base_processor_policy.normalized(),
                     has_efficiency_cores,
-                    background_pressure_profile,
-                    focus_and_launch_profile,
+                    background_pressure_profile: settings.background_pressure_profile,
+                    focus_and_launch_profile: settings.focus_and_launch_profile,
+                    restraint_core_parking,
                 },
                 now,
             )

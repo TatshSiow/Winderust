@@ -19,6 +19,10 @@ mod editor_tests;
 const PROCESSOR_MIN_FIELD: &str = stringify!(adaptive_engine.base_processor_policy.performance_min);
 pub(super) const PROCESSOR_MAX_FIELD: &str =
     stringify!(adaptive_engine.base_processor_policy.performance_max);
+const RESTRAINT_CORE_PARKING_MIN_FIELD: &str =
+    stringify!(adaptive_engine.restraint_core_parking_min);
+const RESTRAINT_CORE_PARKING_MIN_LABEL: &str =
+    "adaptive_processor_power.restraint_core_parking_min";
 pub(super) const PRESET_NAME_INPUT_ID: &str = "adaptive-processor-power-preset-name";
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -283,6 +287,29 @@ impl Editor {
                         0,
                         adaptive_engine.base_processor_policy.core_parking_min
                     ),
+                    widgets::slider_setting(RESTRAINT_CORE_PARKING_MIN_LABEL, "%", move || {
+                        widgets::slider_stepper(
+                            u64::from(s.adaptive_engine.restraint_core_parking_min),
+                            numbers
+                                .drafts
+                                .get(RESTRAINT_CORE_PARKING_MIN_FIELD)
+                                .map(|draft| draft.text.as_str()),
+                            0..=100,
+                            1,
+                            |value| {
+                                Message::Number(
+                                    |settings, number| {
+                                        settings.restraint_core_parking_min = number as u8
+                                    },
+                                    value,
+                                    0,
+                                    100,
+                                    RESTRAINT_CORE_PARKING_MIN_FIELD,
+                                    RESTRAINT_CORE_PARKING_MIN_LABEL,
+                                )
+                            },
+                        )
+                    }),
                     processor_range.into(),
                     number!(
                         "processor_power.boost_policy",

@@ -87,9 +87,7 @@ use crate::{
         memory_trim_policy_difference, MemoryTrimManager, MemoryTrimPolicyDifference,
         MemoryTrimSnapshot,
     },
-    power::{
-        AdaptivePowerBoostValues, AdaptivePowerDemand, AdaptivePowerProfile, ProcessorPowerValues,
-    },
+    power::{AdaptivePowerDemand, AdaptivePowerProfile},
     power_source,
     process_priority::{ProcessPriorityManager, ProcessPrioritySnapshot},
     rules::{
@@ -2265,12 +2263,19 @@ fn run_background_automation(
         {
             if adaptive_waits_for_source {
                 if let Err(ActivePlanCheckError::Operation(error)) =
-                    runner.refresh_active_plan(false)
+                    runner.wait_for_adaptive_power_plan_source()
                 {
                     update_worker_error(&shared, Some(error));
                 }
             } else {
-                runner.run_adaptive_power_plan_update(settings, &mut observations);
+                let restraint_source = plugged_in
+                    .filter(|_| !adaptive_exclusion_refresh_pending)
+                    .map(|plugged_in| active_power_source(Some(plugged_in)));
+                runner.run_adaptive_power_plan_update(
+                    settings,
+                    restraint_source,
+                    &mut observations,
+                );
             }
             scheduler.schedule_after(
                 RefreshDomain::AdaptivePowerPlan,

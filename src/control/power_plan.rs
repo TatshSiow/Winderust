@@ -4,11 +4,13 @@ use crate::{
     backend::crash_recovery::{
         forget_power_plan_changes, record_power_plan_change, DeferredRecoveryIntent, RecoveryIntent,
     },
+    config::PowerSourceProfile,
     features::power_plan_control::ByCpuLoadMatch,
     power::{
-        active_plan, adaptive_power_profile_transition, apply_processor_power_values, delete_plan,
-        duplicate_adaptive_plan, initialize_adaptive_plan, set_active, AdaptivePowerBoostValues,
-        AdaptivePowerProfile, ProcessorPowerSourceValues, ProcessorPowerValues,
+        active_plan, adaptive_power_profile_transition, apply_processor_power_values,
+        apply_processor_power_values_staged, delete_plan, duplicate_adaptive_plan,
+        initialize_adaptive_plan, set_active, AdaptivePowerBoostValues, AdaptivePowerProfile,
+        ProcessorPowerSourceValues, ProcessorPowerValues,
     },
     rules::{DecisionOutcome, DecisionState, ExecutionFailureTracker, QualifiedPowerPlan},
 };
@@ -82,13 +84,63 @@ pub(crate) struct AdaptivePowerPlanRequest {
     pub(crate) has_efficiency_cores: bool,
     pub(crate) background_pressure_profile: AdaptivePowerBoostValues,
     pub(crate) focus_and_launch_profile: AdaptivePowerBoostValues,
+    pub(crate) restraint_core_parking: Option<RestraintCoreParking>,
+}
+
+impl AdaptivePowerPlanRequest {
+    fn calibrated_values(
+        self,
+        profile: AdaptivePowerProfile,
+    ) -> (ProcessorPowerSourceValues, ProcessorPowerSourceValues) {
+        let normal = profile.calibrated_power_values(
+            self.baseline,
+            self.has_efficiency_cores,
+            self.background_pressure_profile,
+            self.focus_and_launch_profile,
+        );
+        let mut values = normal;
+        if let Some(restraint) = self.restraint_core_parking {
+            let source = match restraint.source {
+                PowerSourceProfile::PluggedIn => &mut values.ac,
+                PowerSourceProfile::OnBattery => &mut values.battery,
+            };
+            source.core_parking_min = source
+                .core_parking_min
+                .max(u32::from(restraint.minimum_percent.min(100)));
+        }
+        (normal, values)
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct RestraintCoreParking {
+    pub(crate) source: PowerSourceProfile,
+    pub(crate) minimum_percent: u8,
+}
+
+struct AdaptiveProcessorValues {
+    normal: ProcessorPowerSourceValues,
+    applied: Option<ProcessorPowerSourceValues>,
+    restraint_core_parking_may_be_applied: bool,
+    normal_write_pending: bool,
+}
+
+impl AdaptiveProcessorValues {
+    fn applied(normal: ProcessorPowerSourceValues, values: ProcessorPowerSourceValues) -> Self {
+        Self {
+            normal,
+            applied: Some(values),
+            restraint_core_parking_may_be_applied: values != normal,
+            normal_write_pending: false,
+        }
+    }
 }
 
 struct ActiveAdaptivePowerPlan {
     original_guid: String,
     plan_guid: String,
     profile: AdaptivePowerProfile,
-    values: Option<ProcessorPowerSourceValues>,
+    values: Option<AdaptiveProcessorValues>,
     lower_demand_since: Option<Instant>,
     active: bool,
 }
@@ -140,6 +192,7 @@ pub(crate) trait PowerPlanPlatform {
         &mut self,
         guid: &str,
         values: ProcessorPowerSourceValues,
+        previous: Option<ProcessorPowerSourceValues>,
     ) -> Result<(), String>;
 }
 
@@ -185,8 +238,14 @@ impl PowerPlanPlatform for WindowsPowerPlanPlatform {
         &mut self,
         guid: &str,
         values: ProcessorPowerSourceValues,
+        previous: Option<ProcessorPowerSourceValues>,
     ) -> Result<(), String> {
-        apply_processor_power_values(guid, values)
+        if let Some(previous) = previous {
+            apply_processor_power_values_staged(guid, values.into(), Some(previous.into()))
+                .map_err(|error| error.to_string())
+        } else {
+            apply_processor_power_values(guid, values)
+        }
     }
 }
 
@@ -926,12 +985,8 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
             let original_guid = self.read_active_guid()?;
             self.observe_active_plan(&original_guid)?;
             let plan_guid = self.platform.duplicate_adaptive_plan(&original_guid)?;
-            let values = request.profile.calibrated_power_values(
-                request.baseline,
-                request.has_efficiency_cores,
-                request.background_pressure_profile,
-                request.focus_and_launch_profile,
-            );
+            // Apply the restraint floor only after activation is verified.
+            let (normal, _) = request.calibrated_values(request.profile);
             // Own the duplicate before even metadata or idle-state initialization can fail.
             // Activation failure can be uncertain; cleanup rechecks the actual active plan.
             self.adaptive_plan = Some(ActiveAdaptivePowerPlan {
@@ -946,7 +1001,10 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
             let transition = self
                 .platform
                 .initialize_adaptive_plan(&plan_guid, &original_guid)
-                .and_then(|()| self.platform.apply_processor_values(&plan_guid, values))
+                .and_then(|()| {
+                    self.platform
+                        .apply_processor_values(&plan_guid, normal, None)
+                })
                 .and_then(|()| self.switch_active_verified(&plan_guid, TemporaryEffect::Preserve));
             let transition = match transition {
                 Ok(transition) => transition,
@@ -962,7 +1020,7 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
                 original_guid: transition.previous_guid,
                 plan_guid,
                 profile: request.profile,
-                values: Some(values),
+                values: Some(AdaptiveProcessorValues::applied(normal, normal)),
                 lower_demand_since: None,
                 active: true,
             });
@@ -980,26 +1038,62 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
         };
         let next_profile =
             adaptive_power_profile_transition(plan.profile, request.profile, lower_demand_elapsed);
-        let next_values = next_profile.calibrated_power_values(
-            request.baseline,
-            request.has_efficiency_cores,
-            request.background_pressure_profile,
-            request.focus_and_launch_profile,
-        );
-        let values_changed = Some(next_values) != plan.values;
-        if values_changed {
-            // A failed write may already have changed part of the stored plan.
-            plan.values = None;
+        let (next_normal, next_values) = request.calibrated_values(next_profile);
+        let normal_changed = next_profile != plan.profile
+            || plan
+                .values
+                .as_ref()
+                .is_none_or(|values| next_normal != values.normal);
+        let state = plan.values.get_or_insert(AdaptiveProcessorValues {
+            normal: next_normal,
+            applied: None,
+            restraint_core_parking_may_be_applied: false,
+            normal_write_pending: false,
+        });
+        if Some(next_values) != state.applied {
+            // A failed write may change either source slot before reaching activation.
+            let previous = state.applied.take().filter(|_| !normal_changed);
+            state.restraint_core_parking_may_be_applied |= next_values != next_normal;
+            state.normal_write_pending |= normal_changed;
             self.platform
-                .apply_processor_values(&plan.plan_guid, next_values)?;
+                .apply_processor_values(&plan.plan_guid, next_values, previous)?;
         }
-        if next_profile != plan.profile || values_changed {
-            plan.profile = next_profile;
-            plan.values = Some(next_values);
+        if normal_changed || state.normal_write_pending {
             plan.lower_demand_since = None;
         }
+        plan.profile = next_profile;
+        *state = AdaptiveProcessorValues::applied(next_normal, next_values);
 
         Ok(plan.profile)
+    }
+
+    pub(crate) fn clear_adaptive_restraint_core_parking(
+        &mut self,
+        now: Instant,
+    ) -> Result<(), String> {
+        let has_overlay = |plan: &ActiveAdaptivePowerPlan| {
+            plan.active
+                && plan
+                    .values
+                    .as_ref()
+                    .is_some_and(|values| values.restraint_core_parking_may_be_applied)
+        };
+        if !self.adaptive_plan.as_ref().is_some_and(has_overlay) {
+            return Ok(());
+        }
+        self.refresh_active_plan(now)?;
+        let Some(plan) = self.adaptive_plan.as_mut().filter(|plan| has_overlay(plan)) else {
+            return Ok(());
+        };
+        let Some(state) = plan.values.as_mut() else {
+            return Err("Adaptive core parking baseline was not initialized.".to_owned());
+        };
+        let previous = state.applied.take();
+        self.platform
+            .apply_processor_values(&plan.plan_guid, state.normal, previous)?;
+        state.applied = Some(state.normal);
+        state.restraint_core_parking_may_be_applied = false;
+        Ok(())
     }
 
     pub(crate) fn release_adaptive(&mut self, now: Instant) -> Result<(), String> {
@@ -1463,6 +1557,8 @@ fn adaptive_plan_setup_error(operation_error: String, cleanup: Result<(), String
 
 #[cfg(test)]
 mod tests {
+    mod restraint_core_parking;
+
     use std::{
         cell::RefCell,
         collections::{BTreeSet, VecDeque},
@@ -1588,6 +1684,7 @@ mod tests {
         verify_wrong_guid: bool,
         next_adaptive: u32,
         processor_values: Option<ProcessorPowerSourceValues>,
+        previous_processor_values: Option<ProcessorPowerSourceValues>,
         fail_partial_processor_write: bool,
         fail_duplicate: bool,
         initialization_failure: Option<&'static str>,
@@ -1610,6 +1707,7 @@ mod tests {
                 verify_wrong_guid: false,
                 next_adaptive: 1,
                 processor_values: None,
+                previous_processor_values: None,
                 fail_partial_processor_write: false,
                 fail_duplicate: false,
                 initialization_failure: None,
@@ -1728,8 +1826,10 @@ mod tests {
             &mut self,
             guid: &str,
             values: ProcessorPowerSourceValues,
+            previous: Option<ProcessorPowerSourceValues>,
         ) -> Result<(), String> {
             self.events.borrow_mut().push(format!("configure:{guid}"));
+            self.previous_processor_values = previous;
             if std::mem::take(&mut self.fail_partial_processor_write) {
                 self.processor_values.get_or_insert(values).ac = values.ac;
                 return Err("injected partial processor write".into());
@@ -2769,6 +2869,7 @@ mod tests {
             has_efficiency_cores: false,
             background_pressure_profile: AdaptivePowerBoostValues::BACKGROUND_PRESSURE,
             focus_and_launch_profile: AdaptivePowerBoostValues::FOCUS_AND_LAUNCH,
+            restraint_core_parking: None,
         }
     }
 

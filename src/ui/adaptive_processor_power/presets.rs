@@ -1,4 +1,7 @@
-use super::{design, edit_settings, scrollable, widgets, Editor, Message, PRESET_NAME_INPUT_ID};
+use super::{
+    design, edit_settings, scrollable, widgets, Editor, Message, PRESET_NAME_INPUT_ID,
+    RESTRAINT_CORE_PARKING_MIN_LABEL,
+};
 use crate::application::SettingsEditor;
 use crate::config::{AdaptiveEngineSettings, AdaptiveProcessorPowerPreset, PowerSourceProfile};
 use crate::power::{AdaptivePowerBoostValues, ProcessorBoostMode, ProcessorPowerValues};
@@ -124,6 +127,7 @@ impl BuiltInPreset {
                 ProcessorBoostMode::EfficientAggressive,
             ),
         };
+        settings.restraint_core_parking_min = 0;
         for (profile, defaults) in [
             (
                 &mut settings.background_pressure_profile,
@@ -505,6 +509,10 @@ impl PresetPreview {
         let mut values = AdaptiveEngineSettings::default();
         self.preset.apply(&mut values, self.source);
         let base = values.base_processor_policy;
+        let restraint_core_parking = match values.restraint_core_parking_min {
+            0 => t!("adaptive_processor_power.restraint_core_parking_min_normal").into_owned(),
+            percent => format!("{percent}%"),
+        };
         let demand_rows = |boost: AdaptivePowerBoostValues| {
             let (policy, mode) = match self.source {
                 PowerSourceProfile::PluggedIn => (boost.ac_policy, boost.ac_mode),
@@ -526,6 +534,7 @@ impl PresetPreview {
                 "adaptive_processor_power.base_processor_policy",
                 [
                     preview_percent("processor_power.core_parking_min", base.core_parking_min),
+                    preview_row(RESTRAINT_CORE_PARKING_MIN_LABEL, restraint_core_parking),
                     preview_percent("processor_power.processor_min", base.performance_min),
                     preview_percent("processor_power.processor_max", base.performance_max),
                     preview_percent("processor_power.boost_policy", base.boost_policy),

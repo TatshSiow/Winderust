@@ -1664,6 +1664,7 @@ fn adaptive_processor_power_waits_only_for_source_dependent_policy() {
     let battery = &mut settings.battery_profile_mut().adaptive_engine;
     battery.enabled = true;
     battery.base_processor_policy.core_parking_min = 101;
+    battery.restraint_core_parking_min = 75;
     assert!(!adaptive_power_plan_waits_for_source(&settings, None));
 
     settings

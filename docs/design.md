@@ -222,6 +222,9 @@ hover/press; background shading supplies feedback.
 - Adaptive Processor Power lives under Power Plan Control. Its Plugged In and On Battery editors each have an enable switch, off by default, with a Preset dropdown below it. Both editors share the preset library. The dropdown stages tuning for the selected source. The Presets tab opens a read-only preview of the base policy and demand values for that source. Use preset stages the preview, and closing it preserves existing edits. Add preset names a copy of the selected source's tuning. List edits and tuning use the shared Save and Discard flow. Configuration remains editable while the feature is off.
 - The Base Processor Policy tab shows the Idle settings and the baseline inherited by higher-demand profiles. The Demand Profiles tab explains automatic profile selection and shows one boost policy and one boost mode each for Background Pressure and Focus and Launch.
 - The Adaptive Processor Power Status rail reports live ownership, errors, and restoration. The source profile selected for editing can differ from the live power source.
+- Minimum unparked during CPU restraint follows the normal core parking control in Base
+  Processor Policy. Its help explains the temporary plan and processor-class scope.
+  Preset previews name the normal policy at 0% and show the configured percentage otherwise.
 - Prefer one setting per row when possible.
 - Use collapsible setting groups for advanced or multi-row settings.
 - Multi-setting cards use subtle 1px neutral, theme-aware dividers between complete settings, with even inset spacing. Keep labels, descriptions, and associated controls together. Expanded groups separate their header and body with the same divider; single-setting cards have no extra leading/trailing rules. Use shared widgets helpers and preserve dense table styling.

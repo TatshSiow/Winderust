@@ -8,7 +8,13 @@ fn select_preset(editor: &mut Editor, settings: &mut SettingsEditor, message: Me
 
 #[test]
 fn preview_cancel_preserves_the_editor_and_use_stages_only_the_selected_source() {
-    let mut settings = SettingsEditor::with_settings(Settings::default());
+    let mut saved = Settings::default();
+    saved.adaptive_engine.restraint_core_parking_min = 85;
+    saved
+        .battery_profile_mut()
+        .adaptive_engine
+        .restraint_core_parking_min = 65;
+    let mut settings = SettingsEditor::with_settings(saved);
     settings.select_power_source(PowerSourceProfile::OnBattery);
     let mut editor = Editor::default();
     let prior = settings.global().clone();
@@ -41,6 +47,7 @@ fn preview_cancel_preserves_the_editor_and_use_stages_only_the_selected_source()
             .performance_max,
         95
     );
+    assert_eq!(settings.adaptive_engine.restraint_core_parking_min, 0);
     assert_eq!(settings.global().adaptive_engine, prior.adaptive_engine);
     assert_eq!(settings.persisted(), &prior);
 }
