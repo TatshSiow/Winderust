@@ -662,6 +662,111 @@ mod tests {
     }
 
     #[test]
+    fn adaptive_engine_reuses_the_catalogue_only_for_known_system_pressure() {
+        use crate::{
+            config::{AdaptiveEngineProcessSettings, AdaptivePressureSource},
+            features::cpu_control::adaptive_engine_process::{
+                AdaptiveEngineProcessManager, AdaptiveEngineProcessUpdate,
+            },
+        };
+
+        #[derive(PartialEq, Eq)]
+        enum ExpectedPass {
+            Quiet,
+            SystemPressure,
+            ChangedAncestry,
+        }
+        use ExpectedPass::{ChangedAncestry, Quiet, SystemPressure};
+
+        fn catalogue_with_child() -> Result<Vec<ProcessInfo>, String> {
+            let mut rows = processes()?;
+            rows[0].can_set_information = false;
+            rows.push(ProcessInfo {
+                id: 101,
+                parent_id: Some(42),
+                creation_time: Some(2),
+                ..rows[0].clone()
+            });
+            Ok(rows)
+        }
+
+        let _guard = TEST_LOCK.lock().unwrap();
+        let foreground = Arc::from(processes().unwrap());
+        let mut manager = AdaptiveEngineProcessManager::default();
+        let mut allocation = Default::default();
+        let mut priority = Default::default();
+        let mut log = ActionLog::default();
+        for (case, threshold, system_cpu, expected) in [
+            ("fresh recovery band", 75, Some(72.0), Quiet),
+            ("entry", 75, Some(80.0), SystemPressure),
+            ("held recovery band", 75, Some(72.0), SystemPressure),
+            ("below recovery", 75, Some(69.0), Quiet),
+            ("re-entry", 75, Some(80.0), SystemPressure),
+            ("threshold changed", 76, Some(73.0), Quiet),
+            ("entry with new threshold", 76, Some(80.0), SystemPressure),
+            ("both signals unknown", 76, None, ChangedAncestry),
+        ] {
+            let settings = AdaptiveEngineProcessSettings {
+                dynamic_resource_zones_enabled: true,
+                pressure_source: AdaptivePressureSource::Either,
+                foreground_or_system_cpu_threshold_percent: threshold,
+                ..Default::default()
+            };
+            let mut observations = CycleObservations {
+                foreground_ancestry: if expected == SystemPressure {
+                    Observation::Unavailable("unexpected standalone ancestry read".into())
+                } else {
+                    Observation::Available(Arc::clone(&foreground))
+                },
+                foreground_process_id: Observation::Available(Some(42)),
+                adaptive_cpu_sample: Some(None),
+                sources: ObservationSources {
+                    process_entries: catalogue_with_child,
+                    process_metadata: |_| {},
+                    visible_window_process_ids: || Some(BTreeSet::new()),
+                    ..ObservationSources::default()
+                },
+                ..CycleObservations::default()
+            };
+            let status = manager.update(
+                AdaptiveEngineProcessUpdate {
+                    settings: &settings,
+                    automation_enabled: true,
+                    allow_cross_session_process_control: true,
+                    foreground_process_id: Some(42),
+                    total_cpu_usage_percent: system_cpu,
+                    user_idle_for: None,
+                    excluded_process_id: Some(42),
+                    explicit_cpu_allocation_paths: &[],
+                    observations: &mut observations,
+                },
+                &mut allocation,
+                &mut priority,
+                &mut log,
+            );
+            assert_eq!(
+                status.observation_paused,
+                expected == ChangedAncestry,
+                "{case}"
+            );
+            assert_eq!(
+                status.scanned_processes,
+                if expected == SystemPressure { 2 } else { 0 },
+                "{case}"
+            );
+            assert_eq!(
+                observations.availability().processes,
+                if expected == Quiet {
+                    ObservationAvailability::NotRequested
+                } else {
+                    ObservationAvailability::Available
+                },
+                "{case}"
+            );
+        }
+    }
+
+    #[test]
     fn adaptive_engine_only_enriches_catalogue_for_an_enabled_path_exclusion() {
         use crate::{
             config::{

@@ -511,25 +511,34 @@ impl AdaptiveEngineProcessManager {
                 observations.processes()
             }
         };
-        let foreground_processes =
-            match if cpu_pressure_restraint_should_run(settings, None, total_cpu_usage_percent) {
-                read_background_processes(observations)
-            } else {
-                observations.foreground_process_ancestry(foreground_id)
-            } {
-                Ok(processes) => processes,
-                Err(error) => {
-                    let mut status = self.pause_for_unknown_focus(
-                        settings.dynamic_resource_zones_enabled,
-                        restraint_idle_pause,
-                        cpu_allocation_coordinator,
-                        priority_efficiency_controller,
-                        action_log,
-                    );
-                    status.last_error.get_or_insert(error);
-                    return status;
-                }
-            };
+        let system_pressure_started =
+            cpu_pressure_restraint_should_run(settings, None, total_cpu_usage_percent);
+        let system_pressure_held = !system_pressure_started
+            && self.can_hold_background_pressure(settings)
+            && cpu_pressure_above_recovery_threshold(settings, None, total_cpu_usage_percent);
+        // System pressure already requires the full catalog, which also contains the ancestry.
+        let foreground_processes = match if system_pressure_started || system_pressure_held {
+            read_background_processes(observations)
+        } else {
+            observations.foreground_process_ancestry(foreground_id)
+        } {
+            Ok(processes) => processes,
+            Err(error) => {
+                let reason = if system_pressure_held {
+                    "process list unavailable"
+                } else {
+                    "foreground app is unknown"
+                };
+                return self.pause_for_observation_failure(
+                    settings.dynamic_resource_zones_enabled,
+                    restraint_idle_pause,
+                    cpu_allocation_coordinator,
+                    priority_efficiency_controller,
+                    action_log,
+                    (reason, Some(error)),
+                );
+            }
+        };
         let foreground_workload = observations.adaptive_workload(&foreground_processes);
         if foreground_workload.is_empty() {
             return self.pause_for_unknown_focus(
@@ -1759,48 +1768,35 @@ impl AdaptiveEngineProcessManager {
         self.failure_suppression.clear_process_failure(process_name);
     }
 
+    fn can_hold_background_pressure(&self, settings: &AdaptiveEngineProcessSettings) -> bool {
+        self.background_pressure_active
+            && !self
+                .allocation_settings
+                .as_ref()
+                .is_some_and(|previous| pressure_gate_changed(previous, settings))
+    }
+
     fn update_background_pressure(
         &mut self,
         settings: &AdaptiveEngineProcessSettings,
         foreground_cpu_usage_percent: Option<f32>,
         total_cpu_usage_percent: Option<f32>,
     ) -> bool {
-        if self
-            .allocation_settings
-            .as_ref()
-            .is_some_and(|previous| pressure_gate_changed(previous, settings))
-        {
-            self.background_pressure_active = false;
-        }
-        if cpu_pressure_restraint_should_run(
+        let either_pressure_unknown = settings.pressure_source == AdaptivePressureSource::Either
+            && foreground_cpu_usage_percent.is_none()
+            && total_cpu_usage_percent.is_none();
+        self.background_pressure_active = cpu_pressure_restraint_should_run(
             settings,
             foreground_cpu_usage_percent,
             total_cpu_usage_percent,
-        ) {
-            self.background_pressure_active = true;
-            return true;
-        }
-
-        if self.background_pressure_active
-            && settings.pressure_source == AdaptivePressureSource::Either
-            && foreground_cpu_usage_percent.is_none()
-            && total_cpu_usage_percent.is_none()
-        {
-            return true;
-        }
-
-        if self.background_pressure_active
-            && cpu_pressure_above_recovery_threshold(
-                settings,
-                foreground_cpu_usage_percent,
-                total_cpu_usage_percent,
-            )
-        {
-            return true;
-        }
-
-        self.background_pressure_active = false;
-        false
+        ) || (self.can_hold_background_pressure(settings)
+            && (either_pressure_unknown
+                || cpu_pressure_above_recovery_threshold(
+                    settings,
+                    foreground_cpu_usage_percent,
+                    total_cpu_usage_percent,
+                )));
+        self.background_pressure_active
     }
 
     fn update_adaptive_engine_process_sample(
