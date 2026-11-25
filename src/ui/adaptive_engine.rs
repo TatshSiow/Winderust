@@ -549,22 +549,39 @@ impl Editor {
         };
         let editable = !preset || self.preview.is_none();
         let mut body = column![].spacing(super::widgets::CARD_GAP);
-        macro_rules! number {($key:expr,$min:expr,$max:expr,$($field:ident).+) => {{
-            let key=stringify!($($field).+);
-            let min = $min;
-            let formatted;
-            let value = if let Some(draft) = numbers.drafts.get(key) {
-                &draft.text
-            } else {
-                formatted = s.$($field).+.to_string();
-                &formatted
-            };
-            let unit=if key.ends_with("_ms") {"ms"} else if key.ends_with("_seconds") {"s"} else if key.ends_with("_percent") || $max==100 {"%"} else {""};
-            row![setting_label_with_unit($key, unit).width(Fill),
-                super::widgets::stepper(value, min..=$max, 1,
-                    editable.then_some(move|v|Message::Number(|s,n|s.$($field).+ = n as _,v,min,$max,key,$key)))
-            ].spacing(design::space::SMALL).padding([design::space::CONTROL as u16, 0]).align_y(iced::Center)
-        }};}
+        macro_rules! number {
+            ($key:expr, $min:expr, $max:expr, $($field:ident).+) => {{
+                let key = stringify!($($field).+);
+                let draft = numbers.drafts.get(key);
+                let current = s.$($field).+;
+                let unit = if key.ends_with("_ms") {
+                    "ms"
+                } else if key.ends_with("_seconds") {
+                    "s"
+                } else if key.ends_with("_percent") || $max == 100 {
+                    "%"
+                } else {
+                    ""
+                };
+                super::widgets::numeric_setting($key, unit, move || {
+                    let formatted;
+                    let value = if let Some(draft) = draft {
+                        &draft.text
+                    } else {
+                        formatted = current.to_string();
+                        &formatted
+                    };
+                    super::widgets::stepper(
+                        value,
+                        $min..=$max,
+                        1,
+                        editable.then_some(move |value| {
+                            Message::Number(|s, n| s.$($field).+ = n as _, value, $min, $max, key, $key)
+                        }),
+                    )
+                })
+            }};
+        }
         macro_rules! selector {($s:ident,$key:expr,$ty:ty,$options:expr,$label:expr,$($field:ident).+) => {{let values:&[$ty]=$options;let selected=s.$($field).+;let control:Element<'_,Message>=if editable{pick_list(values.iter().copied().map(|v|Choice(v,$label(v))).collect::<Vec<_>>(),Some(Choice(selected,$label(selected))),move |v|Message::Choice(|$s,i|{let options:&[$ty]=$options;if let Some(v)=options.get(i){$s.$($field).+ = *v;}},values.iter().position(|x|*x==v.0).unwrap_or(0))).width(Fill).into()}else{text($label(selected)).into()};control}};}
         macro_rules! choice {($s:ident,$key:expr,$ty:ty,$options:expr,$label:expr,$($field:ident).+) => {row![setting_label($key).width(Fill),iced::widget::container(selector!($s,$key,$ty,$options,$label,$($field).+)).width(280)].spacing(design::space::SMALL).padding([design::space::CONTROL as u16, 0]).align_y(iced::Center)};}
         if !preset {
@@ -634,50 +651,43 @@ impl Editor {
                         1,
                         100,
                         adaptive_engine_process.background_app_cpu_threshold_percent
-                    )
-                    .into(),
+                    ),
                     number!(
                         "adaptive_engine_process.restraint_candidate_limit",
                         1,
                         64,
                         adaptive_engine_process.maximum_restrained_apps
-                    )
-                    .into(),
+                    ),
                     number!(
                         "adaptive_engine_process.reaction_time",
                         250,
                         5000,
                         adaptive_engine_process.reaction_time_ms
-                    )
-                    .into(),
+                    ),
                     number!(
                         "adaptive_engine_process.foreground_or_system_cpu_threshold",
                         1,
                         100,
                         adaptive_engine_process.foreground_or_system_cpu_threshold_percent
-                    )
-                    .into(),
+                    ),
                     number!(
                         "adaptive_engine_process.cpu_restraint_time",
                         1,
                         3600,
                         adaptive_engine_process.cpu_restraint_time_seconds
-                    )
-                    .into(),
+                    ),
                     number!(
                         "adaptive_engine_process.cpu_recovery_threshold",
                         1,
                         100,
                         adaptive_engine_process.cpu_recovery_threshold_percent
-                    )
-                    .into(),
+                    ),
                     number!(
                         "adaptive_engine_process.cpu_recovery_time",
                         1,
                         3600,
                         adaptive_engine_process.cpu_recovery_time_seconds
-                    )
-                    .into(),
+                    ),
                 ]);
                 body = body.push(super::widgets::setting_group(
                     "adaptive_engine_process.shared_detection".to_string(),
@@ -956,11 +966,7 @@ impl Editor {
     }
 }
 fn setting_label(key: &str) -> iced::widget::Column<'static, Message> {
-    setting_label_with_unit(key, "")
-}
-
-fn setting_label_with_unit(key: &str, unit: &str) -> iced::widget::Column<'static, Message> {
-    super::widgets::setting_title_with_help(key, unit, &format!("{key}_help"))
+    super::widgets::setting_title_with_unit(key, "")
 }
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct Choice<T>(pub(super) T, pub(super) String);

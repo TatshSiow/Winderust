@@ -162,12 +162,11 @@ impl Editor {
                 let key = stringify!(adaptive_engine.$($field).+);
                 let min = $min;
                 let formatted = s.adaptive_engine.$($field).+.to_string();
-                let value = numbers
-                    .drafts
-                    .get(key)
-                    .map_or(formatted.as_str(), |draft| draft.text.as_str());
-                row![
-                    widgets::setting_title_with_help($label, "%", $help).width(Fill),
+                widgets::numeric_setting_with_help($label, "%", $help, move || {
+                    let value = numbers
+                        .drafts
+                        .get(key)
+                        .map_or(formatted.as_str(), |draft| draft.text.as_str());
                     widgets::stepper(
                         value,
                         min..=100,
@@ -180,11 +179,8 @@ impl Editor {
                             key,
                             $label,
                         )),
-                    ),
-                ]
-                .spacing(design::space::SMALL)
-                .padding([design::space::CONTROL as u16, 0])
-                .align_y(iced::Center)
+                    )
+                })
             }};
         }
         macro_rules! boost {
@@ -202,8 +198,7 @@ impl Editor {
                         "adaptive_processor_power.profile_boost_policy_help",
                         0,
                         adaptive_engine.$profile.$policy
-                    )
-                    .into(),
+                    ),
                     boost!(
                         "adaptive_processor_power.profile_boost_mode_help",
                         adaptive_engine.$profile.$mode
@@ -211,7 +206,6 @@ impl Editor {
                 ]))
             };
         }
-        let error = self.validation_error();
         let source = s.selected_power_source();
         let tabs = row![
             widgets::panel_tab(
@@ -253,21 +247,13 @@ impl Editor {
         .spacing(widgets::CARD_GAP);
         match self.tab {
             Tab::BasePolicy => {
-                body = body.push(widgets::settings_card(widgets::settings_rows([
-                    number!(
-                        "processor_power.core_parking_min",
-                        "adaptive_processor_power.core_parking_min_help",
-                        0,
-                        adaptive_engine.base_processor_policy.core_parking_min
-                    )
-                    .into(),
+                let processor_range = column![
                     number!(
                         "processor_power.processor_min",
                         "adaptive_processor_power.processor_min_help",
                         0,
                         adaptive_engine.base_processor_policy.performance_min
-                    )
-                    .into(),
+                    ),
                     number!(
                         "processor_power.processor_max",
                         "adaptive_processor_power.processor_max_help",
@@ -278,15 +264,32 @@ impl Editor {
                                 .min(100)
                         ),
                         adaptive_engine.base_processor_policy.performance_max
-                    )
-                    .into(),
+                    ),
+                ]
+                .spacing(design::space::SMALL)
+                .extend(
+                    [PROCESSOR_MIN_FIELD, PROCESSOR_MAX_FIELD]
+                        .into_iter()
+                        .filter_map(|key| {
+                            numbers.drafts.get(key)?.invalid.map(|invalid| {
+                                text(number_error(invalid)).style(text::danger).into()
+                            })
+                        }),
+                );
+                body = body.push(widgets::settings_card(widgets::settings_rows([
+                    number!(
+                        "processor_power.core_parking_min",
+                        "adaptive_processor_power.core_parking_min_help",
+                        0,
+                        adaptive_engine.base_processor_policy.core_parking_min
+                    ),
+                    processor_range.into(),
                     number!(
                         "processor_power.boost_policy",
                         "adaptive_processor_power.base_boost_policy_help",
                         0,
                         adaptive_engine.base_processor_policy.boost_policy
-                    )
-                    .into(),
+                    ),
                     boost!(
                         "adaptive_processor_power.base_boost_mode_help",
                         adaptive_engine.base_processor_policy.boost_mode
@@ -316,7 +319,13 @@ impl Editor {
                     .push(focus_and_launch);
             }
         }
-        if let Some(error) = error {
+        let range_is_visible = self.tab == Tab::BasePolicy;
+        if let Some(error) = numbers.drafts.iter().find_map(|(key, draft)| {
+            if range_is_visible && matches!(*key, PROCESSOR_MIN_FIELD | PROCESSOR_MAX_FIELD) {
+                return None;
+            }
+            draft.invalid.map(number_error)
+        }) {
             body = body.push(text(error).style(text::danger));
         }
         scrollable(body)
@@ -325,6 +334,10 @@ impl Editor {
             .height(Fill)
             .into()
     }
+}
+
+fn number_error((min, max, label): (u64, u64, &'static str)) -> String {
+    format!("{}: {min}..{max}", t!(label))
 }
 
 fn edit_settings(settings: &mut SettingsEditor, update: impl FnOnce(&mut AdaptiveEngineSettings)) {
@@ -465,8 +478,8 @@ mod tests {
                 for card in body.children().skip(4).step_by(2) {
                     let rows = unwrap_single_child(card);
                     assert_eq!(rows.children().len(), 3, "one policy, divider and mode");
-                    let policy = rows.children().next().unwrap();
-                    let stepper = policy.children().last().unwrap();
+                    let policy = unwrap_single_child(rows.children().next().unwrap());
+                    let stepper = unwrap_single_child(policy.children().last().unwrap());
                     let increment = stepper.children().last().unwrap().bounds().center();
                     for event in [
                         mouse::Event::ButtonPressed(mouse::Button::Left),

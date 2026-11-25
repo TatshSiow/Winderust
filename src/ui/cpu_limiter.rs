@@ -735,7 +735,7 @@ impl CpuLimiter {
 
 fn affinity_rows<'a>(
     limit: &CpuLimiterAffinityLimit,
-    editor: &AffinityEditor,
+    editor: &'a AffinityEditor,
 ) -> (Vec<Element<'a, Message>>, bool) {
     let total = editor.catalog.processor_count();
     let count = limit.selection.processors().len();
@@ -759,23 +759,32 @@ fn affinity_rows<'a>(
             .focus_id(CHOOSE_PROCESSORS_ID)
             .on_press(Message::ChooseProcessors),
     );
+    let trigger_range = CpuLimiterAffinityLimit::TRIGGER_RANGE;
+    let trigger = editor
+        .trigger
+        .parse()
+        .ok()
+        .filter(|value| trigger_range.contains(value))
+        .unwrap_or(limit.trigger_percent);
     let mut rows = vec![
         widgets::setting_row("cpu_allocation.selected_logical_cpus", choose).into(),
-        widgets::setting_row_with_unit(
-            "cpu_limiter.affinity_trigger",
-            "%",
-            text_input("1–100", &editor.trigger)
-                .on_input(Message::AffinityTrigger)
-                .width(design::NUMERIC_WIDTH),
-        )
-        .into(),
-        widgets::setting_row(
-            "cpu_limiter.affinity_sustain",
-            text_input("1–600", &editor.sustain)
-                .on_input(Message::AffinitySustain)
-                .width(design::NUMERIC_WIDTH),
-        )
-        .into(),
+        widgets::slider_setting("cpu_limiter.affinity_trigger", "%", move || {
+            widgets::slider_stepper(
+                u64::from(trigger),
+                Some(&editor.trigger),
+                u32::from(*trigger_range.start())..=u32::from(*trigger_range.end()),
+                1,
+                Message::AffinityTrigger,
+            )
+        }),
+        widgets::numeric_setting("cpu_limiter.affinity_sustain", "", move || {
+            widgets::stepper(
+                &editor.sustain,
+                CpuLimiterAffinityLimit::SUSTAIN_RANGE,
+                1,
+                Some(Message::AffinitySustain),
+            )
+        }),
     ];
     let values = editor.values();
     let selection_valid = selection_error.is_none() && count > 0;

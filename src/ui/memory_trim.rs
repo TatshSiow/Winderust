@@ -1,5 +1,5 @@
 use super::design;
-use super::widgets::{checkbox, heading, text_input};
+use super::widgets::{checkbox, heading, numeric_setting, stepper};
 use crate::application::SettingsEditor;
 use crate::config::MemoryTrimSettings;
 use crate::memory_trim::{size_label, MemoryTrimReadback, MemoryTrimSnapshot, MemoryTrimStatus};
@@ -231,21 +231,17 @@ impl Editor {
         settings: &'a MemoryTrimSettings,
         candidates: &'a [super::app_picker::Candidate],
     ) -> Element<'a, Message> {
-        let field = |field: Threshold, unit: &str| {
-            let formatted;
-            let raw = if let Some(raw) = &self.thresholds[field as usize] {
-                raw
-            } else {
-                formatted = field.value(settings).to_string();
-                &formatted
-            };
-            super::widgets::setting_row_with_unit(
-                field.label_and_maximum().0,
-                unit,
-                text_input("", raw)
-                    .on_input(move |raw| Message::Threshold(field, raw))
-                    .width(design::STANDALONE_NUMERIC_WIDTH),
-            )
+        let field = |field: Threshold, unit: &'static str| {
+            let (label, maximum) = field.label_and_maximum();
+            numeric_setting(label, unit, move || {
+                let raw = self.thresholds[field as usize].as_deref();
+                stepper(
+                    raw.unwrap_or(&field.value(settings).to_string()),
+                    1..=maximum,
+                    1,
+                    Some(move |raw| Message::Threshold(field, raw)),
+                )
+            })
         };
         let mut body = column![super::widgets::setting_group(
             "memory_trim.enable".to_string(),
@@ -253,9 +249,9 @@ impl Editor {
             Message::ToggleSettings,
             super::widgets::switch(settings.enabled, Some(Message::Enabled)),
             super::widgets::settings_rows([
-                field(Threshold::Load, "%").into(),
-                field(Threshold::WorkingSet, "MB").into(),
-                field(Threshold::Idle, "s").into(),
+                field(Threshold::Load, "%"),
+                field(Threshold::WorkingSet, "MB"),
+                field(Threshold::Idle, "s"),
             ]),
         )]
         .spacing(super::widgets::CARD_GAP);

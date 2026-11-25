@@ -41,6 +41,7 @@ pub(super) const RULE_STATUS_WIDTH: u32 = 140;
 pub(super) const RULE_ACTIONS_WIDTH: u32 = 80;
 const SLIDER_CONTROL_WIDTH: u32 = 320;
 const SLIDER_INLINE_MIN_WIDTH: f32 = 600.0;
+const NUMERIC_INLINE_MIN_WIDTH: f32 = 400.0;
 
 pub(super) fn rules_table<'a, M: 'a>(
     header: iced::widget::Row<'a, M>,
@@ -1059,12 +1060,16 @@ pub(super) fn setting_row_with_unit<'a, M: 'a>(
     unit: &str,
     action: impl Into<Element<'a, M>>,
 ) -> iced::widget::Row<'a, M> {
-    row![
-        iced::widget::container(setting_title_with_unit(key, unit)).width(Fill),
-        action.into()
-    ]
-    .spacing(design::space::MEDIUM)
-    .align_y(iced::Center)
+    setting_row_with_title(setting_title_with_unit(key, unit), action.into())
+}
+
+fn setting_row_with_title<'a, M: 'a>(
+    title: iced::widget::Column<'a, M>,
+    action: Element<'a, M>,
+) -> Row<'a, M> {
+    row![container(title).width(Fill), action]
+        .spacing(design::space::MEDIUM)
+        .align_y(iced::Center)
 }
 
 pub(super) fn slider_setting<'a, M: 'a>(
@@ -1072,12 +1077,50 @@ pub(super) fn slider_setting<'a, M: 'a>(
     unit: &'a str,
     control: impl Fn() -> Row<'a, M> + 'a,
 ) -> Element<'a, M> {
+    bounded_setting(
+        SLIDER_INLINE_MIN_WIDTH,
+        move || setting_title_with_unit(key, unit),
+        move || control().width(SLIDER_CONTROL_WIDTH).into(),
+    )
+}
+
+pub(super) fn numeric_setting<'a, M: 'a>(
+    key: &'a str,
+    unit: &'a str,
+    control: impl Fn() -> Element<'a, M> + 'a,
+) -> Element<'a, M> {
+    bounded_setting(
+        NUMERIC_INLINE_MIN_WIDTH,
+        move || setting_title_with_unit(key, unit),
+        control,
+    )
+}
+
+pub(super) fn numeric_setting_with_help<'a, M: 'a>(
+    key: &'a str,
+    unit: &'a str,
+    help_key: &'a str,
+    control: impl Fn() -> Element<'a, M> + 'a,
+) -> Element<'a, M> {
+    bounded_setting(
+        NUMERIC_INLINE_MIN_WIDTH,
+        move || setting_title_with_help(key, unit, help_key),
+        control,
+    )
+}
+
+fn bounded_setting<'a, M: 'a>(
+    inline_min_width: f32,
+    title: impl Fn() -> iced::widget::Column<'a, M> + 'a,
+    control: impl Fn() -> Element<'a, M> + 'a,
+) -> Element<'a, M> {
     responsive(move |size| {
+        let title = title();
         let control = control();
-        if size.width >= SLIDER_INLINE_MIN_WIDTH {
-            setting_row_with_unit(key, unit, control.width(SLIDER_CONTROL_WIDTH)).into()
+        if size.width >= inline_min_width {
+            setting_row_with_title(title, control).into()
         } else {
-            column![setting_title_with_unit(key, unit), trailing_slider(control)]
+            column![title, container(control).align_right(Fill)]
                 .spacing(design::space::SMALL)
                 .into()
         }

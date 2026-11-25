@@ -555,17 +555,19 @@ impl Editor {
                 )
             })
             .collect();
-        let mut duration = column![widgets::setting_row_with_unit(
+        let mut duration = column![widgets::numeric_setting(
             "resource_thresholds.duration",
             "s",
-            widgets::text_input(
-                "",
-                self.duration
-                    .as_deref()
-                    .unwrap_or(&settings.sustained_seconds.to_string()),
-            )
-            .on_input(Message::Duration)
-            .width(design::STANDALONE_NUMERIC_WIDTH),
+            move || {
+                widgets::stepper(
+                    self.duration
+                        .as_deref()
+                        .unwrap_or(&settings.sustained_seconds.to_string()),
+                    RESOURCE_THRESHOLDS_DURATION_RANGE,
+                    1,
+                    Some(Message::Duration),
+                )
+            }
         )]
         .spacing(design::space::SMALL);
         if self.has_invalid_inputs() {
@@ -710,13 +712,17 @@ impl Editor {
                     ),
                     design::typography::BODY,
                 ),
-                widgets::setting_row_with_unit(
+                widgets::numeric_setting(
                     "resource_thresholds.threshold",
                     metric.unit(),
-                    widgets::text_input("", threshold)
-                        .on_input(move |value| Message::Threshold(resource, critical, value))
-                        .on_submit(Message::SaveRule)
-                        .width(design::STANDALONE_NUMERIC_WIDTH),
+                    move || {
+                        widgets::text_input("", threshold)
+                            .align_x(iced::alignment::Horizontal::Center)
+                            .on_input(move |value| Message::Threshold(resource, critical, value))
+                            .on_submit(Message::SaveRule)
+                            .width(design::STANDALONE_NUMERIC_WIDTH)
+                            .into()
+                    }
                 ),
             ]
             .spacing(design::space::MEDIUM);
@@ -921,6 +927,7 @@ impl Editor {
             "resource_thresholds.rule_duration",
             "s",
             widgets::text_input(&t!("common.default"), &draft.duration)
+                .align_x(iced::alignment::Horizontal::Center)
                 .on_input(Message::RuleDuration)
                 .on_submit(Message::SaveRule)
                 .width(design::STANDALONE_NUMERIC_WIDTH),

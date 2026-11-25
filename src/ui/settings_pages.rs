@@ -1,6 +1,9 @@
 use super::design;
 use super::widgets::{self, Choice};
 use super::widgets::{action_button, button, pick_list, text_input};
+use crate::rules::execution_failure::{
+    MAX_EXECUTION_FAILURE_SUPPRESSION_THRESHOLD, MIN_EXECUTION_FAILURE_SUPPRESSION_THRESHOLD,
+};
 use crate::ui::scrolling::scrollable;
 use crate::{config::*, ui::Page};
 use iced::widget::{column, row, text};
@@ -527,21 +530,23 @@ impl Editor {
                         Flag::CrossSession
                     )
                     .into(),
-                    widgets::setting_row(
+                    widgets::numeric_setting(
                         "settings.failure_suppression_threshold",
-                        text_input(
-                            "",
-                            self.failure_threshold.as_deref().unwrap_or(
-                                &s.advanced
-                                    .execution_failure_suppression_threshold
-                                    .to_string()
+                        "",
+                        move || {
+                            widgets::stepper(
+                                self.failure_threshold.as_deref().unwrap_or(
+                                    &s.advanced
+                                        .execution_failure_suppression_threshold
+                                        .to_string(),
+                                ),
+                                u64::from(MIN_EXECUTION_FAILURE_SUPPRESSION_THRESHOLD)
+                                    ..=u64::from(MAX_EXECUTION_FAILURE_SUPPRESSION_THRESHOLD),
+                                1,
+                                Some(Message::FailureThreshold),
                             )
-                        )
-                        .on_input(Message::FailureThreshold)
-                        .align_x(iced::Center)
-                        .width(design::STANDALONE_NUMERIC_WIDTH),
-                    )
-                    .into(),
+                        },
+                    ),
                 ])),
                 widgets::heading(
                     t!("settings.keyboard_shortcuts").to_string(),

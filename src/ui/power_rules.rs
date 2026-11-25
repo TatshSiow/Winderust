@@ -732,6 +732,71 @@ impl Editor {
                     .push(widgets::settings_card(schedule));
             }
             RuleRef::Cpu(r) => {
+                let invalid_input = |field| {
+                    self.inputs
+                        .get(&(id, field))
+                        .is_some_and(|value| !valid_input(field, value))
+                };
+                let between = r.comparison == CpuUsageComparison::Between;
+                let upper_threshold = r.upper_threshold_percent.unwrap_or(CpuLoadPercent::MAX);
+                let lower = (!invalid_input(Field::Threshold)).then_some(r.threshold_percent);
+                let upper = (!between || !invalid_input(Field::Upper)).then_some(upper_threshold);
+                let invalid_range = between && lower.zip(upper).is_some_and(|(lo, hi)| lo > hi);
+                let feedback = |message| {
+                    text(message)
+                        .wrapping(text::Wrapping::WordOrGlyph)
+                        .style(text::danger)
+                };
+                let invalid_duration = || {
+                    feedback(
+                        t!(
+                            "by_cpu_load.invalid_duration",
+                            maximum = ByCpuLoadRule::MAX_DURATION_SECONDS
+                        )
+                        .to_string(),
+                    )
+                    .into()
+                };
+                let mut entry = column![self.number(
+                    (id, index),
+                    Field::Threshold,
+                    if between {
+                        "by_cpu_load.lower_threshold"
+                    } else {
+                        "by_cpu_load.threshold"
+                    },
+                    u64::from(r.threshold_percent.get()),
+                    Message::Threshold,
+                )]
+                .spacing(design::space::SMALL);
+                if between {
+                    entry = entry.push(self.number(
+                        (id, index),
+                        Field::Upper,
+                        "by_cpu_load.upper_threshold",
+                        u64::from(upper_threshold.get()),
+                        Message::Upper,
+                    ));
+                }
+                let entry = entry
+                    .extend(
+                        (lower.is_none() || upper.is_none()).then(|| {
+                            feedback(t!("by_cpu_load.invalid_threshold").to_string()).into()
+                        }),
+                    )
+                    .extend(
+                        invalid_range
+                            .then(|| feedback(t!("by_cpu_load.invalid_range").to_string()).into()),
+                    );
+                let duration = column![self.number(
+                    (id, index),
+                    Field::Duration,
+                    "by_cpu_load.duration",
+                    r.duration_seconds,
+                    Message::Duration,
+                )]
+                .spacing(design::space::SMALL)
+                .extend(invalid_input(Field::Duration).then(invalid_duration));
                 let choices = vec![
                     Choice(
                         CpuUsageComparison::AtOrBelow,
@@ -747,45 +812,16 @@ impl Editor {
                     ),
                 ];
                 let selected = choices.iter().find(|c| c.0 == r.comparison).cloned();
-                let condition = widgets::settings_rows([
+                let mut condition = widgets::settings_rows([
                     widgets::setting_row(
                         "by_cpu_load.if",
                         pick_list(choices, selected, move |v| Message::Comparison(index, v.0))
                             .width(design::SELECT_WIDTH),
                     )
                     .into(),
-                    self.number(
-                        (id, index),
-                        Field::Threshold,
-                        "by_cpu_load.threshold",
-                        u64::from(r.threshold_percent.get()),
-                        Message::Threshold,
-                    ),
+                    entry.into(),
+                    duration.into(),
                 ]);
-                let upper = self.number(
-                    (id, index),
-                    Field::Upper,
-                    "by_cpu_load.upper_threshold",
-                    u64::from(
-                        r.upper_threshold_percent
-                            .unwrap_or(CpuLoadPercent::MAX)
-                            .get(),
-                    ),
-                    Message::Upper,
-                );
-                let mut condition = condition
-                    .push(widgets::optional_content(
-                        column![widgets::settings_divider(), upper].spacing(design::space::MEDIUM),
-                        r.comparison == CpuUsageComparison::Between,
-                    ))
-                    .push(widgets::settings_divider())
-                    .push(self.number(
-                        (id, index),
-                        Field::Duration,
-                        "by_cpu_load.duration",
-                        r.duration_seconds,
-                        Message::Duration,
-                    ));
                 if r.comparison != CpuUsageComparison::Else {
                     condition =
                         condition
@@ -799,21 +835,20 @@ impl Editor {
                             ));
                 }
                 if let Some(stability) = &r.stability {
-                    condition = condition
-                        .push(widgets::settings_divider())
-                        .push(self.number(
-                            (id, index),
-                            Field::ExitThreshold,
-                            if r.comparison == CpuUsageComparison::AtOrBelow {
-                                "by_cpu_load.release_above"
-                            } else {
-                                "by_cpu_load.release_below"
-                            },
-                            u64::from(stability.exit_threshold_percent.get()),
-                            Message::ExitThreshold,
-                        ));
-                    if r.comparison == CpuUsageComparison::Between {
-                        condition = condition.push(widgets::settings_divider()).push(
+                    let mut release = column![self.number(
+                        (id, index),
+                        Field::ExitThreshold,
+                        if r.comparison == CpuUsageComparison::AtOrBelow {
+                            "by_cpu_load.release_above"
+                        } else {
+                            "by_cpu_load.release_below"
+                        },
+                        u64::from(stability.exit_threshold_percent.get()),
+                        Message::ExitThreshold,
+                    )]
+                    .spacing(design::space::SMALL);
+                    if between {
+                        release = release.push(
                             self.number(
                                 (id, index),
                                 Field::ExitUpper,
@@ -828,15 +863,27 @@ impl Editor {
                             ),
                         );
                     }
+                    let invalid_release = invalid_input(Field::ExitThreshold)
+                        || invalid_input(Field::ExitUpper)
+                        || r.validate_stability_for_entry(lower, upper).is_err();
+                    let release =
+                        release.extend(invalid_release.then(|| {
+                            feedback(t!("by_cpu_load.invalid_stability").to_string()).into()
+                        }));
+                    let minimum_hold = column![self.number(
+                        (id, index),
+                        Field::MinimumHold,
+                        "by_cpu_load.minimum_hold",
+                        stability.minimum_hold_seconds,
+                        Message::MinimumHold,
+                    )]
+                    .spacing(design::space::SMALL)
+                    .extend(invalid_input(Field::MinimumHold).then(invalid_duration));
                     condition = condition
                         .push(widgets::settings_divider())
-                        .push(self.number(
-                            (id, index),
-                            Field::MinimumHold,
-                            "by_cpu_load.minimum_hold",
-                            stability.minimum_hold_seconds,
-                            Message::MinimumHold,
-                        ));
+                        .push(release)
+                        .push(widgets::settings_divider())
+                        .push(minimum_hold);
                 }
                 let mut plan_controls = widgets::settings_rows([
                     widgets::setting_row(
@@ -863,54 +910,12 @@ impl Editor {
                     .spacing(design::space::MEDIUM),
                     r.else_enabled,
                 ));
-                let invalid_input = |field| {
-                    self.inputs
-                        .get(&(id, field))
-                        .is_some_and(|value| !valid_input(field, value))
-                };
-                let between = r.comparison == CpuUsageComparison::Between;
-                let lower = (!invalid_input(Field::Threshold)).then_some(r.threshold_percent);
-                let upper = (!(between && invalid_input(Field::Upper)))
-                    .then_some(r.upper_threshold_percent.unwrap_or(CpuLoadPercent::MAX));
-                let invalid_range = between && lower.zip(upper).is_some_and(|(lo, hi)| lo > hi);
-                let invalid_stability =
-                    [Field::ExitThreshold, Field::ExitUpper, Field::MinimumHold]
-                        .into_iter()
-                        .any(invalid_input)
-                        || r.validate_stability_for_entry(lower, upper).is_err();
-                let feedback = |message| {
-                    text(message)
-                        .wrapping(text::Wrapping::WordOrGlyph)
-                        .style(text::danger)
-                };
                 controls = controls
                     .push(widgets::heading(
                         t!("by_cpu_load.condition").to_string(),
                         design::typography::BODY,
                     ))
                     .push(widgets::settings_card(condition))
-                    .push(widgets::optional_content(
-                        feedback(t!("by_cpu_load.invalid_threshold").to_string()),
-                        lower.is_none() || upper.is_none(),
-                    ))
-                    .push(widgets::optional_content(
-                        feedback(
-                            t!(
-                                "by_cpu_load.invalid_duration",
-                                maximum = ByCpuLoadRule::MAX_DURATION_SECONDS
-                            )
-                            .to_string(),
-                        ),
-                        invalid_input(Field::Duration),
-                    ))
-                    .push(widgets::optional_content(
-                        feedback(t!("by_cpu_load.invalid_range").to_string()),
-                        invalid_range,
-                    ))
-                    .push(widgets::optional_content(
-                        feedback(t!("by_cpu_load.invalid_stability").to_string()),
-                        invalid_stability,
-                    ))
                     .push(widgets::heading(
                         t!("common.power_plan_selection").to_string(),
                         design::typography::BODY,
@@ -1012,15 +1017,29 @@ impl Editor {
         action: fn(usize, String) -> Message,
     ) -> Element<'_, Message> {
         let (id, index) = target;
-        let (unit, max) = if matches!(field, Field::Duration | Field::MinimumHold) {
-            ("s", 86_400)
-        } else {
-            ("%", u32::from(CpuLoadPercent::MAX.get()))
-        };
         let draft = self.input(id, field);
-        widgets::slider_setting(label, unit, move || {
-            widgets::slider_stepper(value, draft, 0..=max, 1, move |v| action(index, v))
-        })
+        let action = move |value| action(index, value);
+        if matches!(field, Field::Duration | Field::MinimumHold) {
+            let input = draft.map_or_else(|| value.to_string(), str::to_owned);
+            widgets::numeric_setting(label, "s", move || {
+                widgets::stepper(
+                    &input,
+                    0..=ByCpuLoadRule::MAX_DURATION_SECONDS,
+                    1,
+                    Some(action),
+                )
+            })
+        } else {
+            widgets::slider_setting(label, "%", move || {
+                widgets::slider_stepper(
+                    value,
+                    draft,
+                    0..=u32::from(CpuLoadPercent::MAX.get()),
+                    1,
+                    action,
+                )
+            })
+        }
     }
 }
 fn initial_stability(rule: &ByCpuLoadRule) -> ByCpuLoadStability {

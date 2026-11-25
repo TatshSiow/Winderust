@@ -2,7 +2,7 @@ use super::widgets::{
     action_button, icon_button, pick_list, power_plan_label, preset_select,
     processor_boost_mode_label, text_input,
 };
-use super::{design, power_plan_control};
+use super::{design, power_plan_control, widgets};
 use crate::application::{
     AdvancedPowerPlanTuningApplyError, AdvancedPowerPlanTuningError,
     AdvancedPowerPlanTuningService, SettingsEditor,
@@ -112,6 +112,21 @@ impl InvalidPercentages {
             .as_ref()
             .map(|_| text(t!("processor_power.invalid_percentage").to_string()).style(text::danger))
     }
+
+    fn processor_range_feedback(
+        &self,
+        minimum: u32,
+        maximum: u32,
+    ) -> Option<iced::widget::Text<'static>> {
+        (maximum < minimum
+            && self.0[Field::Minimum as usize].is_none()
+            && self.0[Field::Maximum as usize].is_none())
+        .then(|| text(processor_range_error(minimum)).style(text::danger))
+    }
+}
+
+fn processor_range_error(minimum: u32) -> String {
+    t!("processor_power.invalid_processor_range", minimum = minimum).into_owned()
 }
 #[derive(Debug, Clone, Copy)]
 pub(super) enum SchedulingField {
@@ -140,24 +155,6 @@ impl PresetEditor {
         valid_name(presets, index, &self.name)
             && !self.invalid_percentages.any()
             && !self.has_inverted_range()
-    }
-
-    fn feedback(&self, field: Field) -> Option<iced::widget::Text<'static>> {
-        self.invalid_percentages.feedback(field).or_else(|| {
-            (matches!(field, Field::Maximum)
-                && self.invalid_percentages.0[Field::Minimum as usize].is_none()
-                && self.has_inverted_range())
-            .then(|| {
-                text(
-                    t!(
-                        "processor_power.invalid_preset_processor_max",
-                        minimum = self.values.processor.performance_min
-                    )
-                    .to_string(),
-                )
-                .style(text::danger)
-            })
-        })
     }
 }
 
@@ -359,6 +356,22 @@ impl Editor {
         self.invalid_percentages.iter().any(InvalidPercentages::any)
     }
 
+    fn invalid_processor_minimum(&self) -> Option<u32> {
+        let values = self.values?;
+        [values.ac.processor, values.battery.processor]
+            .into_iter()
+            .find(|processor| processor.performance_min > processor.performance_max)
+            .map(|processor| processor.performance_min)
+    }
+
+    fn validation_error(&self) -> Option<String> {
+        if self.has_invalid_inputs() {
+            Some(t!("processor_power.invalid_percentage").into_owned())
+        } else {
+            self.invalid_processor_minimum().map(processor_range_error)
+        }
+    }
+
     pub(super) fn ensure_plan(&mut self, plans: &[PowerPlan]) {
         if self.dirty || self.has_invalid_inputs() {
             return;
@@ -502,8 +515,8 @@ impl Editor {
         plans: &[PowerPlan],
         origin: ApplyOrigin,
     ) -> Result<(), String> {
-        if self.has_invalid_inputs() {
-            return Err(t!("processor_power.invalid_percentage").to_string());
+        if let Some(error) = self.validation_error() {
+            return Err(error);
         }
         if self.unverified_apply.is_some() {
             return Err(self.status().into_owned());
@@ -621,9 +634,9 @@ impl Editor {
     }
 
     fn take_applicable_review(&mut self, plans: &[PowerPlan]) -> Option<ApplyReview> {
-        if self.has_invalid_inputs() {
+        if let Some(error) = self.validation_error() {
             self.cancel_apply_review();
-            self.status = t!("processor_power.invalid_percentage").to_string().into();
+            self.status = error.into();
             return None;
         }
         let review = self.review.take()?;
@@ -1083,33 +1096,29 @@ impl Editor {
                     Message::Load(source, p)
                 });
                 let invalid = &self.invalid_percentages[source as usize];
-                let mut controls = Vec::new();
-                for (field, label, value) in fields(values.processor).into_iter().chain(
-                    values.energy_performance_preference.map(|value| {
-                        (
-                            Field::EnergyPreference,
-                            ENERGY_PREFERENCE_LABEL,
-                            u32::from(value),
-                        )
-                    }),
-                ) {
-                    let control = super::widgets::slider_setting(label, "%", move || {
-                        super::widgets::slider_stepper(
+                let slider = |field: Field, label: &'static str, value| {
+                    widgets::slider_setting(label, "%", move || {
+                        widgets::slider_stepper(
                             u64::from(value),
                             invalid.0[field as usize].as_deref(),
                             0..=100,
                             1,
                             move |value| Message::ValueText(source, field, value),
                         )
-                    });
-                    controls.push(
-                        column![control]
-                            .spacing(design::space::SMALL)
-                            .extend(invalid.feedback(field).map(Element::from))
-                            .into(),
-                    );
-                }
-                if values.energy_performance_preference.is_none() {
+                    })
+                };
+                let mut controls =
+                    Vec::from(processor_percentage_rows(values.processor, invalid, slider));
+                if let Some(value) = values.energy_performance_preference {
+                    controls.push(with_percentage_feedback(
+                        slider(
+                            Field::EnergyPreference,
+                            ENERGY_PREFERENCE_LABEL,
+                            u32::from(value),
+                        ),
+                        invalid.feedback(Field::EnergyPreference),
+                    ));
+                } else {
                     let status = show_setting_readback(
                         readback.energy_performance_preference,
                         |value| format!("{}%", u32::from(value)),
@@ -1178,6 +1187,7 @@ impl Editor {
                     (self.values.is_some()
                         && self.dirty
                         && !self.has_invalid_inputs()
+                        && self.invalid_processor_minimum().is_none()
                         && target_plan.is_some())
                     .then_some(Message::ReviewApply)
                 )
@@ -1200,7 +1210,6 @@ impl Editor {
         plans: &[PowerPlan],
         status: &PowerPlanStatus,
     ) -> Option<Element<'_, Message>> {
-        use super::widgets;
         let review = self.review.as_ref()?;
         let review_row = |label: &str, value: String| {
             row![
@@ -1295,7 +1304,6 @@ impl Editor {
         &'a self,
         presets: &'a [AdvancedPowerPlanTuningPreset],
     ) -> Option<Element<'a, Message>> {
-        use super::widgets;
         let p = self.preset.as_ref()?;
         let editable = matches!(p.target, PresetTarget::Custom(_));
         let title = match p.target {
@@ -1324,49 +1332,42 @@ impl Editor {
             )
         ]
         .spacing(widgets::CARD_GAP);
-        let mut values = Vec::new();
-        for (field, label, value) in fields(p.values.processor) {
-            values.push(
-                column![widgets::setting_row_with_unit(
-                    label,
-                    "%",
+        let mut values = Vec::from(processor_percentage_rows(
+            p.values.processor,
+            &p.invalid_percentages,
+            |field, label, value| {
+                widgets::numeric_setting(label, "%", move || {
                     widgets::stepper(
                         &p.invalid_percentages.text(field, value),
                         0..=100,
                         1,
                         editable.then_some(move |v| Message::PresetValueText(field, v)),
-                    ),
-                )]
-                .spacing(design::space::SMALL)
-                .extend(p.feedback(field).map(Element::from))
-                .into(),
-            );
-        }
+                    )
+                })
+            },
+        ));
         let field = Field::EnergyPreference;
         let preference = p.values.energy_performance_preference.map(u32::from);
         let keep = t!("processor_power.keep_plan_value");
-        let input: Element<'_, Message> = if editable {
-            let input = p.invalid_percentages.0[field as usize]
-                .clone()
-                .or_else(|| preference.map(|value| value.to_string()))
-                .unwrap_or_default();
-            text_input(&keep, &input)
-                .width(design::SELECT_WIDTH)
-                .on_input(move |raw| Message::PresetValueText(field, raw))
-                .into()
-        } else {
-            text(preference.map_or_else(|| keep.to_string(), |value| format!("{value}%"))).into()
-        };
-        values.push(
-            column![widgets::setting_row_with_unit(
-                ENERGY_PREFERENCE_LABEL,
-                "%",
-                input
-            )]
-            .spacing(design::space::SMALL)
-            .extend(p.feedback(field).map(Element::from))
-            .into(),
-        );
+        let input = widgets::numeric_setting(ENERGY_PREFERENCE_LABEL, "%", move || {
+            if editable {
+                let input = p.invalid_percentages.0[field as usize]
+                    .clone()
+                    .or_else(|| preference.map(|value| value.to_string()))
+                    .unwrap_or_default();
+                text_input(&keep, &input)
+                    .width(design::SELECT_WIDTH)
+                    .on_input(move |raw| Message::PresetValueText(field, raw))
+                    .into()
+            } else {
+                text(preference.map_or_else(|| keep.to_string(), |value| format!("{value}%")))
+                    .into()
+            }
+        });
+        values.push(with_percentage_feedback(
+            input,
+            p.invalid_percentages.feedback(field),
+        ));
         let boost: Element<'_, Message> = if editable {
             pick_list(
                 ProcessorBoostMode::ALL.map(BoostChoice),
@@ -1438,7 +1439,6 @@ impl Editor {
         &'a self,
         presets: &'a [AdvancedPowerPlanTuningPreset],
     ) -> Element<'a, Message> {
-        use super::widgets;
         let mut rail = widgets::preset_list().push(widgets::heading(
             t!("common.built_in_presets").to_string(),
             design::typography::SECONDARY,
@@ -1730,6 +1730,37 @@ impl std::fmt::Display for SchedulingChoice {
     }
 }
 
+fn processor_percentage_rows<'a, B>(
+    values: ProcessorPowerValues<B>,
+    invalid: &InvalidPercentages,
+    control: impl Fn(Field, &'static str, u32) -> Element<'a, Message>,
+) -> [Element<'a, Message>; 3] {
+    let range_error =
+        invalid.processor_range_feedback(values.performance_min, values.performance_max);
+    let [parking, minimum, maximum, boost] = fields(values);
+    let row = |(field, label, value)| {
+        with_percentage_feedback(control(field, label, value), invalid.feedback(field))
+    };
+    [
+        row(parking),
+        column![row(minimum), row(maximum)]
+            .spacing(design::space::SMALL)
+            .extend(range_error.map(Element::from))
+            .into(),
+        row(boost),
+    ]
+}
+
+fn with_percentage_feedback<'a>(
+    control: Element<'a, Message>,
+    feedback: Option<iced::widget::Text<'static>>,
+) -> Element<'a, Message> {
+    column![control]
+        .spacing(design::space::SMALL)
+        .extend(feedback.map(Element::from))
+        .into()
+}
+
 fn fields<B>(v: ProcessorPowerValues<B>) -> [(Field, &'static str, u32); 4] {
     [
         (
@@ -1956,6 +1987,39 @@ mod tests {
             .values
             .energy_performance_preference
             .is_none());
+    }
+
+    #[test]
+    fn inverted_processor_ranges_block_review_until_corrected() {
+        for source in [Source::Ac, Source::Battery] {
+            let plans = [tuning_retry_plan()];
+            let (service, store) = AdvancedPowerPlanTuningService::fake(tuning_retry_baseline());
+            let mut editor = Editor {
+                service,
+                ..Default::default()
+            };
+            editor.ensure_plan(&plans);
+            let mut settings = test_settings();
+            for (field, value) in [(Field::Minimum, "90"), (Field::Maximum, "10")] {
+                editor.update(
+                    &mut settings,
+                    &plans,
+                    Message::ValueText(source, field, value.into()),
+                );
+            }
+            assert_eq!(
+                editor.review_apply(&plans, ApplyOrigin::Save),
+                Err(processor_range_error(90))
+            );
+            assert!(editor.review.is_none());
+            editor.update(
+                &mut settings,
+                &plans,
+                Message::ValueText(source, Field::Maximum, "90".into()),
+            );
+            assert!(editor.review_apply(&plans, ApplyOrigin::Save).is_ok());
+            assert!(store.requests().is_empty());
+        }
     }
 
     #[test]

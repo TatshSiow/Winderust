@@ -7,7 +7,7 @@ use crate::{
     },
 };
 use iced::{
-    widget::{column, row, text},
+    widget::{column, text},
     Element, Fill,
 };
 use rust_i18n::t;
@@ -290,16 +290,12 @@ impl Editor {
     ) -> Option<Element<'a, Message>> {
         let (index, rule, maximum) = self.draft.as_ref()?;
         let valid = self.validated_draft().is_some();
-        let mut fields = column![row![
-            widgets::setting_title_with_help(
-                "instance_limits.maximum",
-                "",
-                "instance_limits.intro_2"
-            ),
-            widgets::stepper(maximum, 1..=u64::from(u32::MAX), 1, Some(Message::Maximum)),
-        ]
-        .spacing(design::space::MEDIUM)
-        .align_y(iced::Center)]
+        let mut fields = column![widgets::numeric_setting_with_help(
+            "instance_limits.maximum",
+            "",
+            "instance_limits.intro_2",
+            move || widgets::stepper(maximum, 1..=u64::from(u32::MAX), 1, Some(Message::Maximum)),
+        )]
         .spacing(design::space::SMALL);
         if !valid {
             fields =

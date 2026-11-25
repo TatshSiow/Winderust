@@ -411,6 +411,7 @@ impl Editor {
                 controls.push(
                     column![
                         text_input("", value)
+                            .align_x(iced::alignment::Horizontal::Center)
                             .on_input(move |v| Message::Threshold(i, upload, v))
                             .width(65),
                         pick_list(
@@ -462,29 +463,22 @@ impl Editor {
             .into()
     }
 
-    fn delay_row(
-        &self,
+    fn delay_row<'a>(
+        &'a self,
         field: Delay,
-        settings: &AppSuspensionSettings,
-    ) -> Element<'static, Message> {
-        let formatted;
-        let value = if let Some(draft) = self.delay_drafts.get(&field) {
-            draft
-        } else {
-            formatted = field.seconds(settings).to_string();
-            &formatted
-        };
-        super::widgets::setting_row_with_unit(
-            field.label(),
-            "s",
+        settings: &'a AppSuspensionSettings,
+    ) -> Element<'a, Message> {
+        super::widgets::numeric_setting(field.label(), "s", move || {
             super::widgets::stepper(
-                value,
+                self.delay_drafts
+                    .get(&field)
+                    .map(String::as_str)
+                    .unwrap_or(&field.seconds(settings).to_string()),
                 1..=field.maximum(),
                 1,
                 Some(move |v| Message::Delay(field, v)),
-            ),
-        )
-        .into()
+            )
+        })
     }
 }
 

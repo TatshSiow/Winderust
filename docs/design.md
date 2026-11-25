@@ -110,10 +110,13 @@ Prefer visible state, compact controls, and predictable rows. Use restrained acc
 - Action and toggle cards use their full surface, including padding and blank space, as the hit target. Expandable cards toggle only from the full header, including its padding; expanded content never toggles the group. Keep one 16px inset for headers and bodies. Nested controls retain their own actions, cursor, and input handling, and disabled controls stay inactive.
 - Collapse expandable cards by default. Keep configuration editable when its main switch is off; read-only presets and invalid operations remain disabled.
 - Sliders always reflect their input values, including when disabled. Put units in labels and use plus/minus icons.
-- Use the shared slider row for numeric settings. Keep the label on the left and
-  the minus button, slider, plus button, and value in a bounded group on the right.
-  Stack the label above the right-aligned controls when the card is narrow.
-- Use sliders, steppers, or numeric inputs for numeric settings.
+- Use the shared numeric setting row. Keep the label and unit on the left and
+  the controls on the right. Stack the label above the right-aligned controls
+  when the card is narrow.
+- Use a slider with minus, plus, and an editable value for ranges users may want
+  to explore. Use a compact stepper for precise integers and a numeric input
+  when the field accepts decimals or a blank override.
+- Group the two endpoints of an editable range and show validation beside the pair.
 - Use dropdowns for bounded option sets.
 - Use icon buttons for compact repeated actions; text buttons are fine for clear primary commands such as save/import/export.
 
@@ -351,8 +354,9 @@ hover/press; background shading supplies feedback.
   separately for Plugged In and On Battery. Offer all six scheduling choices
   for recognized policy values. For unavailable controls, distinguish missing,
   unreadable, and unknown values, and show the raw index for unknown values.
-  Keep the other controls editable. Percentage fields use the shared slider row,
-  with validation feedback below the complete row.
+  Keep the other controls editable. Percentage fields use the shared slider row.
+  Show processor minimum and maximum together and put range feedback beneath
+  them. Require a valid range before opening the apply review.
 - Built-in presets keep current scheduling policies; custom presets can capture
   choices or keep current. Re-read after every Apply attempt, including partial
   failure. Adaptive Engine does not own these persistent writes.
