@@ -1,7 +1,7 @@
 use super::design;
 use super::widgets::{
-    action_button, checkbox, icon_button, pick_list, preset_list, preset_panel, preset_picker_card,
-    preset_row, preset_select, text_input,
+    action_button, checkbox, icon_button, pick_list, preset_list, preset_panel, preset_row,
+    preset_select, text_input,
 };
 use crate::application::SettingsEditor;
 use crate::config::*;
@@ -150,6 +150,7 @@ pub(super) enum Message {
     ViewBuiltIn(BuiltInAdaptiveEnginePreset),
     ViewCustom(usize),
     Apply(usize),
+    RestoreDefaults,
     UsePreset,
     Edit(usize),
     New,
@@ -217,6 +218,19 @@ impl Editor {
                 if let Some(p) = s.global().adaptive_engine_presets.get(i).cloned() {
                     self.stage_preset(s, i + BuiltInAdaptiveEnginePreset::ALL.len(), &p);
                 }
+            }
+            Message::RestoreDefaults if self.draft.is_none() => {
+                let mut defaults = s.adaptive_engine_process.clone();
+                defaults.restore_cpu_behaviour_defaults();
+                if defaults != s.adaptive_engine_process {
+                    if s.selected_power_source() == PowerSourceProfile::PluggedIn {
+                        s.battery_profile_mut();
+                    }
+                    s.adaptive_engine_process = defaults;
+                }
+                self.selected_preset = None;
+                self.live_numbers.drafts.clear();
+                self.error.clear();
             }
             Message::UsePreset => {
                 let Some((_, index)) = self
@@ -666,6 +680,7 @@ impl Editor {
         }
         macro_rules! selector {($s:ident,$key:expr,$ty:ty,$options:expr,$label:expr,$($field:ident).+) => {{let values:&[$ty]=$options;let selected=s.$($field).+;let control:Element<'_,Message>=if editable{pick_list(values.iter().copied().map(|v|Choice(v,$label(v))).collect::<Vec<_>>(),Some(Choice(selected,$label(selected))),move |v|Message::Choice(|$s,i|{let options:&[$ty]=$options;if let Some(v)=options.get(i){$s.$($field).+ = *v;}},values.iter().position(|x|*x==v.0).unwrap_or(0))).width(Fill).into()}else{text($label(selected)).into()};control}};}
         macro_rules! choice {($s:ident,$key:expr,$ty:ty,$options:expr,$label:expr,$($field:ident).+) => {row![setting_label($key).width(Fill),iced::widget::container(selector!($s,$key,$ty,$options,$label,$($field).+)).width(280)].spacing(design::space::SMALL).padding([design::space::CONTROL as u16, 0]).align_y(iced::Center)};}
+        let tab = self.tuning_tabs[usize::from(preset)];
         if !preset {
             body = body.push(super::widgets::toggle_card(
                 "adaptive_engine.enable",
@@ -685,7 +700,7 @@ impl Editor {
                     .map(|(i, p)| Choice(i + built_ins, p.name.clone())),
             );
             let selected = self.selected_preset(live, &options);
-            body = body.push(preset_picker_card(
+            let picker = super::widgets::setting_row(
                 "adaptive_engine.preset",
                 preset_select(options, selected, move |choice| {
                     if let Some(&preset) = BuiltInAdaptiveEnginePreset::ALL.get(choice.0) {
@@ -694,9 +709,19 @@ impl Editor {
                         Message::Apply(choice.0 - built_ins)
                     }
                 }),
+            );
+            let restore = (tab == TuningTab::CpuBehaviour).then(|| {
+                super::widgets::setting_row(
+                    "adaptive_engine.cpu_behaviour_defaults",
+                    action_button(t!("adaptive_engine.restore_defaults").to_string())
+                        .on_press(Message::RestoreDefaults),
+                )
+                .into()
+            });
+            body = body.push(super::widgets::settings_card(
+                super::widgets::settings_rows(std::iter::once(picker.into()).chain(restore)),
             ));
         }
-        let tab = self.tuning_tabs[usize::from(preset)];
         let mut tabs = row![];
         for next in TuningTab::ALL
             .into_iter()
@@ -1947,6 +1972,103 @@ mod tests {
             editor.update(&mut settings, Message::Choice(method, index));
             assert!(editor.validation_error().is_none());
         }
+    }
+
+    #[test]
+    fn restoring_defaults_stages_only_the_selected_profile_and_can_be_discarded() {
+        let mut original = Settings::default();
+        original.adaptive_engine_process.restraint_trigger_time_ms = 1_750;
+        let battery = &mut original.battery_profile_mut().adaptive_engine_process;
+        battery.minimum_restraint_time_ms = 2_100;
+        battery.maximum_restraint_time_ms = 6_000;
+        battery
+            .custom_rules
+            .push(new_process_exclusion_rule(r"C:\Apps\Example.exe"));
+
+        let mut settings = SettingsEditor::with_settings(original.clone());
+        settings.select_power_source(PowerSourceProfile::OnBattery);
+        let mut editor = Editor::default();
+        editor.update(&mut settings, Message::RestoreDefaults);
+
+        assert!(settings.has_unsaved_changes());
+        assert_eq!(settings.persisted(), &original);
+        assert_eq!(
+            settings.global().adaptive_engine_process,
+            original.adaptive_engine_process
+        );
+        assert_eq!(
+            settings.adaptive_engine_process.minimum_restraint_time_ms,
+            3_000
+        );
+        assert_eq!(
+            settings.adaptive_engine_process.maximum_restraint_time_ms,
+            0
+        );
+        assert_eq!(
+            settings.adaptive_engine_process.custom_rules,
+            original
+                .battery_profile()
+                .adaptive_engine_process
+                .custom_rules,
+        );
+
+        settings.cancel();
+        assert_eq!(settings.global(), &original);
+        assert!(!settings.has_unsaved_changes());
+    }
+
+    #[test]
+    fn restoring_already_default_battery_settings_clears_drafts_without_creating_a_profile() {
+        let mut settings = SettingsEditor::with_settings(Settings::default());
+        settings.select_power_source(PowerSourceProfile::OnBattery);
+        let mut editor = Editor {
+            error: "stale error".into(),
+            selected_preset: Some(Choice(0, "Old selection".into())),
+            ..Editor::default()
+        };
+        editor.update(
+            &mut settings,
+            Message::Number(
+                |_, _| {},
+                String::new(),
+                0,
+                ADAPTIVE_RESTRAINT_MAX_TIME_MS,
+                MINIMUM_RESTRAINT_TIME_FIELD,
+                "adaptive_engine_process.minimum_restraint_time",
+            ),
+        );
+        assert!(editor.validation_error().is_some());
+
+        editor.update(&mut settings, Message::RestoreDefaults);
+        assert!(editor.validation_error().is_none());
+        assert!(editor.error.is_empty());
+        assert!(editor.selected_preset.is_none());
+        assert!(settings.global().on_battery.is_none());
+        assert!(!settings.has_unsaved_changes());
+    }
+
+    #[test]
+    fn restoring_plugged_in_defaults_preserves_inherited_battery_settings() {
+        let mut original = Settings::default();
+        original.adaptive_engine_process.minimum_restraint_time_ms = 2_100;
+        let mut settings = SettingsEditor::with_settings(original.clone());
+        let mut editor = Editor::default();
+        editor.update(&mut settings, Message::RestoreDefaults);
+
+        assert!(settings.has_unsaved_changes());
+        assert_eq!(
+            settings.adaptive_engine_process.minimum_restraint_time_ms,
+            3_000
+        );
+        assert_eq!(
+            settings.global().battery_profile().adaptive_engine_process,
+            original.adaptive_engine_process
+        );
+        assert_eq!(settings.persisted(), &original);
+
+        settings.cancel();
+        assert_eq!(settings.global(), &original);
+        assert!(settings.global().on_battery.is_none());
     }
 
     #[test]

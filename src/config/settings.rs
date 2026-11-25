@@ -2957,6 +2957,38 @@ impl AdaptiveEngineProcessSettings {
             || self.dynamic_resource_zones_enabled
     }
 
+    pub(crate) fn restore_cpu_behaviour_defaults(&mut self) {
+        let defaults = Self::default();
+        self.cpu_pressure_restraint_enabled = defaults.cpu_pressure_restraint_enabled;
+        self.limit_background_processors_enabled = defaults.limit_background_processors_enabled;
+        self.dynamic_resource_zones_enabled = defaults.dynamic_resource_zones_enabled;
+        self.dynamic_resource_zone_settings = defaults.dynamic_resource_zone_settings;
+        self.cpu_allocation_method = defaults.cpu_allocation_method;
+        self.preserve_custom_affinity = defaults.preserve_custom_affinity;
+        self.processors_to_remove = defaults.processors_to_remove;
+        self.background_processor_selection = defaults.background_processor_selection;
+        self.processor_limit_percent = defaults.processor_limit_percent;
+        self.specific_processors = defaults.specific_processors;
+        self.pressure_source = defaults.pressure_source;
+        self.exclude_service_hosts = defaults.exclude_service_hosts;
+        self.foreground_or_system_cpu_threshold_percent =
+            defaults.foreground_or_system_cpu_threshold_percent;
+        self.foreground_cpu_threshold_percent = defaults.foreground_cpu_threshold_percent;
+        self.background_app_cpu_threshold_percent = defaults.background_app_cpu_threshold_percent;
+        self.cpu_recovery_threshold_percent = defaults.cpu_recovery_threshold_percent;
+        self.reaction_time_ms = defaults.reaction_time_ms;
+        self.restraint_trigger_time_ms = defaults.restraint_trigger_time_ms;
+        self.pause_restraint_when_idle = defaults.pause_restraint_when_idle;
+        self.restraint_idle_timeout_seconds = defaults.restraint_idle_timeout_seconds;
+        self.restraint_priority = defaults.restraint_priority;
+        self.restraint_io_priority = defaults.restraint_io_priority;
+        self.restraint_energy_efficient_scheduling = defaults.restraint_energy_efficient_scheduling;
+        self.minimum_restraint_time_ms = defaults.minimum_restraint_time_ms;
+        self.maximum_restraint_time_ms = defaults.maximum_restraint_time_ms;
+        self.cpu_recovery_time_seconds = defaults.cpu_recovery_time_seconds;
+        self.maximum_restrained_apps = defaults.maximum_restrained_apps;
+    }
+
     pub fn custom_rule_enabled_for(&self, process_name: &str) -> bool {
         self.custom_rules.iter().any(|rule| {
             rule.enabled && same_rule_executable_path(&rule.executable_path, process_name)

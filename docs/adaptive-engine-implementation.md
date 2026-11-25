@@ -38,6 +38,11 @@ preset records retain their stored power values when CPU Behaviour tuning is edi
 Custom edits remain in the modal draft until saved. Built-ins are read-only.
 Disabled policies remain editable.
 
+Restore defaults stages the factory CPU Behaviour settings for the selected power
+source. Its Custom Rules, the Adaptive Engine master switch, the other power
+source, and Adaptive Processor Power retain their own settings. Save commits the
+draft and Discard restores the last saved tuning.
+
 CPU Behaviour has shared detection/timing followed by three independent policies:
 
 - **CPU Pressure Restraint** temporarily lowers the priority of background apps
