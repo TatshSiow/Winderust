@@ -2030,6 +2030,9 @@ impl WinderustApp {
             Message::Page(_) if self.adaptive_processor_power.preset_open() => {}
             Message::Page(page) => {
                 let entering_page = self.page != page;
+                if entering_page && self.page == Page::ProcessList {
+                    self.processes.stop_gpu_usage_sampling();
+                }
                 self.preferences.dismiss_picker();
                 self.time_rules.dismiss_picker();
                 self.focus_plans.close_preview();
@@ -2671,6 +2674,7 @@ impl WinderustApp {
                 hwnd as windows_sys::Win32::Foundation::HWND,
             );
         }
+        self.processes.stop_gpu_usage_sampling();
         self.hidden = true;
         self.hwnd = None;
         self.navigation.dismiss();

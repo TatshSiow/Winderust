@@ -1112,14 +1112,25 @@ affects the Dedicated GPU memory column in Task Manager's Details pane.
 
 ## GPU Engine utilization
 
-- Implementation: `src/platform/windows/gpu_usage.rs` owns the English PDH wildcard query for
-  `\\GPU Engine(*)\\Utilization Percentage`, formatted-array parsing, per-engine aggregation, and
-  query cleanup. `src/bottleneck_classifier.rs` consumes only the resulting observation.
-- References: [PdhAddEnglishCounterW](https://learn.microsoft.com/windows/win32/api/pdh/nf-pdh-pdhaddenglishcounterw),
-  [PdhGetFormattedCounterArrayW](https://learn.microsoft.com/windows/win32/api/pdh/nf-pdh-pdhgetformattedcounterarrayw).
-- Contract: GPU Engine instances are process-scoped. Strip only the `pid_<number>_` prefix, sum
-  matching physical-engine instances, clamp each engine to 100%, and report the busiest engine.
-  Missing or invalid samples are unavailable observations, not zero utilization.
+`src/platform/windows/gpu_usage.rs` owns the English PDH wildcard query for
+`\GPU Engine(*)\Utilization Percentage`, formatted-array parsing, and query
+cleanup. PDH uses successive collections to calculate a rate.
+[PdhAddEnglishCounterW](https://learn.microsoft.com/windows/win32/api/pdh/nf-pdh-pdhaddenglishcounterw),
+[PdhCollectQueryData](https://learn.microsoft.com/windows/win32/api/pdh/nf-pdh-pdhcollectquerydata),
+[PdhGetFormattedCounterArrayW](https://learn.microsoft.com/windows/win32/api/pdh/nf-pdh-pdhgetformattedcounterarrayw)
+
+The observed provider instance convention is
+`pid_<pid>_luid_<high>_<low>_phys_<index>_eng_<index>_engtype_<type>`.
+For the system bottleneck observation in `src/bottleneck_classifier.rs`,
+the sampler sums process contributions with the same physical-engine suffix,
+clamps each engine to 100%, and reports the busiest engine.
+
+Process List requests per-process GPU Usage only while the page and column
+are visible. It associates readings only with processes whose creation times
+are verified. Each process reports its busiest engine across all GPUs, matching
+Task Manager's aggregation. Grouped parents have no usage total. The column
+shows a dash while the rate is warming up or when no valid reading is available.
+[Microsoft's per-process GPU utilization model](https://devblogs.microsoft.com/directx/gpus-in-the-task-manager/#processes-tab)
 
 ## Appearance change notifications
 

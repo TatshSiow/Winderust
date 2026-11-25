@@ -180,6 +180,10 @@ hover/press; background shading supplies feedback.
 - Filters, column visibility, and memory value/percentage controls belong in the Settings side panel.
 - The default Working Set column shows resident RAM in decimal MB or as a percentage of physical RAM. The optional Private Commit column is available under Columns and shows privately committed memory in decimal MB. Sort both columns by bytes and keep missing measurements distinct from zero.
 - The optional CPU Time column shows cumulative user and kernel time as hours, minutes, and seconds. Groups total current members only when every member has a sample. Sort by the full measurement and make unmeasured values visible.
+- GPU Usage is an optional column under Columns. It starts hidden and samples
+  only while enabled on the visible Process List. Show the busiest GPU engine
+  for each process as a percentage and sort by the unrounded value. A dash
+  indicates an unavailable reading or a grouped parent row.
 - Dedicated GPU Memory and Shared GPU Memory are optional columns under Columns.
   Both start hidden. Collect readings on the Process List refresh only while at
   least one is visible. Show decimal MB and sort by bytes. Show a dash for an

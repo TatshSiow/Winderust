@@ -469,15 +469,17 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
         if matches!(extra, Some(GPU_MEMORY_WIDE | GPU_MEMORY_COMPACT)) {
             use process_list::{Message as ProcessMessage, Sort};
 
-            for column in [Sort::DedicatedGpuMemory, Sort::SharedGpuMemory] {
+            for column in [
+                Sort::GpuUsage,
+                Sort::DedicatedGpuMemory,
+                Sort::SharedGpuMemory,
+            ] {
                 let _ = app.update(Message::Processes(ProcessMessage::Column(column, true)));
             }
             let _ = app.update(Message::Processes(ProcessMessage::Group(
                 extra == Some(GPU_MEMORY_COMPACT),
             )));
-            let _ = app.update(Message::Processes(ProcessMessage::Sort(
-                Sort::DedicatedGpuMemory,
-            )));
+            let _ = app.update(Message::Processes(ProcessMessage::Sort(Sort::GpuUsage)));
         }
         let was_open = app.side_panel_open;
         let navigate = app.update(Message::Page(page));
@@ -1417,6 +1419,9 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
         ]));
     }
     run.ticks += 1;
+    if matches!(extra, Some(GPU_MEMORY_WIDE | GPU_MEMORY_COMPACT)) && run.ticks == 7 {
+        return Some(app.update(Message::Processes(process_list::Message::Refresh)));
+    }
     if matches!(extra, Some(DOCK_FOCUS_WIDE | DOCK_FOCUS_COMPACT)) {
         match run.ticks {
             3 => return Some(iced::widget::operation::focus(SIDE_PANEL_CLOSE)),
