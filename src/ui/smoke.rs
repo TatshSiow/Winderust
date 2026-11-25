@@ -763,10 +763,11 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                     )));
                 } else if index == 7 {
                     app.settings.adaptive_engine_process.custom_rules.push(
-                        crate::config::ProcessExclusionRule {
-                            executable_path: r"C:\Apps\Example\example.exe".into(),
+                        crate::config::AdaptiveEngineExclusionRule {
                             enabled: false,
-                            ..Default::default()
+                            ..crate::config::AdaptiveEngineExclusionRule::exact_path(
+                                r"C:\Apps\Example\example.exe",
+                            )
                         },
                     );
                     let _ = app.update(Message::Adaptive(AdaptiveMessage::TuningTab(

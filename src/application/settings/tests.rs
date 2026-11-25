@@ -750,6 +750,50 @@ fn auto_exclusion_patch_preserves_literal_executable_path_suffix() {
 }
 
 #[test]
+fn adaptive_auto_exclusion_remains_path_scoped() {
+    use crate::config::{AdaptiveEngineExclusionRule, ExecutableSelector};
+
+    let (mut coordinator, mut draft, _) = load_ok_with_fixtures();
+    let disabled_name = AdaptiveEngineExclusionRule {
+        enabled: false,
+        selector: ExecutableSelector::ExactName {
+            executable_name: "worker.exe".into(),
+        },
+    };
+    let path = r"C:\Apps\worker.exe";
+    let path_rule = AdaptiveEngineExclusionRule::exact_path(path);
+    let mut disabled_path = path_rule.clone();
+    disabled_path.enabled = false;
+    draft.adaptive_engine_process.custom_rules = vec![disabled_name.clone(), disabled_path];
+    draft
+        .battery_profile_mut()
+        .adaptive_engine_process
+        .custom_rules = vec![disabled_name.clone()];
+    coordinator.save(&mut draft).expect("save fixture rules");
+
+    let patch = AutoExclusionPatch {
+        base_revision: draft.base_revision,
+        adaptive_engine_process: vec![path.into()],
+        ..AutoExclusionPatch::default()
+    };
+    assert!(coordinator
+        .apply_auto_exclusion_patch(&mut draft, &patch)
+        .expect("apply patch"));
+    for settings in [&*draft, draft.battery_profile()] {
+        assert_eq!(
+            settings.adaptive_engine_process.custom_rules,
+            [disabled_name.clone(), path_rule.clone()]
+        );
+        assert!(!settings
+            .adaptive_engine_process
+            .excludes_executable_name("worker.exe"));
+        assert!(!settings
+            .adaptive_engine_process
+            .excludes_executable_path(r"D:\Other\worker.exe"));
+    }
+}
+
+#[test]
 fn runtime_settings_projection_keeps_live_general_and_advanced_only() {
     let mut current = Settings::default();
     let mut persisted = Settings::default();

@@ -1286,7 +1286,7 @@ fn native_pressure_restraint_idle_restores_priority() -> Result<(), String> {
     };
     use windows_sys::Win32::System::Threading::{CREATE_NO_WINDOW, NORMAL_PRIORITY_CLASS};
 
-    use crate::config::ProcessPrioritySetting;
+    use crate::config::{AdaptiveEngineExclusionRule, ExecutableSelector, ProcessPrioritySetting};
     use crate::control::priority_efficiency::current_process_priority;
 
     struct DisposableProcess(Child);
@@ -1326,7 +1326,7 @@ fn native_pressure_restraint_idle_restores_priority() -> Result<(), String> {
         || current_process_priority(&target, false).map_err(|error| error.to_string());
     assert_eq!(read_priority()?, ProcessPrioritySetting::Normal);
 
-    let settings = AdaptiveEngineProcessSettings {
+    let mut settings = AdaptiveEngineProcessSettings {
         cpu_pressure_restraint_enabled: true,
         pause_restraint_when_idle: true,
         restraint_idle_timeout_seconds: 30,
@@ -1334,7 +1334,11 @@ fn native_pressure_restraint_idle_restores_priority() -> Result<(), String> {
     };
     let mut priority = PriorityEfficiencyController::default();
     let control_target = ProcessControlTarget::from_action_target(&target);
-    for priority_class in [PriorityClassValue::BelowNormal, PriorityClassValue::Idle] {
+    for (priority_class, exclude_by_name) in [
+        (PriorityClassValue::BelowNormal, false),
+        (PriorityClassValue::Idle, false),
+        (PriorityClassValue::BelowNormal, true),
+    ] {
         let outcome = priority
             .apply_priority_claim(
                 PriorityClassClaim {
@@ -1353,17 +1357,58 @@ fn native_pressure_restraint_idle_restores_priority() -> Result<(), String> {
             Ok(true)
         );
 
-        let snapshot = AdaptiveEngineProcessManager::default().update(
+        let (foreground_id, mut observations) = if exclude_by_name {
+            settings.limit_background_processors_enabled = true;
+            settings.custom_rules.push(AdaptiveEngineExclusionRule {
+                enabled: true,
+                selector: ExecutableSelector::ExactName {
+                    executable_name: target.name.to_ascii_uppercase(),
+                },
+            });
+            let foreground_id = std::process::id();
+            let worker = ProcessInfo {
+                id: target.id,
+                name: target.name.clone(),
+                creation_time: Some(target.creation_time),
+                parent_id: None,
+                session_id: target.session_id,
+                user_name: None,
+                is_service_account: target.is_service_account,
+                is_critical: Some(false),
+                can_set_information: true,
+                image_path: Some(target.executable_path.clone()),
+            };
+            let foreground = ProcessInfo {
+                id: foreground_id,
+                name: "foreground.exe".into(),
+                creation_time: Some(1),
+                image_path: None,
+                ..worker.clone()
+            };
+            (
+                Some(foreground_id),
+                CycleObservations::with_adaptive_cpu_sample(
+                    vec![foreground, worker],
+                    Some(foreground_id),
+                    None,
+                )
+                .with_visible_windows(BTreeSet::new()),
+            )
+        } else {
+            (None, CycleObservations::default())
+        };
+        let mut manager = AdaptiveEngineProcessManager::default();
+        let snapshot = manager.update(
             AdaptiveEngineProcessUpdate {
                 settings: &settings,
                 automation_enabled: true,
                 allow_cross_session_process_control: false,
-                foreground_process_id: None,
+                foreground_process_id: foreground_id,
                 total_cpu_usage_percent: Some(100.0),
-                user_idle_for: Some(Duration::from_secs(30)),
+                user_idle_for: Some(Duration::from_secs(if exclude_by_name { 0 } else { 30 })),
                 excluded_process_id: None,
                 explicit_cpu_allocation_paths: &[],
-                observations: &mut CycleObservations::default(),
+                observations: &mut observations,
             },
             &mut CpuAllocationCoordinator::default(),
             &mut priority,
@@ -1371,9 +1416,16 @@ fn native_pressure_restraint_idle_restores_priority() -> Result<(), String> {
         );
         assert_eq!(
             snapshot.restraint_idle_pause,
-            Some(RestraintIdlePause::Idle)
+            (!exclude_by_name).then_some(RestraintIdlePause::Idle)
         );
-        assert!(!snapshot.cpu_pressure_restraint_active);
+        assert_eq!(
+            snapshot.cpu_pressure_restraint_active, exclude_by_name,
+            "unexpected Adaptive Engine snapshot: {snapshot:?}"
+        );
+        if exclude_by_name {
+            assert_eq!(snapshot.scanned_processes, 2);
+            assert!(!manager.tracked_processes.contains_key(&target.id));
+        }
         assert_eq!(snapshot.failed_processes, 0);
         assert_eq!(read_priority()?, ProcessPrioritySetting::Normal);
         assert!(priority.adaptive_restraint_processes().next().is_none());

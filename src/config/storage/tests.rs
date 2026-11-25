@@ -396,6 +396,80 @@ fn process_power_plan_rules_keep_flat_selectors_on_both_power_profiles() {
 }
 
 #[test]
+fn adaptive_custom_rules_keep_flat_selectors_for_profiles_and_presets() {
+    let path = Path::new("adaptive-custom-rules.toml");
+    let old_row =
+        "executable_path = 'C:/Apps/game.exe'\nprocess_background_priority = 'below_normal'";
+    let path_rule: AdaptiveEngineExclusionRule = toml::from_str(old_row).unwrap();
+    assert_eq!(
+        path_rule,
+        AdaptiveEngineExclusionRule::exact_path("C:/Apps/game.exe")
+    );
+    let name_rule = AdaptiveEngineExclusionRule {
+        enabled: true,
+        selector: crate::config::ExecutableSelector::ExactName {
+            executable_name: "Game Tool.exe".into(),
+        },
+    };
+
+    let mut settings = Settings::default();
+    settings
+        .battery_profile_mut()
+        .adaptive_engine_process
+        .custom_rules = vec![name_rule.clone()];
+    settings.adaptive_engine_process.custom_rules = vec![path_rule, name_rule.clone()];
+    settings.adaptive_engine_presets.push(AdaptiveEnginePreset {
+        name: "Saved tuning".into(),
+        processor_power_policy_enabled: false,
+        base_processor_policy: settings.adaptive_engine.base_processor_policy,
+        background_pressure_profile: settings.adaptive_engine.background_pressure_profile,
+        focus_and_launch_profile: settings.adaptive_engine.focus_and_launch_profile,
+        adaptive_engine_process: AdaptiveEngineProcessSettings {
+            custom_rules: vec![name_rule],
+            ..Default::default()
+        },
+    });
+
+    let raw = toml::to_string(&settings).unwrap();
+    assert!(raw.contains("executable_path = \"C:/Apps/game.exe\""));
+    assert!(raw.contains("executable_name = \"Game Tool.exe\""));
+    assert_eq!(parse_toml_settings(path, &raw).unwrap(), settings);
+    let historical = raw.replace("executable_path = \"C:/Apps/game.exe\"", old_row);
+    assert_eq!(parse_toml_settings(path, &historical).unwrap(), settings);
+
+    let saved: toml::Value = toml::from_str(&raw).unwrap();
+    let invalid_name = rust_i18n::t!("adaptive_engine_process.custom_rule_name_invalid");
+    for (invalid, error) in [
+        (
+            "executable_path = 'C:/Apps/game.exe'\nexecutable_name = 'Game Tool.exe'",
+            "exactly one executable path or executable name",
+        ),
+        (
+            "enabled = true",
+            "exactly one executable path or executable name",
+        ),
+        ("executable_name = '*.exe'", invalid_name.as_ref()),
+        (
+            "executable_name = 'C:/Apps/game.exe'",
+            invalid_name.as_ref(),
+        ),
+    ] {
+        let invalid = toml::from_str::<toml::Value>(invalid).unwrap();
+        let mut ac = saved.clone();
+        ac["adaptive_engine_process"]["custom_rules"][0] = invalid.clone();
+        let mut battery = saved.clone();
+        battery["on_battery"]["adaptive_engine_process"]["custom_rules"][0] = invalid.clone();
+        let mut preset = saved.clone();
+        preset["adaptive_engine_presets"][0]["adaptive_engine_process"]["custom_rules"][0] =
+            invalid;
+        for variant in [ac, battery, preset] {
+            let raw = toml::to_string(&variant).unwrap();
+            assert!(parse_toml_settings(path, &raw).unwrap_err().contains(error));
+        }
+    }
+}
+
+#[test]
 fn invalid_by_time_clock_values_fail_load_and_import_without_rewriting() {
     let mut settings = Settings::default();
     settings.battery_profile_mut();
@@ -426,20 +500,21 @@ fn invalid_by_time_clock_values_fail_load_and_import_without_rewriting() {
 }
 
 use crate::config::{
-    AccentSettings, ActionLogMode, AdaptiveEnginePreset, AdaptiveEngineProcessSettings,
-    AdaptiveEngineSettings, AdaptivePressureSource, AdaptiveRestraintIoPriority,
-    AdaptiveRestraintPriority, AdvancedPowerPlanTuningPreset, AdvancedSettings, AppLanguage,
-    AppSuspensionRule, AppSuspensionSettings, AppThemeMode, BackgroundProcessorSelection,
-    ByActivitySettings, ByCpuLoadRule, ByCpuLoadSettings, ByFocusRule, ByFocusSettings,
-    ByRunningAppRule, ByRunningAppSettings, ByTimeRule, ByTimeSettings, CpuAllocationMethod,
-    CpuAllocationPreset, CpuAllocationRule, CpuAllocationSettings, CpuLimiterRule,
-    CpuLimiterSettings, CpuUsageComparison, DynamicPriorityBoostSettings, EfficiencyModeRule,
-    EfficiencyModeSettings, GeneralSettings, GpuPrioritySettings, InputDetectionSettings,
-    IoPrioritySettings, MemoryPrioritySettings, MemoryTrimSettings, NetworkThresholdUnit,
-    PowerPlanSettings, ProcessDynamicPriorityBoostSetting, ProcessExclusionRule,
-    ProcessGpuPrioritySetting, ProcessIoPrioritySetting, ProcessMemoryPrioritySetting,
-    ProcessPrioritySetting, ProcessPrioritySettings, ProcessRuleMode, ProcessThreadPrioritySetting,
-    ThreadPrioritySettings, TimerResolutionRule, TimerResolutionSettings, WeekdaySetting,
+    AccentSettings, ActionLogMode, AdaptiveEngineExclusionRule, AdaptiveEnginePreset,
+    AdaptiveEngineProcessSettings, AdaptiveEngineSettings, AdaptivePressureSource,
+    AdaptiveRestraintIoPriority, AdaptiveRestraintPriority, AdvancedPowerPlanTuningPreset,
+    AdvancedSettings, AppLanguage, AppSuspensionRule, AppSuspensionSettings, AppThemeMode,
+    BackgroundProcessorSelection, ByActivitySettings, ByCpuLoadRule, ByCpuLoadSettings,
+    ByFocusRule, ByFocusSettings, ByRunningAppRule, ByRunningAppSettings, ByTimeRule,
+    ByTimeSettings, CpuAllocationMethod, CpuAllocationPreset, CpuAllocationRule,
+    CpuAllocationSettings, CpuLimiterRule, CpuLimiterSettings, CpuUsageComparison,
+    DynamicPriorityBoostSettings, EfficiencyModeRule, EfficiencyModeSettings, GeneralSettings,
+    GpuPrioritySettings, InputDetectionSettings, IoPrioritySettings, MemoryPrioritySettings,
+    MemoryTrimSettings, NetworkThresholdUnit, PowerPlanSettings,
+    ProcessDynamicPriorityBoostSetting, ProcessExclusionRule, ProcessGpuPrioritySetting,
+    ProcessIoPrioritySetting, ProcessMemoryPrioritySetting, ProcessPrioritySetting,
+    ProcessPrioritySettings, ProcessRuleMode, ProcessThreadPrioritySetting, ThreadPrioritySettings,
+    TimerResolutionRule, TimerResolutionSettings, WeekdaySetting,
 };
 
 fn set_cpu_allocation_selections(settings: &mut Settings, mask: u64) {
@@ -1504,11 +1579,9 @@ fn toml_round_trip_preserves_settings() {
             maximum_restraint_time_ms: crate::config::ADAPTIVE_RESTRAINT_MAX_TIME_MS,
             cpu_recovery_time_seconds: 10,
             maximum_restrained_apps: 6,
-            custom_rules: vec![ProcessExclusionRule {
-                enabled: true,
-                executable_path: "C:\\Games\\game.exe".to_owned(),
-                ..Default::default()
-            }],
+            custom_rules: vec![AdaptiveEngineExclusionRule::exact_path(
+                r"C:\Games\game.exe",
+            )],
         },
         process_priority: ProcessPrioritySettings {
             enabled: true,

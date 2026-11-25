@@ -202,6 +202,14 @@ impl AdaptiveEngineProcessSettings {
                 rust_i18n::t!("adaptive_engine_process.processors_to_remove_invalid").into_owned(),
             );
         }
+        if self.custom_rules.iter().any(|rule| {
+            matches!(&rule.selector, ExecutableSelector::ExactName { executable_name }
+                if !is_valid_executable_name(executable_name))
+        }) {
+            return Err(
+                rust_i18n::t!("adaptive_engine_process.custom_rule_name_invalid").into_owned(),
+            );
+        }
         Ok(())
     }
 }

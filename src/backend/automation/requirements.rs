@@ -177,12 +177,12 @@ pub(super) fn adaptive_engine_process_waits_for_source(
             .custom_rules
             .iter()
             .filter(|rule| rule.enabled)
-            .map(|rule| &rule.executable_path)
+            .map(|rule| &rule.selector)
             .ne(dc
                 .custom_rules
                 .iter()
                 .filter(|rule| rule.enabled)
-                .map(|rule| &rule.executable_path))
+                .map(|rule| &rule.selector))
 }
 
 pub(super) fn efficiency_mode_policy_varies_by_source(settings: &Settings) -> bool {

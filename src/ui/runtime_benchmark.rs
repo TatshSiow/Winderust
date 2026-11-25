@@ -11,7 +11,7 @@ use crate::{
         automation::{RuntimeHandle, RuntimeStatusSnapshot},
         crash_recovery, privilege,
     },
-    config::{PowerSourceProfile, ProcessExclusionRule, Settings},
+    config::{AdaptiveEngineExclusionRule, PowerSourceProfile, Settings},
     control::power_plan::PowerPlanOwner,
     power,
     ui::adaptive_processor_power::BuiltInPreset,
@@ -70,10 +70,9 @@ impl BenchmarkRequest {
             if !Path::new(path).is_absolute() {
                 return Err("Benchmark host path must be absolute".to_owned());
             }
-            process.custom_rules.push(ProcessExclusionRule {
-                executable_path: path.clone(),
-                ..Default::default()
-            });
+            process
+                .custom_rules
+                .push(AdaptiveEngineExclusionRule::exact_path(path.clone()));
         }
         if let Some(value) = self.dynamic_resource_zones_enabled {
             process.dynamic_resource_zones_enabled = value;

@@ -13,7 +13,7 @@ use crate::{
     audio_activity::active_audio_process_ids,
     config::{
         AdaptiveEngineProcessSettings, AdaptivePressureSource, AdaptiveRestraintPriority,
-        BackgroundProcessorSelection, CpuAllocationMethod, PowerSourceProfile,
+        BackgroundProcessorSelection, CpuAllocationMethod, ExecutableSelector, PowerSourceProfile,
     },
     control::{
         cpu_allocation::CpuAllocationCoordinator,
@@ -459,10 +459,19 @@ impl AdaptiveEngineProcessManager {
             };
         };
 
-        let exact_paths_required = settings
-            .custom_rules
-            .iter()
-            .any(|rule| rule.enabled && Path::new(rule.executable_path.trim()).is_absolute());
+        let exact_paths_required = settings.custom_rules.iter().any(|rule| {
+            rule.enabled
+                && rule
+                    .selector
+                    .exact_path()
+                    .is_some_and(|path| Path::new(path.trim()).is_absolute())
+        });
+        let name_exclusions_enabled = settings.custom_rules.iter().any(|rule| {
+            rule.enabled && matches!(&rule.selector, ExecutableSelector::ExactName { .. })
+        });
+        let excluded_by_name = |process: &ProcessInfo| {
+            name_exclusions_enabled && settings.excludes_executable_name(&process.name)
+        };
         let read_background_processes = |observations: &mut CycleObservations| {
             if exact_paths_required {
                 observations.processes_with_paths()
@@ -631,6 +640,7 @@ impl AdaptiveEngineProcessManager {
             .find(|process| process.id == foreground_id)
             .is_some_and(|process| {
                 excluded_process_id != Some(foreground_id)
+                    && !excluded_by_name(process)
                     && focus_process_priority_eligible(
                         foreground_id,
                         &process.name,
@@ -640,8 +650,9 @@ impl AdaptiveEngineProcessManager {
                     && process.creation_time.is_some_and(|created| {
                         focus_and_launch_profile_eligible(foreground_id, created)
                     })
-                    && !cached_executable_path(process, &mut executable_paths)
-                        .is_some_and(|path| settings.custom_rule_enabled_for(&path))
+                    && (!exact_paths_required
+                        || !cached_executable_path(process, &mut executable_paths)
+                            .is_some_and(|path| settings.excludes_executable_path(&path)))
             });
         let cpu_pressure_restraint_applies = settings.cpu_pressure_restraint_enabled
             && restraint_idle_pause.is_none()
@@ -693,6 +704,7 @@ impl AdaptiveEngineProcessManager {
             if process.is_critical != Some(false)
                 || !process.can_set_information
                 || excluded_service_host(process)
+                || excluded_by_name(process)
                 || should_skip_process(
                     process.id,
                     &process.name,
@@ -894,7 +906,7 @@ impl AdaptiveEngineProcessManager {
                 else {
                     continue;
                 };
-                if settings.custom_rule_enabled_for(&executable_path) {
+                if exact_paths_required && settings.excludes_executable_path(&executable_path) {
                     continue;
                 }
                 actionable_process_ids.insert(*process_id);
@@ -1043,6 +1055,7 @@ impl AdaptiveEngineProcessManager {
                         || !process.can_set_information
                         || excluded_service_host(process)
                         || excluded_process_id == Some(*process_id)
+                        || excluded_by_name(process)
                         || !focus_process_priority_eligible(
                             *process_id,
                             &process.name,
@@ -1057,7 +1070,7 @@ impl AdaptiveEngineProcessManager {
                     else {
                         continue;
                     };
-                    if settings.custom_rule_enabled_for(&executable_path)
+                    if (exact_paths_required && settings.excludes_executable_path(&executable_path))
                         || cpu_allocation::contains_process(
                             explicit_cpu_allocation_paths,
                             &executable_path,

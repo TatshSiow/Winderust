@@ -357,27 +357,39 @@ fn network_threshold_units_convert_to_canonical_bytes() {
 }
 
 #[test]
-fn custom_rules_match_only_the_configured_executable_path() {
+fn adaptive_custom_rules_match_the_configured_selector_kind() {
     let settings = AdaptiveEngineProcessSettings {
         custom_rules: vec![
-            ProcessExclusionRule {
-                enabled: true,
-                executable_path: "C:\\Games\\game.exe".to_owned(),
-                ..Default::default()
-            },
-            ProcessExclusionRule {
+            AdaptiveEngineExclusionRule::exact_path(r"C:\Games\game.exe"),
+            AdaptiveEngineExclusionRule {
                 enabled: false,
-                executable_path: "C:\\Apps\\disabled.exe".to_owned(),
-                ..Default::default()
+                ..AdaptiveEngineExclusionRule::exact_path(r"C:\Apps\disabled.exe")
+            },
+            AdaptiveEngineExclusionRule {
+                enabled: true,
+                selector: ExecutableSelector::ExactName {
+                    executable_name: "Éditeur.exe".into(),
+                },
+            },
+            AdaptiveEngineExclusionRule {
+                enabled: false,
+                selector: ExecutableSelector::ExactName {
+                    executable_name: "disabled.exe".into(),
+                },
             },
         ],
         ..Default::default()
     };
 
-    assert!(settings.custom_rule_enabled_for("c:/games/GAME.exe"));
-    assert!(!settings.custom_rule_enabled_for("C:\\Other\\game.exe"));
-    assert!(!settings.custom_rule_enabled_for("C:\\Games\\game*.exe"));
-    assert!(!settings.custom_rule_enabled_for("C:\\Apps\\disabled.exe"));
+    assert!(settings.excludes_executable_path("c:/games/GAME.exe"));
+    assert!(!settings.excludes_executable_path(r"C:\Other\game.exe"));
+    assert!(!settings.excludes_executable_path(r"C:\Games\game*.exe"));
+    assert!(!settings.excludes_executable_path(r"C:\Apps\disabled.exe"));
+    assert!(!settings.excludes_executable_name("game.exe"));
+    assert!(settings.excludes_executable_name("éditeur.EXE"));
+    assert!(!settings.excludes_executable_name("my-éditeur.exe"));
+    assert!(!settings.excludes_executable_name("disabled.exe"));
+    assert!(!settings.excludes_executable_path(r"C:\Apps\éditeur.exe"));
 }
 
 #[test]

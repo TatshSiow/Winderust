@@ -163,7 +163,7 @@ pub(super) fn can_add_by_running_app_name(settings: &ByRunningAppSettings, name:
         && can_add_executable_name(settings.rules.iter().map(|rule| &rule.selector), name)
 }
 
-fn can_add_executable_name<'a>(
+pub(super) fn can_add_executable_name<'a>(
     mut selectors: impl Iterator<Item = &'a ExecutableSelector>,
     name: &str,
 ) -> bool {

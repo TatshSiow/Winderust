@@ -3989,6 +3989,45 @@ fn adaptive_engine_source_selection_checks_only_effective_foreground_thresholds(
 }
 
 #[test]
+fn adaptive_engine_source_selection_compares_enabled_exclusion_selectors() {
+    use crate::config::{AdaptiveEngineExclusionRule, ExecutableSelector};
+
+    let mut settings = Settings::default();
+    settings.adaptive_engine.enabled = true;
+    settings
+        .adaptive_engine_process
+        .limit_background_processors_enabled = true;
+    let name = AdaptiveEngineExclusionRule {
+        enabled: true,
+        selector: ExecutableSelector::ExactName {
+            executable_name: "worker.exe".to_owned(),
+        },
+    };
+    let path = AdaptiveEngineExclusionRule::exact_path(r"C:\Apps\worker.exe");
+    settings.adaptive_engine_process.custom_rules = vec![path.clone()];
+    settings
+        .battery_profile_mut()
+        .adaptive_engine_process
+        .custom_rules = vec![name.clone()];
+    assert!(adaptive_engine_process_waits_for_source(&settings, None));
+    assert!(!adaptive_engine_process_waits_for_source(
+        &settings,
+        Some(true)
+    ));
+
+    settings.adaptive_engine_process.custom_rules = vec![name];
+    assert!(!adaptive_engine_process_waits_for_source(&settings, None));
+    settings
+        .adaptive_engine_process
+        .custom_rules
+        .push(AdaptiveEngineExclusionRule {
+            enabled: false,
+            ..path
+        });
+    assert!(!adaptive_engine_process_waits_for_source(&settings, None));
+}
+
+#[test]
 fn adaptive_engine_source_selection_checks_effective_affinity_and_service_guard() {
     use crate::config::{BackgroundProcessorSelection, CpuAllocationMethod};
 

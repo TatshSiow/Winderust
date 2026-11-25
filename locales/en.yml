@@ -386,6 +386,7 @@ process_list:
   rulesets: "Rulesets"
   rulesets_unsupported_path: "The executable path contains invalid Unicode. Rulesets are unavailable for this path."
   details_exclusions: "Feature exclusions"
+  adaptive_excluded_by_name: "Excluded by executable name. Edit in Custom Rules."
   details_priority: "Priority Control"
   use_page_defaults: "Use page defaults"
 
@@ -964,7 +965,8 @@ adaptive_engine_process:
   processors_to_remove_invalid: "Enter a whole number from 1 to 63 for Processors to remove."
   preserve_custom_affinity: "Preserve custom affinity"
   preserve_custom_affinity_help: "Skip apps with narrower processor affinity or custom CPU Sets. Reduce affinity always skips apps with custom CPU Sets."
-  custom_rules_help: "Keeps matching processes out of Adaptive Engine priority restraint and CPU placement."
+  custom_rules_help: "Exclude matching processes from CPU Pressure Restraint and processor placement. Executable name matches across installation paths."
+  custom_rule_name_invalid: "Adaptive Engine Custom Rules require an exact executable name."
 
 priority_control:
   custom_rules_help: "An enabled app rule overrides the matching tier's setting. Choose Default to skip the app in that tier."

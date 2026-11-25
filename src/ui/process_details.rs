@@ -41,6 +41,18 @@ impl std::fmt::Display for Plan {
         self.1.fmt(f)
     }
 }
+
+fn adaptive_name_excluded(settings: &Settings, path: &str) -> bool {
+    std::path::Path::new(path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| {
+            settings
+                .adaptive_engine_process
+                .excludes_executable_name(name)
+        })
+}
+
 pub(super) fn update(s: &mut SettingsEditor, image_path: &str, m: Message) -> Option<String> {
     if !std::path::Path::new(image_path).is_absolute() {
         return None;
@@ -80,8 +92,11 @@ pub(super) fn update(s: &mut SettingsEditor, image_path: &str, m: Message) -> Op
             }
         }
         Message::Adaptive(included) => {
-            let matches_path = |rule: &ProcessExclusionRule| {
-                same_rule_executable_path(&rule.executable_path, image_path)
+            if adaptive_name_excluded(s, image_path) {
+                return None;
+            }
+            let matches_path = |rule: &AdaptiveEngineExclusionRule| {
+                selector_path_matches(&rule.selector, image_path)
             };
             let rules = &s.adaptive_engine_process.custom_rules;
             match (included, rules.iter().position(matches_path)) {
@@ -92,10 +107,11 @@ pub(super) fn update(s: &mut SettingsEditor, image_path: &str, m: Message) -> Op
                 (false, Some(index)) if !rules[index].enabled => {
                     s.adaptive_engine_process.custom_rules[index].enabled = true;
                 }
-                (false, None) => s
-                    .adaptive_engine_process
-                    .custom_rules
-                    .push(new_process_exclusion_rule(image_path)),
+                (false, None) => s.adaptive_engine_process.custom_rules.push(
+                    AdaptiveEngineExclusionRule::exact_path(
+                        normalize_path_slashes(image_path).into_owned(),
+                    ),
+                ),
                 _ => {}
             }
         }
@@ -280,11 +296,8 @@ pub(super) fn view<'a>(
     path: &'a str,
     plans: PlanCatalog<'_>,
 ) -> Element<'a, Message> {
-    let adaptive = !s
-        .adaptive_engine_process
-        .custom_rules
-        .iter()
-        .any(|r| r.enabled && same_rule_executable_path(&r.executable_path, path));
+    let excluded_by_name = adaptive_name_excluded(s, path);
+    let adaptive = !s.adaptive_engine_process.excludes_executable_path(path);
     let efficiency = s
         .efficiency_mode
         .custom_rules
@@ -301,6 +314,19 @@ pub(super) fn view<'a>(
         ("nav.adaptive_engine", adaptive, true),
         ("nav.efficiency_mode", efficiency, false),
     ] {
+        if adaptive_rule && excluded_by_name {
+            exclusions.push(
+                setting_row(
+                    key,
+                    text(t!("process_list.adaptive_excluded_by_name").into_owned())
+                        .size(design::typography::SECONDARY)
+                        .style(text::secondary)
+                        .width(design::SELECT_WIDTH),
+                )
+                .into(),
+            );
+            continue;
+        }
         let options = [
             t!("process_list.include").to_string(),
             t!("process_list.exclude").to_string(),
@@ -769,8 +795,10 @@ mod tests {
             selected
         );
         assert_eq!(
-            settings.adaptive_engine_process.custom_rules[1].executable_path,
-            selected
+            settings.adaptive_engine_process.custom_rules[1]
+                .selector
+                .exact_path(),
+            Some(selected),
         );
         assert_eq!(
             settings.efficiency_mode.custom_rules[1].executable_path,
@@ -784,19 +812,48 @@ mod tests {
         ] {
             assert_eq!(update(&mut settings, selected, message), None);
         }
-        let actual = [
-            settings.process_priority.exclusions.as_slice(),
-            settings.adaptive_engine_process.custom_rules.as_slice(),
-        ];
-        for rules in actual {
-            assert_eq!(rules.len(), 1);
-            assert_eq!(rules[0].executable_path, ordinary);
-        }
+        assert_eq!(settings.process_priority.exclusions.len(), 1);
+        assert_eq!(
+            settings.process_priority.exclusions[0].executable_path,
+            ordinary
+        );
+        assert_eq!(
+            settings.adaptive_engine_process.custom_rules,
+            vec![AdaptiveEngineExclusionRule::exact_path(ordinary)],
+        );
         assert_eq!(settings.efficiency_mode.custom_rules.len(), 1);
         assert_eq!(
             settings.efficiency_mode.custom_rules[0].executable_path,
             ordinary
         );
+    }
+
+    #[test]
+    fn details_keeps_executable_name_exclusions_in_custom_rules() {
+        let path = r"C:\Apps\Worker.exe";
+        let mut original = Settings::default();
+        original.adaptive_engine_process.custom_rules = vec![
+            AdaptiveEngineExclusionRule::exact_path(path),
+            AdaptiveEngineExclusionRule {
+                enabled: true,
+                selector: ExecutableSelector::ExactName {
+                    executable_name: "worker.exe".into(),
+                },
+            },
+        ];
+        let mut settings = SettingsEditor::with_settings(original.clone());
+        assert!(adaptive_name_excluded(&settings, path));
+        assert_eq!(update(&mut settings, path, Message::Adaptive(true)), None);
+        assert_eq!(
+            update(
+                &mut settings,
+                r"C:\Other\Worker.exe",
+                Message::Adaptive(false)
+            ),
+            None
+        );
+        assert_eq!(settings.global(), &original);
+        assert!(!settings.has_unsaved_changes());
     }
 
     #[test]

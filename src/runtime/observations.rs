@@ -213,6 +213,12 @@ impl CycleObservations {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn with_visible_windows(mut self, process_ids: BTreeSet<u32>) -> Self {
+        self.visible_window_process_ids = Observation::Available(Arc::new(process_ids));
+        self
+    }
+
     pub(crate) fn cpu_topology(&mut self) -> Result<Arc<crate::cpu_topology::CpuTopology>, String> {
         if matches!(self.cpu_topology, Observation::NotRequested) {
             self.cpu_topology = match (self.sources.cpu_topology)() {
@@ -652,6 +658,67 @@ mod tests {
                     ObservationAvailability::NotRequested
                 );
             }
+        }
+    }
+
+    #[test]
+    fn adaptive_engine_only_enriches_catalogue_for_an_enabled_path_exclusion() {
+        use crate::{
+            config::{
+                AdaptiveEngineExclusionRule, AdaptiveEngineProcessSettings, AdaptivePressureSource,
+                ExecutableSelector,
+            },
+            features::cpu_control::adaptive_engine_process::{
+                AdaptiveEngineProcessManager, AdaptiveEngineProcessUpdate,
+            },
+        };
+
+        let name = AdaptiveEngineExclusionRule {
+            enabled: true,
+            selector: ExecutableSelector::ExactName {
+                executable_name: "test.exe".to_owned(),
+            },
+        };
+        let path = AdaptiveEngineExclusionRule::exact_path(r"C:\Apps\test.exe");
+        let disabled_path = AdaptiveEngineExclusionRule {
+            enabled: false,
+            ..path.clone()
+        };
+        let _guard = TEST_LOCK.lock().unwrap();
+        for (custom_rules, expected_enrichment) in [
+            (vec![name.clone(), disabled_path], false),
+            (vec![name, path], true),
+        ] {
+            let settings = AdaptiveEngineProcessSettings {
+                limit_background_processors_enabled: true,
+                pressure_source: AdaptivePressureSource::System,
+                custom_rules,
+                ..Default::default()
+            };
+            let mut observations =
+                CycleObservations::with_adaptive_cpu_sample(processes().unwrap(), Some(42), None);
+            observations.sources.visible_window_process_ids = || Some(BTreeSet::new());
+            observations.sources.cpu_topology = || Ok(crate::cpu_topology::test_topology());
+            observations.sources.enrich_process_paths = |_| {};
+            let status = AdaptiveEngineProcessManager::default().update(
+                AdaptiveEngineProcessUpdate {
+                    settings: &settings,
+                    automation_enabled: true,
+                    allow_cross_session_process_control: true,
+                    foreground_process_id: Some(42),
+                    total_cpu_usage_percent: Some(90.0),
+                    user_idle_for: None,
+                    excluded_process_id: None,
+                    explicit_cpu_allocation_paths: &[],
+                    observations: &mut observations,
+                },
+                &mut Default::default(),
+                &mut Default::default(),
+                &mut ActionLog::default(),
+            );
+            assert!(!status.observation_paused);
+            assert_eq!(status.scanned_processes, 1);
+            assert_eq!(observations.process_paths_enriched, expected_enrichment);
         }
     }
 

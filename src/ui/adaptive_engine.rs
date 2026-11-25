@@ -5,9 +5,10 @@ use super::widgets::{
 };
 use crate::application::SettingsEditor;
 use crate::config::*;
+use crate::foreground::process_list::normalize_path_slashes;
 use crate::ui::process_rules::{
-    can_add_exact_process_candidate, exact_path_input, new_process_exclusion_rule,
-    picked_path_input,
+    can_add_exact_process_candidate, can_add_executable_name, exact_path_input, picked_path_input,
+    selector_path_matches, MatchBy,
 };
 use crate::ui::scrolling::scrollable;
 use iced::widget::{column, row, text};
@@ -63,17 +64,25 @@ impl TuningGroup {
     const COUNT: usize = Self::CpuPressureRestraint as usize + 1;
 }
 
-fn can_add_exclusion(settings: &AdaptiveEngineProcessSettings, path: &str) -> bool {
+fn can_add_path_exclusion(settings: &AdaptiveEngineProcessSettings, path: &str) -> bool {
     can_add_exact_process_candidate(
         path,
         |path| {
             settings
                 .custom_rules
                 .iter()
-                .any(|rule| same_rule_executable_path(&rule.executable_path, path))
+                .any(|rule| selector_path_matches(&rule.selector, path))
         },
         crate::adaptive_engine_process::is_builtin_excluded,
     )
+}
+
+fn can_add_name_exclusion(settings: &AdaptiveEngineProcessSettings, name: &str) -> bool {
+    !crate::adaptive_engine_process::is_builtin_excluded(name)
+        && can_add_executable_name(
+            settings.custom_rules.iter().map(|rule| &rule.selector),
+            name,
+        )
 }
 
 #[derive(Default)]
@@ -85,7 +94,9 @@ pub(super) struct Editor {
     preview: Option<(PowerSourceProfile, usize)>,
     tuning_tabs: [TuningTab; 2],
     expanded: [[bool; TuningGroup::COUNT]; 2],
+    match_by: MatchBy,
     path: String,
+    executable_name: String,
     error: String,
     live_numbers: NumberInputs,
     preset_numbers: NumberInputs,
@@ -159,7 +170,9 @@ pub(super) enum Message {
     Delete(usize),
     Cancel,
     UseCurrent,
+    MatchBy(MatchBy),
     Path(String),
+    ExecutableName(String),
     Browse,
     AddExclusion,
     RemoveExclusion(usize),
@@ -326,16 +339,38 @@ impl Editor {
                     self.draft = Some((**s).clone())
                 }
             }
+            Message::MatchBy(match_by) => self.match_by = match_by,
             Message::Path(v) => self.path = v,
+            Message::ExecutableName(v) => self.executable_name = v,
             Message::Browse => {}
             Message::AddExclusion => {
-                let path = exact_path_input(&self.path);
-                if can_add_exclusion(&s.adaptive_engine_process, path) {
-                    s.adaptive_engine_process
-                        .custom_rules
-                        .push(new_process_exclusion_rule(path));
-                    self.path.clear();
-                }
+                let rule = match self.match_by {
+                    MatchBy::ExecutablePath => {
+                        let path = exact_path_input(&self.path);
+                        if !can_add_path_exclusion(&s.adaptive_engine_process, path) {
+                            return;
+                        }
+                        let rule =
+                            AdaptiveEngineExclusionRule::exact_path(normalize_path_slashes(path));
+                        self.path.clear();
+                        rule
+                    }
+                    MatchBy::ExecutableName => {
+                        if !can_add_name_exclusion(
+                            &s.adaptive_engine_process,
+                            &self.executable_name,
+                        ) {
+                            return;
+                        }
+                        AdaptiveEngineExclusionRule {
+                            enabled: true,
+                            selector: ExecutableSelector::ExactName {
+                                executable_name: std::mem::take(&mut self.executable_name),
+                            },
+                        }
+                    }
+                };
+                s.adaptive_engine_process.custom_rules.push(rule);
             }
             Message::RemoveExclusion(i) => {
                 if i < s.adaptive_engine_process.custom_rules.len() {
@@ -1175,23 +1210,55 @@ impl Editor {
             TuningTab::CustomRules => {}
         }
         if !preset && tab == TuningTab::CustomRules {
+            let cpu = &s.adaptive_engine_process;
+            let target_input = match self.match_by {
+                MatchBy::ExecutablePath => super::app_picker::view_with_path_selection(
+                    &self.path,
+                    candidates,
+                    true,
+                    (Message::Path, |path| Message::Path(picked_path_input(path))),
+                    Message::Browse,
+                    can_add_path_exclusion(cpu, exact_path_input(&self.path))
+                        .then_some(Message::AddExclusion),
+                    |path| can_add_path_exclusion(cpu, path).then_some(true),
+                ),
+                MatchBy::ExecutableName => {
+                    let add = can_add_name_exclusion(cpu, &self.executable_name)
+                        .then_some(Message::AddExclusion);
+                    column![
+                        super::widgets::setting_title("common.executable_name"),
+                        row![
+                            text_input("app.exe", &self.executable_name)
+                                .on_input(Message::ExecutableName)
+                                .on_submit_maybe(add.clone())
+                                .width(Fill),
+                            super::widgets::rule_add_button(add),
+                        ]
+                        .spacing(design::space::SMALL)
+                        .align_y(iced::Center),
+                    ]
+                    .spacing(design::space::SMALL)
+                    .into()
+                }
+            };
             body = body.push(super::widgets::settings_card(
-                column![
+                super::widgets::settings_rows([
                     text(t!("adaptive_engine_process.custom_rules_help").to_string())
                         .size(design::typography::SECONDARY)
-                        .style(text::secondary),
-                    super::app_picker::view_with_path_selection(
-                        &self.path,
-                        candidates,
-                        true,
-                        (Message::Path, |path| Message::Path(picked_path_input(path))),
-                        Message::Browse,
-                        can_add_exclusion(&s.adaptive_engine_process, exact_path_input(&self.path))
-                            .then_some(Message::AddExclusion),
-                        |path| can_add_exclusion(&s.adaptive_engine_process, path).then_some(true),
-                    ),
-                ]
-                .spacing(design::space::SMALL),
+                        .style(text::secondary)
+                        .into(),
+                    super::widgets::setting_row(
+                        "common.match_by",
+                        pick_list(
+                            [MatchBy::ExecutablePath, MatchBy::ExecutableName],
+                            Some(self.match_by),
+                            Message::MatchBy,
+                        )
+                        .width(design::SELECT_WIDTH),
+                    )
+                    .into(),
+                    target_input,
+                ]),
             ));
             let rules = s
                 .adaptive_engine_process
@@ -1199,17 +1266,38 @@ impl Editor {
                 .iter()
                 .enumerate()
                 .map(|(i, rule)| {
+                    let (app, mut target) =
+                        super::widgets::process_rule_target(&rule.selector, candidates);
+                    let is_path = rule.selector.exact_path().is_some();
+                    if is_path {
+                        target = column![
+                            target,
+                            text(t!("common.executable_path").to_string())
+                                .size(design::typography::CAPTION)
+                                .style(text::secondary),
+                        ]
+                        .spacing(design::space::TINY)
+                        .into();
+                    }
                     (
-                        super::widgets::stable_key(&rule.executable_path),
-                        super::widgets::process_rule_row(
-                            &rule.executable_path,
-                            candidates,
-                            checkbox(rule.enabled)
-                                .on_toggle(move |value| Message::ExclusionEnabled(i, value))
-                                .into(),
-                            vec![],
-                            Some(Message::RemoveExclusion(i)),
-                        ),
+                        super::widgets::stable_key(&(is_path, rule.selector.value())),
+                        column![
+                            super::widgets::process_rule_header_with_target(
+                                app,
+                                target,
+                                checkbox(rule.enabled)
+                                    .on_toggle(move |value| Message::ExclusionEnabled(i, value))
+                                    .into(),
+                                None,
+                                vec![],
+                                super::widgets::rule_actions(
+                                    None,
+                                    Some(Message::RemoveExclusion(i))
+                                ),
+                            ),
+                            super::widgets::settings_divider(),
+                        ]
+                        .into(),
                     )
                 })
                 .collect();
@@ -1476,7 +1564,12 @@ mod tests {
             settings.adaptive_engine_presets[0]
                 .adaptive_engine_process
                 .custom_rules
-                .push(new_process_exclusion_rule(r"C:\Apps\excluded.exe"));
+                .push(AdaptiveEngineExclusionRule {
+                    enabled: true,
+                    selector: ExecutableSelector::ExactName {
+                        executable_name: "excluded.exe".into(),
+                    },
+                });
         });
         let options = vec![
             Choice(1, built_in_adaptive_engine_preset_label(builtin)),
@@ -1567,10 +1660,7 @@ mod tests {
         original
             .adaptive_engine_process
             .custom_rules
-            .push(ProcessExclusionRule {
-                executable_path: r"C:\Apps\test.exe".into(),
-                ..Default::default()
-            });
+            .push(AdaptiveEngineExclusionRule::exact_path(r"C:\Apps\test.exe"));
         let mut settings = crate::application::SettingsEditor::with_settings(original.clone());
         let mut editor = Editor::default();
         editor.update(&mut settings, Message::RemoveExclusion(0));
@@ -1584,6 +1674,51 @@ mod tests {
             settings.adaptive_engine_process.custom_rules,
             original.adaptive_engine_process.custom_rules
         );
+    }
+
+    #[test]
+    fn custom_rules_accept_both_match_types_and_reject_duplicates() {
+        let mut settings = SettingsEditor::with_settings(Settings::default());
+        let mut editor = Editor::default();
+        for message in [
+            Message::Path("C:/Apps/worker.exe".into()),
+            Message::AddExclusion,
+            Message::Path(r"c:\apps\worker.exe".into()),
+            Message::AddExclusion,
+            Message::MatchBy(MatchBy::ExecutableName),
+            Message::ExecutableName(r"C:\Apps\worker.exe".into()),
+            Message::AddExclusion,
+            Message::ExecutableName("*.exe".into()),
+            Message::AddExclusion,
+            Message::ExecutableName("lsass.exe".into()),
+            Message::AddExclusion,
+        ] {
+            editor.update(&mut settings, message);
+        }
+        assert_eq!(settings.adaptive_engine_process.custom_rules.len(), 1);
+
+        for message in [
+            Message::ExecutableName("worker.exe".into()),
+            Message::AddExclusion,
+            Message::ExecutableName("WORKER.EXE".into()),
+            Message::AddExclusion,
+        ] {
+            editor.update(&mut settings, message);
+        }
+        let rules = &settings.adaptive_engine_process.custom_rules;
+        assert_eq!(rules.len(), 2);
+        assert_eq!(rules[0].selector.exact_path(), Some(r"C:\Apps\worker.exe"));
+        assert_eq!(
+            rules[1].selector,
+            ExecutableSelector::ExactName {
+                executable_name: "worker.exe".into()
+            }
+        );
+        assert!(settings
+            .persisted()
+            .adaptive_engine_process
+            .custom_rules
+            .is_empty());
     }
 
     use super::*;
@@ -1715,9 +1850,8 @@ mod tests {
 
         let mut settings = Settings::default();
         settings.adaptive_engine_process.custom_rules = (0..8)
-            .map(|index| ProcessExclusionRule {
-                executable_path: format!(r"C:\Apps\app-{index}.exe"),
-                ..Default::default()
+            .map(|index| {
+                AdaptiveEngineExclusionRule::exact_path(format!(r"C:\Apps\app-{index}.exe"))
             })
             .collect();
         let settings = SettingsEditor::with_settings(settings);
@@ -1815,9 +1949,11 @@ mod tests {
                 .adaptive_engine_process
                 .limit_background_processors_enabled
         );
-        let exclusion = ProcessExclusionRule {
-            executable_path: r"C:\App\app.exe".into(),
-            ..Default::default()
+        let exclusion = AdaptiveEngineExclusionRule {
+            enabled: true,
+            selector: ExecutableSelector::ExactName {
+                executable_name: "app.exe".into(),
+            },
         };
         settings
             .adaptive_engine_process
@@ -1983,7 +2119,9 @@ mod tests {
         battery.maximum_restraint_time_ms = 6_000;
         battery
             .custom_rules
-            .push(new_process_exclusion_rule(r"C:\Apps\Example.exe"));
+            .push(AdaptiveEngineExclusionRule::exact_path(
+                r"C:\Apps\Example.exe",
+            ));
 
         let mut settings = SettingsEditor::with_settings(original.clone());
         settings.select_power_source(PowerSourceProfile::OnBattery);

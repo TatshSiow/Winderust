@@ -5,7 +5,7 @@ use std::path::Path;
 use super::{ExecutableSelector, RuleTime};
 
 use crate::cpu_topology::CpuSelection;
-use crate::foreground::same_executable_path;
+use crate::foreground::{process_list::same_executable_name, same_executable_path};
 use crate::power::plan::{
     AdaptivePowerBoostValues, AdvancedPowerPlanTuningValues, ProcessorBoostMode,
     ProcessorPowerValues,
@@ -1141,6 +1141,25 @@ pub enum AdaptiveRestraintIoPriority {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AdaptiveEngineExclusionRule {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(flatten)]
+    pub selector: ExecutableSelector,
+}
+
+impl AdaptiveEngineExclusionRule {
+    pub(crate) fn exact_path(path: impl Into<String>) -> Self {
+        Self {
+            enabled: true,
+            selector: ExecutableSelector::ExactPath {
+                executable_path: path.into(),
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "AdaptiveEngineProcessSettingsWire")]
 pub struct AdaptiveEngineProcessSettings {
     pub process_priority_enabled: bool,
@@ -1213,7 +1232,7 @@ pub struct AdaptiveEngineProcessSettings {
     pub maximum_restraint_time_ms: u64,
     pub cpu_recovery_time_seconds: u64,
     pub maximum_restrained_apps: u8,
-    pub custom_rules: Vec<ProcessExclusionRule>,
+    pub custom_rules: Vec<AdaptiveEngineExclusionRule>,
 }
 
 #[derive(Deserialize)]
@@ -1302,7 +1321,7 @@ struct AdaptiveEngineProcessSettingsWire {
     pub maximum_restraint_time_ms: u64,
     pub cpu_recovery_time_seconds: u64,
     pub maximum_restrained_apps: u8,
-    pub custom_rules: Vec<ProcessExclusionRule>,
+    pub custom_rules: Vec<AdaptiveEngineExclusionRule>,
 }
 
 impl TryFrom<AdaptiveEngineProcessSettingsWire> for AdaptiveEngineProcessSettings {
@@ -2989,9 +3008,21 @@ impl AdaptiveEngineProcessSettings {
         self.maximum_restrained_apps = defaults.maximum_restrained_apps;
     }
 
-    pub fn custom_rule_enabled_for(&self, process_name: &str) -> bool {
+    pub(crate) fn excludes_executable_name(&self, name: &str) -> bool {
         self.custom_rules.iter().any(|rule| {
-            rule.enabled && same_rule_executable_path(&rule.executable_path, process_name)
+            rule.enabled
+                && matches!(&rule.selector, ExecutableSelector::ExactName { executable_name }
+                    if same_executable_name(executable_name, name))
+        })
+    }
+
+    pub(crate) fn excludes_executable_path(&self, path: &str) -> bool {
+        self.custom_rules.iter().any(|rule| {
+            rule.enabled
+                && rule
+                    .selector
+                    .exact_path()
+                    .is_some_and(|target| same_rule_executable_path(target, path))
         })
     }
 }

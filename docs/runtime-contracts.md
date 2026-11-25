@@ -569,7 +569,8 @@ Read the relevant section before changing feature policy, ownership, restoration
 - Auto-exclusion fallback is shared through `PendingAutoExclusions` in `src/backend/automation.rs`.
 - On newly suppressed process failures, features emit `auto_excluded_processes`; `WinderustApp::apply_pending_auto_exclusions` persists them into each feature's existing exclusion/rule list.
 - Rule-only fallbacks use disabled rules: CPU Sets (Soft), Processor Affinity (Hard), CPU Limiter, App Suspension.
-- Exclusion-list features append `ProcessExclusionRule`.
+- Exclusion-list features append enabled exact path rules. Adaptive Engine keeps
+  user-created executable-name rules separate from these automatic exclusions.
 
 ## Memory Trim
 
@@ -909,6 +910,10 @@ Read the relevant section before changing feature policy, ownership, restoration
 - When Exclude service hosts is enabled, Adaptive Engine excludes observable active
   service hosts, known service accounts, and Session 0 or unknown-session processes. Unavailable
   service inventory pauses the process policies and restores managed state.
+- Adaptive Engine Custom Rules match exact executable names or paths. Name rules
+  use the observed basename across directories. Exact path rules and automatic
+  failure exclusions retain their path scope. The process identity required for
+  any scheduling change is verified independently of the exclusion selector.
 - Adaptive Engine uses the shared right-rail Status / Presets pattern. Presets apply CPU Behaviour tuning while preserving master switches, exclusions, and Adaptive Processor Power settings.
 
 ## Interrupt Timing

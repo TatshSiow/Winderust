@@ -388,6 +388,7 @@ process_list:
   rulesets: "規則集"
   rulesets_unsupported_path: "執行檔路徑包含無效的 Unicode 字元，無法為此路徑設定規則集。"
   details_exclusions: "功能排除"
+  adaptive_excluded_by_name: "已依執行檔名稱排除。請在自訂規則中編輯。"
   details_priority: "優先順序控制"
   use_page_defaults: "使用頁面預設值"
 
@@ -966,7 +967,8 @@ adaptive_engine_process:
   processors_to_remove_invalid: "要移除的處理器數量須為 1 到 63 的整數。"
   preserve_custom_affinity: "保留自訂親和性"
   preserve_custom_affinity_help: "略過已縮減處理器親和性或設定自訂 CPU 集合的應用程式。縮減親和性一律略過有自訂 CPU 集合的應用程式。"
-  custom_rules_help: "排除符合規則的處理程序，讓自適應引擎略過其優先順序限制與 CPU 配置。"
+  custom_rules_help: "將符合規則的處理程序排除於 CPU 壓力限制與處理器配置之外。以執行檔名稱比對時，規則適用於不同的安裝路徑。"
+  custom_rule_name_invalid: "自適應引擎的自訂規則必須指定確切的執行檔名稱。"
 
 
 priority_control:

@@ -43,6 +43,10 @@ source. Its Custom Rules, the Adaptive Engine master switch, the other power
 source, and Adaptive Processor Power retain their own settings. Save commits the
 draft and Discard restores the last saved tuning.
 
+Custom Rules can exclude an exact executable path or an exact executable name.
+A name rule covers the same executable name in every directory. Process Details
+shows name coverage and directs users to Custom Rules to edit it.
+
 CPU Behaviour has shared detection/timing followed by three independent policies:
 
 - **CPU Pressure Restraint** temporarily lowers the priority of background apps

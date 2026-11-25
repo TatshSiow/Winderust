@@ -105,10 +105,7 @@ fn balanced_export_matches_the_process_preset_and_separate_power_tuning() {
         .unwrap(),
     )
     .unwrap();
-    let exclusion = ProcessExclusionRule {
-        executable_path: host.to_str().unwrap().to_owned(),
-        ..Default::default()
-    };
+    let exclusion = AdaptiveEngineExclusionRule::exact_path(host.to_str().unwrap());
     expected
         .adaptive_engine_process
         .custom_rules

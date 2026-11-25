@@ -619,7 +619,7 @@ fn apply_auto_exclusion_patch_to_profile(
         &patch.app_suspension,
         false,
         app_suspension_rule,
-        |rule| &rule.executable_path,
+        |rule| Some(rule.executable_path.as_str()),
         |rule, enabled| set_enabled_value(&mut rule.enabled, enabled),
     );
     changed |= apply_auto_exclusion_paths(
@@ -627,7 +627,7 @@ fn apply_auto_exclusion_patch_to_profile(
         &patch.cpu_sets_soft,
         false,
         cpu_allocation_rule,
-        |rule| &rule.executable_path,
+        |rule| Some(rule.executable_path.as_str()),
         |rule, enabled| set_enabled_value(&mut rule.enabled, enabled),
     );
     changed |= apply_auto_exclusion_paths(
@@ -635,7 +635,7 @@ fn apply_auto_exclusion_patch_to_profile(
         &patch.processor_affinity_hard,
         false,
         cpu_allocation_rule,
-        |rule| &rule.executable_path,
+        |rule| Some(rule.executable_path.as_str()),
         |rule, enabled| set_enabled_value(&mut rule.enabled, enabled),
     );
     changed |= apply_auto_exclusion_paths(
@@ -643,15 +643,15 @@ fn apply_auto_exclusion_patch_to_profile(
         &patch.cpu_limiter,
         false,
         cpu_limiter_rule,
-        |rule| &rule.executable_path,
+        |rule| Some(rule.executable_path.as_str()),
         |rule, enabled| set_enabled_value(&mut rule.enabled, enabled),
     );
     changed |= apply_auto_exclusion_paths(
         &mut settings.adaptive_engine_process.custom_rules,
         &patch.adaptive_engine_process,
         true,
-        process_exclusion_rule,
-        |rule| &rule.executable_path,
+        |path| config::AdaptiveEngineExclusionRule::exact_path(path),
+        |rule| rule.selector.exact_path(),
         |rule, enabled| set_enabled_value(&mut rule.enabled, enabled),
     );
     changed |= apply_auto_exclusion_paths(
@@ -659,7 +659,7 @@ fn apply_auto_exclusion_patch_to_profile(
         &patch.io_priority,
         true,
         process_exclusion_rule,
-        |rule| &rule.executable_path,
+        |rule| Some(rule.executable_path.as_str()),
         |rule, enabled| set_enabled_value(&mut rule.enabled, enabled),
     );
     changed |= apply_auto_exclusion_paths(
@@ -667,7 +667,7 @@ fn apply_auto_exclusion_patch_to_profile(
         &patch.process_priority,
         true,
         process_exclusion_rule,
-        |rule| &rule.executable_path,
+        |rule| Some(rule.executable_path.as_str()),
         |rule, enabled| set_enabled_value(&mut rule.enabled, enabled),
     );
     changed |= apply_auto_exclusion_paths(
@@ -675,7 +675,7 @@ fn apply_auto_exclusion_patch_to_profile(
         &patch.thread_priority,
         true,
         process_exclusion_rule,
-        |rule| &rule.executable_path,
+        |rule| Some(rule.executable_path.as_str()),
         |rule, enabled| set_enabled_value(&mut rule.enabled, enabled),
     );
     changed |= apply_auto_exclusion_paths(
@@ -683,7 +683,7 @@ fn apply_auto_exclusion_patch_to_profile(
         &patch.dynamic_priority_boost,
         true,
         process_exclusion_rule,
-        |rule| &rule.executable_path,
+        |rule| Some(rule.executable_path.as_str()),
         |rule, enabled| set_enabled_value(&mut rule.enabled, enabled),
     );
     changed |= apply_auto_exclusion_paths(
@@ -691,7 +691,7 @@ fn apply_auto_exclusion_patch_to_profile(
         &patch.gpu_priority,
         true,
         process_exclusion_rule,
-        |rule| &rule.executable_path,
+        |rule| Some(rule.executable_path.as_str()),
         |rule, enabled| set_enabled_value(&mut rule.enabled, enabled),
     );
     changed |= apply_auto_exclusion_paths(
@@ -699,7 +699,7 @@ fn apply_auto_exclusion_patch_to_profile(
         &patch.memory_priority,
         true,
         process_exclusion_rule,
-        |rule| &rule.executable_path,
+        |rule| Some(rule.executable_path.as_str()),
         |rule, enabled| set_enabled_value(&mut rule.enabled, enabled),
     );
     changed |= apply_auto_exclusion_paths(
@@ -707,7 +707,7 @@ fn apply_auto_exclusion_patch_to_profile(
         &patch.memory_trim,
         true,
         process_exclusion_rule,
-        |rule| &rule.executable_path,
+        |rule| Some(rule.executable_path.as_str()),
         |rule, enabled| set_enabled_value(&mut rule.enabled, enabled),
     );
     changed
@@ -718,7 +718,7 @@ fn apply_auto_exclusion_paths<T>(
     incoming: &[String],
     enabled_value: bool,
     new_rule: impl Fn(&str) -> T,
-    executable_path: impl Fn(&T) -> &str,
+    executable_path: impl Fn(&T) -> Option<&str>,
     set_enabled: impl Fn(&mut T, bool) -> bool,
 ) -> bool {
     let mut changed = false;
@@ -730,7 +730,8 @@ fn apply_auto_exclusion_paths<T>(
             continue;
         }
         if let Some(rule) = rules.iter_mut().find(|rule| {
-            same_executable_path(Path::new(executable_path(*rule).trim_start()), candidate)
+            executable_path(*rule)
+                .is_some_and(|path| same_executable_path(Path::new(path.trim_start()), candidate))
         }) {
             changed |= set_enabled(rule, enabled_value);
             continue;
