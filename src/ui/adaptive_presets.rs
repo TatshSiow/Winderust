@@ -247,7 +247,7 @@ pub(super) fn adaptive_engine_process_preset_values(
                 reaction_time_ms: 1_500,
                 restraint_trigger_time_ms: 1_500,
                 minimum_restraint_time_ms: 2_000,
-                cpu_recovery_time_seconds: 4,
+                cpu_recovery_time_seconds: 3,
                 maximum_restrained_apps: 4,
             }
         }
@@ -276,7 +276,7 @@ pub(super) fn adaptive_engine_process_preset_values(
             reaction_time_ms: 750,
             restraint_trigger_time_ms: 750,
             minimum_restraint_time_ms: 3_000,
-            cpu_recovery_time_seconds: 5,
+            cpu_recovery_time_seconds: 3,
             maximum_restrained_apps: 8,
         },
         BuiltInAdaptiveEnginePreset::Speed => AdaptiveEngineProcessPresetValues {
@@ -299,12 +299,12 @@ pub(super) fn adaptive_engine_process_preset_values(
             background_processor_selection: BackgroundProcessorSelection::LeastUsed,
             processor_limit_percent: 75,
             foreground_or_system_cpu_threshold_percent: 35,
-            background_app_cpu_threshold_percent: 4,
-            cpu_recovery_threshold_percent: 2,
+            background_app_cpu_threshold_percent: 8,
+            cpu_recovery_threshold_percent: 7,
             reaction_time_ms: 500,
-            restraint_trigger_time_ms: 500,
+            restraint_trigger_time_ms: 1_000,
             minimum_restraint_time_ms: 5_000,
-            cpu_recovery_time_seconds: 8,
+            cpu_recovery_time_seconds: 4,
             maximum_restrained_apps: 12,
         },
     }
@@ -445,12 +445,14 @@ mod tests {
 
     #[test]
     fn built_in_presets_set_restraint_timing_and_reset_advanced_controls() {
-        for (preset, (dwell_ms, minimum_ms)) in BuiltInAdaptiveEnginePreset::ALL.into_iter().zip([
-            (1_500, 2_000),
-            (1_500, 2_000),
-            (750, 3_000),
-            (500, 5_000),
-        ]) {
+        for (preset, (dwell_ms, minimum_ms, recovery_secs, hot_percent, recovery_percent)) in
+            BuiltInAdaptiveEnginePreset::ALL.into_iter().zip([
+                (1_500, 2_000, 3, 10, 5),
+                (1_500, 2_000, 3, 10, 5),
+                (750, 3_000, 3, 8, 4),
+                (1_000, 5_000, 4, 8, 7),
+            ])
+        {
             let mut settings = AdaptiveEngineProcessSettings {
                 pause_restraint_when_idle: true,
                 restraint_idle_timeout_seconds: 120,
@@ -475,6 +477,8 @@ mod tests {
             };
             apply_adaptive_engine_process_preset(&mut settings, preset);
             assert_eq!(settings.restraint_trigger_time_ms, dwell_ms);
+            assert_eq!(settings.background_app_cpu_threshold_percent, hot_percent);
+            assert_eq!(settings.cpu_recovery_threshold_percent, recovery_percent);
             assert!(!settings.pause_restraint_when_idle);
             assert_eq!(settings.restraint_idle_timeout_seconds, 300);
             assert_eq!(settings.pressure_source, AdaptivePressureSource::Either);
@@ -493,6 +497,7 @@ mod tests {
                 AdaptiveRestraintPriority::BelowNormal
             );
             assert_eq!(settings.minimum_restraint_time_ms, minimum_ms);
+            assert_eq!(settings.cpu_recovery_time_seconds, recovery_secs);
             assert_eq!(settings.maximum_restraint_time_ms, 0);
             assert!(!settings.limit_background_processors_during_restraint);
             assert_eq!(

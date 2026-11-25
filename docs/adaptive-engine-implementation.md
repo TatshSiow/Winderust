@@ -35,6 +35,15 @@ allocation configurations. Applying a preset leaves Adaptive Processor Power,
 the master switch, and custom rules under their own controls. Existing custom
 preset records retain their stored power values when CPU Behaviour tuning is edited.
 
+Power Save, Balanced, and Performance use a three-second recovery interval.
+Speed uses four seconds. During continued CPU pressure, recovery starts after
+the minimum hold ends and requires app CPU use to stay at or below the recovery
+threshold for the full interval. The next evaluation releases the claim.
+Speed samples every 500 ms and waits one second above the per-app threshold
+before restraining. It qualifies apps at 8% of one logical CPU and allows
+recovery at or below 7%, so small variations in the sampled CPU counter can
+settle without restarting recovery.
+
 Custom edits remain in the modal draft until saved. Built-ins are read-only.
 Disabled policies remain editable.
 
