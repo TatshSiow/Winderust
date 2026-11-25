@@ -7,6 +7,8 @@ use iced::{
     keyboard, keyboard::key::Named, mouse, touch, Event, Rectangle, Renderer, Theme, Vector,
 };
 
+pub(super) const SAVE_CARD: &str = "floating-save-card";
+
 pub(super) fn move_focus<M: Send + 'static>(forward: bool, wrap: bool) -> iced::Task<M> {
     let focus = if wrap {
         let target = operation::map(operation::focusable::count(), move |count| {
@@ -88,6 +90,8 @@ struct Reveal {
     ordinal: usize,
     pending: Option<Scroll>,
     ancestors: Vec<Scroll>,
+    targets: Vec<(Rectangle, Vec<Scroll>)>,
+    save_card: Option<Rectangle>,
     changes: Vec<(usize, Vector)>,
     apply: bool,
 }
@@ -102,6 +106,12 @@ impl<T: Send + 'static> Operation<T> for Reveal {
         visit(self);
         if entered.is_some() {
             self.ancestors.pop();
+        }
+    }
+
+    fn container(&mut self, id: Option<&Id>, bounds: Rectangle) {
+        if id == Some(&Id::new(SAVE_CARD)) {
+            self.save_card = Some(bounds);
         }
     }
 
@@ -140,14 +150,14 @@ impl<T: Send + 'static> Operation<T> for Reveal {
         }
     }
 
-    fn focusable(&mut self, id: Option<&Id>, mut target: Rectangle, state: &mut dyn Focusable) {
+    fn focusable(&mut self, id: Option<&Id>, target: Rectangle, state: &mut dyn Focusable) {
         if self.apply {
             return;
         }
         let focused = state.is_focused();
         if focused && self.ancestors.iter().any(|scroll| scroll.is_focus_scope) {
             self.found_scoped_focus = true;
-            self.changes.clear();
+            self.targets.clear();
         } else if self.found_scoped_focus
             || !self.target.as_ref().map_or_else(
                 || self.focus_scope.is_none() && focused,
@@ -156,46 +166,80 @@ impl<T: Send + 'static> Operation<T> for Reveal {
         {
             return;
         }
-        for scroll in self.ancestors.iter().rev() {
-            target.x -= scroll.translation.x;
-            target.y -= scroll.translation.y;
-            let delta = Vector::new(
-                reveal_axis(
-                    target.x,
-                    target.width,
-                    scroll.bounds.x,
-                    scroll.bounds.width,
-                    scroll.translation.x,
-                    scroll.content.width,
-                ),
-                reveal_axis(
-                    target.y,
-                    target.height,
-                    scroll.bounds.y,
-                    scroll.bounds.height,
-                    scroll.translation.y,
-                    scroll.content.height,
-                ),
-            );
-            if delta != Vector::ZERO {
-                self.changes.push((scroll.ordinal, delta));
-            }
-            target.x -= delta.x;
-            target.y -= delta.y;
+        if !self.ancestors.is_empty() {
+            self.targets.push((target, self.ancestors.clone()));
         }
     }
 
     fn finish(&self) -> operation::Outcome<T> {
-        if self.apply || self.changes.is_empty() {
+        if self.apply {
+            return operation::Outcome::None;
+        }
+        let changes: Vec<_> = self
+            .targets
+            .iter()
+            .flat_map(|(target, ancestors)| reveal_changes(*target, ancestors, self.save_card))
+            .collect();
+        if changes.is_empty() {
             operation::Outcome::None
         } else {
             operation::Outcome::Chain(Box::new(Self {
-                changes: self.changes.clone(),
+                changes,
                 apply: true,
                 ..Self::default()
             }))
         }
     }
+}
+
+fn reveal_changes(
+    mut target: Rectangle,
+    ancestors: &[Scroll],
+    save_card: Option<Rectangle>,
+) -> impl Iterator<Item = (usize, Vector)> + '_ {
+    // The card is fixed to the page. Only its outermost vertical scroller moves
+    // a nested target clear of it.
+    let covered = save_card.and_then(|card| {
+        let scroll = ancestors
+            .iter()
+            .find(|scroll| scroll.content.height > scroll.bounds.height)?;
+        Some((scroll.ordinal, scroll.bounds.intersection(&card)?))
+    });
+    ancestors.iter().rev().filter_map(move |scroll| {
+        target.x -= scroll.translation.x;
+        target.y -= scroll.translation.y;
+        let x = reveal_axis(
+            target.x,
+            target.width,
+            scroll.bounds.x,
+            scroll.bounds.width,
+            scroll.translation.x,
+            scroll.content.width - scroll.bounds.width,
+        );
+        let visible_height = match covered {
+            Some((ordinal, card))
+                if ordinal == scroll.ordinal
+                    && target.x - x < card.x + card.width
+                    && target.x - x + target.width > card.x
+                    && target.height <= card.y - scroll.bounds.y =>
+            {
+                card.y - scroll.bounds.y
+            }
+            _ => scroll.bounds.height,
+        };
+        let y = reveal_axis(
+            target.y,
+            target.height,
+            scroll.bounds.y,
+            visible_height,
+            scroll.translation.y,
+            scroll.content.height - scroll.bounds.height,
+        );
+        target.x -= x;
+        target.y -= y;
+        let delta = Vector::new(x, y);
+        (delta != Vector::ZERO).then_some((scroll.ordinal, delta))
+    })
 }
 
 fn reveal_axis(
@@ -204,12 +248,12 @@ fn reveal_axis(
     viewport: f32,
     visible: f32,
     offset: f32,
-    content: f32,
+    max_offset: f32,
 ) -> f32 {
     let delta = (start + size - viewport - visible)
         .max(0.0)
         .min(start - viewport);
-    (offset + delta).clamp(0.0, (content - visible).max(0.0)) - offset
+    (offset + delta).clamp(0.0, max_offset.max(0.0)) - offset
 }
 
 #[derive(Default)]
@@ -324,6 +368,23 @@ mod tests {
     use iced::advanced::{layout, widget::Tree, Layout};
     use iced::{Element, Size};
 
+    fn run(
+        view: &mut Element<'_, ()>,
+        tree: &mut Tree,
+        node: &layout::Node,
+        renderer: &Renderer,
+        mut operation: Box<dyn Operation>,
+    ) {
+        loop {
+            view.as_widget_mut()
+                .operate(tree, Layout::new(node), renderer, operation.as_mut());
+            match operation.finish() {
+                operation::Outcome::Chain(next) => operation = next,
+                _ => break,
+            }
+        }
+    }
+
     #[test]
     fn wrapped_focus_handles_zero_and_one_control() {
         use operation::focusable::Count;
@@ -373,22 +434,6 @@ mod tests {
             ) {
                 assert!(id.is_none() || id == Some(&Id::from(FOCUS_SCOPE)));
                 self.scrolls.push((bounds, translation));
-            }
-        }
-        fn run(
-            view: &mut Element<'_, ()>,
-            tree: &mut Tree,
-            node: &layout::Node,
-            renderer: &Renderer,
-            mut operation: Box<dyn Operation>,
-        ) {
-            loop {
-                view.as_widget_mut()
-                    .operate(tree, Layout::new(node), renderer, operation.as_mut());
-                match operation.finish() {
-                    operation::Outcome::Chain(next) => operation = next,
-                    _ => break,
-                }
             }
         }
         fn snapshot(
@@ -545,6 +590,73 @@ mod tests {
             assert_eq!(after.focused.unwrap().0, 1);
             assert_eq!(after.scrolls[0], before.scrolls[0]);
             assert_eq!(after.scrolls[2].1.y, 0.0);
+        }
+    }
+
+    #[test]
+    fn focus_scrolls_right_hand_controls_above_the_floating_save_card() {
+        use iced::widget::{column, container, row, stack, Space};
+        use iced::{Bottom, Fill, Right};
+
+        let renderer = Renderer::new(design::typography::FONT, iced::Pixels(14.0));
+        let size = Size::new(500.0, 180.0);
+        let other_pane = crate::ui::scrolling::scrollable(column![
+            Space::new().height(118),
+            widgets::action_button("Other pane").on_press(()),
+            Space::new().height(100),
+        ])
+        .width(120)
+        .height(Fill);
+        let editor = crate::ui::scrolling::scrollable(column![
+            Space::new().height(118),
+            row![
+                widgets::action_button("Left action").on_press(()),
+                Space::new().width(Fill),
+                widgets::action_button("Right action").on_press(()),
+            ],
+            Space::new().height(100),
+        ])
+        .width(Fill)
+        .height(Fill);
+        let card = container(container(Space::new().width(180).height(80)).id(SAVE_CARD))
+            .width(Fill)
+            .height(Fill)
+            .align_x(Right)
+            .align_y(Bottom);
+        let mut view: Element<'_, ()> = stack![row![other_pane, editor], card].into();
+        let mut tree = Tree::new(&view);
+        let node = view.as_widget_mut().layout(
+            &mut tree,
+            &renderer,
+            &layout::Limits::new(Size::ZERO, size),
+        );
+
+        for overlaps_card in [false, false, true] {
+            run(
+                &mut view,
+                &mut tree,
+                &node,
+                &renderer,
+                Box::new(operation::focusable::focus_next::<()>()),
+            );
+            run(
+                &mut view,
+                &mut tree,
+                &node,
+                &renderer,
+                Box::new(Reveal::default()),
+            );
+            let mut snapshot = Reveal::default();
+            view.as_widget_mut()
+                .operate(&mut tree, Layout::new(&node), &renderer, &mut snapshot);
+            let card = snapshot.save_card.unwrap();
+            let (target, scrolls) = &snapshot.targets[0];
+            let offset = scrolls[0].translation.y;
+            assert_eq!(target.x + target.width > card.x, overlaps_card);
+            assert_eq!(offset > 0.0, overlaps_card);
+            if overlaps_card {
+                assert!(target.y + target.height - offset <= card.y);
+            }
         }
     }
 

@@ -12,7 +12,7 @@ use crate::config::{PowerSourceProfile, Settings};
 use crate::cpu::{CpuUsageMonitor, CpuUsageSnapshot};
 use crate::cpu_allocation::CpuAllocationSnapshot;
 use crate::features::watchdog::memory_trim::MemoryTrimStatus;
-use crate::ui::scrolling::scrollable;
+use crate::ui::scrolling::{scrollable, PageScroll};
 use crate::ui::Page;
 use iced::widget::{canvas, column, container, responsive, row, text};
 use iced::{keyboard::key::Named, mouse, Element, Fill, Point, Rectangle, Renderer, Theme};
@@ -359,6 +359,7 @@ impl Model {
         &'a self,
         settings: &'a Settings,
         status: &'a RuntimeStatusSnapshot,
+        page_scroll: PageScroll,
     ) -> Element<'a, Message> {
         responsive(move |size| {
             let now = Instant::now();
@@ -533,13 +534,17 @@ impl Model {
             } else {
                 body = body.push(enabled).push(recent);
             }
-            if layout.fits {
+            if layout.fits && page_scroll.0 == 0.0 {
                 super::scrolling::vertical_gutter(body)
                     .width(Fill)
                     .height(Fill)
                     .into()
             } else {
-                scrollable(body).id("home-content").height(Fill).into()
+                page_scroll
+                    .scrollable(body)
+                    .id("home-content")
+                    .height(Fill)
+                    .into()
             }
         })
         .into()

@@ -311,12 +311,31 @@ fn scroll_style(
 pub(super) fn scrollable<'a, Message: 'a>(
     content: impl Into<Element<'a, Message>>,
 ) -> iced::widget::Scrollable<'a, Message> {
-    iced::widget::scrollable(Element::new(ScrollContent {
-        content: vertical_gutter(content).into(),
-        behavior: Behavior::Scroll,
-    }))
-    .direction(iced::widget::scrollable::Direction::Vertical(scrollbar()))
-    .style(scroll_style)
+    PageScroll::default().scrollable(content)
+}
+
+/// Space that lets the end of a page scroll above a floating action card.
+#[derive(Clone, Copy, Default)]
+pub(super) struct PageScroll(pub(super) f32);
+
+impl PageScroll {
+    pub(super) fn scrollable<'a, Message: 'a>(
+        self,
+        content: impl Into<Element<'a, Message>>,
+    ) -> iced::widget::Scrollable<'a, Message> {
+        iced::widget::scrollable(Element::new(ScrollContent {
+            content: vertical_gutter(content)
+                .padding(iced::Padding {
+                    right: SCROLLBAR_GUTTER,
+                    bottom: self.0,
+                    ..iced::Padding::ZERO
+                })
+                .into(),
+            behavior: Behavior::Scroll,
+        }))
+        .direction(iced::widget::scrollable::Direction::Vertical(scrollbar()))
+        .style(scroll_style)
+    }
 }
 
 /// Popups reserve scrollbar space only when their own content overflows.

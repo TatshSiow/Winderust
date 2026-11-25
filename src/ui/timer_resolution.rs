@@ -7,7 +7,7 @@ use crate::ui::process_rules::{
     can_add_timer_resolution_process, exact_path_input, new_timer_resolution_rule,
     picked_path_input,
 };
-use crate::ui::scrolling::scrollable;
+use crate::ui::scrolling::PageScroll;
 use iced::widget::{column, text};
 use iced::{Element, Fill};
 use rust_i18n::t;
@@ -111,6 +111,7 @@ impl Editor {
         s: &'a TimerResolutionSettings,
         status: &TimerResolutionSnapshot,
         candidates: &'a [super::app_picker::Candidate],
+        page_scroll: PageScroll,
     ) -> Element<'a, Message> {
         let mut body = column![
             super::widgets::toggle_card(
@@ -179,7 +180,7 @@ impl Editor {
         if let Some(error) = &status.last_error {
             body = body.push(text(error.clone()));
         }
-        scrollable(body).height(Fill).into()
+        page_scroll.scrollable(body).height(Fill).into()
     }
 }
 fn draft_resolution_is_invalid(value: &str) -> bool {

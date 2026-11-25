@@ -6,7 +6,7 @@ use crate::ui::process_rules::{
     can_add_exact_process_candidate, exact_path_input, new_process_exclusion_rule,
     picked_path_input,
 };
-use crate::ui::scrolling::scrollable;
+use crate::ui::scrolling::PageScroll;
 use iced::widget::column;
 use iced::{Element, Fill};
 use rust_i18n::t;
@@ -532,6 +532,7 @@ impl Editor {
         settings: &'a Settings,
         kind: Kind,
         candidates: &'a [super::app_picker::Candidate],
+        page_scroll: PageScroll,
     ) -> Element<'a, Message> {
         let key = kind.key();
         let enabled = kind.enabled(settings);
@@ -637,7 +638,7 @@ impl Editor {
             false,
         ));
 
-        scrollable(body).height(Fill).into()
+        page_scroll.scrollable(body).height(Fill).into()
     }
 }
 pub(super) fn process_priority_setting_label(priority: ProcessPrioritySetting) -> String {

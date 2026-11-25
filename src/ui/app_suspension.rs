@@ -6,7 +6,7 @@ use crate::config::{AppSuspensionRule, AppSuspensionSettings, NetworkThresholdUn
 use crate::ui::process_rules::{
     can_add_app_suspension_process, exact_path_input, new_app_suspension_rule, picked_path_input,
 };
-use crate::ui::scrolling::scrollable;
+use crate::ui::scrolling::PageScroll;
 use iced::widget::{column, text};
 use iced::{Element, Fill};
 use rust_i18n::t;
@@ -292,6 +292,7 @@ impl Editor {
         unavailable: &[String],
         candidates: &'a [super::app_picker::Candidate],
         observed_plugged_in: Option<bool>,
+        page_scroll: PageScroll,
     ) -> Element<'a, Message> {
         let s = &settings.app_suspension;
         let live = live_suspension_settings(settings, observed_plugged_in);
@@ -457,7 +458,8 @@ impl Editor {
         if let Some(error) = &status.last_error {
             body = body.push(text(error.clone()));
         }
-        scrollable(body)
+        page_scroll
+            .scrollable(body)
             .id("app-suspension-settings")
             .height(Fill)
             .into()

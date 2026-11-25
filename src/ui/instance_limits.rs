@@ -118,6 +118,7 @@ impl Editor {
         settings: &'a InstanceLimitsSettings,
         status: &'a InstanceLimitsSnapshot,
         candidates: &'a [app_picker::Candidate],
+        page_scroll: super::scrolling::PageScroll,
     ) -> Element<'a, Message> {
         let rules = settings
             .rules
@@ -262,26 +263,27 @@ impl Editor {
                     .push(text(error).size(design::typography::SECONDARY));
             }
         }
-        super::scrolling::scrollable(
-            column![
-                widgets::setting_group(
-                    "instance_limits.enable".to_string(),
-                    self.settings_expanded,
-                    Message::ToggleSettings,
-                    widgets::switch(settings.enabled, Some(Message::Enabled)),
-                    column![widgets::setting_row(
-                        "instance_limits.notify",
-                        widgets::switch(settings.notify, Some(Message::Notify)),
-                    )],
-                ),
-                widgets::setting_title("common.rules"),
-                widgets::settings_card(picker),
-                widgets::process_rules_table_with_notify([], rules, true),
-            ]
-            .spacing(widgets::CARD_GAP),
-        )
-        .height(Fill)
-        .into()
+        page_scroll
+            .scrollable(
+                column![
+                    widgets::setting_group(
+                        "instance_limits.enable".to_string(),
+                        self.settings_expanded,
+                        Message::ToggleSettings,
+                        widgets::switch(settings.enabled, Some(Message::Enabled)),
+                        column![widgets::setting_row(
+                            "instance_limits.notify",
+                            widgets::switch(settings.notify, Some(Message::Notify)),
+                        )],
+                    ),
+                    widgets::setting_title("common.rules"),
+                    widgets::settings_card(picker),
+                    widgets::process_rules_table_with_notify([], rules, true),
+                ]
+                .spacing(widgets::CARD_GAP),
+            )
+            .height(Fill)
+            .into()
     }
 
     pub(super) fn modal<'a>(

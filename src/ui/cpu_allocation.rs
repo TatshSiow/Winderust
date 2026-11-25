@@ -10,7 +10,7 @@ use crate::foreground::process_list::normalize_path_slashes;
 use crate::ui::process_rules::{
     can_add_exact_process_candidate, exact_path_input, picked_path_input,
 };
-use crate::ui::scrolling::scrollable;
+use crate::ui::scrolling::{scrollable, PageScroll};
 use iced::widget::{column, row, text};
 use iced::{Element, Fill};
 use rust_i18n::t;
@@ -378,6 +378,7 @@ impl Editor {
         s: &'a Settings,
         k: Kind,
         candidates: &'a [super::app_picker::Candidate],
+        page_scroll: PageScroll,
     ) -> Element<'a, Message> {
         let feature = settings(s, k);
         let mut body = column![
@@ -492,7 +493,7 @@ impl Editor {
             body = body.push(text(self.error.clone()).style(text::danger));
         }
 
-        scrollable(body).width(Fill).height(Fill).into()
+        page_scroll.scrollable(body).width(Fill).height(Fill).into()
     }
 
     pub(super) fn modal<'a>(&'a self, s: &Settings, kind: Kind) -> Option<Element<'a, Message>> {

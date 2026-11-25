@@ -1645,6 +1645,7 @@ impl ProcessList {
         &'a self,
         settings: &'a SettingsEditor,
         plans: PlanCatalog<'a>,
+        bottom_clearance: f32,
     ) -> Element<'a, Message> {
         let count = if self.population_loaded {
             t!("process_list.count", count = self.processes.len())
@@ -1736,7 +1737,12 @@ impl ProcessList {
             }
             let offsets = &self.offsets;
             let body_height = size.height - HEADER_HEIGHT - scrolling::SCROLLBAR_GUTTER;
-            let range = visible_range_offsets(offsets, &self.offset, body_height);
+            let bottom_clearance = if self.rows.is_empty() {
+                0.0
+            } else {
+                bottom_clearance
+            };
+            let range = visible_range_offsets(offsets, &self.offset, body_height, bottom_clearance);
             let mut rows = column![Space::new().height(offsets[range.start])];
             let mut visible_rows = Vec::with_capacity(range.len());
             for row_index in range.clone() {
@@ -1855,10 +1861,9 @@ impl ProcessList {
                 ));
             }
             rows = rows.push(iced::widget::keyed_column(visible_rows).width(Fill));
-            rows = rows.push(
-                Space::new()
-                    .height(offsets.last().copied().unwrap_or_default() - offsets[range.end]),
-            );
+            rows = rows.push(Space::new().height(
+                offsets.last().copied().unwrap_or_default() - offsets[range.end] + bottom_clearance,
+            ));
             let table = scrollable(container(rows).width(Fill))
                 .id(PROCESS_TABLE)
                 .height(Fill)
@@ -1879,11 +1884,12 @@ impl ProcessList {
                 table,
                 PROCESS_TABLE,
                 !self.rows.is_empty(),
-                |key, modifiers, bounds| {
-                    let height = bounds.height;
+                move |key, modifiers, bounds| {
+                    let height = (bounds.height - bottom_clearance).max(0.0);
+                    let focus_bounds = Rectangle { height, ..bounds };
                     Some(match (key, modifiers) {
                         (Named::F10, Modifiers::SHIFT) => {
-                            (Message::OpenContextFocused(bounds), false)
+                            (Message::OpenContextFocused(focus_bounds), false)
                         }
                         (key, modifiers) if modifiers.is_empty() => match key {
                             Named::ArrowUp => (Message::MoveRowFocus(false, height), true),
@@ -1891,7 +1897,9 @@ impl ProcessList {
                             Named::Enter => (Message::OpenFocused(height), false),
                             Named::Space => (Message::ExpandFocused(Some(height)), false),
                             Named::Delete => (Message::DeleteFocused(height), false),
-                            Named::ContextMenu => (Message::OpenContextFocused(bounds), false),
+                            Named::ContextMenu => {
+                                (Message::OpenContextFocused(focus_bounds), false)
+                            }
                             _ => return None,
                         },
                         _ => return None,
@@ -2645,10 +2653,12 @@ fn visible_range_offsets(
     offsets: &[f32],
     offset: &std::cell::Cell<f32>,
     height: f32,
+    bottom_clearance: f32,
 ) -> Range<usize> {
     let count = offsets.len().saturating_sub(1);
     let height = height.max(0.0);
-    let max_offset = (offsets.last().copied().unwrap_or_default() - height).max(0.0);
+    let max_offset =
+        (offsets.last().copied().unwrap_or_default() + bottom_clearance - height).max(0.0);
     let bounded = offset.get().clamp(0.0, max_offset);
     // Keyboard focus uses the same offset even when Iced skips an on_scroll callback.
     offset.set(bounded);
@@ -2668,7 +2678,7 @@ fn visible_range(count: usize, offset: f32, height: f32) -> Range<usize> {
     let offsets = (0..=count)
         .map(|i| i as f32 * ROW_HEIGHT)
         .collect::<Vec<_>>();
-    visible_range_offsets(&offsets, &std::cell::Cell::new(offset), height)
+    visible_range_offsets(&offsets, &std::cell::Cell::new(offset), height, 0.0)
 }
 
 fn background<T: Send + 'static>(
@@ -3212,12 +3222,13 @@ mod tests {
             let home_page = frame < 8 && frame % 2 == 0;
             let log_page = frame >= 8 && frame % 2 == 0;
             let content = if home_page {
-                home.view(&settings, &status).map(|_| Message::Refresh)
+                home.view(&settings, &status, scrolling::PageScroll::default())
+                    .map(|_| Message::Refresh)
             } else if log_page {
-                log.view(&status.action_log_entries, &[])
+                log.view(&status.action_log_entries, &[], 0.0)
                     .map(|_| Message::Refresh)
             } else {
-                list.view(&settings, PlanCatalog::Loaded(&[]))
+                list.view(&settings, PlanCatalog::Loaded(&[]), 0.0)
             };
             let page = super::super::motion::wrap(
                 scrolling::repaint_group(content),
@@ -3309,7 +3320,7 @@ mod tests {
         list.rebuild();
         let rebuilt = start.elapsed();
         let settings = SettingsEditor::with_settings(Settings::default());
-        let mut view = list.view(&settings, PlanCatalog::Loaded(&[]));
+        let mut view = list.view(&settings, PlanCatalog::Loaded(&[]), 0.0);
         let mut tree = Tree::new(&view);
         let renderer = iced::Renderer::new(design::typography::FONT, iced::Pixels(14.0));
         let bounds = Rectangle::with_size(Size::new(1200.0, 800.0));
@@ -3406,7 +3417,7 @@ mod tests {
         list.grouped = false;
         list.rebuild();
         let settings = SettingsEditor::with_settings(Settings::default());
-        let mut view = list.view(&settings, PlanCatalog::Loaded(&[]));
+        let mut view = list.view(&settings, PlanCatalog::Loaded(&[]), 0.0);
         let mut tree = Tree::new(&view);
         let renderer = iced::Renderer::new(design::typography::FONT, iced::Pixels(14.0));
         let bounds = Rectangle::with_size(Size::new(1000.0, 500.0));
@@ -3460,7 +3471,7 @@ mod tests {
         list.rebuild();
         let settings = SettingsEditor::with_settings(Settings::default());
         scrolling::check_scroll_damage(
-            list.view(&settings, PlanCatalog::Loaded(&[])),
+            list.view(&settings, PlanCatalog::Loaded(&[]), 0.0),
             iced::Rectangle::with_size(iced::Size::new(1920.0, 1080.0)),
         );
     }
@@ -3521,7 +3532,7 @@ mod tests {
             let _ = list.update(Message::Stop(tree), &mut editor, &runtime);
             assert_eq!(list.stopping.as_ref().unwrap().1, tree);
             {
-                let mut view = list.view(&editor, PlanCatalog::Loaded(&[]));
+                let mut view = list.view(&editor, PlanCatalog::Loaded(&[]), 0.0);
                 let mut state = Tree::new(&view);
                 let renderer = iced::Renderer::new(design::typography::FONT, iced::Pixels(14.0));
                 let node = view.as_widget_mut().layout(
@@ -3604,7 +3615,7 @@ mod tests {
     fn selection_overlays_preserve_the_list_widget_tree() {
         let settings = SettingsEditor::with_settings(Settings::default());
         let mut list = ProcessList::default();
-        let view = list.view(&settings, PlanCatalog::Loaded(&[]));
+        let view = list.view(&settings, PlanCatalog::Loaded(&[]), 0.0);
         let mut tree = iced::advanced::widget::Tree::new(&view);
         let root_tag = tree.tag;
         let list_tag = tree.children[0].tag;
@@ -3616,13 +3627,13 @@ mod tests {
         });
         for context in [Some(ContextAnchor::Pointer(Point::ORIGIN)), None] {
             list.context = context;
-            let view = list.view(&settings, PlanCatalog::Loaded(&[]));
+            let view = list.view(&settings, PlanCatalog::Loaded(&[]), 0.0);
             tree.diff(&view);
             assert_eq!(tree.tag, root_tag);
             assert_eq!(tree.children[0].tag, list_tag);
         }
         list.selected = None;
-        tree.diff(list.view(&settings, PlanCatalog::Loaded(&[])));
+        tree.diff(list.view(&settings, PlanCatalog::Loaded(&[]), 0.0));
         assert_eq!(tree.tag, root_tag);
         assert_eq!(tree.children[0].tag, list_tag);
     }
@@ -3732,7 +3743,7 @@ mod tests {
         let settings = SettingsEditor::with_settings(Settings::default());
         let renderer = Renderer::new(design::typography::FONT, iced::Pixels(14.0));
         let viewport = Rectangle::with_size(Size::new(900.0, 620.0));
-        let mut view = list.view(&settings, PlanCatalog::Loaded(&[]));
+        let mut view = list.view(&settings, PlanCatalog::Loaded(&[]), 0.0);
         let mut tree = Tree::new(&view);
         let node = view.as_widget_mut().layout(
             &mut tree,
@@ -4090,7 +4101,13 @@ mod tests {
         assert_eq!(visible_range(3, 120_000.0, 600.0), 0..3);
         let offsets = (0..=11).map(|i| i as f32 * ROW_HEIGHT).collect::<Vec<_>>();
         let offset = std::cell::Cell::new(1500.0);
-        assert_eq!(visible_range_offsets(&offsets, &offset, 450.0), 0..11);
+        let height = 11.0 * ROW_HEIGHT;
+        assert_eq!(
+            visible_range_offsets(&offsets, &offset, height, 80.0),
+            0..11
+        );
+        assert_eq!(offset.get(), 80.0);
+        assert_eq!(visible_range_offsets(&offsets, &offset, height, 0.0), 0..11);
         assert_eq!(offset.get(), 0.0);
     }
     #[test]
@@ -4161,7 +4178,7 @@ mod tests {
         list.expanded.insert(key.clone());
         list.rebuild();
         assert_eq!(list.rows.len(), 1001);
-        assert!(visible_range_offsets(&list.offsets, &list.offset, 600.0).len() <= 42);
+        assert!(visible_range_offsets(&list.offsets, &list.offset, 600.0, 0.0).len() <= 42);
         list.expanded.remove(&key);
         list.rebuild();
         assert_eq!(list.rows.len(), 1);

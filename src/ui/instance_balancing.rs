@@ -111,6 +111,7 @@ impl Editor {
         status: &'a InstanceBalancingSnapshot,
         master_enabled: bool,
         candidates: &'a [app_picker::Candidate],
+        page_scroll: super::scrolling::PageScroll,
     ) -> Element<'a, Message> {
         let rules = settings
             .rules
@@ -160,21 +161,22 @@ impl Editor {
         if let Some(error) = error {
             picker = picker.push(text(error).style(text::danger));
         }
-        super::scrolling::scrollable(
-            column![
-                widgets::toggle_card(
-                    "instance_balancing.enable",
-                    settings.enabled,
-                    Some(Message::Enabled),
-                ),
-                widgets::setting_title("common.rules"),
-                widgets::settings_card(picker),
-                widgets::process_rules_table([], rules, true),
-            ]
-            .spacing(widgets::CARD_GAP),
-        )
-        .height(Fill)
-        .into()
+        page_scroll
+            .scrollable(
+                column![
+                    widgets::toggle_card(
+                        "instance_balancing.enable",
+                        settings.enabled,
+                        Some(Message::Enabled),
+                    ),
+                    widgets::setting_title("common.rules"),
+                    widgets::settings_card(picker),
+                    widgets::process_rules_table([], rules, true),
+                ]
+                .spacing(widgets::CARD_GAP),
+            )
+            .height(Fill)
+            .into()
     }
 
     pub(super) fn modal<'a>(

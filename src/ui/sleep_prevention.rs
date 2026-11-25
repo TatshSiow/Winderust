@@ -136,6 +136,7 @@ impl Editor {
         status: Option<&SleepPreventionSnapshot>,
         candidates: &'a [app_picker::Candidate],
         keep_awake: KeepAwakeView,
+        page_scroll: super::scrolling::PageScroll,
     ) -> Element<'a, Message> {
         let rules = settings
             .rules
@@ -183,26 +184,27 @@ impl Editor {
         if !can_add && app_picker::is_path_query(&self.path) && validate_path(path).is_err() {
             picker = picker.push(app_picker::path_format_hint());
         }
-        super::scrolling::scrollable(
-            column![
-                widgets::toggle_card(
-                    "sleep_prevention.enable",
-                    settings.enabled,
-                    Some(Message::Enabled)
-                ),
-                self.keep_awake_card(keep_awake),
-                widgets::setting_title("common.rules"),
-                widgets::settings_card(picker),
-                widgets::process_rules_table(
-                    [t!("sleep_prevention.keep_display_on").to_string()],
-                    rules,
-                    true,
-                ),
-            ]
-            .spacing(widgets::CARD_GAP),
-        )
-        .height(Fill)
-        .into()
+        page_scroll
+            .scrollable(
+                column![
+                    widgets::toggle_card(
+                        "sleep_prevention.enable",
+                        settings.enabled,
+                        Some(Message::Enabled)
+                    ),
+                    self.keep_awake_card(keep_awake),
+                    widgets::setting_title("common.rules"),
+                    widgets::settings_card(picker),
+                    widgets::process_rules_table(
+                        [t!("sleep_prevention.keep_display_on").to_string()],
+                        rules,
+                        true,
+                    ),
+                ]
+                .spacing(widgets::CARD_GAP),
+            )
+            .height(Fill)
+            .into()
     }
 
     fn keep_awake_card(&self, view: KeepAwakeView) -> Element<'_, Message> {

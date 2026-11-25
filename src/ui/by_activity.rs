@@ -1,6 +1,6 @@
 use super::design;
 use super::widgets;
-use crate::ui::scrolling::scrollable;
+use crate::ui::scrolling::PageScroll;
 use iced::widget::column;
 use iced::{Element, Fill};
 
@@ -85,6 +85,7 @@ pub(super) fn view<'a>(
     settings: &'a Settings,
     plans: &[PowerPlan],
     inputs: &'a Inputs,
+    page_scroll: PageScroll,
 ) -> Element<'a, Message> {
     let activity = &settings.by_activity;
     let plan_picker = |guid: &Option<String>, action: fn(Option<String>) -> Message| {
@@ -114,57 +115,58 @@ pub(super) fn view<'a>(
         )
         .into(),
     ]);
-    scrollable(
-        column![
-            widgets::toggle_card(
-                "by_activity.enable",
-                activity.enabled,
-                Some(Message::Enabled)
-            ),
-            widgets::heading(
-                rust_i18n::t!("by_activity.power_plans").to_string(),
-                design::typography::BODY
-            ),
-            widgets::settings_card(power_plans),
-            widgets::setting_title("by_activity.input_detection"),
-            widgets::settings_card(widgets::settings_rows([
-                flag(
-                    "by_activity.keyboard_input",
-                    activity.input_detection.keyboard,
-                    Message::Keyboard
-                )
-                .into(),
-                flag(
-                    "by_activity.mouse_input",
-                    activity.input_detection.mouse,
-                    Message::Mouse
-                )
-                .into(),
-                flag(
-                    "by_activity.controller_input",
-                    activity.input_detection.controller,
-                    Message::Controller
-                )
-                .into(),
-            ])),
-            widgets::settings_card(widgets::slider_setting(
-                "by_activity.idle_timeout",
-                "s",
-                move || {
-                    widgets::slider_stepper(
-                        activity.idle_timeout_seconds,
-                        inputs.idle.as_deref(),
-                        IDLE_TIMEOUT_RANGE,
-                        1,
-                        Message::IdleTimeout,
+    page_scroll
+        .scrollable(
+            column![
+                widgets::toggle_card(
+                    "by_activity.enable",
+                    activity.enabled,
+                    Some(Message::Enabled)
+                ),
+                widgets::heading(
+                    rust_i18n::t!("by_activity.power_plans").to_string(),
+                    design::typography::BODY
+                ),
+                widgets::settings_card(power_plans),
+                widgets::setting_title("by_activity.input_detection"),
+                widgets::settings_card(widgets::settings_rows([
+                    flag(
+                        "by_activity.keyboard_input",
+                        activity.input_detection.keyboard,
+                        Message::Keyboard
                     )
-                },
-            )),
-        ]
-        .spacing(widgets::CARD_GAP),
-    )
-    .height(Fill)
-    .into()
+                    .into(),
+                    flag(
+                        "by_activity.mouse_input",
+                        activity.input_detection.mouse,
+                        Message::Mouse
+                    )
+                    .into(),
+                    flag(
+                        "by_activity.controller_input",
+                        activity.input_detection.controller,
+                        Message::Controller
+                    )
+                    .into(),
+                ])),
+                widgets::settings_card(widgets::slider_setting(
+                    "by_activity.idle_timeout",
+                    "s",
+                    move || {
+                        widgets::slider_stepper(
+                            activity.idle_timeout_seconds,
+                            inputs.idle.as_deref(),
+                            IDLE_TIMEOUT_RANGE,
+                            1,
+                            Message::IdleTimeout,
+                        )
+                    },
+                )),
+            ]
+            .spacing(widgets::CARD_GAP),
+        )
+        .height(Fill)
+        .into()
 }
 
 #[cfg(test)]
@@ -248,7 +250,7 @@ mod tests {
                 mouse,
                 controller,
             };
-            let mut view = view(&settings, &[], &inputs);
+            let mut view = view(&settings, &[], &inputs, PageScroll::default());
             let mut tree = Tree::new(&view);
             let node = view.as_widget_mut().layout(&mut tree, &renderer, &limits);
             let mut count = FocusableCount::default();

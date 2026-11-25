@@ -6,7 +6,7 @@ use crate::memory_trim::{size_label, MemoryTrimReadback, MemoryTrimSnapshot, Mem
 use crate::ui::process_rules::{
     can_add_memory_trim_exclusion, exact_path_input, new_process_exclusion_rule, picked_path_input,
 };
-use crate::ui::scrolling::scrollable;
+use crate::ui::scrolling::PageScroll;
 use iced::widget::{column, text};
 use iced::{Element, Fill};
 use rust_i18n::t;
@@ -230,6 +230,7 @@ impl Editor {
         &'a self,
         settings: &'a MemoryTrimSettings,
         candidates: &'a [super::app_picker::Candidate],
+        page_scroll: PageScroll,
     ) -> Element<'a, Message> {
         let field = |field: Threshold, unit: &'static str| {
             let (label, maximum) = field.label_and_maximum();
@@ -292,7 +293,7 @@ impl Editor {
             ))
             .push(super::widgets::settings_card(picker))
             .push(super::widgets::process_rules_table([], cards, false));
-        scrollable(body).height(Fill).into()
+        page_scroll.scrollable(body).height(Fill).into()
     }
 }
 #[cfg(test)]

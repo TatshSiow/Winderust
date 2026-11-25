@@ -6,7 +6,7 @@ use super::{
     resource_thresholds, settings_pages, sleep_prevention, status_rail, tasks, timer_resolution,
     widgets, win32_priority_separation, window_frame,
 };
-use crate::ui::scrolling::scrollable;
+use crate::ui::scrolling::{repaint_popup, scrollable, PageScroll, SCROLLBAR_GUTTER};
 use std::{
     cell::RefCell,
     path::PathBuf,
@@ -98,16 +98,30 @@ fn page_canvas<'a>(
     content: Element<'a, Message>,
     save_card: Option<Element<'a, Message>>,
 ) -> Element<'a, Message> {
+    let mut layers = iced::widget::Stack::new().push(
+        column![heading, content]
+            .spacing(design::space::WIDE)
+            .height(Fill),
+    );
+    if let Some(card) = save_card {
+        layers = layers.push(
+            container(iced::widget::opaque(repaint_popup(card)))
+                .padding(iced::Padding {
+                    bottom: SCROLLBAR_GUTTER,
+                    right: SCROLLBAR_GUTTER,
+                    ..iced::Padding::ZERO
+                })
+                .width(Fill)
+                .height(Fill)
+                .align_x(iced::Right)
+                .align_y(iced::Bottom),
+        );
+    }
     container(
-        container(
-            column![heading, content]
-                .extend(save_card)
-                .spacing(design::space::WIDE)
-                .height(Fill),
-        )
-        .max_width(design::CONTENT_WIDTH)
-        .width(Fill)
-        .height(Fill),
+        container(layers)
+            .max_width(design::CONTENT_WIDTH)
+            .width(Fill)
+            .height(Fill),
     )
     .center_x(Fill)
     .height(Fill)
@@ -116,6 +130,11 @@ fn page_canvas<'a>(
 
 const SIDE_PANEL_TOGGLE: &str = "side-panel-toggle";
 const SIDE_PANEL_CLOSE: &str = "side-panel-close";
+const SAVE_CARD_HEIGHT: f32 = (design::space::SECTION
+    + design::space::SMALL
+    + design::BUTTON_HEIGHT
+    + 2 * widgets::CARD_PADDING) as f32;
+const SAVE_CARD_CLEARANCE: f32 = SAVE_CARD_HEIGHT + SCROLLBAR_GUTTER + design::space::SMALL as f32;
 
 fn side_panel_button(open: bool) -> Element<'static, Message> {
     button(
@@ -3498,12 +3517,19 @@ impl WinderustApp {
             panel_button,
         );
         let settings_are_pending = self.pending_settings_changes();
+        let save_card = (settings_are_pending && !process_actions_open).then(|| self.save_card());
+        let page_scroll = PageScroll(if settings_are_pending {
+            SAVE_CARD_CLEARANCE
+        } else {
+            0.0
+        });
         let content = container(super::motion::wrap(
             super::motion::wrap(
                 super::scrolling::repaint_group(self.page_view(
                     settings_are_pending,
                     read_power_source,
                     size.height,
+                    page_scroll,
                 )),
                 true,
                 super::motion::Effect::Content(self.power_source as u64),
@@ -3513,12 +3539,6 @@ impl WinderustApp {
         ))
         .width(Fill)
         .height(Fill);
-        let save_card = (settings_are_pending && !process_actions_open).then(|| {
-            container(self.save_card())
-                .width(Fill)
-                .align_x(iced::Right)
-                .into()
-        });
         let body = page_canvas(shield(heading), content.into(), save_card);
         let layout = row![
             navigation,
@@ -3712,7 +3732,11 @@ impl WinderustApp {
     fn save_card(&self) -> Element<'static, Message> {
         widgets::settings_card(
             column![
-                widgets::heading(t!("unsaved.title").to_string(), design::typography::BODY),
+                container(widgets::heading(
+                    t!("unsaved.title").to_string(),
+                    design::typography::BODY
+                ))
+                .center_y(design::space::SECTION),
                 row![
                     iced::widget::Space::new().width(Fill),
                     action_button(t!("common.discard").to_string())
@@ -3730,6 +3754,7 @@ impl WinderustApp {
         )
         .width(Fill)
         .max_width(320)
+        .id(super::keyboard_focus::SAVE_CARD)
         .into()
     }
 
@@ -3749,6 +3774,7 @@ impl WinderustApp {
         settings_are_pending: bool,
         read_power_source: impl FnOnce() -> Option<bool>,
         shell_height: f32,
+        page_scroll: PageScroll,
     ) -> Element<'_, Message> {
         let general = &self.settings.global().general;
         let runtime_power_rules = || {
@@ -3777,6 +3803,7 @@ impl WinderustApp {
                         status,
                         &self.candidates,
                         keep_awake,
+                        page_scroll,
                     )
                     .map(Message::SleepPrevention)
             }
@@ -3788,6 +3815,7 @@ impl WinderustApp {
                     &self.unavailable_candidates,
                     &self.candidates,
                     read_power_source(),
+                    page_scroll,
                 )
                 .map(Message::Suspension),
             Page::ResourceThresholds => self
@@ -3795,6 +3823,7 @@ impl WinderustApp {
                 .view(
                     &self.settings.global().resource_thresholds,
                     &self.candidates,
+                    page_scroll,
                 )
                 .map(Message::ResourceThresholds),
             Page::InstanceLimits => self
@@ -3803,6 +3832,7 @@ impl WinderustApp {
                     &self.settings.global().instance_limits,
                     &self.status.feature_status.instance_limits,
                     &self.candidates,
+                    page_scroll,
                 )
                 .map(Message::InstanceLimits),
             Page::InstanceBalancing => self
@@ -3812,6 +3842,7 @@ impl WinderustApp {
                     &self.status.feature_status.instance_balancing,
                     general.enabled,
                     &self.candidates,
+                    page_scroll,
                 )
                 .map(Message::InstanceBalancing),
             Page::KeepRunning => self
@@ -3821,11 +3852,12 @@ impl WinderustApp {
                     &self.status.feature_status.keep_running,
                     &self.candidates,
                     settings_are_pending,
+                    page_scroll,
                 )
                 .map(Message::KeepRunning),
             Page::MemoryTrim => self
                 .trim
-                .view(&self.settings.memory_trim, &self.candidates)
+                .view(&self.settings.memory_trim, &self.candidates, page_scroll)
                 .map(Message::Trim),
             Page::TimerResolution => self
                 .timer
@@ -3833,15 +3865,16 @@ impl WinderustApp {
                     &self.settings.timer_resolution,
                     &self.status.feature_status.timer_resolution,
                     &self.candidates,
+                    page_scroll,
                 )
                 .map(Message::Timer),
             Page::Win32PrioritySeparation => self
                 .priority_separation
-                .view()
+                .view(page_scroll)
                 .map(Message::PrioritySeparation),
             Page::AdaptiveProcessorPower => self
                 .adaptive_processor_power
-                .view(&self.settings)
+                .view(&self.settings, page_scroll)
                 .map(Message::AdaptiveProcessorPower),
             Page::AdvancedPowerPlanTuning => self
                 .power_tuning
@@ -3854,6 +3887,7 @@ impl WinderustApp {
                         .map_or(crate::power::EffectivePowerMode::Unknown, |monitor| {
                             monitor.snapshot()
                         }),
+                    page_scroll,
                 )
                 .map(Message::PowerTuning),
 
@@ -3864,6 +3898,7 @@ impl WinderustApp {
                     &self.settings,
                     runtime_power_rules(),
                     &self.status.power_plan_status,
+                    page_scroll,
                 )
                 .map(|m| Message::PowerRules(power_rules::Kind::Time, m)),
             Page::ByCpuLoad => self
@@ -3873,19 +3908,30 @@ impl WinderustApp {
                     &self.settings,
                     runtime_power_rules(),
                     &self.status.power_plan_status,
+                    page_scroll,
                 )
                 .map(|m| Message::PowerRules(power_rules::Kind::CpuLoad, m)),
             Page::EfficiencyMode => self
                 .efficiency_mode
-                .view(&self.settings, &self.candidates)
+                .view(&self.settings, &self.candidates, page_scroll)
                 .map(Message::EfficiencyMode),
             Page::CpuSetsSoft => self
                 .soft_allocation
-                .view(&self.settings, cpu_allocation::Kind::Soft, &self.candidates)
+                .view(
+                    &self.settings,
+                    cpu_allocation::Kind::Soft,
+                    &self.candidates,
+                    page_scroll,
+                )
                 .map(|m| Message::Allocation(cpu_allocation::Kind::Soft, m)),
             Page::ProcessorAffinityHard => self
                 .hard_allocation
-                .view(&self.settings, cpu_allocation::Kind::Hard, &self.candidates)
+                .view(
+                    &self.settings,
+                    cpu_allocation::Kind::Hard,
+                    &self.candidates,
+                    page_scroll,
+                )
                 .map(|m| Message::Allocation(cpu_allocation::Kind::Hard, m)),
             Page::AdaptiveEngine => self
                 .adaptive
@@ -3894,6 +3940,7 @@ impl WinderustApp {
                     &self.candidates,
                     &self.interrupt_timing,
                     shell_height,
+                    page_scroll,
                 )
                 .map(Message::Adaptive),
             Page::ProcessPriority => self
@@ -3902,6 +3949,7 @@ impl WinderustApp {
                     &self.settings,
                     priority_control::Kind::Process,
                     &self.candidates,
+                    page_scroll,
                 )
                 .map(|m| Message::Priority(priority_control::Kind::Process, m)),
             Page::ThreadPriority => self
@@ -3910,11 +3958,17 @@ impl WinderustApp {
                     &self.settings,
                     priority_control::Kind::Thread,
                     &self.candidates,
+                    page_scroll,
                 )
                 .map(|m| Message::Priority(priority_control::Kind::Thread, m)),
             Page::IoPriority => self
                 .priority
-                .view(&self.settings, priority_control::Kind::Io, &self.candidates)
+                .view(
+                    &self.settings,
+                    priority_control::Kind::Io,
+                    &self.candidates,
+                    page_scroll,
+                )
                 .map(|m| Message::Priority(priority_control::Kind::Io, m)),
             Page::GpuPriority => self
                 .priority
@@ -3922,6 +3976,7 @@ impl WinderustApp {
                     &self.settings,
                     priority_control::Kind::Gpu,
                     &self.candidates,
+                    page_scroll,
                 )
                 .map(|m| Message::Priority(priority_control::Kind::Gpu, m)),
             Page::MemoryPriority => self
@@ -3930,6 +3985,7 @@ impl WinderustApp {
                     &self.settings,
                     priority_control::Kind::Memory,
                     &self.candidates,
+                    page_scroll,
                 )
                 .map(|m| Message::Priority(priority_control::Kind::Memory, m)),
             Page::DynamicPriorityBoost => self
@@ -3938,6 +3994,7 @@ impl WinderustApp {
                     &self.settings,
                     priority_control::Kind::DynamicBoost,
                     &self.candidates,
+                    page_scroll,
                 )
                 .map(|m| Message::Priority(priority_control::Kind::DynamicBoost, m)),
 
@@ -3948,8 +4005,11 @@ impl WinderustApp {
                     &self.settings,
                     &self.power_plans,
                     &self.candidates,
-                    runtime_power_rules(),
-                    &self.status.power_plan_status,
+                    process_power_plans::RuntimeRules {
+                        settings: runtime_power_rules(),
+                        status: &self.status.power_plan_status,
+                    },
+                    page_scroll,
                 )
                 .map(|message| {
                     Message::ProcessPowerPlans(process_power_plans::Kind::Focus, message)
@@ -3961,16 +4021,22 @@ impl WinderustApp {
                     &self.settings,
                     &self.power_plans,
                     &self.candidates,
-                    runtime_power_rules(),
-                    &self.status.power_plan_status,
+                    process_power_plans::RuntimeRules {
+                        settings: runtime_power_rules(),
+                        status: &self.status.power_plan_status,
+                    },
+                    page_scroll,
                 )
                 .map(|message| {
                     Message::ProcessPowerPlans(process_power_plans::Kind::RunningApp, message)
                 }),
-            Page::ByActivity => {
-                by_activity::view(&self.settings, &self.power_plans, &self.activity_inputs)
-                    .map(Message::ByActivity)
-            }
+            Page::ByActivity => by_activity::view(
+                &self.settings,
+                &self.power_plans,
+                &self.activity_inputs,
+                page_scroll,
+            )
+            .map(Message::ByActivity),
             Page::CpuLimiter => self
                 .cpu_limiter
                 .view(
@@ -3978,6 +4044,7 @@ impl WinderustApp {
                     &self.candidates,
                     self.settings.global().general.enabled,
                     self.cpu_limiter_rule_status(read_power_source),
+                    page_scroll,
                 )
                 .map(Message::CpuLimiter),
             Page::ProcessList => self
@@ -3991,11 +4058,12 @@ impl WinderustApp {
                     } else {
                         process_list::PlanCatalog::Unavailable
                     },
+                    page_scroll.0,
                 )
                 .map(Message::Processes),
             Page::Home => self
                 .home
-                .view(self.settings.persisted(), &self.status)
+                .view(self.settings.persisted(), &self.status, page_scroll)
                 .map(Message::Home),
             Page::WinderustBehaviour
             | Page::LanguageAndAppearance
@@ -4007,58 +4075,67 @@ impl WinderustApp {
                     self.settings.global(),
                     self.can_replace_settings(),
                     self.show_shortcut_error(),
+                    page_scroll,
                 )
                 .map(Message::Preferences),
-            Page::PowerPlanControl => scrollable(
-                column![
-                    power_plan_control::view(
-                        &self.status.power_plan_status,
-                        &self.power_plans,
-                        self.power_plans_loaded,
-                        self.power_plans_loading,
-                        &self.power_plan_control,
-                    )
-                    .map(Message::PowerPlanControl),
-                    widgets::heading(
-                        t!("power_plan_control.switching_settings").to_string(),
-                        design::typography::BODY,
-                    ),
-                    widgets::settings_card(widgets::settings_rows([
-                        widgets::setting_row(
-                            "power_plan_control.pause_plugged",
-                            widgets::switch(
-                                general.pause_power_plan_switching_while_plugged_in,
-                                Some(Message::PausePowerPlans),
-                            ),
+            Page::PowerPlanControl => page_scroll
+                .scrollable(
+                    column![
+                        power_plan_control::view(
+                            &self.status.power_plan_status,
+                            &self.power_plans,
+                            self.power_plans_loaded,
+                            self.power_plans_loading,
+                            &self.power_plan_control,
                         )
-                        .into(),
-                        widgets::setting_row(
-                            "power_plan_control.restore_previous_plan",
-                            widgets::switch(
-                                general.restore_previous_power_plan,
-                                Some(Message::RestorePreviousPowerPlan),
-                            ),
-                        )
-                        .into(),
-                        self.power_plan_control
-                            .fallback_polling_interval_field(general.check_interval_ms)
-                            .map(Message::PowerPlanControl),
-                    ])),
-                    self.child_pages(),
-                ]
-                .spacing(widgets::CARD_GAP),
-            )
-            .height(Fill)
-            .into(),
+                        .map(Message::PowerPlanControl),
+                        widgets::heading(
+                            t!("power_plan_control.switching_settings").to_string(),
+                            design::typography::BODY,
+                        ),
+                        widgets::settings_card(widgets::settings_rows([
+                            widgets::setting_row(
+                                "power_plan_control.pause_plugged",
+                                widgets::switch(
+                                    general.pause_power_plan_switching_while_plugged_in,
+                                    Some(Message::PausePowerPlans),
+                                ),
+                            )
+                            .into(),
+                            widgets::setting_row(
+                                "power_plan_control.restore_previous_plan",
+                                widgets::switch(
+                                    general.restore_previous_power_plan,
+                                    Some(Message::RestorePreviousPowerPlan),
+                                ),
+                            )
+                            .into(),
+                            self.power_plan_control
+                                .fallback_polling_interval_field(general.check_interval_ms)
+                                .map(Message::PowerPlanControl),
+                        ])),
+                        self.child_pages(),
+                    ]
+                    .spacing(widgets::CARD_GAP),
+                )
+                .height(Fill)
+                .into(),
             Page::ActionLog => self
                 .action_log
-                .view(&self.status.action_log_entries, &self.candidates)
+                .view(
+                    &self.status.action_log_entries,
+                    &self.candidates,
+                    page_scroll.0,
+                )
                 .map(Message::ActionLog),
             Page::Watchdog
             | Page::CpuControl
             | Page::PriorityControl
             | Page::SettingsHome
-            | Page::AdvancedControls => scrollable(self.child_pages()).height(Fill).into(),
+            | Page::AdvancedControls => page_scroll
+                .scrollable(self.child_pages())
+                .height(Fill)
+                .into(),
         }
     }
 
@@ -4423,7 +4500,7 @@ mod tests {
     }
 
     #[test]
-    fn dock_and_save_card_reserve_space_and_keep_header_alignment() {
+    fn floating_save_card_preserves_the_editor_viewport_with_the_dock() {
         use iced::advanced::{layout, widget::Tree};
         let renderer = iced::Renderer::new(iced::Font::DEFAULT, iced::Pixels(14.0));
         for width in [780.0, 1440.0, 1800.0] {
@@ -4443,8 +4520,12 @@ mod tests {
                         let workspace = page_canvas(
                             heading,
                             iced::widget::Space::new().width(Fill).height(Fill).into(),
-                            has_save_card
-                                .then(|| iced::widget::Space::new().width(Fill).height(90).into()),
+                            has_save_card.then(|| {
+                                iced::widget::Space::new()
+                                    .width(320)
+                                    .height(SAVE_CARD_HEIGHT)
+                                    .into()
+                            }),
                         );
                         let panel = (available && open)
                             .then(|| iced::widget::Space::new().height(Fill).into());
@@ -4462,12 +4543,16 @@ mod tests {
                         }
                         let workspace = &node.children()[0].children()[0];
                         let canvas = &workspace.children()[0];
-                        let column = &canvas.children()[0];
+                        let layers = &canvas.children()[0];
+                        let column = &layers.children()[0];
                         let mut bounds = column.children()[1].bounds();
+                        assert_eq!(bounds.y + bounds.height, size.height);
                         if has_save_card {
-                            let footer = column.children()[2].bounds();
-                            assert!(bounds.y + bounds.height <= footer.y);
-                            assert_eq!(footer.y + footer.height, size.height);
+                            let card = layers.children()[1].children()[0].bounds();
+                            assert!(card.y > bounds.y);
+                            assert_eq!(card.y + card.height, size.height - SCROLLBAR_GUTTER);
+                            assert_eq!(card.x + card.width, bounds.width - SCROLLBAR_GUTTER);
+                            assert!(card.width < bounds.width);
                         }
                         assert_eq!(column.children()[0].bounds().x, bounds.x);
                         bounds.x += canvas.bounds().x;
@@ -4486,7 +4571,7 @@ mod tests {
     }
 
     #[test]
-    fn dock_and_page_controls_remain_interactive_together() {
+    fn save_card_blocks_pointer_input_only_within_its_bounds() {
         use iced::advanced::{layout, widget::Tree, Layout, Shell};
         let renderer = iced::Renderer::new(iced::Font::DEFAULT, iced::Pixels(14.0));
         let workspace: Element<'_, Message> = button(text("Background action"))
@@ -4499,6 +4584,16 @@ mod tests {
             .height(Fill)
             .on_press(Message::Cancel)
             .into();
+        let workspace = page_canvas(
+            text("Editor").into(),
+            workspace,
+            Some(
+                iced::widget::Space::new()
+                    .width(320)
+                    .height(SAVE_CARD_HEIGHT)
+                    .into(),
+            ),
+        );
         let mut view = side_panel_dock(workspace, Some(panel), 320.0);
         let mut tree = Tree::new(&view);
         let size = iced::Size::new(900.0, 620.0);
@@ -4507,9 +4602,10 @@ mod tests {
             &renderer,
             &layout::Limits::new(iced::Size::ZERO, size),
         );
-        for (cursor, outside) in [
-            (iced::Point::new(100.0, 200.0), true),
-            (iced::Point::new(800.0, 200.0), false),
+        for (cursor, expected) in [
+            (iced::Point::new(100.0, 560.0), Some(Message::Save)),
+            (iced::Point::new(500.0, 560.0), None),
+            (iced::Point::new(800.0, 560.0), Some(Message::Cancel)),
         ] {
             let mut messages = Vec::new();
             for event in [
@@ -4527,9 +4623,12 @@ mod tests {
                     &node.bounds(),
                 );
             }
-            assert_eq!(messages.len(), 1);
-            assert!(matches!(messages[0], Message::Save) == outside);
-            assert!(matches!(messages[0], Message::Cancel) != outside);
+            assert!(matches!(
+                (messages.as_slice(), expected),
+                ([Message::Save], Some(Message::Save))
+                    | ([Message::Cancel], Some(Message::Cancel))
+                    | ([], None)
+            ));
         }
     }
 

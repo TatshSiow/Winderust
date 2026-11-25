@@ -199,7 +199,7 @@ fn rule_tables_align_columns_and_keep_controls_working_at_both_widths() {
                 settings.by_time.rules.truncate(count);
                 settings.by_cpu_load.rules.truncate(count);
                 let renderer = iced::Renderer::new(design::typography::FONT, iced::Pixels(14.0));
-                let mut view = editor.view(kind, &settings, None, &status);
+                let mut view = editor.view(kind, &settings, None, &status, PageScroll::default());
                 let mut tree = Tree::new(&view);
                 let bounds = Rectangle::with_size(Size::new(width as f32, 400.0));
                 let node = view.as_widget_mut().layout(

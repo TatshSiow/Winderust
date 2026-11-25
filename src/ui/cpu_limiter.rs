@@ -1,7 +1,7 @@
 use super::cpu_allocation::{self, Kind, SelectionCatalog};
 use super::design;
 use super::widgets::{self, checkbox, numeric_input, pick_list, slider};
-use crate::ui::scrolling::scrollable;
+use crate::ui::scrolling::{scrollable, PageScroll};
 use iced::widget::{column, row, text, Row};
 use iced::{Element, Fill};
 use rust_i18n::t;
@@ -497,6 +497,7 @@ impl CpuLimiter {
         candidates: &'a [super::app_picker::Candidate],
         master_enabled: bool,
         status: Option<&CpuLimiterSnapshot>,
+        page_scroll: PageScroll,
     ) -> Element<'a, Message> {
         let defaults = Tier::ALL.map(|tier| {
             widgets::slider_setting(tier.key(), "%", move || {
@@ -592,7 +593,7 @@ impl CpuLimiter {
             cards,
             true,
         ));
-        scrollable(body).height(Fill).into()
+        page_scroll.scrollable(body).height(Fill).into()
     }
     pub(super) fn modal<'a>(
         &'a self,
