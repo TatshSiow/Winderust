@@ -746,6 +746,11 @@ Read the relevant section before changing feature policy, ownership, restoration
   is off, the scoped limiter is dormant. It releases the placement claim when the episode
   loses verification or ends. Dynamic Resource Zones, explicit CPU allocation, and manual
   ownership keep their existing precedence.
+- The Processor placement only action qualifies the same pressure episodes and uses the
+  existing background processor selection. A hold starts only with an exact verified
+  placement from the scoped limiter. A higher owner invalidates that claim and a fresh
+  evaluation is required before the limiter can apply again. Existing assignments and
+  zoning do not count towards verification for this action.
 - Limit Background Processors can instead reduce each target's original group-0 affinity by
   a configured count, retaining at least one logical processor. Selection stays stable for the
   exact process while its captured baseline holds. Reduce affinity preserves external default
@@ -878,8 +883,8 @@ Read the relevant section before changing feature policy, ownership, restoration
   active audio, and exclusions. Restraint writes temporary Below Normal or optional
   Idle priority for a process whose baseline is Normal. Efficiency Mode
   and saved Process Priority take precedence on the same process.
-  Status lists the exact process instances whose restraint is verified, whose
-  priority restoration is pending, or whose priority ownership is unconfirmed.
+  Status lists the exact process instances whose priority or placement restraint is
+  verified, whose priority restoration is pending, or whose priority ownership is unconfirmed.
   The list follows existing controller transitions and retries without querying
   Windows again. Pending and unconfirmed entries remain visible while paused or
   disabled.

@@ -16,7 +16,7 @@ use crate::{
         BackgroundProcessorSelection, CpuAllocationMethod, ExecutableSelector, PowerSourceProfile,
     },
     control::{
-        cpu_allocation::CpuAllocationCoordinator,
+        cpu_allocation::{CpuAllocationCoordinator, CpuAllocationReconciliationSummary},
         priority_efficiency::{
             AdaptiveRestraintProcess, AdaptiveRestraintState, PriorityClassClaim,
             PriorityClassPreservation, PriorityClassValue, PriorityEfficiencyController,
@@ -423,7 +423,8 @@ impl AdaptiveEngineProcessManager {
             };
         }
 
-        let limit_during_restraint = settings.limit_background_processors_during_restraint;
+        let placement_only = settings.placement_only_restraint_enabled();
+        let limit_during_restraint = settings.background_processor_limit_scoped();
         let background_limit_enabled = settings.background_processor_limit_enabled();
         let independent_limit_enabled = background_limit_enabled && !limit_during_restraint;
         let restraint_idle_pause = RestraintIdlePause::detect(settings, user_idle_for);
@@ -618,7 +619,9 @@ impl AdaptiveEngineProcessManager {
             })
             .unwrap_or_default();
         if let Some(previous) = self.allocation_settings.as_mut() {
-            if previous.cpu_pressure_restraint_enabled != settings.cpu_pressure_restraint_enabled
+            if previous.placement_only_restraint_enabled() != placement_only
+                || previous.cpu_pressure_restraint_enabled
+                    != settings.cpu_pressure_restraint_enabled
                 || previous.background_app_cpu_threshold_percent
                     != settings.background_app_cpu_threshold_percent
                 || previous.foreground_or_system_cpu_threshold_percent
@@ -776,7 +779,7 @@ impl AdaptiveEngineProcessManager {
 
         let mut cpu_allocation_targets = Vec::new();
         let mut restraint_allocation_selection = None;
-        let mut priority_candidates = Vec::new();
+        let mut restraint_candidates = Vec::new();
         let topology_observation = (placement_applies
             || cpu_allocation_coordinator.needs_topology_observation())
         .then(|| observations.cpu_topology());
@@ -973,6 +976,18 @@ impl AdaptiveEngineProcessManager {
                     state.pressure_restraint = PressureRestraintEpisode::default();
                     continue;
                 }
+                if placement_only
+                    && state.pressure_restraint.selected_since.is_some()
+                    && cpu_allocation_coordinator
+                        .verified_adaptive_episode_placement(&ProcessTargetKey::new(
+                            *process_id,
+                            creation_time,
+                            Path::new(&executable_path),
+                        ))
+                        .is_none()
+                {
+                    state.pressure_restraint = PressureRestraintEpisode::default();
+                }
                 if state
                     .pressure_restraint
                     .qualifies(settings, sample.sampled_at, usage)
@@ -980,7 +995,7 @@ impl AdaptiveEngineProcessManager {
                     let selected = state.pressure_restraint.selected_since.is_some();
                     let score = u32::from(usage)
                         + u32::from(selected) * ADAPTIVE_ENGINE_PROCESS_SELECTION_STICKINESS_TENTHS;
-                    priority_candidates.push((
+                    restraint_candidates.push((
                         score,
                         sample.sampled_at,
                         ProcessControlTarget::automatic(
@@ -1134,13 +1149,15 @@ impl AdaptiveEngineProcessManager {
             self.cpu_allocation_selection = [None; 2];
         }
 
-        priority_candidates.sort_unstable_by_key(|(score, _, target)| (Reverse(*score), target.id));
-        let qualified_episodes = priority_candidates
+        restraint_candidates
+            .sort_unstable_by_key(|(score, _, target)| (Reverse(*score), target.id));
+        let qualified_episodes = restraint_candidates
             .iter()
+            .filter(|_| !placement_only)
             .map(|(_, _, target)| target.key())
             .collect::<BTreeSet<_>>();
         self.failure_suppression.retain_keys(
-            &priority_candidates
+            &restraint_candidates
                 .iter()
                 .map(|(_, _, target)| {
                     process_failure_key(&target.executable_path.to_string_lossy())
@@ -1150,11 +1167,20 @@ impl AdaptiveEngineProcessManager {
         let mut skipped_processes = 0;
         let mut selected_candidates = Vec::new();
         let target_limit = usize::from(settings.maximum_restrained_apps.max(1));
-        for (_, sampled_at, target) in priority_candidates {
-            if selected_candidates.len() == target_limit {
+        for (_, sampled_at, target) in restraint_candidates {
+            if !placement_only && selected_candidates.len() == target_limit {
                 break;
             }
             let executable_path = target.executable_path.to_string_lossy();
+            if placement_only
+                && (restraint_allocation_selection.is_none()
+                    || cpu_allocation::contains_process(
+                        explicit_cpu_allocation_paths,
+                        &executable_path,
+                    ))
+            {
+                continue;
+            }
             if self.is_executable_path_suppressed(
                 target.id,
                 &target.name,
@@ -1180,24 +1206,40 @@ impl AdaptiveEngineProcessManager {
                 }
             }
         }
-        let active_priority_targets = selected_candidates
+        let active_targets = selected_candidates
             .iter()
             .map(|(_, target)| target.key())
             .collect::<BTreeSet<_>>();
-        let selected_ids = active_priority_targets
+        let selected_ids = active_targets
             .iter()
             .map(|key| key.id)
             .collect::<BTreeSet<_>>();
         for (process_id, process) in &mut self.tracked_processes {
             if !selected_ids.contains(process_id) {
-                process.pressure_restraint.selected_since = None;
-                process.pressure_restraint.below_since = None;
+                if placement_only && process.pressure_restraint.selected_since.is_some() {
+                    process.pressure_restraint = PressureRestraintEpisode::default();
+                } else {
+                    process.pressure_restraint.selected_since = None;
+                    process.pressure_restraint.below_since = None;
+                }
             }
         }
+        let no_targets = BTreeSet::new();
+        let active_priority_targets = if placement_only {
+            &no_targets
+        } else {
+            &active_targets
+        };
         let release = priority_efficiency_controller
-            .reconcile_adaptive_restraint_targets(&active_priority_targets, &qualified_episodes);
+            .reconcile_adaptive_restraint_targets(active_priority_targets, &qualified_episodes);
         // A process awaiting restoration can still occupy a restraint slot.
-        if !release.failures.is_empty() {
+        if !release.failures.is_empty()
+            || (placement_only
+                && priority_efficiency_controller
+                    .adaptive_restraint_processes()
+                    .next()
+                    .is_some())
+        {
             selected_candidates.clear();
         }
         self.merge_controller_release(
@@ -1210,18 +1252,55 @@ impl AdaptiveEngineProcessManager {
             "process priority",
             &mut failures,
         );
-        let (restraint_priority, restraint_message) = match settings.restraint_priority {
-            AdaptiveRestraintPriority::BelowNormal => (
+        if !placement_only {
+            let (release, pending) =
+                cpu_allocation_coordinator.release_adaptive_episode_placements_except(&no_targets);
+            if pending {
+                selected_candidates.clear();
+            }
+            failures.count += release.failures.len();
+            if failures.last_error.is_none() {
+                failures.last_error = release
+                    .failures
+                    .first()
+                    .map(|failure| failure.error.to_string());
+            }
+            cpu_allocation::record_cpu_allocation_reconciliation(
+                CpuAllocationReconciliationSummary {
+                    releases: release,
+                    ..Default::default()
+                },
+                action_log,
+            );
+        }
+        let priority_action = match settings.restraint_priority {
+            AdaptiveRestraintPriority::BelowNormal => Some((
                 PriorityClassValue::BelowNormal,
                 "Lowered process priority to Below Normal during sustained background CPU pressure.",
-            ),
-            AdaptiveRestraintPriority::Idle => (
+            )),
+            AdaptiveRestraintPriority::Idle => Some((
                 PriorityClassValue::Idle,
                 "Lowered process priority to Idle during sustained background CPU pressure.",
-            ),
+            )),
+            AdaptiveRestraintPriority::ProcessorPlacementOnly => None,
         };
         let mut successful_priority_targets = BTreeSet::new();
+        let mut placement_attempts = Vec::new();
         for (sampled_at, target) in selected_candidates {
+            let Some((restraint_priority, restraint_message)) = priority_action else {
+                if let Some(selection) = restraint_allocation_selection.as_ref() {
+                    placement_attempts.push((sampled_at, target.key()));
+                    cpu_allocation_targets.push(CpuAllocationTarget {
+                        process_id: target.id,
+                        process_name: target.name,
+                        executable_path: target.executable_path.to_string_lossy().into_owned(),
+                        mode: cpu_allocation_method(settings),
+                        selection: selection.clone(),
+                        creation_time: target.creation_time,
+                    });
+                }
+                continue;
+            };
             let process_id = target.id;
             let executable_path = target.executable_path.to_string_lossy();
             let result = priority_efficiency_controller.apply_priority_claim(
@@ -1278,7 +1357,7 @@ impl AdaptiveEngineProcessManager {
                 }
             }
         }
-        if let Some(selection) = restraint_allocation_selection {
+        if let Some(selection) = restraint_allocation_selection.filter(|_| !placement_only) {
             cpu_allocation_targets = verified_restraint_allocation_targets(
                 priority_efficiency_controller.adaptive_restraint_processes(),
                 &successful_priority_targets,
@@ -1307,6 +1386,7 @@ impl AdaptiveEngineProcessManager {
                 topology,
                 ControlOwner::AdaptiveEngine,
                 cpu_allocation_targets,
+                placement_only.then_some(target_limit),
                 attempted_zones.then_some((zone_background_targets, zone_foreground_targets)),
                 scanned_processes,
                 allow_cross_session_process_control,
@@ -1320,6 +1400,22 @@ impl AdaptiveEngineProcessManager {
                 action_log,
             )
         };
+        for (sampled_at, key) in placement_attempts {
+            let Some(process) = self.tracked_processes.get_mut(&key.id) else {
+                continue;
+            };
+            if cpu_allocation_coordinator
+                .verified_adaptive_episode_placement(&key)
+                .is_some()
+            {
+                process
+                    .pressure_restraint
+                    .selected_since
+                    .get_or_insert(sampled_at);
+            } else if process.pressure_restraint.selected_since.is_some() {
+                process.pressure_restraint = PressureRestraintEpisode::default();
+            }
+        }
         let mut cpu_allocation_snapshot = allocation.snapshot;
         if let Some(error) = allocation_error {
             cpu_allocation_snapshot.last_error.get_or_insert(error);

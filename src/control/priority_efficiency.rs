@@ -134,6 +134,7 @@ pub(crate) enum ProcessPropertyApplyOutcome {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AdaptiveRestraintState {
     Verified,
+    PlacementVerified,
     RestorationPending,
     ConfirmationPending,
 }

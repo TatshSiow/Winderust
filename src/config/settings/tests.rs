@@ -379,6 +379,34 @@ fn restraint_scoped_background_processor_limit_requires_restraint() {
 }
 
 #[test]
+fn placement_only_restraint_uses_the_limiter_without_changing_its_saved_scope() {
+    let mut settings = AdaptiveEngineProcessSettings {
+        restraint_priority: AdaptiveRestraintPriority::ProcessorPlacementOnly,
+        limit_background_processors_enabled: true,
+        ..Default::default()
+    };
+    assert!(!settings.has_enabled_policies());
+    assert!(!settings.background_processor_limit_enabled());
+
+    settings.cpu_pressure_restraint_enabled = true;
+    assert!(settings.placement_only_restraint_enabled());
+    assert!(settings.background_processor_limit_enabled());
+    assert!(settings.background_processor_limit_scoped());
+
+    let file = toml::to_string(&settings).unwrap();
+    assert!(file.contains("restraint_priority = \"processor_placement_only\""));
+    assert_eq!(
+        toml::from_str::<AdaptiveEngineProcessSettings>(&file).unwrap(),
+        settings
+    );
+
+    settings.restraint_priority = AdaptiveRestraintPriority::BelowNormal;
+    assert!(!settings.placement_only_restraint_enabled());
+    assert!(settings.background_processor_limit_enabled());
+    assert!(!settings.background_processor_limit_scoped());
+}
+
+#[test]
 fn adaptive_custom_rules_match_the_configured_selector_kind() {
     let settings = AdaptiveEngineProcessSettings {
         custom_rules: vec![

@@ -531,8 +531,9 @@ hover/press; background shading supplies feedback.
   show Preserve custom affinity inside the same expandable card.
   Place Only during CPU Pressure Restraint in that card, with its prerequisite visible in the
   setting description in live and preset editors.
-- Restraint CPU priority, Restraint I/O priority, and Energy-efficient scheduling sit together
-  in CPU Pressure Restraint. The scheduling toggle is independent of the selected priority.
+- Restraint action, Restraint I/O priority, and Energy-efficient scheduling sit together in
+  CPU Pressure Restraint. Processor placement only shows its allocation method and
+  selection through Limit Background Processors and hides the priority adjuncts.
 - Separate foreground CPU threshold is available in the shared detection card when the source
   combines system and foreground CPU. Enabling it reveals separate System CPU threshold and
   Foreground CPU threshold sliders. The foreground help states that its unit is whole-system

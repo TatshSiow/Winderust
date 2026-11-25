@@ -1291,6 +1291,11 @@ impl RuntimeCore {
             && !self
                 .priority_efficiency_controller
                 .has_adaptive_restraint_claims()
+            && self
+                .cpu_allocation_coordinator
+                .adaptive_episode_placement_processes()
+                .next()
+                .is_none()
         {
             return false;
         }
@@ -1298,7 +1303,12 @@ impl RuntimeCore {
         let audit_changed = {
             let processes = self
                 .priority_efficiency_controller
-                .adaptive_restraint_processes();
+                .adaptive_restraint_processes()
+                .chain(
+                    self.cpu_allocation_coordinator
+                        .adaptive_episode_placement_processes()
+                        .map(|process| (process, AdaptiveRestraintState::PlacementVerified)),
+                );
             let previous = self
                 .adaptive_restraint_processes
                 .as_deref()
@@ -1364,6 +1374,9 @@ impl RuntimeCore {
                 && settings
                     .adaptive_engine_process
                     .cpu_pressure_restraint_enabled
+                && !settings
+                    .adaptive_engine_process
+                    .placement_only_restraint_enabled()
         });
         let io_priority = settings.and_then(|settings| {
             match settings.adaptive_engine_process.restraint_io_priority {
@@ -1587,6 +1600,9 @@ impl RuntimeCore {
                         && settings
                             .adaptive_engine_process
                             .cpu_pressure_restraint_enabled
+                        && !settings
+                            .adaptive_engine_process
+                            .placement_only_restraint_enabled()
                         && self
                             .priority_efficiency_controller
                             .adaptive_restraint_processes()

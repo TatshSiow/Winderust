@@ -1489,6 +1489,17 @@ fn native_pressure_restraint_idle_restores_priority() -> Result<(), String> {
 #[test]
 #[ignore = "modifies and restores priority and affinity on a disposable Windows process"]
 fn native_scoped_placement_follows_verified_episodes() -> Result<(), String> {
+    native_restraint_placement_lifecycle(false)
+}
+
+#[test]
+#[ignore = "modifies and restores affinity on a disposable Windows process"]
+fn native_placement_only_restraint_follows_episode_without_priority_changes() -> Result<(), String>
+{
+    native_restraint_placement_lifecycle(true)
+}
+
+fn native_restraint_placement_lifecycle(placement_only: bool) -> Result<(), String> {
     use crate::{
         config::ProcessPrioritySetting,
         control::{
@@ -1515,8 +1526,13 @@ fn native_scoped_placement_follows_verified_episodes() -> Result<(), String> {
     let topology = cpu_allocation::processor_topology()?;
     let settings = AdaptiveEngineProcessSettings {
         cpu_pressure_restraint_enabled: true,
-        limit_background_processors_enabled: true,
-        limit_background_processors_during_restraint: true,
+        restraint_priority: if placement_only {
+            AdaptiveRestraintPriority::ProcessorPlacementOnly
+        } else {
+            AdaptiveRestraintPriority::BelowNormal
+        },
+        limit_background_processors_enabled: !placement_only,
+        limit_background_processors_during_restraint: !placement_only,
         cpu_allocation_method: CpuAllocationMethod::ProcessorAffinityHard,
         background_processor_selection: BackgroundProcessorSelection::Custom,
         specific_processors: CpuSelection::from_group_zero_mask(&topology, expected as u64)
@@ -1575,14 +1591,26 @@ fn native_scoped_placement_follows_verified_episodes() -> Result<(), String> {
         assert_eq!(status.failed_processes, 0, "{status:?}");
         assert_eq!(
             read_affinity()?,
-            if restrained { expected } else { baseline }
+            if restrained { expected } else { baseline },
+            "at {elapsed_ms} ms: {status:?}"
         );
         assert_eq!(
             current_process_priority(&target, false).map_err(|error| error.to_string())?,
-            if restrained {
+            if restrained && !placement_only {
                 ProcessPrioritySetting::BelowNormal
             } else {
                 ProcessPrioritySetting::Normal
+            }
+        );
+        assert_eq!(
+            allocation
+                .adaptive_episode_placement_processes()
+                .map(|process| process.id)
+                .collect::<Vec<_>>(),
+            if restrained && placement_only {
+                vec![target.id]
+            } else {
+                Vec::new()
             }
         );
     }

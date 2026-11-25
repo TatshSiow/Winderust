@@ -590,6 +590,103 @@ fn allocation_target(id: u32, mask: u64, hard: bool) -> crate::cpu_allocation::C
     }
 }
 
+#[test]
+fn episode_placement_admits_a_real_restriction_past_an_external_matching_mask() {
+    use crate::cpu_allocation::CpuAllocationManager;
+
+    let mut coordinator = coordinator();
+    let mut second = process_state(&coordinator);
+    second.identity = identity(43, 7);
+    {
+        let mut state = coordinator.platform.state.borrow_mut();
+        state.processes.get_mut(&42).unwrap().affinity = 3;
+        state.processes.insert(43, second);
+    }
+    let topology = test_topology();
+    let mut manager =
+        CpuAllocationManager::with_action_log_feature(ActionLogFeature::AdaptiveEngine);
+    let mut log = ActionLog::default();
+    let generation = manager.reconcile_targets(
+        &mut coordinator,
+        Ok(&topology),
+        ControlOwner::AdaptiveEngine,
+        vec![
+            allocation_target(42, 3, true),
+            allocation_target(43, 3, true),
+        ],
+        Some(1),
+        None,
+        2,
+        true,
+        &mut log,
+    );
+    assert_eq!(generation.fallback_count, 1);
+    assert_eq!(
+        coordinator
+            .adaptive_episode_placement_processes()
+            .map(|process| process.id)
+            .collect::<Vec<_>>(),
+        [43]
+    );
+    manager.reconcile_empty_generation(&mut coordinator, ControlOwner::AdaptiveEngine, 2, &mut log);
+    let state = coordinator.platform.state.borrow();
+    assert_eq!(state.processes[&42].affinity, 3);
+    assert_eq!(state.processes[&43].affinity, 15);
+}
+
+#[test]
+fn episode_placement_needs_fresh_qualification_after_higher_owner_releases() {
+    let mut coordinator = coordinator();
+    let topology = test_topology();
+    let mut inventory = CpuSetInventory::default();
+    let episode = claim(
+        ControlOwner::AdaptiveEngine,
+        CpuAllocationRequest::HardAffinity {
+            selection: test_selection(3),
+        },
+        7,
+    );
+    assert_eq!(
+        coordinator
+            .apply_adaptive_episode_claim(&mut inventory, Ok(&topology), episode.clone(), true)
+            .unwrap(),
+        CpuAllocationApplyOutcome::Applied
+    );
+    assert_eq!(process_state(&coordinator).affinity, 3);
+    coordinator
+        .apply_policy_claim(
+            &mut inventory,
+            Ok(&topology),
+            claim(
+                ControlOwner::ProcessorAffinityHard,
+                CpuAllocationRequest::HardAffinity {
+                    selection: test_selection(12),
+                },
+                7,
+            ),
+            true,
+        )
+        .unwrap();
+    assert!(coordinator
+        .adaptive_episode_placement_processes()
+        .next()
+        .is_none());
+    assert_eq!(
+        coordinator
+            .apply_adaptive_episode_claim(&mut inventory, Ok(&topology), episode, true)
+            .unwrap(),
+        CpuAllocationApplyOutcome::Shadowed
+    );
+    coordinator.release_all_policy(ControlOwner::ProcessorAffinityHard);
+    let summary = coordinator.reconcile_pending(Ok(&topology), true, true);
+    assert!(summary.applications.is_empty());
+    assert!(coordinator
+        .adaptive_episode_placement_processes()
+        .next()
+        .is_none());
+    assert_eq!(process_state(&coordinator).affinity, 15);
+}
+
 fn changed_topology() -> CpuTopology {
     let original = test_topology();
     let mut processors = original.processors().to_vec();
@@ -653,6 +750,7 @@ fn stale_selection_restores_its_allocation_without_suppressing_apps_or_releasing
             Ok(&changed),
             ControlOwner::CpuSetsSoft,
             vec![allocation_target(42, 1, false)],
+            None,
             None,
             2,
             true,
@@ -1271,6 +1369,7 @@ fn mapping_failure_is_shared_without_suppressing_apps_or_losing_assignments() {
             ControlOwner::CpuSetsSoft,
             targets(),
             None,
+            None,
             2,
             true,
             log,
@@ -1366,6 +1465,7 @@ fn zone_generation_orders_background_first_and_preserves_handoff_baselines() {
         ControlOwner::AdaptiveEngine,
         fallback(),
         None,
+        None,
         2,
         true,
         &mut log,
@@ -1382,6 +1482,7 @@ fn zone_generation_orders_background_first_and_preserves_handoff_baselines() {
         Ok(&test_topology()),
         ControlOwner::AdaptiveEngine,
         fallback(),
+        None,
         zones(),
         2,
         true,
@@ -1406,6 +1507,7 @@ fn zone_generation_orders_background_first_and_preserves_handoff_baselines() {
         Ok(&test_topology()),
         ControlOwner::AdaptiveEngine,
         fallback(),
+        None,
         zones(),
         2,
         true,
@@ -1429,6 +1531,7 @@ fn zone_generation_orders_background_first_and_preserves_handoff_baselines() {
         ControlOwner::AdaptiveEngine,
         fallback(),
         None,
+        None,
         2,
         true,
         &mut log,
@@ -1442,6 +1545,7 @@ fn zone_generation_orders_background_first_and_preserves_handoff_baselines() {
         Ok(&test_topology()),
         ControlOwner::AdaptiveEngine,
         Vec::new(),
+        None,
         None,
         2,
         true,
@@ -1508,6 +1612,7 @@ fn failed_or_shadowed_background_never_narrows_foreground() {
             Ok(&test_topology()),
             ControlOwner::AdaptiveEngine,
             Vec::new(),
+            None,
             Some((
                 vec![allocation_target(42, 1, false)],
                 vec![allocation_target(43, 14, false)],
@@ -1560,6 +1665,7 @@ fn partial_foreground_failure_withdraws_successful_zone_roles() {
         Ok(&test_topology()),
         ControlOwner::AdaptiveEngine,
         vec![allocation_target(42, 3, true)],
+        None,
         Some((
             vec![allocation_target(42, 1, false)],
             vec![

@@ -3946,6 +3946,23 @@ fn adaptive_engine_source_selection_checks_pressure_and_restraint_actions() {
     assert!(adaptive_engine_process_waits_for_source(&settings, None));
     settings.adaptive_engine_process.maximum_restraint_time_ms = 30_000;
     assert!(!adaptive_engine_process_waits_for_source(&settings, None));
+
+    let placement_only = AdaptiveRestraintPriority::ProcessorPlacementOnly;
+    settings.adaptive_engine_process.restraint_priority = placement_only;
+    assert!(adaptive_engine_process_waits_for_source(&settings, None));
+    let battery = &mut settings.battery_profile_mut().adaptive_engine_process;
+    battery.restraint_priority = placement_only;
+    battery.limit_background_processors_enabled = false;
+    battery.limit_background_processors_during_restraint = true;
+    battery.restraint_io_priority = AdaptiveRestraintIoPriority::Unchanged;
+    battery.restraint_energy_efficient_scheduling = false;
+    assert!(!adaptive_engine_process_waits_for_source(&settings, None));
+
+    settings
+        .battery_profile_mut()
+        .adaptive_engine_process
+        .processor_limit_percent = 73;
+    assert!(adaptive_engine_process_waits_for_source(&settings, None));
 }
 
 #[test]

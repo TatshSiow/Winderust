@@ -316,6 +316,7 @@ impl CpuAllocationManager {
             owner,
             targets,
             None,
+            None,
             scanned_processes,
             allow_cross_session_process_control,
             action_log,
@@ -368,6 +369,7 @@ impl CpuAllocationManager {
         topology: Result<&CpuTopology, &str>,
         owner: ControlOwner,
         targets: Vec<CpuAllocationTarget>,
+        episode_limit: Option<usize>,
         zones: Option<(Vec<CpuAllocationTarget>, Vec<CpuAllocationTarget>)>,
         scanned_processes: usize,
         allow_cross_session_process_control: bool,
@@ -432,13 +434,34 @@ impl CpuAllocationManager {
             "saved CPU selection is unavailable",
             &mut failures,
         );
+        let episode_cleanup_pending = if let Some(limit) = episode_limit {
+            let selected = targets
+                .iter()
+                .take(limit)
+                .map(cpu_allocation_target_key)
+                .collect::<BTreeSet<_>>();
+            let (release, pending) =
+                coordinator.release_adaptive_episode_placements_except(&selected);
+            self.merge_release_summary(
+                release,
+                owner,
+                action_log,
+                "CPU Pressure Restraint episode ended",
+                &mut failures,
+            );
+            pending
+        } else {
+            false
+        };
         let mut skipped_processes = 0;
         let mut auto_excluded_processes = BTreeSet::new();
         let mut zone_failure = self.zone_failure;
         if attempt_zones {
             zone_failure = ZoneAllocationFailure::Waiting;
         }
-        let fallback_label = if owner == ControlOwner::AdaptiveEngine {
+        let fallback_label = if episode_limit.is_some() {
+            "CPU Pressure Restraint processor placement".to_owned()
+        } else if owner == ControlOwner::AdaptiveEngine {
             "Limit Background Processors".to_owned()
         } else {
             self.feature_label().to_owned()
@@ -446,6 +469,8 @@ impl CpuAllocationManager {
         let mut unresolved_targets = BTreeSet::new();
         let mut apply = |target: CpuAllocationTarget, zone_role: Option<&str>| {
             let role = zone_role.unwrap_or(&fallback_label);
+            let episode = episode_limit.is_some() && zone_role.is_none();
+            let episode_key = episode.then(|| cpu_allocation_target_key(&target));
             let mut effective = false;
             let selection_valid = topology.is_ok_and(|topology| match target.mode {
                 CpuAllocationMode::SoftCpuSets if owner != ControlOwner::AdaptiveEngine => {
@@ -471,7 +496,15 @@ impl CpuAllocationManager {
                 if zone_role.is_some() {
                     zone_failure = ZoneAllocationFailure::Degraded;
                 }
-                return false;
+                let pending = episode_key.is_some_and(|key| {
+                    self.release_failed_episode_placement(
+                        coordinator,
+                        &key,
+                        action_log,
+                        &mut failures,
+                    )
+                });
+                return (false, pending);
             }
 
             let request = match target.mode {
@@ -506,12 +539,22 @@ impl CpuAllocationManager {
                 request,
                 balancing_generation: None,
             };
-            match coordinator.apply_policy_claim(
-                &mut inventory,
-                topology,
-                claim,
-                allow_cross_session_process_control,
-            ) {
+            let outcome = if episode {
+                coordinator.apply_adaptive_episode_claim(
+                    &mut inventory,
+                    topology,
+                    claim,
+                    allow_cross_session_process_control,
+                )
+            } else {
+                coordinator.apply_policy_claim(
+                    &mut inventory,
+                    topology,
+                    claim,
+                    allow_cross_session_process_control,
+                )
+            };
+            match outcome {
                 Ok(CpuAllocationApplyOutcome::Applied) => {
                     effective = true;
                     if zone_role.is_some() || self.zone_generation.is_empty() {
@@ -613,13 +656,22 @@ impl CpuAllocationManager {
                     );
                 }
             }
-            effective
+            let pending = !effective
+                && episode_key.is_some_and(|key| {
+                    self.release_failed_episode_placement(
+                        coordinator,
+                        &key,
+                        action_log,
+                        &mut failures,
+                    )
+                });
+            (effective, pending)
         };
         let mut active_targets = BTreeSet::new();
         let mut background_count = 0;
         for target in background.into_iter().filter(|_| attempt_zones) {
             let key = cpu_allocation_target_key(&target);
-            if apply(target, Some("Dynamic Resource Zones background")) {
+            if apply(target, Some("Dynamic Resource Zones background")).0 {
                 background_count += 1;
                 active_targets.insert(key);
             }
@@ -629,7 +681,7 @@ impl CpuAllocationManager {
         if background_count > 0 {
             for target in foreground {
                 let key = cpu_allocation_target_key(&target);
-                if apply(target, Some("Dynamic Resource Zones foreground")) {
+                if apply(target, Some("Dynamic Resource Zones foreground")).0 {
                     foreground_count += 1;
                     active_targets.insert(key);
                 }
@@ -642,12 +694,19 @@ impl CpuAllocationManager {
         let mut fallback_count = 0;
         if zone_counts.is_none() {
             active_targets.clear();
-            for target in targets {
-                active_targets.insert(cpu_allocation_target_key(&target));
-                fallback_count += usize::from(apply(target, None));
+            for target in targets.into_iter().filter(|_| !episode_cleanup_pending) {
+                let key = cpu_allocation_target_key(&target);
+                let (applied, cleanup_pending) = apply(target, None);
+                if applied || episode_limit.is_none() {
+                    active_targets.insert(key);
+                }
+                fallback_count += usize::from(applied);
+                if cleanup_pending || episode_limit == Some(fallback_count) {
+                    break;
+                }
             }
         }
-        if inventory.failed() {
+        if inventory.failed() && episode_limit.is_none() {
             active_targets.extend(desired_keys);
         }
         active_targets.retain(|key| !unresolved_targets.contains(key));
@@ -689,6 +748,24 @@ impl CpuAllocationManager {
             fallback_count,
             zone_failure,
         }
+    }
+
+    fn release_failed_episode_placement<P: CpuAllocationPlatform>(
+        &mut self,
+        coordinator: &mut CpuAllocationCoordinator<P>,
+        key: &ProcessTargetKey,
+        action_log: &mut ActionLog,
+        failures: &mut CpuAllocationFailures,
+    ) -> bool {
+        let (release, pending) = coordinator.release_adaptive_episode_placement(key);
+        self.merge_release_summary(
+            release,
+            ControlOwner::AdaptiveEngine,
+            action_log,
+            "CPU Pressure Restraint processor placement was unconfirmed",
+            failures,
+        );
+        pending
     }
 
     pub(crate) fn pause_for_power_source<P: CpuAllocationPlatform>(

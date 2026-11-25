@@ -1817,7 +1817,8 @@ fn run_background_automation(
         let cpu_behaviour = &settings.adaptive_engine_process;
         let scoped_placement = adaptive_engine_process_active
             && cpu_behaviour.background_processor_limit_enabled()
-            && cpu_behaviour.limit_background_processors_during_restraint;
+            && cpu_behaviour.limit_background_processors_during_restraint
+            && !cpu_behaviour.placement_only_restraint_enabled();
         let restraints_before_commands = (scoped_placement
             && adaptive_engine_process_status.is_some()
             && process_control_commands.iter().any(|command| {

@@ -1132,6 +1132,13 @@ pub enum AdaptiveRestraintPriority {
     #[default]
     BelowNormal,
     Idle,
+    ProcessorPlacementOnly,
+}
+
+impl AdaptiveRestraintPriority {
+    pub(crate) const fn is_placement_only(self) -> bool {
+        matches!(self, Self::ProcessorPlacementOnly)
+    }
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -2980,10 +2987,23 @@ impl AdaptiveEngineProcessSettings {
         (shared, foreground)
     }
 
+    pub(crate) const fn placement_only_restraint_enabled(&self) -> bool {
+        self.cpu_pressure_restraint_enabled && self.restraint_priority.is_placement_only()
+    }
+
+    pub(crate) const fn background_processor_limit_scoped(&self) -> bool {
+        self.limit_background_processors_during_restraint
+            || self.restraint_priority.is_placement_only()
+    }
+
     pub(crate) const fn background_processor_limit_enabled(&self) -> bool {
-        self.limit_background_processors_enabled
-            && (!self.limit_background_processors_during_restraint
-                || self.cpu_pressure_restraint_enabled)
+        if self.restraint_priority.is_placement_only() {
+            self.placement_only_restraint_enabled()
+        } else {
+            self.limit_background_processors_enabled
+                && (!self.background_processor_limit_scoped()
+                    || self.cpu_pressure_restraint_enabled)
+        }
     }
 
     pub(crate) const fn has_enabled_policies(&self) -> bool {

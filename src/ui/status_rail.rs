@@ -631,7 +631,13 @@ fn adaptive_restraint_section(
         .as_deref()
         .unwrap_or_default()
         .iter()
-        .filter(|row| row.state != AdaptiveRestraintState::Verified || verified_available)
+        .filter(|row| {
+            verified_available
+                || !matches!(
+                    row.state,
+                    AdaptiveRestraintState::Verified | AdaptiveRestraintState::PlacementVerified
+                )
+        })
         .peekable();
     let mut details = column![].spacing(design::space::CONTROL);
     if let Some(pause) = idle_pause {
@@ -656,6 +662,9 @@ fn adaptive_restraint_section(
     for row in rows {
         let key = match row.state {
             AdaptiveRestraintState::Verified => "adaptive_engine_process.restraint_verified",
+            AdaptiveRestraintState::PlacementVerified => {
+                "adaptive_engine_process.restraint_placement_verified"
+            }
             AdaptiveRestraintState::RestorationPending => {
                 "adaptive_engine_process.restraint_restoration_pending"
             }
@@ -1745,6 +1754,11 @@ mod tests {
                         "uncertain.exe",
                         AdaptiveRestraintState::ConfirmationPending,
                     ),
+                    row(
+                        4,
+                        "placement.exe",
+                        AdaptiveRestraintState::PlacementVerified,
+                    ),
                 ])),
                 ..Default::default()
             };
@@ -1766,6 +1780,11 @@ mod tests {
             "verified.exe (1)",
             "adaptive_engine_process.restraint_verified",
         ));
+        assert!(item_visible(
+            &live,
+            "placement.exe (4)",
+            "adaptive_engine_process.restraint_placement_verified",
+        ));
         for rail in [&live, &mismatched, &inactive] {
             assert!(item_visible(
                 rail,
@@ -1780,6 +1799,7 @@ mod tests {
         }
         for rail in [mismatched, inactive] {
             assert!(!rail.iter().any(|line| line == "verified.exe (1)"));
+            assert!(!rail.iter().any(|line| line == "placement.exe (4)"));
         }
 
         settings.adaptive_engine_process.pause_restraint_when_idle = true;

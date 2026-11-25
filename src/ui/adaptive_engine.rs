@@ -778,6 +778,7 @@ impl Editor {
                 };
 
                 let cpu = &s.adaptive_engine_process;
+                let placement_only = cpu.restraint_priority.is_placement_only();
                 let method = cpu.cpu_allocation_method;
                 let selection = cpu.background_processor_selection;
                 let custom_selection = editable
@@ -941,80 +942,91 @@ impl Editor {
                     iced::widget::Space::new(),
                     pressure,
                 ));
-                let restraint = super::widgets::settings_rows([
-                    choice!(
-                        s,
-                        "adaptive_engine_process.restraint_priority",
-                        AdaptiveRestraintPriority,
-                        &[
-                            AdaptiveRestraintPriority::BelowNormal,
-                            AdaptiveRestraintPriority::Idle,
-                        ],
-                        restraint_priority_label,
-                        adaptive_engine_process.restraint_priority
-                    )
-                    .into(),
-                    choice!(
-                        s,
-                        "adaptive_engine_process.restraint_io_priority",
-                        AdaptiveRestraintIoPriority,
-                        &[
-                            AdaptiveRestraintIoPriority::Unchanged,
-                            AdaptiveRestraintIoPriority::Low,
-                            AdaptiveRestraintIoPriority::VeryLow,
-                        ],
-                        restraint_io_priority_label,
-                        adaptive_engine_process.restraint_io_priority
-                    )
-                    .into(),
-                    super::widgets::setting_row(
-                        "adaptive_engine_process.restraint_energy_efficient_scheduling",
-                        super::widgets::switch(
-                            cpu.restraint_energy_efficient_scheduling,
-                            editable.then_some(|value| {
-                                Message::Toggle(
-                                    |s, enabled| {
-                                        s.adaptive_engine_process
-                                            .restraint_energy_efficient_scheduling = enabled
-                                    },
-                                    value,
-                                )
-                            }),
-                        ),
-                    )
-                    .into(),
-                    number!(
-                        "adaptive_engine_process.restraint_trigger_time",
-                        ADAPTIVE_RESTRAINT_TRIGGER_MIN_MS,
-                        ADAPTIVE_RESTRAINT_TRIGGER_MAX_MS,
-                        adaptive_engine_process.restraint_trigger_time_ms
-                    ),
-                    number!(
-                        "adaptive_engine_process.maximum_restraint_time",
-                        0,
-                        ADAPTIVE_RESTRAINT_MAX_TIME_MS,
-                        adaptive_engine_process.maximum_restraint_time_ms
-                    ),
-                    super::widgets::setting_row(
-                        "adaptive_engine_process.pause_restraint_when_idle",
-                        super::widgets::switch(
-                            s.adaptive_engine_process.pause_restraint_when_idle,
-                            editable.then_some(|v| {
-                                Message::Toggle(
-                                    |s, v| s.adaptive_engine_process.pause_restraint_when_idle = v,
-                                    v,
-                                )
-                            }),
-                        ),
-                    )
-                    .into(),
-                    number!(
-                        "adaptive_engine_process.restraint_idle_timeout",
-                        ADAPTIVE_RESTRAINT_IDLE_MIN_SECONDS,
-                        ADAPTIVE_RESTRAINT_IDLE_MAX_SECONDS,
-                        adaptive_engine_process.restraint_idle_timeout_seconds
-                    ),
-                ]);
+                let restraint_action = choice!(
+                    s,
+                    "adaptive_engine_process.restraint_action",
+                    AdaptiveRestraintPriority,
+                    &[
+                        AdaptiveRestraintPriority::BelowNormal,
+                        AdaptiveRestraintPriority::Idle,
+                        AdaptiveRestraintPriority::ProcessorPlacementOnly,
+                    ],
+                    restraint_action_label,
+                    adaptive_engine_process.restraint_priority
+                );
+                let priority_effects = (!placement_only).then(|| {
+                    [
+                        choice!(
+                            s,
+                            "adaptive_engine_process.restraint_io_priority",
+                            AdaptiveRestraintIoPriority,
+                            &[
+                                AdaptiveRestraintIoPriority::Unchanged,
+                                AdaptiveRestraintIoPriority::Low,
+                                AdaptiveRestraintIoPriority::VeryLow,
+                            ],
+                            restraint_io_priority_label,
+                            adaptive_engine_process.restraint_io_priority
+                        )
+                        .into(),
+                        super::widgets::setting_row(
+                            "adaptive_engine_process.restraint_energy_efficient_scheduling",
+                            super::widgets::switch(
+                                cpu.restraint_energy_efficient_scheduling,
+                                editable.then_some(|value| {
+                                    Message::Toggle(
+                                        |s, enabled| {
+                                            s.adaptive_engine_process
+                                                .restraint_energy_efficient_scheduling = enabled
+                                        },
+                                        value,
+                                    )
+                                }),
+                            ),
+                        )
+                        .into(),
+                    ]
+                });
+                let restraint = super::widgets::settings_rows(
+                    std::iter::once(restraint_action.into())
+                        .chain(priority_effects.into_iter().flatten())
+                        .chain([
+                            number!(
+                                "adaptive_engine_process.restraint_trigger_time",
+                                ADAPTIVE_RESTRAINT_TRIGGER_MIN_MS,
+                                ADAPTIVE_RESTRAINT_TRIGGER_MAX_MS,
+                                adaptive_engine_process.restraint_trigger_time_ms
+                            ),
+                            number!(
+                                "adaptive_engine_process.maximum_restraint_time",
+                                0,
+                                ADAPTIVE_RESTRAINT_MAX_TIME_MS,
+                                adaptive_engine_process.maximum_restraint_time_ms
+                            ),
+                            super::widgets::setting_row(
+                                "adaptive_engine_process.pause_restraint_when_idle",
+                                super::widgets::switch(
+                                    s.adaptive_engine_process.pause_restraint_when_idle,
+                                    editable.then_some(|v| {
+                                        Message::Toggle(
+                                            |s, v| {
+                                                s.adaptive_engine_process
+                                                    .pause_restraint_when_idle = v
+                                            },
+                                            v,
+                                        )
+                                    }),
+                                ),
+                            )
+                            .into(),
+                            number!(
+                                "adaptive_engine_process.restraint_idle_timeout",
+                                ADAPTIVE_RESTRAINT_IDLE_MIN_SECONDS,
+                                ADAPTIVE_RESTRAINT_IDLE_MAX_SECONDS,
+                                adaptive_engine_process.restraint_idle_timeout_seconds
+                            ),
+                        ]),
+                );
                 body = body.push(super::widgets::setting_group(
                     "adaptive_engine.cpu_pressure".to_string(),
                     self.expanded[usize::from(preset)][CpuPressureRestraint as usize],
@@ -1113,31 +1125,39 @@ impl Editor {
                         ),
                     );
                 }
-                allocation = allocation.push(super::widgets::settings_divider()).push(
-                    super::widgets::setting_row(
-                        "adaptive_engine_process.limit_background_processors_during_restraint",
-                        super::widgets::switch(
-                            cpu.limit_background_processors_during_restraint,
-                            editable.then_some(|enabled| {
-                                Message::Toggle(
-                                    |settings, enabled| {
-                                        settings
-                                            .adaptive_engine_process
-                                            .limit_background_processors_during_restraint = enabled
-                                    },
-                                    enabled,
-                                )
-                            }),
-                        ),
-                    ),
-                );
-                body = body.push(super::widgets::setting_group(
-                    "adaptive_engine_process.limit_background_processors".to_string(),
-                    self.expanded[usize::from(preset)][BackgroundProcessors as usize],
-                    Message::Collapse(BackgroundProcessors),
+                let allocation_action: Element<'_, Message> = if placement_only {
+                    let scope = if cpu.placement_only_restraint_enabled() {
+                        "adaptive_engine_process.placement_only_scope"
+                    } else {
+                        "adaptive_engine_process.placement_only_scope_disabled"
+                    };
+                    text(t!(scope).to_string())
+                        .size(design::typography::SECONDARY)
+                        .style(text::secondary)
+                        .into()
+                } else {
+                    allocation =
+                        allocation
+                            .push(super::widgets::settings_divider())
+                            .push(super::widgets::setting_row(
+                            "adaptive_engine_process.limit_background_processors_during_restraint",
+                            super::widgets::switch(
+                                cpu.limit_background_processors_during_restraint,
+                                editable.then_some(|enabled| {
+                                    Message::Toggle(
+                                        |settings, enabled| {
+                                            settings
+                                                .adaptive_engine_process
+                                                .limit_background_processors_during_restraint =
+                                                enabled
+                                        },
+                                        enabled,
+                                    )
+                                }),
+                            ),
+                        ));
                     super::widgets::switch(
-                        s.adaptive_engine_process
-                            .limit_background_processors_enabled,
+                        cpu.limit_background_processors_enabled,
                         editable.then_some(|v| {
                             Message::Toggle(
                                 |s, v| {
@@ -1147,7 +1167,13 @@ impl Editor {
                                 v,
                             )
                         }),
-                    ),
+                    )
+                };
+                body = body.push(super::widgets::setting_group(
+                    "adaptive_engine_process.limit_background_processors".to_string(),
+                    self.expanded[usize::from(preset)][BackgroundProcessors as usize],
+                    Message::Collapse(BackgroundProcessors),
+                    allocation_action,
                     allocation,
                 ));
                 let zones = &s.adaptive_engine_process.dynamic_resource_zone_settings;
@@ -1409,10 +1435,13 @@ fn pressure_source_label(source: AdaptivePressureSource) -> String {
     })
     .to_string()
 }
-fn restraint_priority_label(priority: AdaptiveRestraintPriority) -> String {
+fn restraint_action_label(priority: AdaptiveRestraintPriority) -> String {
     t!(match priority {
-        AdaptiveRestraintPriority::BelowNormal => "process_priority.priority_below_normal",
-        AdaptiveRestraintPriority::Idle => "process_priority.priority_idle",
+        AdaptiveRestraintPriority::BelowNormal =>
+            "adaptive_engine_process.restraint_action_below_normal",
+        AdaptiveRestraintPriority::Idle => "adaptive_engine_process.restraint_action_idle",
+        AdaptiveRestraintPriority::ProcessorPlacementOnly =>
+            "adaptive_engine_process.restraint_action_placement_only",
     })
     .to_string()
 }

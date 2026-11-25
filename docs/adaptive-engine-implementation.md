@@ -49,8 +49,10 @@ shows name coverage and directs users to Custom Rules to edit it.
 
 CPU Behaviour has shared detection/timing followed by three independent policies:
 
-- **CPU Pressure Restraint** temporarily lowers the priority of background apps
-  with sustained CPU demand during aggregate CPU pressure.
+- **CPU Pressure Restraint** acts on apps with sustained CPU demand during aggregate
+  CPU pressure. Its action selects Below Normal priority, Idle priority, or
+  Processor placement only. Placement only uses the method and selection in Limit
+  Background Processors for each verified restraint episode.
 - **Limit Background Processors** restricts background candidates only, using its own selector,
   percentage/custom mask, and soft/hard method. Its Reduce affinity (Hard) method removes
   a configurable number of logical processors from each process's original mask. It never
@@ -58,6 +60,8 @@ CPU Behaviour has shared detection/timing followed by three independent policies
   Only during CPU Pressure Restraint restricts the limiter to apps with verified
   restraint. Each app's limit ends when its restraint ends or loses verification.
   The option requires CPU Pressure Restraint and defaults off.
+  Processor placement only selects this scope automatically and preserves the stored
+  standalone limiter preferences for switching back.
 - **Dynamic Resource Zones (Experimental)** uses separate settings and complementary CPU Sets (Soft).
   The Performance preset enables zoning; Speed, Balanced, and Power Save leave it off.
 
@@ -135,13 +139,17 @@ migration or copying from the limiter is performed.
   instance and a continuous Time above threshold. Reaction time controls
   sampling. The default for both is one second. Restraint submits a temporary
   priority claim for a process at Normal priority. Below Normal is the default and Idle is optional.
+  Processor placement only starts a hold once the shared CPU coordinator confirms the
+  selected placement for that exact process. Explicit allocation and Dynamic Resource Zones
+  retain precedence. Placement alone leaves CPU and I/O priority, scheduling hints and
+  the restraint parking floor untouched.
   Windows can pass Idle priority to children launched while the parent is restrained.
   Focused apps and their process groups,
   apps with visible windows, active audio, and exclusions are protected. Saved
   Process Priority and Efficiency Mode take precedence.
 - Pause when idle is off by default. When enabled, its Idle timeout uses the
   last input in Winderust's Windows session. After the timeout or when the idle
-  observation is unavailable, restore restrained priorities and start a fresh
+  observation is unavailable, release restraint claims and start a fresh
   qualification interval on resumption. The placement policies keep their own
   eligibility.
 - Each policy ranks its own eligible candidates within the configured limit.
@@ -150,7 +158,7 @@ migration or copying from the limiter is performed.
   occupied slot. Loss of aggregate pressure, a protected role, or unavailable
   required observations withdraw the priority claim. The background processor
   limit yields when its candidate enters recovery.
-- Maximum restraint time limits a continuous priority adjustment even if its process remains hot.
+- Maximum restraint time limits a continuous restraint even if its process remains hot.
   It is entered in milliseconds and checked at the next evaluation. Zero leaves the adjustment
   uncapped. A positive maximum must be at least the minimum. After expiration, the process must
   build fresh qualification before being restrained again. Pending restoration retains its existing

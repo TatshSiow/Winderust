@@ -452,7 +452,7 @@ mod tests {
                 pressure_source: AdaptivePressureSource::System,
                 foreground_cpu_threshold_percent: Some(35),
                 exclude_service_hosts: true,
-                restraint_priority: AdaptiveRestraintPriority::Idle,
+                restraint_priority: AdaptiveRestraintPriority::ProcessorPlacementOnly,
                 restraint_io_priority: AdaptiveRestraintIoPriority::Low,
                 restraint_energy_efficient_scheduling: true,
                 minimum_restraint_time_ms: 2_100,
@@ -508,7 +508,8 @@ mod tests {
             CpuAllocationMethod::ReduceAffinity;
         settings.adaptive_engine_process.preserve_custom_affinity = true;
         settings.adaptive_engine_process.processors_to_remove = 4;
-        settings.adaptive_engine_process.restraint_priority = AdaptiveRestraintPriority::Idle;
+        settings.adaptive_engine_process.restraint_priority =
+            AdaptiveRestraintPriority::ProcessorPlacementOnly;
         settings.adaptive_engine_process.restraint_io_priority =
             AdaptiveRestraintIoPriority::VeryLow;
         settings

@@ -135,8 +135,10 @@ pub(super) fn adaptive_engine_process_waits_for_source(
             policy.cpu_pressure_restraint_enabled.then_some((
                 policy.restraint_trigger_time_ms,
                 policy.restraint_priority,
-                policy.restraint_io_priority,
-                policy.restraint_energy_efficient_scheduling,
+                (!policy.placement_only_restraint_enabled()).then_some((
+                    policy.restraint_io_priority,
+                    policy.restraint_energy_efficient_scheduling,
+                )),
                 policy.maximum_restraint_time_ms,
                 policy
                     .pause_restraint_when_idle
@@ -144,7 +146,7 @@ pub(super) fn adaptive_engine_process_waits_for_source(
             )),
             policy
                 .background_processor_limit_enabled()
-                .then_some(policy.limit_background_processors_during_restraint),
+                .then_some(policy.background_processor_limit_scoped()),
             policy.dynamic_resource_zones_enabled,
             policy.pressure_source,
             policy.exclude_service_hosts,

@@ -370,6 +370,7 @@ pub(crate) struct CpuAllocationCoordinator<P: CpuAllocationPlatform = WindowsCpu
 {
     platform: P,
     claims: BTreeMap<ControlOwner, BTreeMap<ProcessTargetKey, CpuAllocationClaim>>,
+    adaptive_episode_keys: BTreeSet<ProcessTargetKey>,
     managed_affinity: BTreeMap<ProcessIdentity, ManagedValue<usize>>,
     managed_cpu_sets: BTreeMap<ProcessIdentity, ManagedValue<Vec<u32>>>,
     pending_reconciliations: BTreeMap<ProcessTargetKey, PendingReconciliation>,
@@ -388,6 +389,7 @@ impl<P: CpuAllocationPlatform> CpuAllocationCoordinator<P> {
         Self {
             platform,
             claims: BTreeMap::new(),
+            adaptive_episode_keys: BTreeSet::new(),
             managed_affinity: BTreeMap::new(),
             managed_cpu_sets: BTreeMap::new(),
             pending_reconciliations: BTreeMap::new(),
@@ -526,8 +528,92 @@ impl<P: CpuAllocationPlatform> CpuAllocationCoordinator<P> {
             }
         } else {
             self.pending_reconciliations.remove(&key);
+            if matches!(
+                result,
+                Ok(CpuAllocationApplyOutcome::Applied | CpuAllocationApplyOutcome::Unchanged)
+            ) {
+                if owner != ControlOwner::AdaptiveEngine {
+                    self.withdraw_adaptive_episode_claim(&key);
+                }
+                self.adaptive_episode_keys.remove(&key);
+            }
         }
         result
+    }
+
+    pub(crate) fn apply_adaptive_episode_claim(
+        &mut self,
+        inventory: &mut CpuSetInventory,
+        topology: Result<&CpuTopology, &str>,
+        claim: CpuAllocationClaim,
+        allow_cross_session_process_control: bool,
+    ) -> Result<CpuAllocationApplyOutcome, CpuAllocationApplyError> {
+        if claim.owner != ControlOwner::AdaptiveEngine {
+            return Err(ProcessControlError::Failed(
+                "Only Adaptive Engine can apply an episode-scoped CPU allocation.".to_owned(),
+            )
+            .into());
+        }
+        let key = claim.target.key();
+        let result = self.apply_policy_claim(
+            inventory,
+            topology,
+            claim,
+            allow_cross_session_process_control,
+        );
+        // Keep the exact generation key for unsettled writes until the shared restore settles.
+        self.adaptive_episode_keys.insert(key.clone());
+        if matches!(
+            result,
+            Ok(CpuAllocationApplyOutcome::Applied | CpuAllocationApplyOutcome::Unchanged)
+        ) && self.verified_adaptive_episode_placement(&key).is_none()
+        {
+            return Ok(CpuAllocationApplyOutcome::NoUsableTarget);
+        }
+        result
+    }
+
+    pub(crate) fn adaptive_episode_placement_processes(
+        &self,
+    ) -> impl Iterator<Item = &ProcessIdentity> + Clone {
+        self.adaptive_episode_keys
+            .iter()
+            .filter_map(|key| self.verified_adaptive_episode_placement(key))
+    }
+
+    pub(crate) fn verified_adaptive_episode_placement(
+        &self,
+        key: &ProcessTargetKey,
+    ) -> Option<&ProcessIdentity> {
+        if !self.adaptive_episode_keys.contains(key)
+            || self.pending_reconciliations.contains_key(key)
+            || self
+                .effective_claim(key)
+                .is_none_or(|claim| claim.owner != ControlOwner::AdaptiveEngine)
+        {
+            return None;
+        }
+        let owner = ControlOwner::AdaptiveEngine;
+        self.managed_affinity
+            .iter()
+            .find_map(|(identity, managed)| {
+                (managed.owner == owner
+                    && managed.confirmed
+                    && managed.expected != managed.baseline
+                    && identity.matches_target_key(key))
+                .then_some(identity)
+            })
+            .or_else(|| {
+                self.managed_cpu_sets
+                    .iter()
+                    .find_map(|(identity, managed)| {
+                        (managed.owner == owner
+                            && managed.confirmed
+                            && managed.expected != managed.baseline
+                            && identity.matches_target_key(key))
+                        .then_some(identity)
+                    })
+            })
     }
 
     fn apply_effective_claim(
@@ -1217,7 +1303,69 @@ impl<P: CpuAllocationPlatform> CpuAllocationCoordinator<P> {
         for key in reconcile_keys {
             self.reconcile_policy_key(&key, &mut summary);
         }
+        self.prune_adaptive_episode_keys();
         summary
+    }
+
+    pub(crate) fn release_adaptive_episode_placements_except(
+        &mut self,
+        active_targets: &BTreeSet<ProcessTargetKey>,
+    ) -> (CpuAllocationReleaseSummary, bool) {
+        let stale = self
+            .adaptive_episode_keys
+            .difference(active_targets)
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut summary = CpuAllocationReleaseSummary::default();
+        for key in stale {
+            self.withdraw_adaptive_episode_claim(&key);
+            self.reconcile_policy_key(&key, &mut summary);
+        }
+        self.prune_adaptive_episode_keys();
+        (
+            summary,
+            !self.adaptive_episode_keys.is_subset(active_targets),
+        )
+    }
+
+    pub(crate) fn release_adaptive_episode_placement(
+        &mut self,
+        key: &ProcessTargetKey,
+    ) -> (CpuAllocationReleaseSummary, bool) {
+        let mut summary = CpuAllocationReleaseSummary::default();
+        if self.adaptive_episode_keys.contains(key) {
+            self.withdraw_adaptive_episode_claim(key);
+            self.reconcile_policy_key(key, &mut summary);
+            self.prune_adaptive_episode_keys();
+        }
+        (summary, self.adaptive_episode_keys.contains(key))
+    }
+
+    fn withdraw_adaptive_episode_claim(&mut self, key: &ProcessTargetKey) {
+        if self.adaptive_episode_keys.contains(key) {
+            if let Some(claims) = self.claims.get_mut(&ControlOwner::AdaptiveEngine) {
+                claims.remove(key);
+            }
+        }
+    }
+
+    fn prune_adaptive_episode_keys(&mut self) {
+        if self.adaptive_episode_keys.is_empty() {
+            return;
+        }
+        let owner = ControlOwner::AdaptiveEngine;
+        let claims = self.claims.get(&owner);
+        let affinity = &self.managed_affinity;
+        let cpu_sets = &self.managed_cpu_sets;
+        self.adaptive_episode_keys.retain(|key| {
+            claims.is_some_and(|claims| claims.contains_key(key))
+                || affinity.iter().any(|(identity, managed)| {
+                    managed.owner == owner && identity.matches_target_key(key)
+                })
+                || cpu_sets.iter().any(|(identity, managed)| {
+                    managed.owner == owner && identity.matches_target_key(key)
+                })
+        });
     }
 
     pub(crate) fn release_all_policy(
@@ -1283,6 +1431,7 @@ impl<P: CpuAllocationPlatform> CpuAllocationCoordinator<P> {
             if !self.release_unresolved_assignment(&key, &invalid_owners, &mut summary.releases) {
                 continue;
             }
+            self.discard_replayed_episode_claim(&key);
             let Some(claim) = self.effective_claim(&key).cloned() else {
                 if !self.release_managed_key(&key, &mut summary.releases) {
                     self.pending_reconciliations.insert(
@@ -1377,6 +1526,7 @@ impl<P: CpuAllocationPlatform> CpuAllocationCoordinator<P> {
                 }
             }
         }
+        self.prune_adaptive_episode_keys();
         summary
     }
 
@@ -1477,6 +1627,7 @@ impl<P: CpuAllocationPlatform> CpuAllocationCoordinator<P> {
         key: &ProcessTargetKey,
         summary: &mut CpuAllocationReleaseSummary,
     ) {
+        self.discard_replayed_episode_claim(key);
         if let Some(effective) = self.effective_claim(key) {
             let effective = claim_fingerprint(effective);
             let should_queue_handoff = match self.pending_reconciliations.get(key) {
@@ -1517,10 +1668,22 @@ impl<P: CpuAllocationPlatform> CpuAllocationCoordinator<P> {
         key: &ProcessTargetKey,
         failed_claim: Option<CpuAllocationClaimFingerprint>,
     ) {
+        self.discard_replayed_episode_claim(key);
         let effective = self.effective_claim(key).map(claim_fingerprint);
         if effective.is_some() && effective != failed_claim {
             self.pending_reconciliations
                 .insert(key.clone(), PendingReconciliation::Handoff);
+        }
+    }
+
+    fn discard_replayed_episode_claim(&mut self, key: &ProcessTargetKey) {
+        if self.adaptive_episode_keys.contains(key)
+            && self
+                .effective_claim(key)
+                .is_some_and(|claim| claim.owner == ControlOwner::AdaptiveEngine)
+        {
+            // A handoff cannot start a timed allocation without a fresh eligibility pass.
+            self.withdraw_adaptive_episode_claim(key);
         }
     }
 
@@ -1812,6 +1975,7 @@ impl<P: CpuAllocationPlatform> CpuAllocationCoordinator<P> {
 
     pub(crate) fn shutdown(&mut self) -> Result<(), String> {
         self.claims.clear();
+        self.adaptive_episode_keys.clear();
         self.pending_reconciliations.clear();
         let mut releases = self
             .managed_affinity
