@@ -324,8 +324,9 @@ hover/press; background shading supplies feedback.
   slider, and a 100% target is Unlimited. Inactive rules retain their selections.
   Explain both methods beside the selector. The Load-triggered affinity form
   shows the CPU trigger, sustained duration, and selected processor count.
-  Choose processors opens the shared verified picker in the same dialog, with
-  group, core, and cache details contained in the picker. A live preview describes
+  Choose processors opens the verified picker in the same dialog. Its processor
+  buttons match the CPU Sets (Soft) preset editor and show group and core labels
+  inside the picker alongside cache presets. A live preview describes
   the threshold, duration, and configured selection. An all-processor selection
   explains how to narrow the rule. Only the selected method's controls are actionable.
   CPU Limiter rule status follows the published observation for the selected live power source.

@@ -534,39 +534,14 @@ impl Editor {
         let mut cpus = row![].spacing(design::space::CONTROL);
         for (id, cpu) in processors {
             let selected = self.preset_selection.processors().binary_search(id).is_ok();
-            let kind = t!(match cpu.kind {
-                LogicalProcessorKind::Performance => "cpu_allocation.p_core",
-                LogicalProcessorKind::Efficiency => "cpu_allocation.e_core",
-                LogicalProcessorKind::Standard => "cpu_allocation.core",
-            })
-            .to_string();
-            cpus = cpus.push(
-                button(
-                    iced::widget::container(
-                        column![
-                            text(kind).size(design::typography::CAPTION),
-                            text(format!("G{}:CPU {}", id.group, id.number))
-                        ]
-                        .align_x(iced::Center),
-                    )
-                    .center_x(Fill)
-                    .center_y(Fill),
-                )
-                .width(100)
-                .height(64)
-                .style(move |theme, status| {
-                    if selected {
-                        super::widgets::tab_style(theme, status, true)
-                    } else {
-                        super::widgets::tertiary_button(theme, status)
-                    }
-                })
-                .on_press_maybe(
-                    toggle_topology
-                        .as_ref()
-                        .map(|topology| Message::TogglePresetProcessor(*id, Arc::clone(topology))),
-                ),
-            );
+            cpus = cpus.push(processor_button(
+                *id,
+                processor_kind_label(cpu.kind),
+                selected,
+                toggle_topology
+                    .as_ref()
+                    .map(|topology| Message::TogglePresetProcessor(*id, Arc::clone(topology))),
+            ));
         }
         let valid_name = !self.preset_name.trim().is_empty()
             && !s.cpu_allocation_presets.iter().enumerate().any(|(i, p)| {
@@ -981,11 +956,57 @@ fn cache_presets(
         .collect()
 }
 
+fn processor_kind_label(kind: LogicalProcessorKind) -> String {
+    t!(match kind {
+        LogicalProcessorKind::Performance => "cpu_allocation.p_core",
+        LogicalProcessorKind::Efficiency => "cpu_allocation.e_core",
+        LogicalProcessorKind::Standard => "cpu_allocation.core",
+    })
+    .into_owned()
+}
+
+fn processor_button<'a, M: Clone + 'a>(
+    id: ProcessorId,
+    caption: String,
+    selected: bool,
+    on_press: Option<M>,
+) -> Element<'a, M> {
+    button(
+        iced::widget::container(
+            column![
+                text(caption).size(design::typography::CAPTION),
+                text(format!("G{}:CPU {}", id.group, id.number))
+            ]
+            .align_x(iced::Center),
+        )
+        .center_x(Fill)
+        .center_y(Fill),
+    )
+    .width(100)
+    .height(64)
+    .style(move |theme, status| {
+        if selected {
+            super::widgets::tab_style(theme, status, true)
+        } else {
+            super::widgets::tertiary_button(theme, status)
+        }
+    })
+    .on_press_maybe(on_press)
+    .into()
+}
+
+#[derive(Clone, Copy)]
+pub(super) enum ProcessorPickerLayout {
+    Compact,
+    Buttons,
+}
+
 pub(super) fn mask_selector<'a, M: Clone + 'a>(
     selection: &CpuSelection,
     catalog: &SelectionCatalog,
     custom: &[CpuAllocationPreset],
-    message: impl Fn(CpuSelection) -> M + Clone + 'a,
+    layout: ProcessorPickerLayout,
+    message: impl Fn(CpuSelection) -> M,
 ) -> Element<'a, M> {
     let mut presets = row![].spacing(design::space::TIGHT);
     for preset in &catalog.presets {
@@ -1009,22 +1030,17 @@ pub(super) fn mask_selector<'a, M: Clone + 'a>(
     }
     let mut cpus = row![].spacing(design::space::CONTROL);
     for (id, cpu) in &catalog.processors {
-        let selected = selection.processors().contains(id);
-        let msg = message.clone();
-        let candidate = catalog.toggled(selection, *id);
-        let kind = t!(match cpu.kind {
-            LogicalProcessorKind::Performance => "cpu_allocation.p_core",
-            LogicalProcessorKind::Efficiency => "cpu_allocation.e_core",
-            LogicalProcessorKind::Standard => "cpu_allocation.core",
-        });
-        cpus = cpus.push(
-            checkbox(selected)
-                .label(format!(
-                    "G{}:CPU {} ({kind} {})",
-                    id.group, id.number, cpu.core_index
-                ))
-                .on_toggle_maybe(candidate.map(|candidate| move |_| msg(candidate.clone()))),
-        );
+        let selected = selection.processors().binary_search(id).is_ok();
+        let toggle = catalog.toggled(selection, *id).map(&message);
+        let core = format!("{} {}", processor_kind_label(cpu.kind), cpu.core_index);
+        let control = match layout {
+            ProcessorPickerLayout::Compact => checkbox(selected)
+                .label(format!("G{}:CPU {} ({core})", id.group, id.number))
+                .on_toggle_maybe(toggle.map(|message| move |_| message.clone()))
+                .into(),
+            ProcessorPickerLayout::Buttons => processor_button(*id, core, selected, toggle),
+        };
+        cpus = cpus.push(control);
     }
     let unavailable = unavailable.into_iter().map(|(reason, names)| {
         column![

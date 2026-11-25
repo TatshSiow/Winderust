@@ -642,6 +642,7 @@ impl CpuLimiter {
                                 selection,
                                 &editor.catalog,
                                 presets,
+                                cpu_allocation::ProcessorPickerLayout::Buttons,
                                 Message::AffinitySelection,
                             ),
                         ]

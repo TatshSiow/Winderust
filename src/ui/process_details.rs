@@ -541,6 +541,7 @@ pub(super) fn view<'a>(
                         selection,
                         catalog,
                         &s.cpu_allocation_presets,
+                        cpu_allocation::ProcessorPickerLayout::Compact,
                         move |v| Message::CpuMask(soft, tier, v),
                     ));
             }

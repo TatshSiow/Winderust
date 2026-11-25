@@ -739,6 +739,7 @@ impl Editor {
                                 &s.adaptive_engine_process.specific_processors,
                                 catalog,
                                 &s.cpu_allocation_presets,
+                                super::cpu_allocation::ProcessorPickerLayout::Compact,
                                 Message::Mask,
                             ),
                         );
@@ -816,6 +817,7 @@ impl Editor {
                                     &zones.specific_processors,
                                     catalog,
                                     &s.cpu_allocation_presets,
+                                    super::cpu_allocation::ProcessorPickerLayout::Compact,
                                     Message::ZoneMask,
                                 ));
                         }
