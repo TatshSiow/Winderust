@@ -321,8 +321,8 @@ hover/press; background shading supplies feedback.
   CPU time rules use Profile Limit, Custom, and No Time Cap in the Focus,
   Visible Window, and Background columns. Profile Limit uses Winderust's configured
   limit for the selected power profile and app state. No Time Cap turns off the cap for
-  that state. The Enable CPU Limiter card starts collapsed and expands to show
-  Default CPU time limits for the selected profile. Custom tiers show a 1% to 100%
+  that state. The Enable CPU Limiter card starts collapsed and expands directly to
+  the selected profile's three default limit controls. Custom tiers show a 1% to 100%
   Allowed CPU Time slider. At 100%, Winderust applies no CPU time cap. Inactive
   rules retain their selections.
   Explain both methods beside the selector. The Load-triggered affinity form

@@ -1194,8 +1194,6 @@ by_running_app:
 
 cpu_limiter:
   waiting_for_power_source: "CPU 限制會保持暫停，直到 Windows 回報電源來源。"
-  limits: "預設 CPU 時間限制"
-  limits_help: "設定所選電源設定檔的「焦點」、「可見視窗」與「背景」預設限制。"
   invalid_limit: "請輸入 1 至 100 的 CPU 時間值。"
   enable: "啟用 CPU 限制器"
   enable_help: "對選取的應用程式套用 CPU 時間限制或負載觸發的處理器親和性。"

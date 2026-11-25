@@ -531,11 +531,7 @@ impl CpuLimiter {
             self.defaults_expanded,
             Message::ToggleDefaults,
             widgets::switch(settings.enabled, Some(Message::Enabled)),
-            column![
-                widgets::setting_title("cpu_limiter.limits"),
-                widgets::settings_rows(defaults),
-            ]
-            .spacing(widgets::CARD_GAP),
+            widgets::settings_rows(defaults),
         )]
         .spacing(widgets::CARD_GAP);
         if self.has_invalid_inputs() {

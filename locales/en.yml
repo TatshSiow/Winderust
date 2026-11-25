@@ -1191,8 +1191,6 @@ by_running_app:
 
 cpu_limiter:
   waiting_for_power_source: "CPU limits stay paused until Windows reports the power source."
-  limits: "Default CPU time limits"
-  limits_help: "Set the Focus, Visible Window, and Background defaults for the selected power profile."
   invalid_limit: "Enter a CPU time value from 1 to 100."
   enable: "Enable CPU Limiter"
   enable_help: "Apply CPU time or load-triggered affinity limits to selected apps."
