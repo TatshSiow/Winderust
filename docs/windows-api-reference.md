@@ -575,13 +575,17 @@ from a preset stay untouched. Unavailable or out-of-range required processor
 percentages fail the plan read. Persistent tuning stays outside the automatic
 power-plan recovery journal and claim ledger.
 
-Adaptive Processor Power composes the optional restraint floor in
-`src/control/power_plan.rs` using the existing class-0 core parking minimum
-on the temporary scheme. The normal value is retained for restoration even
-if writing the floor only partially succeeds. The controller uses the same
-adapter and active-plan recheck for the restored values. A 100% minimum
-disables core parking for this setting within each NUMA node.
+Adaptive Processor Power applies optional restraint floors in
+`src/control/power_plan.rs` on the temporary scheme. The Windows adapter in
+`src/platform/windows/power_plan.rs` addresses class 0 through `CPMINCORES`
+and class 1 through `CPMINCORES1` (`GUID_PROCESSOR_CORE_PARKING_MIN_CORES_1`
+in `winnt.h`). The class 1 floor requires a matching processor efficiency
+class in the Windows topology. The controller retains the normal values
+for restoration after a partial write and rechecks active-plan ownership
+before restoring them. A 100% minimum disables parking for that class
+within each NUMA node.
 [Microsoft CPMinCores](https://learn.microsoft.com/en-us/windows-hardware/customize/power-settings/options-for-core-parking-cpmincores)
+[Microsoft processor power management](https://learn.microsoft.com/en-us/windows-hardware/customize/power-settings/configure-processor-power-management-options)
 
 If the active-plan query or reactivation fails after values were stored, Apply
 can retry once the full readback matches the reviewed result. The retry checks

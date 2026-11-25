@@ -18,7 +18,10 @@ impl Settings {
         self.validate_dynamic_resource_zones()?;
         self.validate_by_cpu_load_rules()?;
         for profile in self.profiles() {
-            if profile.adaptive_engine.restraint_core_parking_min > 100 {
+            let processor_power = &profile.adaptive_engine;
+            if processor_power.restraint_core_parking_min > 100
+                || processor_power.restraint_core_parking_min_class1 > 100
+            {
                 return Err(rust_i18n::t!(
                     "adaptive_processor_power.restraint_core_parking_min_invalid"
                 )

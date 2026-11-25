@@ -3,7 +3,8 @@ use super::*;
 fn floor(source: PowerSourceProfile, minimum_percent: u8) -> Option<RestraintCoreParking> {
     Some(RestraintCoreParking {
         source,
-        minimum_percent,
+        minimum_percent_class0: minimum_percent,
+        minimum_percent_class1: 0,
     })
 }
 
@@ -289,9 +290,144 @@ fn setup_failure_never_applies_restraint_floor_before_verified_ownership() {
     platform.failure = Some(FailurePoint::Apply);
     let mut controller = PowerPlanController::with_platform(platform);
     let mut request = adaptive_request();
-    request.restraint_core_parking = floor(PowerSourceProfile::PluggedIn, 95);
+    request.restraint_core_parking = Some(RestraintCoreParking {
+        source: PowerSourceProfile::PluggedIn,
+        minimum_percent_class0: 95,
+        minimum_percent_class1: 90,
+    });
     let (normal, _) = request.calibrated_values(request.profile);
     assert!(controller.reconcile_adaptive(request, now).is_err());
     assert_eq!(controller.platform.processor_values, Some(normal));
     assert_eq!(controller.platform.active, "ordinary");
+    assert!(!controller
+        .platform
+        .events
+        .borrow()
+        .iter()
+        .any(|event| event.contains("class1-parking")));
+}
+
+#[test]
+fn class1_uses_inherited_floors_and_restores_each_source_without_class0_writes() {
+    let now = Instant::now();
+    let mut controller = PowerPlanController::with_platform(FakePlatform::new("ordinary"));
+    let normal = controller.platform.class1_core_parking_values;
+    let mut request = adaptive_request();
+    controller.reconcile_adaptive(request, now).unwrap();
+    let class0 = controller.platform.processor_values;
+    assert!(!controller
+        .platform
+        .events
+        .borrow()
+        .iter()
+        .any(|event| event.contains("class1-parking")));
+    controller.platform.events.borrow_mut().clear();
+
+    for (source, minimum_percent_class1, expected) in [
+        (PowerSourceProfile::PluggedIn, 10, normal),
+        (
+            PowerSourceProfile::PluggedIn,
+            80,
+            Class1CoreParkingValues { ac: 80, ..normal },
+        ),
+        (
+            PowerSourceProfile::OnBattery,
+            90,
+            Class1CoreParkingValues {
+                battery: 90,
+                ..normal
+            },
+        ),
+        (PowerSourceProfile::OnBattery, 0, normal),
+    ] {
+        request.restraint_core_parking = Some(RestraintCoreParking {
+            source,
+            minimum_percent_class0: 0,
+            minimum_percent_class1,
+        });
+        controller.reconcile_adaptive(request, now).unwrap();
+        assert_eq!(controller.platform.class1_core_parking_values, expected);
+    }
+    assert_eq!(controller.platform.processor_values, class0);
+    assert_eq!(
+        controller.platform.events.borrow().as_slice(),
+        [
+            "read-class1-parking:adaptive-1",
+            "configure-class1-parking:adaptive-1:80:20",
+            "configure-class1-parking:adaptive-1:30:90",
+            "configure-class1-parking:adaptive-1:30:20",
+        ]
+    );
+}
+
+#[test]
+fn class1_baseline_read_failure_keeps_normal_and_class0_updates_working() {
+    let now = Instant::now();
+    let mut controller = PowerPlanController::with_platform(FakePlatform::new("ordinary"));
+    let mut request = adaptive_request();
+    controller.reconcile_adaptive(request, now).unwrap();
+    let class1 = controller.platform.class1_core_parking_values;
+    controller.platform.fail_class1_core_parking_read = true;
+    request.baseline.performance_min = 71;
+    request.restraint_core_parking = Some(RestraintCoreParking {
+        source: PowerSourceProfile::OnBattery,
+        minimum_percent_class0: 95,
+        minimum_percent_class1: 90,
+    });
+    let (_, calibrated) = request.calibrated_values(request.profile);
+    assert_eq!(
+        controller.reconcile_adaptive(request, now).unwrap_err(),
+        "injected class 1 battery baseline read failure"
+    );
+    assert_eq!(controller.platform.processor_values, Some(calibrated));
+    assert_eq!(controller.platform.class1_core_parking_values, class1);
+}
+
+#[test]
+fn class1_repairs_partial_write_before_new_source_and_clears_even_if_class0_fails() {
+    let now = Instant::now();
+    let mut controller = PowerPlanController::with_platform(FakePlatform::new("ordinary"));
+    let normal = controller.platform.class1_core_parking_values;
+    let mut request = adaptive_request();
+    controller.reconcile_adaptive(request, now).unwrap();
+    let normal_class0 = controller.platform.processor_values;
+    request.restraint_core_parking = Some(RestraintCoreParking {
+        source: PowerSourceProfile::PluggedIn,
+        minimum_percent_class0: 95,
+        minimum_percent_class1: 80,
+    });
+    controller.platform.fail_partial_class1_core_parking_write = true;
+    assert!(controller.reconcile_adaptive(request, now).is_err());
+    assert_eq!(controller.platform.class1_core_parking_values.ac, 80);
+
+    controller.platform.events.borrow_mut().clear();
+    request.restraint_core_parking.as_mut().unwrap().source = PowerSourceProfile::OnBattery;
+    controller.reconcile_adaptive(request, now).unwrap();
+    assert_eq!(
+        controller.platform.events.borrow().as_slice(),
+        [
+            "configure-class1-parking:adaptive-1:30:20",
+            "configure-class1-parking:adaptive-1:30:80",
+            "configure:adaptive-1",
+        ]
+    );
+
+    controller.platform.fail_partial_processor_write = true;
+    assert!(controller
+        .clear_adaptive_restraint_core_parking(now)
+        .is_err());
+    assert_eq!(controller.platform.class1_core_parking_values, normal);
+    assert_eq!(
+        controller
+            .platform
+            .processor_values
+            .unwrap()
+            .battery
+            .core_parking_min,
+        95
+    );
+    controller
+        .clear_adaptive_restraint_core_parking(now)
+        .unwrap();
+    assert_eq!(controller.platform.processor_values, normal_class0);
 }

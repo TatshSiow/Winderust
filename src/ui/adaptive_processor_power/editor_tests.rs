@@ -10,10 +10,10 @@ fn select_preset(editor: &mut Editor, settings: &mut SettingsEditor, message: Me
 fn preview_cancel_preserves_the_editor_and_use_stages_only_the_selected_source() {
     let mut saved = Settings::default();
     saved.adaptive_engine.restraint_core_parking_min = 85;
-    saved
-        .battery_profile_mut()
-        .adaptive_engine
-        .restraint_core_parking_min = 65;
+    saved.adaptive_engine.restraint_core_parking_min_class1 = 80;
+    let battery = &mut saved.battery_profile_mut().adaptive_engine;
+    battery.restraint_core_parking_min = 65;
+    battery.restraint_core_parking_min_class1 = 70;
     let mut settings = SettingsEditor::with_settings(saved);
     settings.select_power_source(PowerSourceProfile::OnBattery);
     let mut editor = Editor::default();
@@ -48,8 +48,57 @@ fn preview_cancel_preserves_the_editor_and_use_stages_only_the_selected_source()
         95
     );
     assert_eq!(settings.adaptive_engine.restraint_core_parking_min, 0);
+    assert_eq!(
+        settings.adaptive_engine.restraint_core_parking_min_class1,
+        0
+    );
     assert_eq!(settings.global().adaptive_engine, prior.adaptive_engine);
     assert_eq!(settings.persisted(), &prior);
+}
+
+#[test]
+fn restraint_parking_floors_can_be_edited_independently_on_battery() {
+    let mut saved = Settings::default();
+    saved.adaptive_engine.restraint_core_parking_min = 24;
+    saved.adaptive_engine.restraint_core_parking_min_class1 = 36;
+    let mut settings = SettingsEditor::with_settings(saved.clone());
+    settings.select_power_source(PowerSourceProfile::OnBattery);
+    let mut editor = Editor::default();
+
+    let edit_class1 = |editor: &mut Editor, settings: &mut SettingsEditor, text: &str| {
+        editor.update(
+            settings,
+            Message::Number(
+                |settings, value| settings.restraint_core_parking_min_class1 = value as u8,
+                text.into(),
+                0,
+                100,
+                RESTRAINT_CORE_PARKING_MIN_CLASS1_FIELD,
+                RESTRAINT_CORE_PARKING_MIN_CLASS1_LABEL,
+            ),
+        );
+    };
+    edit_class1(&mut editor, &mut settings, "101");
+    assert!(editor.validation_error().is_some());
+    assert!(!settings.has_unsaved_changes());
+
+    edit_class1(&mut editor, &mut settings, "100");
+    assert!(editor.validation_error().is_none());
+    assert_eq!(settings.adaptive_engine.restraint_core_parking_min, 24);
+    assert_eq!(
+        settings.adaptive_engine.restraint_core_parking_min_class1,
+        100
+    );
+    assert_eq!(settings.global().adaptive_engine, saved.adaptive_engine);
+    assert_eq!(settings.persisted(), &saved);
+
+    edit_class1(&mut editor, &mut settings, "0");
+    assert_eq!(
+        settings.adaptive_engine.restraint_core_parking_min_class1,
+        0
+    );
+    settings.cancel();
+    assert_eq!(settings.global(), &saved);
 }
 
 #[test]
@@ -192,6 +241,17 @@ fn editing_a_preset_keeps_its_values_until_current_settings_are_requested() {
         &mut editor,
         &mut settings,
         Message::PreviewBuiltIn(BuiltInPreset::Performance),
+    );
+    editor.update(
+        &mut settings,
+        Message::Number(
+            |settings, value| settings.restraint_core_parking_min_class1 = value as u8,
+            "50".into(),
+            0,
+            100,
+            RESTRAINT_CORE_PARKING_MIN_CLASS1_FIELD,
+            RESTRAINT_CORE_PARKING_MIN_CLASS1_LABEL,
+        ),
     );
     editor.update(&mut settings, Message::NewPreset);
     editor.update(&mut settings, Message::PresetName("quiet".into()));

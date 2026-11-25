@@ -1,6 +1,6 @@
 use super::{
     design, edit_settings, scrollable, widgets, Editor, Message, PRESET_NAME_INPUT_ID,
-    RESTRAINT_CORE_PARKING_MIN_LABEL,
+    RESTRAINT_CORE_PARKING_MIN_CLASS1_LABEL, RESTRAINT_CORE_PARKING_MIN_LABEL,
 };
 use crate::application::SettingsEditor;
 use crate::config::{AdaptiveEngineSettings, AdaptiveProcessorPowerPreset, PowerSourceProfile};
@@ -128,6 +128,7 @@ impl BuiltInPreset {
             ),
         };
         settings.restraint_core_parking_min = 0;
+        settings.restraint_core_parking_min_class1 = 0;
         for (profile, defaults) in [
             (
                 &mut settings.background_pressure_profile,
@@ -509,10 +510,6 @@ impl PresetPreview {
         let mut values = AdaptiveEngineSettings::default();
         self.preset.apply(&mut values, self.source);
         let base = values.base_processor_policy;
-        let restraint_core_parking = match values.restraint_core_parking_min {
-            0 => t!("adaptive_processor_power.restraint_core_parking_min_normal").into_owned(),
-            percent => format!("{percent}%"),
-        };
         let demand_rows = |boost: AdaptivePowerBoostValues| {
             let (policy, mode) = match self.source {
                 PowerSourceProfile::PluggedIn => (boost.ac_policy, boost.ac_mode),
@@ -534,7 +531,14 @@ impl PresetPreview {
                 "adaptive_processor_power.base_processor_policy",
                 [
                     preview_percent("processor_power.core_parking_min", base.core_parking_min),
-                    preview_row(RESTRAINT_CORE_PARKING_MIN_LABEL, restraint_core_parking),
+                    preview_parking_floor(
+                        RESTRAINT_CORE_PARKING_MIN_LABEL,
+                        values.restraint_core_parking_min,
+                    ),
+                    preview_parking_floor(
+                        RESTRAINT_CORE_PARKING_MIN_CLASS1_LABEL,
+                        values.restraint_core_parking_min_class1,
+                    ),
                     preview_percent("processor_power.processor_min", base.performance_min),
                     preview_percent("processor_power.processor_max", base.performance_max),
                     preview_percent("processor_power.boost_policy", base.boost_policy),
@@ -588,6 +592,17 @@ fn preview_group(
 
 fn preview_percent(label: &str, percent: u32) -> Element<'static, Message> {
     preview_row(label, format!("{percent}%"))
+}
+
+fn preview_parking_floor(label: &str, percent: u8) -> Element<'static, Message> {
+    if percent == 0 {
+        preview_row(
+            label,
+            t!("adaptive_processor_power.restraint_core_parking_min_normal").into_owned(),
+        )
+    } else {
+        preview_percent(label, u32::from(percent))
+    }
 }
 
 fn preview_boost_mode(mode: ProcessorBoostMode) -> Element<'static, Message> {

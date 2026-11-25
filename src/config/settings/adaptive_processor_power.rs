@@ -9,6 +9,8 @@ pub struct AdaptiveProcessorPowerPreset {
     base_processor_policy: ProcessorPowerValues,
     #[serde(default)]
     restraint_core_parking_min: u8,
+    #[serde(default)]
+    restraint_core_parking_min_class1: u8,
     background_pressure_profile: PresetBoost,
     focus_and_launch_profile: PresetBoost,
 }
@@ -23,6 +25,7 @@ impl AdaptiveProcessorPowerPreset {
             name,
             base_processor_policy: settings.base_processor_policy.normalized(),
             restraint_core_parking_min: settings.restraint_core_parking_min,
+            restraint_core_parking_min_class1: settings.restraint_core_parking_min_class1,
             background_pressure_profile: PresetBoost::capture(
                 settings.background_pressure_profile,
                 source,
@@ -37,6 +40,7 @@ impl AdaptiveProcessorPowerPreset {
     pub fn apply(&self, settings: &mut AdaptiveEngineSettings, source: PowerSourceProfile) {
         settings.base_processor_policy = self.base_processor_policy;
         settings.restraint_core_parking_min = self.restraint_core_parking_min;
+        settings.restraint_core_parking_min_class1 = self.restraint_core_parking_min_class1;
         self.background_pressure_profile
             .apply(&mut settings.background_pressure_profile, source);
         self.focus_and_launch_profile
@@ -55,6 +59,7 @@ impl AdaptiveProcessorPowerPreset {
         }
         if self.base_processor_policy != self.base_processor_policy.normalized()
             || self.restraint_core_parking_min > 100
+            || self.restraint_core_parking_min_class1 > 100
             || self.background_pressure_profile.policy > 100
             || self.focus_and_launch_profile.policy > 100
         {
@@ -109,6 +114,7 @@ mod tests {
         let mut battery = AdaptiveEngineSettings::default();
         battery.base_processor_policy.performance_max = 31;
         battery.restraint_core_parking_min = 70;
+        battery.restraint_core_parking_min_class1 = 40;
         battery.background_pressure_profile.battery_policy = 44;
         battery.background_pressure_profile.battery_mode = ProcessorBoostMode::Enabled;
         battery.focus_and_launch_profile.battery_policy = 55;
@@ -130,6 +136,7 @@ mod tests {
 
         assert_eq!(ac.base_processor_policy, battery.base_processor_policy);
         assert_eq!(ac.restraint_core_parking_min, 70);
+        assert_eq!(ac.restraint_core_parking_min_class1, 40);
         assert_eq!(ac.background_pressure_profile.ac_policy, 44);
         assert_eq!(
             ac.background_pressure_profile.ac_mode,

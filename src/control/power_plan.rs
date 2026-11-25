@@ -9,8 +9,13 @@ use crate::{
     power::{
         active_plan, adaptive_power_profile_transition, apply_processor_power_values,
         apply_processor_power_values_staged, delete_plan, duplicate_adaptive_plan,
-        initialize_adaptive_plan, set_active, AdaptivePowerBoostValues, AdaptivePowerProfile,
-        ProcessorPowerSourceValues, ProcessorPowerValues,
+        initialize_adaptive_plan,
+        powercfg::{
+            apply_class1_core_parking_values, read_class1_core_parking_values,
+            Class1CoreParkingValues,
+        },
+        set_active, AdaptivePowerBoostValues, AdaptivePowerProfile, ProcessorPowerSourceValues,
+        ProcessorPowerValues,
     },
     rules::{DecisionOutcome, DecisionState, ExecutionFailureTracker, QualifiedPowerPlan},
 };
@@ -106,7 +111,7 @@ impl AdaptivePowerPlanRequest {
             };
             source.core_parking_min = source
                 .core_parking_min
-                .max(u32::from(restraint.minimum_percent.min(100)));
+                .max(u32::from(restraint.minimum_percent_class0.min(100)));
         }
         (normal, values)
     }
@@ -115,7 +120,8 @@ impl AdaptivePowerPlanRequest {
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct RestraintCoreParking {
     pub(crate) source: PowerSourceProfile,
-    pub(crate) minimum_percent: u8,
+    pub(crate) minimum_percent_class0: u8,
+    pub(crate) minimum_percent_class1: u8,
 }
 
 struct AdaptiveProcessorValues {
@@ -141,8 +147,68 @@ struct ActiveAdaptivePowerPlan {
     plan_guid: String,
     profile: AdaptivePowerProfile,
     values: Option<AdaptiveProcessorValues>,
+    class1_core_parking: Option<AdaptiveClass1CoreParking>,
     lower_demand_since: Option<Instant>,
     active: bool,
+}
+
+struct AdaptiveClass1CoreParking {
+    normal: Class1CoreParkingValues,
+    applied: Option<Class1CoreParkingValues>,
+}
+
+impl ActiveAdaptivePowerPlan {
+    fn has_restraint_core_parking_overlay(&self) -> bool {
+        self.active
+            && (self
+                .values
+                .as_ref()
+                .is_some_and(|values| values.restraint_core_parking_may_be_applied)
+                || self
+                    .class1_core_parking
+                    .as_ref()
+                    .is_some_and(|state| state.applied != Some(state.normal)))
+    }
+
+    fn reconcile_class1_core_parking(
+        &mut self,
+        platform: &mut impl PowerPlanPlatform,
+        restraint: Option<RestraintCoreParking>,
+    ) -> Result<(), String> {
+        let restraint = restraint.filter(|restraint| restraint.minimum_percent_class1 > 0);
+        let state = match (&mut self.class1_core_parking, restraint) {
+            (Some(state), _) => state,
+            (slot, Some(_)) => {
+                let normal = platform.read_class1_core_parking(&self.plan_guid)?;
+                slot.insert(AdaptiveClass1CoreParking {
+                    normal,
+                    applied: Some(normal),
+                })
+            }
+            (None, None) => return Ok(()),
+        };
+        if state.applied.is_none() {
+            // Restore both slots after a partial write or failed reactivation before raising a floor.
+            platform.apply_class1_core_parking(&self.plan_guid, state.normal, None)?;
+            state.applied = Some(state.normal);
+        }
+        let mut values = state.normal;
+        if let Some(restraint) = restraint {
+            let minimum = match restraint.source {
+                PowerSourceProfile::PluggedIn => &mut values.ac,
+                PowerSourceProfile::OnBattery => &mut values.battery,
+            };
+            *minimum = (*minimum).max(u32::from(restraint.minimum_percent_class1.min(100)));
+        }
+        if Some(values) != state.applied {
+            platform.apply_class1_core_parking(&self.plan_guid, values, state.applied.take())?;
+            state.applied = Some(values);
+        }
+        if restraint.is_none() {
+            self.class1_core_parking = None;
+        }
+        Ok(())
+    }
 }
 
 pub(crate) trait PowerPlanRecoveryIntent {
@@ -193,6 +259,13 @@ pub(crate) trait PowerPlanPlatform {
         guid: &str,
         values: ProcessorPowerSourceValues,
         previous: Option<ProcessorPowerSourceValues>,
+    ) -> Result<(), String>;
+    fn read_class1_core_parking(&mut self, guid: &str) -> Result<Class1CoreParkingValues, String>;
+    fn apply_class1_core_parking(
+        &mut self,
+        guid: &str,
+        values: Class1CoreParkingValues,
+        previous: Option<Class1CoreParkingValues>,
     ) -> Result<(), String>;
 }
 
@@ -247,6 +320,19 @@ impl PowerPlanPlatform for WindowsPowerPlanPlatform {
             apply_processor_power_values(guid, values)
         }
     }
+
+    fn read_class1_core_parking(&mut self, guid: &str) -> Result<Class1CoreParkingValues, String> {
+        read_class1_core_parking_values(guid)
+    }
+
+    fn apply_class1_core_parking(
+        &mut self,
+        guid: &str,
+        values: Class1CoreParkingValues,
+        previous: Option<Class1CoreParkingValues>,
+    ) -> Result<(), String> {
+        apply_class1_core_parking_values(guid, values, previous)
+    }
 }
 
 pub(crate) struct PowerPlanController<P: PowerPlanPlatform = WindowsPowerPlanPlatform> {
@@ -289,6 +375,7 @@ impl PowerPlanController {
                 plan_guid: "fixture-adaptive".into(),
                 profile: AdaptivePowerProfile::Responsive,
                 values: None,
+                class1_core_parking: None,
                 lower_demand_since: None,
                 active: true,
             }),
@@ -994,6 +1081,7 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
                 plan_guid: plan_guid.clone(),
                 profile: request.profile,
                 values: None,
+                class1_core_parking: None,
                 lower_demand_since: None,
                 active: false,
             });
@@ -1021,6 +1109,7 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
                 plan_guid,
                 profile: request.profile,
                 values: Some(AdaptiveProcessorValues::applied(normal, normal)),
+                class1_core_parking: None,
                 lower_demand_since: None,
                 active: true,
             });
@@ -1030,6 +1119,8 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
             .adaptive_plan
             .as_mut()
             .ok_or_else(|| "Adaptive power plan was not initialized.".to_owned())?;
+        let class1_result =
+            plan.reconcile_class1_core_parking(&mut self.platform, request.restraint_core_parking);
         let lower_demand_elapsed = if request.profile < plan.profile {
             now.saturating_duration_since(*plan.lower_demand_since.get_or_insert(now))
         } else {
@@ -1064,39 +1155,41 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
         plan.profile = next_profile;
         *state = AdaptiveProcessorValues::applied(next_normal, next_values);
 
-        Ok(plan.profile)
+        class1_result.map(|()| plan.profile)
     }
 
     pub(crate) fn clear_adaptive_restraint_core_parking(
         &mut self,
         now: Instant,
     ) -> Result<(), ActivePlanCheckError> {
-        let has_overlay = |plan: &ActiveAdaptivePowerPlan| {
-            plan.active
-                && plan
-                    .values
-                    .as_ref()
-                    .is_some_and(|values| values.restraint_core_parking_may_be_applied)
-        };
-        if !self.adaptive_plan.as_ref().is_some_and(has_overlay) {
+        if !self
+            .adaptive_plan
+            .as_ref()
+            .is_some_and(ActiveAdaptivePowerPlan::has_restraint_core_parking_overlay)
+        {
             return Ok(());
         }
         self.refresh_active_plan_for_status(now, true)?;
-        let Some(plan) = self.adaptive_plan.as_mut().filter(|plan| has_overlay(plan)) else {
+        let Some(plan) = self.adaptive_plan.as_mut().filter(|plan| plan.active) else {
             return Ok(());
         };
-        let Some(state) = plan.values.as_mut() else {
-            return Err(ActivePlanCheckError::Operation(
-                "Adaptive core parking baseline was not initialized.".to_owned(),
-            ));
-        };
-        let previous = state.applied.take();
-        self.platform
-            .apply_processor_values(&plan.plan_guid, state.normal, previous)
-            .map_err(ActivePlanCheckError::Operation)?;
-        state.applied = Some(state.normal);
-        state.restraint_core_parking_may_be_applied = false;
-        Ok(())
+        let class0_result = plan
+            .values
+            .as_mut()
+            .filter(|state| state.restraint_core_parking_may_be_applied)
+            .map_or(Ok(()), |state| {
+                self.platform.apply_processor_values(
+                    &plan.plan_guid,
+                    state.normal,
+                    state.applied.take(),
+                )?;
+                state.applied = Some(state.normal);
+                state.restraint_core_parking_may_be_applied = false;
+                Ok(())
+            });
+        class0_result
+            .and(plan.reconcile_class1_core_parking(&mut self.platform, None))
+            .map_err(ActivePlanCheckError::Operation)
     }
 
     pub(crate) fn release_adaptive(&mut self, now: Instant) -> Result<(), String> {
@@ -1689,6 +1782,9 @@ mod tests {
         processor_values: Option<ProcessorPowerSourceValues>,
         previous_processor_values: Option<ProcessorPowerSourceValues>,
         fail_partial_processor_write: bool,
+        class1_core_parking_values: Class1CoreParkingValues,
+        fail_class1_core_parking_read: bool,
+        fail_partial_class1_core_parking_write: bool,
         fail_duplicate: bool,
         initialization_failure: Option<&'static str>,
     }
@@ -1712,6 +1808,12 @@ mod tests {
                 processor_values: None,
                 previous_processor_values: None,
                 fail_partial_processor_write: false,
+                class1_core_parking_values: Class1CoreParkingValues {
+                    ac: 30,
+                    battery: 20,
+                },
+                fail_class1_core_parking_read: false,
+                fail_partial_class1_core_parking_write: false,
                 fail_duplicate: false,
                 initialization_failure: None,
             }
@@ -1838,6 +1940,39 @@ mod tests {
                 return Err("injected partial processor write".into());
             }
             self.processor_values = Some(values);
+            Ok(())
+        }
+
+        fn read_class1_core_parking(
+            &mut self,
+            guid: &str,
+        ) -> Result<Class1CoreParkingValues, String> {
+            assert!(guid.starts_with("adaptive-") && self.plans.contains(guid));
+            self.events
+                .borrow_mut()
+                .push(format!("read-class1-parking:{guid}"));
+            if self.fail_class1_core_parking_read {
+                return Err("injected class 1 battery baseline read failure".to_owned());
+            }
+            Ok(self.class1_core_parking_values)
+        }
+
+        fn apply_class1_core_parking(
+            &mut self,
+            guid: &str,
+            values: Class1CoreParkingValues,
+            _previous: Option<Class1CoreParkingValues>,
+        ) -> Result<(), String> {
+            assert!(guid.starts_with("adaptive-") && self.plans.contains(guid));
+            self.events.borrow_mut().push(format!(
+                "configure-class1-parking:{guid}:{}:{}",
+                values.ac, values.battery
+            ));
+            if std::mem::take(&mut self.fail_partial_class1_core_parking_write) {
+                self.class1_core_parking_values.ac = values.ac;
+                return Err("injected partial class 1 parking write".to_owned());
+            }
+            self.class1_core_parking_values = values;
             Ok(())
         }
     }

@@ -475,6 +475,8 @@ pub struct AdaptiveEngineSettings {
     pub base_processor_policy: ProcessorPowerValues,
     #[serde(default)]
     pub restraint_core_parking_min: u8,
+    #[serde(default)]
+    pub restraint_core_parking_min_class1: u8,
     pub background_pressure_profile: AdaptivePowerBoostValues,
     pub focus_and_launch_profile: AdaptivePowerBoostValues,
     // Previously saved tuning included this switch. Only the independent opt-in has an effect.
@@ -511,6 +513,7 @@ impl Default for AdaptiveEngineSettings {
             adaptive_processor_power_enabled: false,
             base_processor_policy: default_adaptive_engine_base_processor_policy(),
             restraint_core_parking_min: 0,
+            restraint_core_parking_min_class1: 0,
             background_pressure_profile: default_adaptive_background_pressure_profile(),
             focus_and_launch_profile: default_adaptive_focus_and_launch_profile(),
             _retired_processor_power_switch: (),

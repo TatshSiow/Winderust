@@ -152,6 +152,7 @@ pub(super) struct RuntimeCore {
     per_processor_cpu_monitor: PerProcessorUsageMonitor,
     io_monitor: IoUsageMonitor,
     adaptive_processor_topology: Vec<LogicalProcessorInfo>,
+    adaptive_class1_core_parking_supported: Option<bool>,
     adaptive_io_usage: IoUsageSnapshot,
     next_adaptive_io_refresh: Option<Instant>,
     adaptive_foreground_identity: Option<(u32, u64)>,
@@ -1577,10 +1578,11 @@ impl RuntimeCore {
             self.refresh_cpu_usage();
             let (focus_or_launch, foreground_cpu_percent) =
                 self.sample_adaptive_power_foreground(observations);
-            let minimum_percent = settings.adaptive_engine.restraint_core_parking_min;
+            let minimum_percent_class0 = settings.adaptive_engine.restraint_core_parking_min;
+            let configured_class1 = settings.adaptive_engine.restraint_core_parking_min_class1;
             let restraint_core_parking = restraint_source
                 .filter(|_| {
-                    minimum_percent > 0
+                    (minimum_percent_class0 > 0 || configured_class1 > 0)
                         && settings.adaptive_engine.enabled
                         && settings
                             .adaptive_engine_process
@@ -1590,9 +1592,31 @@ impl RuntimeCore {
                             .adaptive_restraint_processes()
                             .any(|(_, state)| state == AdaptiveRestraintState::Verified)
                 })
-                .map(|source| RestraintCoreParking {
-                    source,
-                    minimum_percent,
+                .and_then(|source| {
+                    if configured_class1 > 0
+                        && self.adaptive_class1_core_parking_supported.is_none()
+                    {
+                        self.adaptive_class1_core_parking_supported =
+                            observations.cpu_topology().ok().map(|topology| {
+                                topology
+                                    .processors()
+                                    .iter()
+                                    .any(|processor| processor.efficiency_class == 1)
+                            });
+                    }
+                    let minimum_percent_class1 =
+                        if self.adaptive_class1_core_parking_supported == Some(true) {
+                            configured_class1
+                        } else {
+                            0
+                        };
+                    (minimum_percent_class0 > 0 || minimum_percent_class1 > 0).then_some(
+                        RestraintCoreParking {
+                            source,
+                            minimum_percent_class0,
+                            minimum_percent_class1,
+                        },
+                    )
                 });
             self.update_adaptive_power_plan(
                 &settings.adaptive_engine,

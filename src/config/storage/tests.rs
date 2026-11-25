@@ -6,10 +6,10 @@ fn adaptive_processor_power_round_trips_and_rejects_invalid_entries() {
 
     let mut settings = Settings::default();
     settings.adaptive_engine.restraint_core_parking_min = 85;
-    settings
-        .battery_profile_mut()
-        .adaptive_engine
-        .restraint_core_parking_min = 60;
+    settings.adaptive_engine.restraint_core_parking_min_class1 = 100;
+    let battery = &mut settings.battery_profile_mut().adaptive_engine;
+    battery.restraint_core_parking_min = 60;
+    battery.restraint_core_parking_min_class1 = 25;
     let preset = AdaptiveProcessorPowerPreset::capture(
         "Quiet".into(),
         &settings.battery_profile().adaptive_engine,
@@ -24,29 +24,53 @@ fn adaptive_processor_power_round_trips_and_rejects_invalid_entries() {
     ));
     write_toml_settings(&path, &settings).unwrap();
     assert_eq!(load_from_path(&path).unwrap(), settings);
+    let legacy = fs::read_to_string(&path)
+        .unwrap()
+        .lines()
+        .filter(|line| !line.starts_with("restraint_core_parking_min_class1 ="))
+        .collect::<Vec<_>>()
+        .join("\n");
     fs::remove_file(&path).unwrap();
+    let legacy = parse_toml_settings(&path, &legacy).unwrap();
+    assert_eq!(legacy.adaptive_engine.restraint_core_parking_min, 85);
+    assert_eq!(legacy.adaptive_engine.restraint_core_parking_min_class1, 0);
+    let battery = &legacy.battery_profile().adaptive_engine;
+    assert_eq!(battery.restraint_core_parking_min, 60);
+    assert_eq!(battery.restraint_core_parking_min_class1, 0);
+    assert!(
+        legacy.adaptive_processor_power_presets[0].matches(battery, PowerSourceProfile::OnBattery)
+    );
 
     for battery in [false, true] {
-        let mut invalid = settings.clone();
-        let profile = if battery {
-            invalid.battery_profile_mut()
-        } else {
-            &mut invalid
-        };
-        profile.adaptive_engine.restraint_core_parking_min = 101;
-        assert_eq!(
-            parse_toml_settings(&path, &toml::to_string(&invalid).unwrap()).unwrap_err(),
-            rust_i18n::t!("adaptive_processor_power.restraint_core_parking_min_invalid")
+        for (class0, class1) in [(101, 0), (0, 101)] {
+            let mut invalid = settings.clone();
+            let profile = if battery {
+                invalid.battery_profile_mut()
+            } else {
+                &mut invalid
+            };
+            profile.adaptive_engine.restraint_core_parking_min = class0;
+            profile.adaptive_engine.restraint_core_parking_min_class1 = class1;
+            assert_eq!(
+                parse_toml_settings(&path, &toml::to_string(&invalid).unwrap()).unwrap_err(),
+                rust_i18n::t!("adaptive_processor_power.restraint_core_parking_min_invalid")
+            );
+        }
+    }
+    let saved = toml::Value::try_from(&settings).unwrap();
+    for field in [
+        "restraint_core_parking_min",
+        "restraint_core_parking_min_class1",
+    ] {
+        let mut invalid = saved.clone();
+        invalid["adaptive_processor_power_presets"][0][field] = 101.into();
+        assert!(
+            parse_toml_settings(&path, &toml::to_string(&invalid).unwrap())
+                .unwrap_err()
+                .contains("out-of-range processor settings")
         );
     }
-    let mut invalid = toml::Value::try_from(&settings).unwrap();
-    invalid["adaptive_processor_power_presets"][0]["restraint_core_parking_min"] = 101.into();
-    assert!(
-        parse_toml_settings(&path, &toml::to_string(&invalid).unwrap())
-            .unwrap_err()
-            .contains("out-of-range processor settings")
-    );
-    invalid["adaptive_processor_power_presets"][0]["restraint_core_parking_min"] = 60.into();
+    let mut invalid = saved;
     invalid["adaptive_processor_power_presets"][0]["background_pressure_profile"]["policy"] =
         101.into();
     assert!(

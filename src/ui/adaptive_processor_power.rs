@@ -23,6 +23,10 @@ const RESTRAINT_CORE_PARKING_MIN_FIELD: &str =
     stringify!(adaptive_engine.restraint_core_parking_min);
 const RESTRAINT_CORE_PARKING_MIN_LABEL: &str =
     "adaptive_processor_power.restraint_core_parking_min";
+const RESTRAINT_CORE_PARKING_MIN_CLASS1_FIELD: &str =
+    stringify!(adaptive_engine.restraint_core_parking_min_class1);
+const RESTRAINT_CORE_PARKING_MIN_CLASS1_LABEL: &str =
+    "adaptive_processor_power.restraint_core_parking_min_class1";
 pub(super) const PRESET_NAME_INPUT_ID: &str = "adaptive-processor-power-preset-name";
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -280,6 +284,21 @@ impl Editor {
                             })
                         }),
                 );
+                let restraint_parking_floor =
+                    |percent: u8,
+                     field: &'static str,
+                     label: &'static str,
+                     update: fn(&mut AdaptiveEngineSettings, u64)| {
+                        widgets::slider_setting(label, "%", move || {
+                            widgets::slider_stepper(
+                                u64::from(percent),
+                                numbers.drafts.get(field).map(|draft| draft.text.as_str()),
+                                0..=100,
+                                1,
+                                move |value| Message::Number(update, value, 0, 100, field, label),
+                            )
+                        })
+                    };
                 body = body.push(widgets::settings_card(widgets::settings_rows([
                     number!(
                         "processor_power.core_parking_min",
@@ -287,29 +306,20 @@ impl Editor {
                         0,
                         adaptive_engine.base_processor_policy.core_parking_min
                     ),
-                    widgets::slider_setting(RESTRAINT_CORE_PARKING_MIN_LABEL, "%", move || {
-                        widgets::slider_stepper(
-                            u64::from(s.adaptive_engine.restraint_core_parking_min),
-                            numbers
-                                .drafts
-                                .get(RESTRAINT_CORE_PARKING_MIN_FIELD)
-                                .map(|draft| draft.text.as_str()),
-                            0..=100,
-                            1,
-                            |value| {
-                                Message::Number(
-                                    |settings, number| {
-                                        settings.restraint_core_parking_min = number as u8
-                                    },
-                                    value,
-                                    0,
-                                    100,
-                                    RESTRAINT_CORE_PARKING_MIN_FIELD,
-                                    RESTRAINT_CORE_PARKING_MIN_LABEL,
-                                )
-                            },
-                        )
-                    }),
+                    restraint_parking_floor(
+                        s.adaptive_engine.restraint_core_parking_min,
+                        RESTRAINT_CORE_PARKING_MIN_FIELD,
+                        RESTRAINT_CORE_PARKING_MIN_LABEL,
+                        |settings, number| settings.restraint_core_parking_min = number as u8,
+                    ),
+                    restraint_parking_floor(
+                        s.adaptive_engine.restraint_core_parking_min_class1,
+                        RESTRAINT_CORE_PARKING_MIN_CLASS1_FIELD,
+                        RESTRAINT_CORE_PARKING_MIN_CLASS1_LABEL,
+                        |settings, number| {
+                            settings.restraint_core_parking_min_class1 = number as u8
+                        },
+                    ),
                     processor_range.into(),
                     number!(
                         "processor_power.boost_policy",

@@ -330,6 +330,85 @@ fn reactivate_if_active(
     Ok(())
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Class1CoreParkingValues {
+    pub(crate) ac: u32,
+    pub(crate) battery: u32,
+}
+
+pub(crate) fn read_class1_core_parking_values(
+    guid: &str,
+) -> Result<Class1CoreParkingValues, String> {
+    let setting = PowerSetting::Class1CoreParkingMinimum;
+    let read = |battery| {
+        let source = if battery { "battery" } else { "A/C" };
+        let value = windows_power::read_optional_value(guid, setting, battery)
+            .map_err(|error| format!("Unable to read {source} class 1 core parking: {error}"))?
+            .ok_or_else(|| format!("The {source} class 1 core parking setting is unavailable."))?;
+        if value > 100 {
+            return Err(format!(
+                "Class 1 core-parking minimum is outside 0–100: {value}."
+            ));
+        }
+        Ok(value)
+    };
+    Ok(Class1CoreParkingValues {
+        ac: read(false)?,
+        battery: read(true)?,
+    })
+}
+
+pub(crate) fn apply_class1_core_parking_values(
+    guid: &str,
+    values: Class1CoreParkingValues,
+    previous: Option<Class1CoreParkingValues>,
+) -> Result<(), String> {
+    let setting = PowerSetting::Class1CoreParkingMinimum;
+    let mut wrote_slot = false;
+    let write_result = write_class1_core_parking_values(values, previous, |battery, value| {
+        if battery {
+            windows_power::write_dc_value(guid, setting, value)?;
+        } else {
+            windows_power::write_ac_value(guid, setting, value)?;
+        }
+        wrote_slot = true;
+        Ok(())
+    });
+    let reactivation = if wrote_slot {
+        reactivate_if_active(guid, windows_power::active_scheme_guid, set_active)
+            .map_err(|error| error.to_string())
+    } else {
+        Ok(())
+    };
+    write_result.and(reactivation)
+}
+
+fn write_class1_core_parking_values(
+    values: Class1CoreParkingValues,
+    previous: Option<Class1CoreParkingValues>,
+    mut write: impl FnMut(bool, u32) -> Result<(), String>,
+) -> Result<(), String> {
+    let recovering = previous.is_none();
+    let mut sources = [
+        (false, values.ac, previous.map(|values| values.ac)),
+        (true, values.battery, previous.map(|values| values.battery)),
+    ];
+    if previous.is_some_and(|previous| previous.battery > values.battery) {
+        // Restore the battery slot before applying a new floor to the A/C slot.
+        sources.reverse();
+    }
+    let mut result = Ok(());
+    for (battery, value, previous) in sources {
+        if Some(value) != previous {
+            result = result.and(write(battery, value));
+            if !recovering && result.is_err() {
+                break;
+            }
+        }
+    }
+    result
+}
+
 pub(crate) fn read_processor_power_values(
     guid: &str,
 ) -> Result<AdvancedPowerPlanTuningReadback, String> {
@@ -515,6 +594,69 @@ mod tests {
     const RECOVERY_ORIGINAL: &str = "381b4222-f694-41f0-9685-ff5bb260df2e";
     const RECOVERY_MANAGED: &str = "00000000-0000-0000-0000-000000000001";
     const RECOVERY_EXTERNAL: &str = "00000000-0000-0000-0000-000000000002";
+
+    #[test]
+    fn class1_parking_restores_the_previous_slot_before_raising_the_next_one() {
+        let ac = Class1CoreParkingValues {
+            ac: 90,
+            battery: 20,
+        };
+        let battery = Class1CoreParkingValues {
+            ac: 30,
+            battery: 80,
+        };
+        for (previous, next, expected) in [
+            (ac, battery, [(false, 30), (true, 80)]),
+            (battery, ac, [(true, 20), (false, 90)]),
+        ] {
+            let mut calls = Vec::new();
+            write_class1_core_parking_values(next, Some(previous), |battery, value| {
+                calls.push((battery, value));
+                Ok(())
+            })
+            .unwrap();
+            assert_eq!(calls, expected);
+        }
+    }
+
+    #[test]
+    fn class1_parking_recovery_attempts_both_baselines_after_a_slot_failure() {
+        let baseline = Class1CoreParkingValues {
+            ac: 30,
+            battery: 20,
+        };
+        for failed_battery in [false, true] {
+            let mut calls = Vec::new();
+            let result = write_class1_core_parking_values(baseline, None, |battery, value| {
+                calls.push((battery, value));
+                if battery == failed_battery {
+                    Err("injected class 1 parking write failure".to_owned())
+                } else {
+                    Ok(())
+                }
+            });
+            assert_eq!(calls, [(false, 30), (true, 20)]);
+            assert_eq!(
+                result.unwrap_err(),
+                "injected class 1 parking write failure"
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "reads class 1 processor power settings from the active Windows plan"]
+    fn native_read_class1_core_parking_values() -> Result<(), String> {
+        let active = windows_power::active_scheme_guid()?;
+        let settings = read_class1_core_parking_values(&active)?;
+        let topology = crate::features::cpu_control::cpu_allocation::processor_topology()?;
+        let classes: std::collections::BTreeSet<_> = topology
+            .processors()
+            .iter()
+            .map(|processor| processor.efficiency_class)
+            .collect();
+        eprintln!("Windows processor efficiency classes {classes:?}; class 1 core parking A/C {}%, battery {}%", settings.ac, settings.battery);
+        Ok(())
+    }
 
     fn stale_plan_fixture(snapshot_active: bool) -> [PowerPlan; 2] {
         [
