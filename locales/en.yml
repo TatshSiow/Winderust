@@ -1244,6 +1244,8 @@ about:
   current_version: "Current version"
   latest_version: "Latest version"
   update_available: "Update available"
+  ignore_update: "Ignore"
+  update: "Update"
   automatic_check_for_updates_on_startup: "Automatically check for updates on startup"
   update_channel: "Update channel"
   update_status: "Update status"

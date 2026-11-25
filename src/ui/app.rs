@@ -195,9 +195,9 @@ fn floating_update_card(preferences: &settings_pages::Editor) -> Element<'_, Mes
         t!("about.update_available").into_owned(),
         Some(version.into()),
         [
-            action_button(t!("common.close").into_owned())
+            action_button(t!("about.ignore_update").into_owned())
                 .on_press(Message::Preferences(settings_pages::Message::DismissUpdate)),
-            action_button(t!("about.open_release_page").into_owned()).on_press_maybe(
+            action_button(t!("about.update").into_owned()).on_press_maybe(
                 preferences
                     .download
                     .clone()

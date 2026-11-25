@@ -1251,6 +1251,8 @@ about:
   current_version: "目前版本"
   latest_version: "最新版本"
   update_available: "有可用更新"
+  ignore_update: "忽略"
+  update: "更新"
   automatic_check_for_updates_on_startup: "啟動時自動檢查更新"
   update_channel: "更新頻道"
   update_status: "更新狀態"

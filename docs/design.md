@@ -443,8 +443,9 @@ hover/press; background shading supplies feedback.
   its controls and version rows, with update status immediately below Update channel.
   The result stays visible until another check or a change to the update channel.
 - A startup update uses the same lower-right floating card as Save / Discard.
-  The card shows the latest version, Close, and Open release page. A pending
-  draft takes priority in the shared slot until it is saved or discarded.
+  The card shows the latest version and offers Ignore and Update. Ignore dismisses
+  the notice for the current launch. Update opens the release page. A pending draft
+  takes priority in the shared slot until it is saved or discarded.
 - Accent palettes wrap to the available width. Time and color pickers use the
   shared application surface, border, accent colors, and labeled Cancel / OK
   actions. By Time keeps editable `HH:MM` fields alongside a 24-hour analog picker.
