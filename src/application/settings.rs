@@ -778,6 +778,7 @@ fn cpu_limiter_rule(path: &str) -> crate::config::CpuLimiterRule {
         focus_allowed_cpu_time_percent: 50,
         visible_window_allowed_cpu_time_percent: 50,
         background_allowed_cpu_time_percent: 50,
+        affinity_limit: None,
     }
 }
 

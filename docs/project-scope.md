@@ -16,7 +16,8 @@ Process Lasso is a useful comparison point, not the target to clone. Prefer smal
 - Advanced Power Plan Tuning for core parking, processor performance and boost,
   energy performance preference, and thread scheduling policies.
 - Adaptive Engine CPU scheduling for foreground responsiveness and background restraint.
-- CPU Control through CPU Limiter, CPU Sets (Soft), Processor Affinity (Hard),
+- CPU Control through CPU Limiter with CPU time and load-triggered affinity,
+  CPU Sets (Soft) with processor-group presets, Processor Affinity (Hard),
   and Cache Domain presets.
 - App Suspension for explicit opt-in apps.
 - Priority Control through Process Priority, Thread Priority, Dynamic Priority

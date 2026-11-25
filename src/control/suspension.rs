@@ -535,9 +535,7 @@ where
         let Some(managed) = self.managed.get(&owner.key()) else {
             return Ok(false);
         };
-        if managed.cpu_limiter_phase.is_none() {
-            return Ok(false);
-        }
+        // The CPU Limiter worker still owns this job while it retries thawing.
         self.platform.contains_process(
             &managed.handle,
             candidate,

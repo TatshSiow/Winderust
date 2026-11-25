@@ -26,7 +26,9 @@ const KEEP_AWAKE_READY: usize = 112;
 const KEEP_AWAKE_ACTIVE: usize = 113;
 const GPU_MEMORY_WIDE: usize = 114;
 const GPU_MEMORY_COMPACT: usize = 115;
-const EXTRA_STATES: usize = 116;
+const CPU_LIMITER_AFFINITY_WIDE: usize = 116;
+const CPU_LIMITER_AFFINITY_COMPACT: usize = 117;
+const EXTRA_STATES: usize = 118;
 pub(super) struct Run {
     pages: Vec<Page>,
     index: usize,
@@ -115,11 +117,14 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                     | MEMORY_TRIM_UNKNOWN
                     | KEEP_AWAKE_ACTIVE
                     | GPU_MEMORY_COMPACT
+                    | CPU_LIMITER_AFFINITY_COMPACT
             )
         });
         let page = match extra {
             Some(0) => Page::EfficiencyMode,
-            Some(1 | 89..=91) => Page::CpuLimiter,
+            Some(1 | 89..=91 | CPU_LIMITER_AFFINITY_WIDE | CPU_LIMITER_AFFINITY_COMPACT) => {
+                Page::CpuLimiter
+            }
             Some(2) => Page::SettingsHome,
             Some(3) => Page::Home,
             Some(4 | 6..=10) => Page::AdaptiveEngine,
@@ -1211,9 +1216,13 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             let _ = app.update(Message::SidePanelTab(SidePanelTab::Status));
             assert_eq!(app.side_panel_tab, SidePanelTab::Status);
         }
-        if matches!(extra, Some(89..=91)) {
-            use crate::config::Settings;
+        if matches!(
+            extra,
+            Some(89..=91 | CPU_LIMITER_AFFINITY_WIDE | CPU_LIMITER_AFFINITY_COMPACT)
+        ) {
+            use crate::config::{CpuLimiterAffinityLimit, Settings};
             use crate::control::cpu_limiter::CpuLimiterActivation;
+            use crate::features::cpu_control::cpu_limiter::CpuLimiterAffinityStatus;
 
             let path = r"C:\Apps\example.exe";
             let mut settings = Settings {
@@ -1222,8 +1231,22 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             };
             settings.general.enabled = true;
             settings.cpu_limiter.enabled = true;
-            settings.cpu_limiter.rules =
-                vec![super::super::process_rules::new_cpu_limiter_rule(path)];
+            let mut rule = super::super::process_rules::new_cpu_limiter_rule(path);
+            if matches!(
+                extra,
+                Some(CPU_LIMITER_AFFINITY_WIDE | CPU_LIMITER_AFFINITY_COMPACT)
+            ) {
+                let catalog = cpu_allocation::SelectionCatalog::capture(cpu_allocation::Kind::Hard);
+                rule.affinity_limit = Some(CpuLimiterAffinityLimit {
+                    selection: catalog.all_selection().unwrap_or_default(),
+                    ..CpuLimiterAffinityLimit::default()
+                });
+            }
+            let affinity_count = rule
+                .affinity_limit
+                .as_ref()
+                .map(|limit| limit.selection.processors().len());
+            settings.cpu_limiter.rules = vec![rule];
             let plugged_in = is_plugged_in().unwrap_or(true);
             let source = if plugged_in {
                 PowerSourceProfile::PluggedIn
@@ -1238,14 +1261,25 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             status.source = Some(source);
             status.enabled = true;
             status.limited_processes = 1;
-            status.active_limits = vec![(
-                path.into(),
-                match extra {
-                    Some(89) => CpuLimiterActivation::Job(40),
-                    Some(90) => CpuLimiterActivation::AncestorJob(60),
-                    _ => CpuLimiterActivation::ThreadFallback(25),
-                },
-            )];
+            status.active_affinity.clear();
+            status.active_limits.clear();
+            if let Some(count) = affinity_count {
+                let active = if count > 0 {
+                    CpuLimiterAffinityStatus::Active(count)
+                } else {
+                    CpuLimiterAffinityStatus::Unavailable
+                };
+                status.active_affinity.push((path.into(), active));
+            } else {
+                status.active_limits.push((
+                    path.into(),
+                    match extra {
+                        Some(89) => CpuLimiterActivation::Job(40),
+                        Some(90) => CpuLimiterActivation::AncestorJob(60),
+                        _ => CpuLimiterActivation::ThreadFallback(25),
+                    },
+                ));
+            }
             assert!(app.cpu_limiter_rule_status(|| Some(plugged_in)).is_some());
             assert!(app.cpu_limiter_rule_status(|| Some(!plugged_in)).is_none());
             let _ = app.update(Message::CpuLimiter(cpu_limiter::Message::Edit(0)));
@@ -1377,7 +1411,8 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                 | MEMORY_TRIM_PARTIAL
                 | MEMORY_TRIM_UNKNOWN
                 | KEEP_AWAKE_ACTIVE
-                | GPU_MEMORY_COMPACT,
+                | GPU_MEMORY_COMPACT
+                | CPU_LIMITER_AFFINITY_COMPACT,
             ) => iced::Size::new(900.0, 620.0),
             Some(RESOURCE_PREVIEW_INSTANCE) => iced::Size::new(900.0, 620.0),
             Some(
@@ -1386,7 +1421,9 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                 | DOCK_FOCUS_WIDE
                 | KEEP_AWAKE_READY,
             ) => iced::Size::new(1120.0, 760.0),
-            Some(CONTRAST_DARK_APPEARANCE | HOME_HISTORY_WIDE) => iced::Size::new(1120.0, 760.0),
+            Some(CONTRAST_DARK_APPEARANCE | HOME_HISTORY_WIDE | CPU_LIMITER_AFFINITY_WIDE) => {
+                iced::Size::new(1120.0, 760.0)
+            }
             Some(35..=37 | 40 | 42 | 44..=50 | 52..=69 | 71..=93) => iced::Size::new(900.0, 620.0),
             Some(30) => iced::Size::new(1280.0, 720.0),
             Some(31) => iced::Size::new(1440.0, 900.0),

@@ -288,6 +288,9 @@ hover/press; background shading supplies feedback.
   shows the saved selection and its topology validation. Keep topology status, selection errors,
   and the review action above the processor grid. Keep duplicate-name feedback beside the name.
   Select a preset for a specific rule policy column to stage it.
+- On systems with multiple processor groups, CPU Sets (Soft) offers a preset for
+  all logical processors in each verified group. Group presets fit the existing
+  policy columns and retain the full topology signature.
 - Verified, fully representable L3 selections appear as Cache Domain presets
   with group and cache-size labels. Missing cache metadata creates no inferred
   preset. Unsupported saved selections remain visible; selection controls do
@@ -314,12 +317,14 @@ hover/press; background shading supplies feedback.
 
 - Priority Control custom rules use the same three policy columns and independently select the
   priority for Focus, Visible Window, and Background.
-- CPU Limiter uses the same three policy columns with Follow Default, Custom,
-  and Unlimited. The CPU time limits card keeps the 1% to 100% defaults for
-  Focus, Visible Window, and Background visible below the master switch. The
-  rule editor shows a 1% to 100% Allowed CPU Time slider only for Custom tiers,
-  and an inactive rule retains its configured values while those sliders are
-  disabled. A 100% target is Unlimited.
+- CPU Limiter offers CPU time and Load-triggered affinity as per-app methods.
+  CPU time rules use Follow Default, Custom, and Unlimited in the Focus, Visible
+  Window, and Background columns. The CPU time limits card keeps the page defaults
+  visible below the master switch. Custom tiers show a 1% to 100% Allowed CPU Time
+  slider, and a 100% target is Unlimited. Inactive rules retain their selections.
+  Load-triggered affinity rules show the CPU trigger, sustained duration, and
+  processor selection in the same rule editor. They use the shared verified
+  processor picker. Only the selected method's controls are actionable.
   CPU Limiter rule status follows the published observation for the selected live power source.
   With the other profile selected or the source unconfirmed, enabled rules show Unknown.
   The applied rule's editor shows its current duty-cycle target and whether it uses an app

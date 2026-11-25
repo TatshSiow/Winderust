@@ -21,6 +21,7 @@ use crate::{
 pub(crate) enum ControlOwner {
     EfficiencyMode,
     CpuSetsSoft,
+    CpuLimiter,
     DynamicPriorityBoost,
     GpuPriority,
     IoPriority,

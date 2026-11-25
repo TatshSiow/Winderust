@@ -1011,6 +1011,37 @@ pub struct CpuLimiterRule {
     pub visible_window_allowed_cpu_time_percent: u8,
     #[serde(default = "default_cpu_limiter_allowed_cpu_time_percent")]
     pub background_allowed_cpu_time_percent: u8,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub affinity_limit: Option<CpuLimiterAffinityLimit>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CpuLimiterAffinityLimit {
+    pub trigger_percent: u8,
+    pub sustain_seconds: u64,
+    pub selection: CpuSelection,
+}
+
+impl Default for CpuLimiterAffinityLimit {
+    fn default() -> Self {
+        Self {
+            trigger_percent: 25,
+            sustain_seconds: 5,
+            selection: CpuSelection::default(),
+        }
+    }
+}
+
+impl CpuLimiterAffinityLimit {
+    pub(crate) const TRIGGER_RANGE: std::ops::RangeInclusive<u8> = 1..=100;
+    pub(crate) const SUSTAIN_RANGE: std::ops::RangeInclusive<u64> = 1..=600;
+
+    pub(crate) fn is_valid(&self) -> bool {
+        Self::TRIGGER_RANGE.contains(&self.trigger_percent)
+            && Self::SUSTAIN_RANGE.contains(&self.sustain_seconds)
+            && !self.selection.is_empty()
+            && self.selection.processors().iter().all(|id| id.group == 0)
+    }
 }
 
 impl CpuLimiterRule {

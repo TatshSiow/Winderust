@@ -1215,6 +1215,7 @@ fn enabled_empty_rule_features_do_not_poll() {
         focus_allowed_cpu_time_percent: 50,
         visible_window_allowed_cpu_time_percent: 50,
         background_allowed_cpu_time_percent: 50,
+        affinity_limit: None,
     });
     settings.by_running_app.rules.push(ByRunningAppRule {
         enabled: true,
@@ -1275,6 +1276,7 @@ fn enabled_nonempty_rule_features_require_runtime_work() {
         focus_allowed_cpu_time_percent: 50,
         visible_window_allowed_cpu_time_percent: 50,
         background_allowed_cpu_time_percent: 50,
+        affinity_limit: None,
     });
     settings.by_running_app.enabled = true;
     settings.by_running_app.rules.push(ByRunningAppRule {
@@ -1338,6 +1340,7 @@ fn all_unlimited_cpu_limiter_rules_do_not_require_runtime_work() {
         focus_allowed_cpu_time_percent: 50,
         visible_window_allowed_cpu_time_percent: 50,
         background_allowed_cpu_time_percent: 50,
+        affinity_limit: None,
     });
 
     assert!(!cpu_limiter_required(&settings));
@@ -1732,6 +1735,7 @@ fn active_cpu_limiter_keeps_process_discovery_at_one_second() {
         focus_allowed_cpu_time_percent: 50,
         visible_window_allowed_cpu_time_percent: 50,
         background_allowed_cpu_time_percent: 50,
+        affinity_limit: None,
     });
 
     for (hidden_to_tray, adaptive_engine_enabled) in [(false, false), (true, false), (false, true)]
@@ -2851,7 +2855,8 @@ fn shared_property_precedence_inputs_are_characterized() {
         "pub(super) fn run_cpu_limiter_update",
         "pub(super) fn run_cpu_allocation_reconciliation",
     );
-    assert!(!cpu_limiter.contains("cpu_allocation_coordinator"));
+    assert!(cpu_limiter.contains("cpu_allocation_coordinator"));
+    assert!(cpu_limiter.contains("affinity_limiter.update"));
     assert!(cpu_limiter.contains("cpu_limiter_controller"));
     assert!(cpu_limiter.contains("app_suspension_controller"));
 
@@ -2864,6 +2869,7 @@ fn shared_property_precedence_inputs_are_characterized() {
             "ControlOwner::CpuSetsSoft",
             "ControlOwner::ProcessorAffinityHard",
             "ControlOwner::InstanceBalancing",
+            "ControlOwner::CpuLimiter",
             "ControlOwner::AdaptiveEngine",
         ],
     );

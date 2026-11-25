@@ -95,8 +95,8 @@ target, but every mutation reopens and revalidates the exact process or thread i
 - Process List reversible actions use the same RuntimeCore controllers as automatic policy and
   may be superseded by a later automatic reconciliation.
 - CPU allocation has one coordinator with this precedence: CPU Sets (Soft), Processor Affinity
-  (Hard), guarded Instance Balancing, then Adaptive Engine.
-- App Suspension and CPU Limiter share one Job Object suspension controller. Their independent
+  (Hard), guarded Instance Balancing, CPU Limiter, then Adaptive Engine.
+- App Suspension and CPU Limiter's CPU time method share one Job Object suspension controller. Their independent
   claims combine into one effective frozen state, so releasing either feature cannot thaw the
   other feature's claim.
 - CPU Limiter keeps that Job Object path primary. Only an incompatible existing-job result selects
@@ -166,8 +166,8 @@ remain available in Git history rather than in the active documentation set.
   time.
 - `src/control/cpu_allocation.rs`: sole live CPU Sets and process-affinity baseline, claim
   arbitration, compensation, and clean-release boundary for CPU Sets (Soft), Processor Affinity
-  (Hard), guarded Instance Balancing, and Adaptive Engine CPU allocation. Its precedence is
-  CPU Sets (Soft) > Processor Affinity (Hard) > Instance Balancing > Adaptive Engine.
+  (Hard), guarded Instance Balancing, load-triggered affinity, and Adaptive Engine CPU allocation.
+  Its precedence is CPU Sets (Soft) > Processor Affinity (Hard) > Instance Balancing > CPU Limiter > Adaptive Engine.
   Adjacent `instance_balancing.rs` and `eligibility.rs` enforce the guarded backend contract.
   `src/features/cpu_control/instance_balancing/` owns deterministic whole-core planning
   and stable-cohort qualification. `src/backend/automation/instance_balancing.rs`
@@ -199,7 +199,7 @@ remain available in Git history rather than in the active documentation set.
   routes. Pending compensation and journal cleanup reconcile on later feature
   passes; feature records retain exact creation time and are pruned when the
   controller no longer owns a frozen exact instance. The feature manager owns
-  rule/grace/wake/reporting policy only. CPU Limiter policy is immediate rule matching, while
+  rule/grace/wake/reporting policy only. The CPU time method uses immediate rule matching, while
   `src/control/cpu_limiter.rs` owns its single duty-cycle worker. `src/platform/windows/job.rs`
   owns shared Job Object creation, assignment, and membership; `src/platform/windows/suspension.rs`
   owns freeze/thaw and the compatibility-sensitive layout; `src/platform/windows/cpu_limiter.rs`
@@ -215,8 +215,9 @@ remain available in Git history rather than in the active documentation set.
   (Hard) retain separate settings, pages, rules, status, and Action Log labels;
   `src/features/cpu_control/cpu_allocation.rs` owns their discovery, topology,
   tier selection, and reporting policy, while the typed controller owns the shared
-  Windows mechanism and restoration state. CPU Limiter remains separate from CPU allocation and
-  uses shared Job Object freeze/thaw duty cycling. Adaptive Engine retains pressure, selection, and tuning only.
+  Windows mechanism and restoration state. CPU Limiter uses shared Job Object freeze/thaw for CPU
+  time and the CPU allocation coordinator for load-triggered affinity. Adaptive Engine retains
+  pressure, selection, and tuning only.
   Adaptive Engine process sampling and identity helpers live in
   `adaptive_engine_process/process_control.rs`; its Process Priority, Power Throttling,
   and Memory Priority mutations route through typed controllers. Pure workload

@@ -10,6 +10,10 @@ use crate::{
         power_plan::{AdaptiveProcessorPowerError, PowerPlanOwner},
         priority_efficiency::AdaptiveRestraintProcess,
     },
+    features::cpu_control::cpu_limiter::{
+        has_affinity_rules, has_duty_cycle_limits, AffinityLimiter, AffinityLimiterCycle,
+        DutyLimiterCycle,
+    },
     foreground::{list_process_ids, process_session_id, ProcessInfo},
     platform::windows::process::current_process_id,
     rules::decision_engine::{matching_by_focus_rules, ordinary_power_plan_stop},
@@ -157,6 +161,7 @@ pub(super) struct RuntimeCore {
     pub(super) instance_balancing: instance_balancing::Runtime,
     cpu_limiter_controller: Option<CpuLimiterController>,
     cpu_limiter_manager: CpuLimiterManager,
+    affinity_limiter: AffinityLimiter,
     pub(super) by_running_app_manager: ByRunningAppManager,
     pub(super) action_log: ActionLog,
     action_log_session: Option<Arc<SharedAutomationState>>,
@@ -1059,6 +1064,46 @@ impl RuntimeCore {
         waiting_for_power_source: bool,
         observations: &mut CycleObservations,
     ) -> CpuLimiterSnapshot {
+        let mut snapshot =
+            self.run_cpu_limiter_duty_cycle(settings, waiting_for_power_source, observations);
+        let enabled =
+            settings.general.enabled && settings.cpu_limiter.enabled && !waiting_for_power_source;
+        let duty_targets = if enabled && has_affinity_rules(&settings.cpu_limiter) {
+            self.cpu_limiter_controller
+                .as_ref()
+                .map(CpuLimiterController::managed_target_keys)
+                .transpose()
+        } else {
+            Ok(None)
+        };
+        let empty = BTreeSet::new();
+        self.affinity_limiter.update(
+            AffinityLimiterCycle {
+                settings: &settings.cpu_limiter,
+                enabled,
+                allow_cross_session_process_control: settings
+                    .general
+                    .allow_cross_session_process_control,
+                duty_targets: duty_targets
+                    .as_ref()
+                    .map(|targets| targets.as_ref().unwrap_or(&empty))
+                    .map_err(String::as_str),
+                duty_controller: self.cpu_limiter_controller.as_ref(),
+                observations,
+            },
+            &mut self.cpu_allocation_coordinator,
+            &mut self.action_log,
+            &mut snapshot,
+        );
+        snapshot
+    }
+
+    fn run_cpu_limiter_duty_cycle(
+        &mut self,
+        settings: &Settings,
+        waiting_for_power_source: bool,
+        observations: &mut CycleObservations,
+    ) -> CpuLimiterSnapshot {
         if waiting_for_power_source {
             return match self.cpu_limiter_controller.as_mut() {
                 Some(controller) => self
@@ -1072,7 +1117,10 @@ impl RuntimeCore {
             };
         }
         if self.cpu_limiter_controller.is_none()
-            && !feature_refresh_required(settings, cpu_limiter_required(settings))
+            && !feature_refresh_required(
+                settings,
+                settings.cpu_limiter.enabled && has_duty_cycle_limits(&settings.cpu_limiter),
+            )
         {
             return CpuLimiterSnapshot {
                 enabled: settings.general.enabled && settings.cpu_limiter.enabled,
@@ -1092,11 +1140,21 @@ impl RuntimeCore {
                 }
             },
         };
+        let affinity_targets = self
+            .cpu_allocation_coordinator
+            .policy_managed_processes(ControlOwner::CpuLimiter)
+            .map(|process| process.key())
+            .collect();
         self.cpu_limiter_manager.update(
             controller,
-            &settings.cpu_limiter,
-            settings.general.enabled,
-            settings.general.allow_cross_session_process_control,
+            DutyLimiterCycle {
+                settings: &settings.cpu_limiter,
+                automation_enabled: settings.general.enabled,
+                allow_cross_session_process_control: settings
+                    .general
+                    .allow_cross_session_process_control,
+                affinity_targets: &affinity_targets,
+            },
             observations,
             &mut self.action_log,
         )
@@ -1985,7 +2043,7 @@ impl RuntimeCore {
     }
 
     pub(super) fn cpu_limiter_release_pending(&self) -> bool {
-        self.cpu_limiter_manager.release_pending()
+        self.cpu_limiter_manager.release_pending() || self.affinity_limiter.release_pending()
     }
 
     pub(super) fn cpu_limiter_release_in_progress(&self) -> bool {

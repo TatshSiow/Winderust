@@ -3748,6 +3748,7 @@ impl WinderustApp {
                 .cpu_limiter
                 .modal(
                     &self.candidates,
+                    &self.settings.global().cpu_allocation_presets,
                     self.settings.global().general.enabled,
                     self.cpu_limiter_rule_status(read_power_source),
                 )

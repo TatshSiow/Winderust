@@ -939,6 +939,7 @@ pub(crate) fn cpu_allocation_action_log_context(
             "Processor Affinity (Hard)",
         ),
         ControlOwner::AdaptiveEngine => (ActionLogFeature::AdaptiveEngine, "Adaptive Engine"),
+        ControlOwner::CpuLimiter => (ActionLogFeature::CpuLimiter, "CPU Limiter"),
         ControlOwner::InstanceBalancing => {
             (ActionLogFeature::InstanceBalancing, "Instance Balancing")
         }
@@ -1006,6 +1007,7 @@ fn cpu_allocation_request_label(
     match request {
         CpuAllocationRequest::SoftCpuSets { .. } => "CPU Sets (Soft)",
         CpuAllocationRequest::HardAffinity { .. } => "Processor Affinity (Hard)",
+        CpuAllocationRequest::AffinityLimit { .. } => "CPU Limiter",
     }
 }
 

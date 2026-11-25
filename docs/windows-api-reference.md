@@ -686,16 +686,23 @@ Implementation entry points:
 Winderust exposes two separate per-app rule features. CPU Sets (Soft) applies
 preferred Windows CPU Sets and is the recommended default. Its editor and
 coordinator retain group-qualified selections, resolving every selected
-`{ group, number }` to a current CPU Set ID. Processor Affinity (Hard) applies a
+`{ group, number }` to a current CPU Set ID. A processor-group preset contains all
+verified logical processors in that group. Processor Affinity (Hard) applies a
 strict process affinity mask and remains limited to group 0. New hard claims
 require GetProcessGroupAffinity to report exactly group 0 before any ownership
 handoff, preventing a group-0 mask from being reinterpreted in another primary
 group. Compensation, release, and recovery do not depend on this new-claim guard.
 All automatic CPU allocation shares one coordinator with this order: CPU Sets
-(Soft) > Processor Affinity (Hard) > Instance Balancing > Adaptive Engine. CPU Sets and affinity cannot
-remain simultaneously Winderust-owned for one exact process instance. Adaptive
+(Soft) > Processor Affinity (Hard) > Instance Balancing > CPU Limiter > Adaptive Engine.
+CPU Sets and affinity cannot remain simultaneously Winderust-owned for one exact process instance. Adaptive
 Engine retains group-0 selection and sampling; its policy choices do not create
 another mutation owner.
+
+Windows process affinity sets one group-relative mask. On Windows 11 and Windows
+Server 2022, default affinity may span groups while process mask readback exposes
+the primary group. CPU Sets (Soft) provide the cross-group placement workflow.
+[SetProcessAffinityMask](https://learn.microsoft.com/windows/win32/api/winbase/nf-winbase-setprocessaffinitymask) ·
+[GetProcessAffinityMask](https://learn.microsoft.com/windows/win32/api/winbase/nf-winbase-getprocessaffinitymask)
 
 `src/platform/windows/cpu_allocation.rs::cpu_set_inventory_from_bytes` retains
 `SYSTEM_CPU_SET_INFORMATION.CpuSet.Group`, `LogicalProcessorIndex`, and the
@@ -722,7 +729,7 @@ outside a thread's hard-affinity groups may be ignored. Winderust does not alter
 thread affinity to work around these restrictions. See [CPU Sets](https://learn.microsoft.com/en-us/windows/win32/procthread/cpu-sets)
 and [SYSTEM_CPU_SET_INFORMATION](https://learn.microsoft.com/en-us/windows/win32/api/winnt/ns-winnt-system_cpu_set_information).
 
-Efficiency Mode exposes Foreground Detection and Visible Window Detection. CPU Limiter,
+Efficiency Mode exposes Foreground Detection and Visible Window Detection. CPU Limiter's CPU time method,
 CPU Sets (Soft), and Processor Affinity (Hard) classify each matched process as Focus, Visible
 Window, or Background and select that tier's policy. Foreground
 resolution starts from the active window; visible-window detection keeps top-level windows that are
@@ -754,6 +761,9 @@ Implementation paths:
 - `src/features/cpu_control/cpu_allocation.rs`: explicit-rule discovery,
   Focus/Visible Window/Background tier selection, topology policy, failure suppression,
   status, and Action Log reporting.
+- `src/features/cpu_control/cpu_limiter/affinity.rs`: per-instance CPU counter qualification
+  for Load-triggered affinity. The coordinator intersects the requested mask with live affinity
+  and checks for an external process-default CPU Set selection before applying it.
 - `src/features/cpu_control/adaptive_engine_process.rs`: pressure, candidate,
   topology, saturation, and rebalance policy only.
 - `src/backend/crash_recovery.rs`: independent crash-recovery mirror for

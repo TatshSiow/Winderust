@@ -1146,7 +1146,7 @@ fn sidebar_state(
     if page == Page::AppSuspension && features.app_suspension.status_unknown {
         return FeatureRunState::Unknown;
     }
-    if (page == Page::CpuLimiter && features.cpu_limiter.observation_paused)
+    if (page == Page::CpuLimiter && super::cpu_limiter::observations_paused(&features.cpu_limiter))
         || (page == Page::TimerResolution && features.timer_resolution.observation_paused)
         || (page == Page::CpuSetsSoft && features.cpu_sets_soft.observation_paused)
         || (page == Page::ProcessorAffinityHard
@@ -1361,7 +1361,7 @@ fn feature_status_summary(
         }
         Page::CpuLimiter => {
             let status = &runtime.feature_status.cpu_limiter;
-            let observed = !status.observation_paused;
+            let observed = !super::cpu_limiter::observations_paused(status);
             FeatureStatusSummary {
                 scanned: observed.then_some(status.scanned_processes),
                 adjusted: observed.then_some(status.limited_processes),
@@ -2186,7 +2186,20 @@ mod tests {
             [(FeatureRunState::Paused, [None; 3]); 3]
         );
 
+        let limiter = &mut std::sync::Arc::make_mut(&mut runtime.feature_status).cpu_limiter;
+        limiter.limited_processes = 1;
+        limiter.active_affinity.push((
+            r"C:\Apps\test.exe".into(),
+            crate::features::cpu_control::cpu_limiter::CpuLimiterAffinityStatus::Active(2),
+        ));
+        assert_eq!(
+            activity(&runtime)[0],
+            (FeatureRunState::Running, [Some(0), Some(1), Some(0)])
+        );
+
         let features = std::sync::Arc::make_mut(&mut runtime.feature_status);
+        features.cpu_limiter.active_affinity.clear();
+        features.cpu_limiter.limited_processes = 0;
         features.cpu_limiter.last_error = Some("restore failed".into());
         features.cpu_sets_soft.last_error = Some("restore failed".into());
         features.processor_affinity_hard.last_error = Some("restore failed".into());

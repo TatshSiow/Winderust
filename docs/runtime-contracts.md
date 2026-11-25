@@ -662,11 +662,11 @@ Read the relevant section before changing feature policy, ownership, restoration
   thaws that retained job even if the recorded root exits while inherited children remain. Raw Job
   Object creation, assignment, and membership live in `src/platform/windows/job.rs`; freeze/thaw
   and the shared undocumented layout live in `src/platform/windows/suspension.rs`.
-- Efficiency Mode and CPU Limiter custom rules use Focus, Visible Window, and Background
+- Efficiency Mode and CPU Limiter's CPU time rules use Focus, Visible Window, and Background
   columns with Focus > Visible Window > Background precedence. CPU Limiter page defaults set
   1% to 100% Focus, Visible Window, and Background targets; each rule tier selects Follow Default,
   Custom, or Unlimited, with Custom owning its own 1% to 100% target. A 100% target is Unlimited.
-- CPU Limiter is a 100 ms freeze/thaw duty cycle. It shares
+- CPU Limiter's CPU time method uses a 100 ms freeze/thaw duty cycle. It shares
   `SuspensionController` with App Suspension; independent owner phases combine
   into one effective frozen state, and one feature cannot thaw the other's claim. One native
   high-resolution waitable-timer worker owns all limiter schedules. Job Object control remains the
@@ -675,8 +675,7 @@ Read the relevant section before changing feature policy, ownership, restoration
   Suspension. Active limiter target and process-appearance refresh remain at one second even while
   hidden or under Adaptive Engine saver cadence. When CPU Limiter is disabled or the saved rules
   have no finite limits, automation keeps a refresh scheduled until the timing worker releases its
-  remaining targets and the cleanup status and Action Log can be published. CPU Limiter does not
-  own CPU allocation or Windows CPU-rate state.
+  remaining targets and the cleanup status and Action Log can be published.
   On Exit, the shared suspension controller's final Job cleanup determines the Job result.
   CPU Limiter reports its own thread fallback and timing worker failures separately.
   The applied rule's editor shows the worker's confirmed duty-cycle target and backend,
@@ -689,6 +688,14 @@ Read the relevant section before changing feature policy, ownership, restoration
   When A/C and battery limits differ, CPU Limiter pauses and releases its limits until Windows
   reports the power source. App Suspension retains its own freeze claims.
   Process inventory and retained cleanup errors remain visible in the status rail.
+- Load-triggered affinity is a separate method for an exact executable path. Consecutive CPU
+  samples are normalized to host logical processor capacity and tracked per process generation.
+  A qualified rule requests a group-0 selection through the CPU allocation coordinator. It can
+  only narrow the verified affinity mask. A verified limit stays active for at least 10 seconds
+  under continuous observations. Once CPU use remains for three seconds below 70% of the lesser
+  of the configured trigger and the verified restricted capacity, the limiter releases it and
+  waits 20 seconds before qualifying again. Missing or invalid observations, disable, and rule
+  removal withdraw the claim. The coordinator owns recovery, restoration, and handoff.
 
 ## Runtime observations
 
@@ -709,13 +716,13 @@ Read the relevant section before changing feature policy, ownership, restoration
 ## CPU allocation and Adaptive Engine
 
 - CPU allocation has one runtime coordinator and deterministic precedence: CPU Sets (Soft) >
-  Processor Affinity (Hard) > Instance Balancing > Adaptive Engine. Feature modules own
+  Processor Affinity (Hard) > Instance Balancing > CPU Limiter > Adaptive Engine. Feature modules own
   policy only; the coordinator alone owns affinity/CPU Set baselines, mutation, compensation,
   arbitration, and restoration. A higher-owner release queues the exact process key; `RuntimeCore`
   reconciles it once after every CPU producer has processed that worker pass. Shutdown bypasses
   this handoff and directly restores all coordinator-owned state in reverse application order.
-- CPU Sets, Processor Affinity, and Adaptive Engine CPU allocation are a complete
-  typed family cutover through `src/control/cpu_allocation.rs`. Do not restore feature-owned raw
+- CPU Sets, Processor Affinity, Instance Balancing, load-triggered affinity, and Adaptive Engine
+  use the typed boundary in `src/control/cpu_allocation.rs`. Do not restore feature-owned raw
   setters, property baselines, recovery calls, or affinity-owning `Drop` paths. Exact identity,
   mutual exclusion, actual-owner Action Log attribution, and clean/crash restoration are part of
   the boundary. Raw affinity, CPU Set, and packed topology-buffer calls live only in
@@ -733,7 +740,8 @@ Read the relevant section before changing feature policy, ownership, restoration
   targets or changing global pressure policy.
 - CPU Sets (Soft) and Processor Affinity (Hard) share one CPU-selection preset catalog. The
   topology-derived Core Presets are read-only: All, P-cores, E-cores, All cores no SMT, P-cores no
-  SMT, and E-cores no SMT. Custom presets remain editable. Every rule independently selects Focus,
+  SMT, and E-cores no SMT. CPU Sets (Soft) also shows one read-only preset per group on a
+  multi-group system. Custom presets remain editable. Every rule independently selects Focus,
   Visible Window, and Background masks with Focus > Visible Window > Background precedence.
   Selecting a preset copies its complete selection and topology signature into that tier;
   later preset edits or deletion do not silently rewrite configured rules.
@@ -1102,7 +1110,7 @@ Read the relevant section before changing feature policy, ownership, restoration
   App observation can change its exclusion. By Running App still observes after manual stops.
   Confirmed source recovery starts fresh pressure qualification. System Bottleneck and Adaptive
   Processor Power keep their separate observation and ownership rules.
-- The existing CPU allocation coordinator remains the only owner of baselines and recovery. Explicit Soft > Hard > Instance Balancing > Adaptive precedence applies to zoning too. Unsupported/multiple processor groups or invalid/empty partitions make zoning unavailable, never a silent All fallback.
+- The existing CPU allocation coordinator remains the only owner of baselines and recovery. CPU Sets (Soft), Processor Affinity (Hard), Instance Balancing, and CPU Limiter all take precedence over zoning. Unsupported/multiple processor groups or invalid/empty partitions make zoning unavailable, never a silent All fallback.
 - Disabled zoning may deserialize a missing zone block into inactive defaults without rewriting input. Enabled zoning with a missing block fails at deserialization for root, Battery, and presets. Do not infer zone values from the limiter or add a migration.
 
 ## Thread Priority discovery

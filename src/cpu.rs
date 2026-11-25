@@ -335,7 +335,7 @@ pub fn process_cpu_demand_percent(
     process_cpu_time_percent(previous, current, 1)
 }
 
-fn process_cpu_time_percent(
+pub(crate) fn process_cpu_time_percent(
     previous: ProcessCpuSample,
     current: ProcessCpuSample,
     processor_count: usize,

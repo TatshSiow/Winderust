@@ -2110,6 +2110,111 @@ fn external_affinity_break_is_relinquished_without_overwrite() {
 }
 
 #[test]
+fn affinity_limit_intersects_the_current_mask_and_preserves_an_external_change() {
+    let mut coordinator = coordinator();
+    let topology = test_topology();
+    let mut inventory = CpuSetInventory::default();
+    let request = claim(
+        ControlOwner::CpuLimiter,
+        CpuAllocationRequest::AffinityLimit {
+            selection: test_selection(0b0011),
+        },
+        7,
+    );
+    let set_affinity = |coordinator: &CpuAllocationCoordinator<FakePlatform>, affinity| {
+        coordinator
+            .platform
+            .state
+            .borrow_mut()
+            .processes
+            .get_mut(&42)
+            .unwrap()
+            .affinity = affinity;
+    };
+    set_affinity(&coordinator, 0b0110);
+    assert_eq!(
+        coordinator
+            .apply_policy_claim(&mut inventory, Ok(&topology), request.clone(), true)
+            .unwrap(),
+        CpuAllocationApplyOutcome::Applied
+    );
+    assert_eq!(process_state(&coordinator).affinity, 0b0010);
+    assert_eq!(
+        coordinator.effective_affinity_limit_count(&request.target.key()),
+        Some(1)
+    );
+    set_affinity(&coordinator, 0b0101);
+    assert_eq!(
+        coordinator
+            .apply_policy_claim(&mut inventory, Ok(&topology), request, true)
+            .unwrap(),
+        CpuAllocationApplyOutcome::NoUsableTarget
+    );
+    assert!(coordinator
+        .release_all_policy(ControlOwner::CpuLimiter)
+        .failures
+        .is_empty());
+    assert_eq!(process_state(&coordinator).affinity, 0b0101);
+    assert!(!coordinator.has_managed_state());
+}
+
+#[test]
+fn affinity_limit_yields_to_external_cpu_sets_and_explicit_placement() {
+    let mut coordinator = coordinator();
+    let topology = test_topology();
+    let mut inventory = CpuSetInventory::default();
+    let request = claim(
+        ControlOwner::CpuLimiter,
+        CpuAllocationRequest::AffinityLimit {
+            selection: test_selection(0b0011),
+        },
+        7,
+    );
+    coordinator
+        .platform
+        .state
+        .borrow_mut()
+        .processes
+        .get_mut(&42)
+        .unwrap()
+        .cpu_sets = vec![102];
+    assert_eq!(
+        coordinator
+            .apply_policy_claim(&mut inventory, Ok(&topology), request.clone(), true)
+            .unwrap(),
+        CpuAllocationApplyOutcome::NoUsableTarget
+    );
+    assert_eq!(process_state(&coordinator).affinity, 0b1111);
+    assert_eq!(process_state(&coordinator).cpu_sets, vec![102]);
+    assert!(coordinator
+        .release_all_policy(ControlOwner::CpuLimiter)
+        .failures
+        .is_empty());
+    coordinator
+        .apply_policy_claim(
+            &mut inventory,
+            Ok(&topology),
+            claim(
+                ControlOwner::CpuSetsSoft,
+                CpuAllocationRequest::SoftCpuSets {
+                    selection: test_selection(0b1000),
+                },
+                7,
+            ),
+            true,
+        )
+        .unwrap();
+    assert_eq!(
+        coordinator
+            .apply_policy_claim(&mut inventory, Ok(&topology), request, true)
+            .unwrap(),
+        CpuAllocationApplyOutcome::Shadowed
+    );
+    assert_eq!(process_state(&coordinator).affinity, 0b1111);
+    assert_eq!(process_state(&coordinator).cpu_sets, vec![103]);
+}
+
+#[test]
 fn external_cpu_sets_break_is_relinquished_without_overwrite() {
     let mut coordinator = coordinator();
     coordinator

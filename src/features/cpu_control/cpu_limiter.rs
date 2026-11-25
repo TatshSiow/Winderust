@@ -3,7 +3,9 @@ use std::{
     path::Path,
 };
 
-use windows_sys::Win32::System::Threading::GetCurrentProcessId;
+mod affinity;
+
+pub(crate) use affinity::{AffinityLimiter, AffinityLimiterCycle, CpuLimiterAffinityStatus};
 
 use crate::{
     action_log::{ActionLog, ActionLogFeature, ActionLogResult},
@@ -24,6 +26,7 @@ use crate::{
         },
         process_session_id, same_executable_path, ProcessInfo, ProtectedProcesses,
     },
+    platform::windows::process::current_process_id,
     rules::{execution_failure_suppression_threshold, ExecutionFailureTracker},
     runtime::observations::CycleObservations,
 };
@@ -41,6 +44,7 @@ pub struct CpuLimiterSnapshot {
     pub skipped_processes: usize,
     pub failed_processes: usize,
     pub(crate) active_limits: Vec<(String, CpuLimiterActivation)>,
+    pub(crate) active_affinity: Vec<(String, CpuLimiterAffinityStatus)>,
     pub(crate) restore_pending_apps: Vec<String>,
     pub failed_apps: Vec<String>,
     pub auto_excluded_processes: Vec<String>,
@@ -66,20 +70,31 @@ struct SelectedTarget {
     executable_path: String,
 }
 
+pub(crate) struct DutyLimiterCycle<'a> {
+    pub(crate) settings: &'a CpuLimiterSettings,
+    pub(crate) automation_enabled: bool,
+    pub(crate) allow_cross_session_process_control: bool,
+    pub(crate) affinity_targets: &'a BTreeSet<ProcessTargetKey>,
+}
+
 impl CpuLimiterManager {
-    pub fn update(
+    pub(crate) fn update(
         &mut self,
         controller: &mut CpuLimiterController,
-        settings: &CpuLimiterSettings,
-        automation_enabled: bool,
-        allow_cross_session_process_control: bool,
+        cycle: DutyLimiterCycle<'_>,
         observations: &mut CycleObservations,
         action_log: &mut ActionLog,
     ) -> CpuLimiterSnapshot {
+        let DutyLimiterCycle {
+            settings,
+            automation_enabled,
+            allow_cross_session_process_control,
+            affinity_targets,
+        } = cycle;
         if !automation_enabled || !settings.enabled {
             return self.clear(controller, action_log, false);
         }
-        if !has_finite_limits(settings) {
+        if !has_duty_cycle_limits(settings) {
             self.failure_suppression.clear();
             return self.clear(controller, action_log, true);
         }
@@ -102,8 +117,7 @@ impl CpuLimiterManager {
             Default::default()
         };
 
-        // SAFETY: GetCurrentProcessId takes no arguments and has no caller requirements.
-        let current_process_id = unsafe { GetCurrentProcessId() };
+        let current_process_id = current_process_id();
         let current_session_id = if allow_cross_session_process_control {
             None
         } else {
@@ -149,9 +163,18 @@ impl CpuLimiterManager {
             ) else {
                 continue;
             };
-            let Some(rule) = matching_rule(settings, &executable_path) else {
+            let Some(rule) = matching_rule(settings, &executable_path)
+                .filter(|rule| rule.affinity_limit.is_none())
+            else {
                 continue;
             };
+            if affinity_targets.contains(&ProcessTargetKey::new(
+                process.id,
+                creation_time,
+                &executable_path,
+            )) {
+                continue;
+            }
             let (focus, visible_window) = detected_process_tier(
                 process.id,
                 &executable_path,
@@ -162,15 +185,7 @@ impl CpuLimiterManager {
             let executable_path = executable_path.to_string_lossy().into_owned();
             let failure_key = process_failure_key(&executable_path);
             active_failure_keys.insert(failure_key);
-            if process.id == 0
-                || process.id == current_process_id
-                || process.is_critical != Some(false)
-                || !process.can_set_information
-                || process.is_service_account != Some(false)
-                || process.session_id.is_none_or(|session_id| session_id == 0)
-                || suspension_control::is_builtin_excluded(&process.name)
-                || current_session_id.is_some_and(|session| process.session_id != Some(session))
-            {
+            if !eligible_process(process, current_process_id, current_session_id) {
                 skipped_processes += 1;
                 continue;
             }
@@ -374,6 +389,7 @@ impl CpuLimiterManager {
             skipped_processes,
             failed_processes,
             active_limits,
+            active_affinity: Vec::new(),
             restore_pending_apps: restore_pending_apps.into_iter().collect(),
             auto_excluded_processes: auto_excluded_processes.into_iter().collect(),
             last_error,
@@ -488,10 +504,25 @@ fn limiter_activation_detail(activation: CpuLimiterActivation) -> String {
     format!("Set the managed app group's Allowed CPU Time target to {allowed_cpu_time_percent}%.{detail}")
 }
 
+fn eligible_process(process: &ProcessInfo, self_id: u32, session: Option<u32>) -> bool {
+    process.id != 0
+        && process.id != self_id
+        && process.is_critical == Some(false)
+        && process.can_set_information
+        && process.is_service_account == Some(false)
+        && process.session_id.is_some_and(|session| session != 0)
+        && !suspension_control::is_builtin_excluded(&process.name)
+        && session.is_none_or(|session| process.session_id == Some(session))
+}
+
 fn valid_rule(rule: &CpuLimiterRule) -> bool {
     rule.enabled
         && Path::new(rule.executable_path.trim_start()).is_absolute()
-        && rule.has_valid_allowed_cpu_time()
+        && (rule.affinity_limit.is_some() || rule.has_valid_allowed_cpu_time())
+}
+
+fn valid_duty_rule(rule: &CpuLimiterRule) -> bool {
+    rule.affinity_limit.is_none() && valid_rule(rule)
 }
 
 fn matching_rule<'a>(
@@ -564,7 +595,7 @@ fn requires_foreground_observation(settings: &CpuLimiterSettings) -> bool {
     settings
         .rules
         .iter()
-        .filter(|rule| valid_rule(rule))
+        .filter(|rule| valid_duty_rule(rule))
         .any(|rule| {
             let focus = resolved_allowed_cpu_time_percent(settings, rule, true, false);
             focus != resolved_allowed_cpu_time_percent(settings, rule, false, true)
@@ -573,8 +604,19 @@ fn requires_foreground_observation(settings: &CpuLimiterSettings) -> bool {
 }
 
 pub(crate) fn has_finite_limits(settings: &CpuLimiterSettings) -> bool {
+    has_duty_cycle_limits(settings) || has_affinity_rules(settings)
+}
+
+pub(crate) fn has_affinity_rules(settings: &CpuLimiterSettings) -> bool {
+    settings
+        .rules
+        .iter()
+        .any(|rule| valid_rule(rule) && rule.affinity_limit.is_some())
+}
+
+pub(crate) fn has_duty_cycle_limits(settings: &CpuLimiterSettings) -> bool {
     settings.rules.iter().any(|rule| {
-        valid_rule(rule)
+        valid_duty_rule(rule)
             && [(true, false), (false, true), (false, false)]
                 .into_iter()
                 .any(|(focus, visible_window)| {
@@ -587,7 +629,13 @@ pub(crate) fn has_finite_limits(settings: &CpuLimiterSettings) -> bool {
 pub(crate) fn same_limit_policy(ac: &CpuLimiterSettings, battery: &CpuLimiterSettings) -> bool {
     fn resolved_rules(
         settings: &CpuLimiterSettings,
-    ) -> impl Iterator<Item = (std::borrow::Cow<'_, str>, [Option<u8>; 3])> {
+    ) -> impl Iterator<
+        Item = (
+            std::borrow::Cow<'_, str>,
+            Option<&crate::config::CpuLimiterAffinityLimit>,
+            [Option<u8>; 3],
+        ),
+    > {
         settings
             .rules
             .iter()
@@ -595,8 +643,13 @@ pub(crate) fn same_limit_policy(ac: &CpuLimiterSettings, battery: &CpuLimiterSet
             .map(|rule| {
                 (
                     power_profile_executable_path_key(rule.executable_path.trim_start()),
+                    rule.affinity_limit.as_ref(),
                     [(true, false), (false, true), (false, false)].map(|(focused, visible)| {
-                        resolved_allowed_cpu_time_percent(settings, rule, focused, visible)
+                        if rule.affinity_limit.is_some() {
+                            None
+                        } else {
+                            resolved_allowed_cpu_time_percent(settings, rule, focused, visible)
+                        }
                     }),
                 )
             })
@@ -608,7 +661,7 @@ fn requires_visible_window_observation(settings: &CpuLimiterSettings) -> bool {
     settings
         .rules
         .iter()
-        .filter(|rule| valid_rule(rule))
+        .filter(|rule| valid_duty_rule(rule))
         .any(|rule| {
             resolved_allowed_cpu_time_percent(settings, rule, false, true)
                 != resolved_allowed_cpu_time_percent(settings, rule, false, false)
@@ -702,6 +755,7 @@ mod tests {
             focus_allowed_cpu_time_percent: 50,
             visible_window_allowed_cpu_time_percent: 50,
             background_allowed_cpu_time_percent: 50,
+            affinity_limit: None,
         }
     }
 
@@ -863,9 +917,12 @@ mod tests {
                 .with_foreground_source(foreground_source);
             manager.update(
                 &mut controller,
-                settings,
-                true,
-                true,
+                DutyLimiterCycle {
+                    settings,
+                    automation_enabled: true,
+                    allow_cross_session_process_control: true,
+                    affinity_targets: &BTreeSet::new(),
+                },
                 &mut observations,
                 &mut action_log,
             )

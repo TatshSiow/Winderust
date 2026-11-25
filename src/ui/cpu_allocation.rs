@@ -788,7 +788,7 @@ impl SelectionCatalog {
         .map_err(|error| error.to_string())
     }
 
-    fn error(&self, selection: &CpuSelection) -> Option<String> {
+    pub(super) fn error(&self, selection: &CpuSelection) -> Option<String> {
         match &self.topology {
             Ok(_) => verify_selection_against(selection, &self.topology, self.kind).err(),
             Err(error) => {
@@ -919,6 +919,19 @@ fn core_presets(
             .map(|selection| super::widgets::Choice(selection, t!(key).to_string()))
     })
     .collect::<Result<Vec<_>, _>>()?;
+    let groups = all
+        .iter()
+        .map(|id| id.group)
+        .collect::<std::collections::BTreeSet<_>>();
+    if groups.len() > 1 {
+        for group in groups {
+            let members = all.iter().copied().filter(|id| id.group == group).collect();
+            presets.push(super::widgets::Choice(
+                CpuSelection::bind(topology, members)?,
+                t!("cpu_allocation.processor_group_preset", group = group).into_owned(),
+            ));
+        }
+    }
     presets.extend(cache_presets(topology, &all)?);
     Ok(presets)
 }
@@ -1137,6 +1150,23 @@ mod tests {
         assert_eq!(zero.processors().len(), 2);
         assert!(soft.error(&all).is_none());
         assert!(hard.error(&all).is_some());
+        for group in [0, 1] {
+            let label = t!("cpu_allocation.processor_group_preset", group = group);
+            let preset = soft
+                .presets
+                .iter()
+                .find(|preset| preset.1 == label)
+                .unwrap();
+            assert_eq!(
+                preset.0.processors(),
+                all.processors()
+                    .iter()
+                    .copied()
+                    .filter(|id| id.group == group)
+                    .collect::<Vec<_>>()
+            );
+            assert!(!hard.presets.iter().any(|preset| preset.1 == label));
+        }
         let group_one = ProcessorId {
             group: 1,
             number: 0,

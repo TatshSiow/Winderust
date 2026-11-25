@@ -924,6 +924,7 @@ fn cpu_limiter_schema_defaults_rules_to_the_page_policy() {
     assert!(round_trip.contains("focus_mode = \"default\""));
     assert!(round_trip.contains("visible_window_mode = \"default\""));
     assert!(round_trip.contains("background_mode = \"default\""));
+    assert!(parsed.cpu_limiter.rules[0].affinity_limit.is_none());
 }
 
 #[test]
@@ -937,6 +938,7 @@ fn cpu_limiter_tier_percentages_round_trip_at_boundaries() {
         focus_allowed_cpu_time_percent: 1,
         visible_window_allowed_cpu_time_percent: 50,
         background_allowed_cpu_time_percent: 100,
+        affinity_limit: None,
     };
 
     let serialized = toml::to_string_pretty(&rule).expect("CPU Limiter rule should serialize");
@@ -944,6 +946,34 @@ fn cpu_limiter_tier_percentages_round_trip_at_boundaries() {
         toml::from_str(&serialized).expect("CPU Limiter rule should parse");
 
     assert_eq!(parsed, rule);
+}
+
+#[test]
+fn cpu_limiter_affinity_limits_round_trip_and_validate_in_both_profiles() {
+    use crate::config::CpuLimiterAffinityLimit;
+    use crate::cpu_topology::test_selection;
+
+    let mut rule: CpuLimiterRule =
+        toml::from_str(r"executable_path = 'C:\Apps\encoder.exe'").unwrap();
+    rule.affinity_limit = Some(CpuLimiterAffinityLimit {
+        trigger_percent: 25,
+        sustain_seconds: 5,
+        selection: test_selection(1),
+    });
+    let mut battery = Settings::default();
+    battery.cpu_limiter.rules.push(rule);
+    let settings = Settings {
+        on_battery: Some(Box::new(battery)),
+        ..Settings::default()
+    };
+    assert!(settings.validate().is_ok());
+
+    let raw = toml::to_string_pretty(&settings).unwrap();
+    let mut parsed: Settings = toml::from_str(&raw).unwrap();
+    assert_eq!(parsed.on_battery, settings.on_battery);
+    let rule = &mut parsed.on_battery.as_mut().unwrap().cpu_limiter.rules[0];
+    rule.affinity_limit.as_mut().unwrap().sustain_seconds = 601;
+    assert!(parsed.validate().is_err());
 }
 
 #[test]
@@ -1205,6 +1235,7 @@ fn toml_round_trip_preserves_settings() {
                 focus_allowed_cpu_time_percent: 35,
                 visible_window_allowed_cpu_time_percent: 35,
                 background_allowed_cpu_time_percent: 35,
+                affinity_limit: None,
             }],
         },
         by_running_app: ByRunningAppSettings {

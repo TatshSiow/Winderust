@@ -38,6 +38,24 @@ impl Settings {
             }
             profile.app_suspension.validate()?;
             profile.sleep_prevention.validate()?;
+            for rule in &profile.cpu_limiter.rules {
+                if let Some(limit) = &rule.affinity_limit {
+                    if !std::path::Path::new(&rule.executable_path).is_absolute()
+                        || rule.executable_path.contains('\0')
+                    {
+                        return Err(
+                            "CPU Limiter affinity rules require an absolute executable path."
+                                .into(),
+                        );
+                    }
+                    if !limit.is_valid() {
+                        return Err(format!(
+                            "CPU Limiter affinity rule '{}' requires a trigger of 1–100%, a duration of 1–600 seconds, and at least one processor in group 0.",
+                            rule.executable_path
+                        ));
+                    }
+                }
+            }
             let focus = profile
                 .by_focus
                 .rules

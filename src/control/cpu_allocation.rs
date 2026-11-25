@@ -101,6 +101,7 @@ impl CpuSetInventory {
 pub(crate) enum CpuAllocationRequest {
     SoftCpuSets { selection: CpuSelection },
     HardAffinity { selection: CpuSelection },
+    AffinityLimit { selection: CpuSelection },
 }
 
 #[derive(Debug, Clone)]
@@ -559,13 +560,8 @@ impl<P: CpuAllocationPlatform> CpuAllocationCoordinator<P> {
                     .collect();
                 self.apply_soft_claim(&identity, &process, claim.owner, desired, Some(expectation))
             }
-            ResolvedCpuAllocation::HardAffinity(mask) => self
-                .apply_hard_claim(
-                    &identity,
-                    &process,
-                    claim.owner,
-                    HardAffinityRequest::Exact(mask),
-                )
+            ResolvedCpuAllocation::HardAffinity(request) => self
+                .apply_hard_claim(&identity, &process, claim.owner, request)
                 .map_err(Into::into),
         }
     }
@@ -635,9 +631,43 @@ impl<P: CpuAllocationPlatform> CpuAllocationCoordinator<P> {
     ) -> Result<CpuAllocationApplyOutcome, ProcessControlError> {
         self.platform.validate_group_zero_affinity(process)?;
         let (current, system) = self.platform.query_affinity(process)?;
-        let desired = match request {
-            HardAffinityRequest::Exact(mask) => target_affinity_mask(mask, system),
-        };
+        let desired =
+            match request {
+                HardAffinityRequest::Exact(mask) => target_affinity_mask(mask, system),
+                HardAffinityRequest::Limit(mask) => {
+                    if self.managed_affinity.get(identity).is_some_and(|managed| {
+                        managed.owner == owner && managed.expected != current
+                    }) {
+                        self.release_affinity_if_managed(identity, process)?;
+                        return Ok(CpuAllocationApplyOutcome::NoUsableTarget);
+                    }
+                    let mut cpu_sets = self.platform.query_cpu_sets(process)?;
+                    normalize_cpu_set_ids(&mut cpu_sets);
+                    let baseline_sets = self
+                        .managed_cpu_sets
+                        .get(identity)
+                        .filter(|managed| managed.expected == cpu_sets)
+                        .map_or(cpu_sets.as_slice(), |managed| managed.baseline.as_slice());
+                    if !baseline_sets.is_empty() {
+                        return Ok(CpuAllocationApplyOutcome::NoUsableTarget);
+                    }
+                    let Some(desired) = target_affinity_mask(mask, system)
+                        .map(|selection| selection & current)
+                        .filter(|desired| *desired != 0)
+                    else {
+                        return Ok(CpuAllocationApplyOutcome::NoUsableTarget);
+                    };
+                    if desired == current
+                        && !self
+                            .managed_affinity
+                            .get(identity)
+                            .is_some_and(|managed| managed.owner == owner)
+                    {
+                        return Ok(CpuAllocationApplyOutcome::NoUsableTarget);
+                    }
+                    Some(desired)
+                }
+            };
         let released_cpu_sets = self.release_cpu_sets_for_switch(identity, process)?;
         let Some(desired) = desired else {
             if let Err(error) = self.release_affinity_if_managed(identity, process) {
@@ -1661,6 +1691,17 @@ impl<P: CpuAllocationPlatform> CpuAllocationCoordinator<P> {
         self.policy_managed_processes(owner).count()
     }
 
+    pub(crate) fn effective_affinity_limit_count(&self, key: &ProcessTargetKey) -> Option<usize> {
+        self.managed_affinity
+            .iter()
+            .find_map(|(identity, managed)| {
+                (managed.owner == ControlOwner::CpuLimiter
+                    && managed.confirmed
+                    && identity.key() == *key)
+                    .then_some(managed.expected.count_ones() as usize)
+            })
+    }
+
     pub(crate) fn policy_managed_processes(
         &self,
         owner: ControlOwner,
@@ -1798,6 +1839,7 @@ enum ManagedProperty {
 #[derive(Clone, Copy)]
 enum HardAffinityRequest {
     Exact(u64),
+    Limit(u64),
 }
 
 enum SwitchCompensation {
@@ -2056,6 +2098,7 @@ fn cpu_allocation_owner_precedence() -> &'static [ControlOwner] {
         ControlOwner::CpuSetsSoft,
         ControlOwner::ProcessorAffinityHard,
         ControlOwner::InstanceBalancing,
+        ControlOwner::CpuLimiter,
         ControlOwner::AdaptiveEngine,
     ]
 }
@@ -2077,7 +2120,7 @@ fn target_affinity_mask(rule_mask: u64, system_affinity: usize) -> Option<usize>
 
 enum ResolvedCpuAllocation<'a> {
     SoftCpuSets(&'a [ProcessorId]),
-    HardAffinity(u64),
+    HardAffinity(HardAffinityRequest),
     InstanceBalancing {
         processors: &'a [ProcessorId],
         generation: u64,
@@ -2111,7 +2154,10 @@ fn resolve_request<'a>(
             }),
         CpuAllocationRequest::HardAffinity { selection } => selection
             .resolve_group_zero(topology)
-            .map(ResolvedCpuAllocation::HardAffinity),
+            .map(|mask| ResolvedCpuAllocation::HardAffinity(HardAffinityRequest::Exact(mask))),
+        CpuAllocationRequest::AffinityLimit { selection } => selection
+            .resolve_group_zero(topology)
+            .map(|mask| ResolvedCpuAllocation::HardAffinity(HardAffinityRequest::Limit(mask))),
     }
     .map_err(|error| ProcessControlError::Failed(error.to_string()))
 }

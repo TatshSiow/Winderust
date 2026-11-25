@@ -435,6 +435,42 @@ impl CpuLimiterController {
             .map_err(|_| "CPU Limiter worker state is unavailable.".to_owned())
     }
 
+    pub(crate) fn covers_target(
+        &self,
+        target: &SuspensionTarget,
+        allow_cross_session_process_control: bool,
+    ) -> Result<bool, String> {
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| "CPU Limiter worker state is unavailable.".to_owned())?;
+        let mut jobs = state
+            .targets
+            .values()
+            .filter(|owner| owner.backend.is_job())
+            .peekable();
+        if jobs.peek().is_none() {
+            return Ok(false);
+        }
+        let mut suspension = self
+            .suspension
+            .lock()
+            .map_err(|_| "CPU Limiter suspension state is unavailable.".to_owned())?;
+        for owner in jobs {
+            if suspension
+                .cpu_limiter_job_contains(
+                    &owner.target.suspension_target,
+                    target,
+                    allow_cross_session_process_control,
+                )
+                .map_err(|error| error.to_string())?
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     pub(crate) fn target_observations(
         &self,
     ) -> Result<BTreeMap<ProcessTargetKey, CpuLimiterTargetObservation>, String> {

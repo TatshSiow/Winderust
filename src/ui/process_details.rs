@@ -252,12 +252,10 @@ pub(super) fn update(s: &mut SettingsEditor, image_path: &str, m: Message) -> Op
             }
         }
         Message::LimiterMode(tier, value) => {
-            if let Some(i) = s
-                .cpu_limiter
-                .rules
-                .iter()
-                .position(|r| same_rule_executable_path(&r.executable_path, image_path))
-            {
+            if let Some(i) = s.cpu_limiter.rules.iter().position(|r| {
+                r.affinity_limit.is_none()
+                    && same_rule_executable_path(&r.executable_path, image_path)
+            }) {
                 cpu_limiter::CpuLimiter::default().update_profile(
                     s,
                     cpu_limiter::Message::RuleMode(i, limiter_tier(tier), value),
@@ -265,12 +263,10 @@ pub(super) fn update(s: &mut SettingsEditor, image_path: &str, m: Message) -> Op
             }
         }
         Message::LimiterLimit(tier, value) => {
-            if let Some(i) = s
-                .cpu_limiter
-                .rules
-                .iter()
-                .position(|r| same_rule_executable_path(&r.executable_path, image_path))
-            {
+            if let Some(i) = s.cpu_limiter.rules.iter().position(|r| {
+                r.affinity_limit.is_none()
+                    && same_rule_executable_path(&r.executable_path, image_path)
+            }) {
                 cpu_limiter::CpuLimiter::default().update_profile(
                     s,
                     cpu_limiter::Message::RuleLimit(i, limiter_tier(tier), value),
@@ -579,7 +575,17 @@ pub(super) fn view<'a>(
         switch(limiter.is_some(), Some(Message::Limiter))
     )]
     .spacing(widgets::CARD_GAP);
-    if let Some(rule) = limiter {
+    if let Some(limit) = limiter.and_then(|rule| rule.affinity_limit.as_ref()) {
+        card = card
+            .push(widgets::settings_divider())
+            .push(text(t!("cpu_limiter.load_triggered_affinity").into_owned()))
+            .push(setting_row(
+                "cpu_allocation.selected_logical_cpus",
+                text(cpu_allocation::selection_text(&limit.selection))
+                    .width(Fill)
+                    .wrapping(text::Wrapping::WordOrGlyph),
+            ));
+    } else if let Some(rule) = limiter {
         for tier in Tier::ALL {
             let (mode, limit) = match tier {
                 Tier::Focus => (rule.focus_mode, rule.focus_allowed_cpu_time_percent),

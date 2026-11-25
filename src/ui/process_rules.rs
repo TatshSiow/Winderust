@@ -71,6 +71,7 @@ pub(crate) fn new_cpu_limiter_rule(process: &str) -> CpuLimiterRule {
         focus_allowed_cpu_time_percent: 50,
         visible_window_allowed_cpu_time_percent: 50,
         background_allowed_cpu_time_percent: 50,
+        affinity_limit: None,
     }
 }
 
