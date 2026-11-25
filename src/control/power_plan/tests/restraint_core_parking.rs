@@ -125,6 +125,42 @@ fn unknown_source_retries_partial_first_overlay_and_clear_writes() {
 }
 
 #[test]
+fn unknown_source_records_read_error_and_keeps_overlay_until_retry() {
+    let now = Instant::now();
+    let mut controller = PowerPlanController::with_platform(FakePlatform::new("original"));
+    let mut request = adaptive_request();
+    controller.reconcile_adaptive(request, now).unwrap();
+    let normal = controller.platform.processor_values.unwrap();
+    request.restraint_core_parking = floor(PowerSourceProfile::PluggedIn, 95);
+    controller.reconcile_adaptive(request, now).unwrap();
+    let restrained = controller.platform.processor_values;
+    controller
+        .platform
+        .query_failures
+        .insert(controller.platform.query_count + 1);
+    controller.platform.events.borrow_mut().clear();
+
+    assert!(matches!(
+        controller.clear_adaptive_restraint_core_parking(now),
+        Err(ActivePlanCheckError::Read(error)) if error == "injected active query failure"
+    ));
+    assert_eq!(
+        controller.status().active_plan_read_error.as_deref(),
+        Some("injected active query failure")
+    );
+    assert_eq!(controller.platform.events.borrow().as_slice(), ["query"]);
+    assert_eq!(controller.platform.processor_values, restrained);
+
+    controller
+        .clear_adaptive_restraint_core_parking(now)
+        .unwrap();
+    assert!(controller.status().active_plan_read_error.is_none());
+    assert_eq!(controller.platform.processor_values, Some(normal));
+    assert_eq!(controller.platform.previous_processor_values, restrained);
+    assert_eq!(controller.platform.active, "adaptive-1");
+}
+
+#[test]
 fn overlay_only_mutations_and_partial_repair_preserve_downward_hysteresis() {
     let now = Instant::now();
     let start_downward = now + Duration::from_secs(1);

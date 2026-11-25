@@ -1606,8 +1606,7 @@ impl RuntimeCore {
         &mut self,
     ) -> Result<(), ActivePlanCheckError> {
         self.power_plan_controller
-            .clear_adaptive_restraint_core_parking(Instant::now())
-            .map_err(ActivePlanCheckError::Operation)?;
+            .clear_adaptive_restraint_core_parking(Instant::now())?;
         self.refresh_active_plan(false)
     }
 

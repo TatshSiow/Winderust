@@ -1070,7 +1070,7 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
     pub(crate) fn clear_adaptive_restraint_core_parking(
         &mut self,
         now: Instant,
-    ) -> Result<(), String> {
+    ) -> Result<(), ActivePlanCheckError> {
         let has_overlay = |plan: &ActiveAdaptivePowerPlan| {
             plan.active
                 && plan
@@ -1081,16 +1081,19 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
         if !self.adaptive_plan.as_ref().is_some_and(has_overlay) {
             return Ok(());
         }
-        self.refresh_active_plan(now)?;
+        self.refresh_active_plan_for_status(now, true)?;
         let Some(plan) = self.adaptive_plan.as_mut().filter(|plan| has_overlay(plan)) else {
             return Ok(());
         };
         let Some(state) = plan.values.as_mut() else {
-            return Err("Adaptive core parking baseline was not initialized.".to_owned());
+            return Err(ActivePlanCheckError::Operation(
+                "Adaptive core parking baseline was not initialized.".to_owned(),
+            ));
         };
         let previous = state.applied.take();
         self.platform
-            .apply_processor_values(&plan.plan_guid, state.normal, previous)?;
+            .apply_processor_values(&plan.plan_guid, state.normal, previous)
+            .map_err(ActivePlanCheckError::Operation)?;
         state.applied = Some(state.normal);
         state.restraint_core_parking_may_be_applied = false;
         Ok(())
