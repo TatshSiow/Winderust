@@ -1,5 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
+    path::Path,
     time::{Duration, Instant},
 };
 
@@ -424,10 +425,12 @@ impl<P: PriorityEfficiencyPlatform> PriorityEfficiencyController<P> {
         allow_cross_session_process_control: bool,
     ) -> Result<bool, ProcessControlError> {
         let key = target.key();
+        let effective = self
+            .effective_priority_claim(&key)
+            .map(|claim| (claim.owner, claim.priority));
         if self.adaptive_priority_manual_yields.contains(&key)
-            || self
-                .effective_priority_claim(&key)
-                .is_some_and(|claim| claim.owner != ControlOwner::AdaptiveEngine)
+            || self.pending_priority_releases.contains_key(&key)
+            || effective.is_some_and(|(owner, _)| owner != ControlOwner::AdaptiveEngine)
         {
             return Ok(false);
         }
@@ -444,8 +447,22 @@ impl<P: PriorityEfficiencyPlatform> PriorityEfficiencyController<P> {
                 managed.baseline == normal
                     && (current == normal
                         || (managed.owner == ControlOwner::AdaptiveEngine
-                            && current == PriorityClassValue::BelowNormal.raw()))
+                            && managed.verified
+                            && effective.is_some_and(|(_, priority)| priority.raw() == current)))
             }))
+    }
+
+    pub(crate) fn adaptive_restraint_restore_pending(
+        &self,
+        id: u32,
+        creation_time: u64,
+        executable_path: &Path,
+    ) -> bool {
+        !self.pending_priority_releases.is_empty()
+            && self
+                .pending_priority_releases
+                .get(&ProcessTargetKey::new(id, creation_time, executable_path))
+                .is_some_and(|release| release.owner == ControlOwner::AdaptiveEngine)
     }
 
     pub(crate) fn apply_priority_claim(
@@ -1572,9 +1589,8 @@ impl<P: PriorityEfficiencyPlatform> PriorityEfficiencyController<P> {
                     .iter()
                     .find_map(|owner| identity.target_entry(self.priority_claims.get(owner)?))?;
                 (effective.owner == ControlOwner::AdaptiveEngine
-                    && effective.priority == PriorityClassValue::BelowNormal
                     && managed.baseline == PriorityClassValue::Normal.raw()
-                    && managed.expected == PriorityClassValue::BelowNormal.raw())
+                    && managed.expected == effective.priority.raw())
                 .then_some((identity, AdaptiveRestraintState::Verified))
             });
         pending.chain(managed)

@@ -61,9 +61,12 @@ pub(super) fn cpu_pressure_restraint_should_run(
     {
         return false;
     }
-    let threshold = f32::from(settings.foreground_or_system_cpu_threshold_percent.min(100));
-    foreground_cpu_usage_percent.is_some_and(|usage| usage >= threshold)
-        || total_cpu_usage_percent.is_some_and(|usage| usage >= threshold)
+    cpu_pressure_reaches(
+        settings.pressure_source,
+        foreground_cpu_usage_percent,
+        total_cpu_usage_percent,
+        settings.foreground_or_system_cpu_threshold_percent.min(100),
+    )
 }
 
 pub(super) fn cpu_pressure_above_recovery_threshold(
@@ -72,10 +75,29 @@ pub(super) fn cpu_pressure_above_recovery_threshold(
     total_cpu_usage_percent: Option<f32>,
 ) -> bool {
     let trigger = settings.foreground_or_system_cpu_threshold_percent.min(100);
-    let recovery_threshold =
-        f32::from(trigger.saturating_sub(ADAPTIVE_ENGINE_PROCESS_RECOVERY_BAND_PERCENT));
-    foreground_cpu_usage_percent.is_some_and(|usage| usage >= recovery_threshold)
-        || total_cpu_usage_percent.is_some_and(|usage| usage >= recovery_threshold)
+    cpu_pressure_reaches(
+        settings.pressure_source,
+        foreground_cpu_usage_percent,
+        total_cpu_usage_percent,
+        trigger.saturating_sub(ADAPTIVE_ENGINE_PROCESS_RECOVERY_BAND_PERCENT),
+    )
+}
+
+fn cpu_pressure_reaches(
+    source: AdaptivePressureSource,
+    foreground_usage: Option<f32>,
+    system_usage: Option<f32>,
+    threshold: u8,
+) -> bool {
+    let reaches_threshold = |usage| usage >= f32::from(threshold);
+    let foreground_high = foreground_usage.is_some_and(reaches_threshold);
+    let system_high = system_usage.is_some_and(reaches_threshold);
+    match source {
+        AdaptivePressureSource::Either => foreground_high || system_high,
+        AdaptivePressureSource::System => system_high,
+        AdaptivePressureSource::Foreground => foreground_high,
+        AdaptivePressureSource::Both => foreground_high && system_high,
+    }
 }
 
 pub(super) fn cpu_allocation_method(settings: &AdaptiveEngineProcessSettings) -> CpuAllocationMode {

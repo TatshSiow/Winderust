@@ -485,7 +485,9 @@ User-facing behavior:
   process priority are observed.
 - Priority precedence is Efficiency Mode > Process Priority > CPU Pressure
   Restraint. Restraint uses `GetPriorityClass` to verify `NORMAL_PRIORITY_CLASS`
-  before claiming `BELOW_NORMAL_PRIORITY_CLASS` with `SetPriorityClass`.
+  before claiming `BELOW_NORMAL_PRIORITY_CLASS` or optional `IDLE_PRIORITY_CLASS`
+  with `SetPriorityClass`. Windows documents that child processes can inherit the
+  Idle class. The controller restores directly managed process instances.
   Efficiency Mode owns automatic Power Throttling claims.
 - It restores only while the live value still equals Winderust's expected
   value. An external change relinquishes ownership and the matching crash

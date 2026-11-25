@@ -159,6 +159,7 @@ pub(super) fn apply_adaptive_engine_process_preset(
     settings.dynamic_resource_zone_settings = DynamicResourceZoneSettings::default();
     settings.background_processor_selection = values.background_processor_selection;
     settings.processor_limit_percent = values.processor_limit_percent;
+    settings.pressure_source = AdaptivePressureSource::default();
     settings.foreground_or_system_cpu_threshold_percent =
         values.foreground_or_system_cpu_threshold_percent;
     settings.background_app_cpu_threshold_percent = values.background_app_cpu_threshold_percent;
@@ -167,7 +168,9 @@ pub(super) fn apply_adaptive_engine_process_preset(
     settings.restraint_trigger_time_ms = values.restraint_trigger_time_ms;
     settings.pause_restraint_when_idle = false;
     settings.restraint_idle_timeout_seconds = DEFAULT_ADAPTIVE_RESTRAINT_IDLE_TIMEOUT_SECONDS;
+    settings.restraint_priority = AdaptiveRestraintPriority::default();
     settings.cpu_restraint_time_seconds = values.cpu_restraint_time_seconds;
+    settings.maximum_restraint_time_seconds = 0;
     settings.cpu_recovery_time_seconds = values.cpu_recovery_time_seconds;
     settings.maximum_restrained_apps = values.maximum_restrained_apps;
 }
@@ -429,20 +432,29 @@ mod tests {
     }
 
     #[test]
-    fn built_in_presets_set_restraint_timing_and_leave_idle_pause_off() {
-        let mut settings = AdaptiveEngineProcessSettings {
-            pause_restraint_when_idle: true,
-            restraint_idle_timeout_seconds: 120,
-            ..Default::default()
-        };
+    fn built_in_presets_set_restraint_timing_and_reset_advanced_controls() {
         for (preset, dwell_ms) in BuiltInAdaptiveEnginePreset::ALL
             .into_iter()
             .zip([1_500, 1_500, 750, 500])
         {
+            let mut settings = AdaptiveEngineProcessSettings {
+                pause_restraint_when_idle: true,
+                restraint_idle_timeout_seconds: 120,
+                pressure_source: AdaptivePressureSource::System,
+                restraint_priority: AdaptiveRestraintPriority::Idle,
+                maximum_restraint_time_seconds: 10,
+                ..Default::default()
+            };
             apply_adaptive_engine_process_preset(&mut settings, preset);
             assert_eq!(settings.restraint_trigger_time_ms, dwell_ms);
             assert!(!settings.pause_restraint_when_idle);
             assert_eq!(settings.restraint_idle_timeout_seconds, 300);
+            assert_eq!(settings.pressure_source, AdaptivePressureSource::Either);
+            assert_eq!(
+                settings.restraint_priority,
+                AdaptiveRestraintPriority::BelowNormal
+            );
+            assert_eq!(settings.maximum_restraint_time_seconds, 0);
         }
     }
 
@@ -451,6 +463,11 @@ mod tests {
         let mut settings = Settings::default();
         settings.adaptive_engine_process.restraint_trigger_time_ms = 2_700;
         settings.adaptive_engine_process.pause_restraint_when_idle = true;
+        settings.adaptive_engine_process.pressure_source = AdaptivePressureSource::Both;
+        settings.adaptive_engine_process.restraint_priority = AdaptiveRestraintPriority::Idle;
+        settings
+            .adaptive_engine_process
+            .maximum_restraint_time_seconds = 10;
         settings
             .adaptive_engine_process
             .restraint_idle_timeout_seconds = 120;

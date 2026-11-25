@@ -401,18 +401,19 @@ fn invalid_by_time_clock_values_fail_load_and_import_without_rewriting() {
 
 use crate::config::{
     AccentSettings, ActionLogMode, AdaptiveEnginePreset, AdaptiveEngineProcessSettings,
-    AdaptiveEngineSettings, AdvancedPowerPlanTuningPreset, AdvancedSettings, AppLanguage,
-    AppSuspensionRule, AppSuspensionSettings, AppThemeMode, BackgroundProcessorSelection,
-    ByActivitySettings, ByCpuLoadRule, ByCpuLoadSettings, ByFocusRule, ByFocusSettings,
-    ByRunningAppRule, ByRunningAppSettings, ByTimeRule, ByTimeSettings, CpuAllocationMethod,
-    CpuAllocationPreset, CpuAllocationRule, CpuAllocationSettings, CpuLimiterRule,
-    CpuLimiterSettings, CpuUsageComparison, DynamicPriorityBoostSettings, EfficiencyModeRule,
-    EfficiencyModeSettings, GeneralSettings, GpuPrioritySettings, InputDetectionSettings,
-    IoPrioritySettings, MemoryPrioritySettings, MemoryTrimSettings, NetworkThresholdUnit,
-    PowerPlanSettings, ProcessDynamicPriorityBoostSetting, ProcessExclusionRule,
-    ProcessGpuPrioritySetting, ProcessIoPrioritySetting, ProcessMemoryPrioritySetting,
-    ProcessPrioritySetting, ProcessPrioritySettings, ProcessRuleMode, ProcessThreadPrioritySetting,
-    ThreadPrioritySettings, TimerResolutionRule, TimerResolutionSettings, WeekdaySetting,
+    AdaptiveEngineSettings, AdaptivePressureSource, AdaptiveRestraintPriority,
+    AdvancedPowerPlanTuningPreset, AdvancedSettings, AppLanguage, AppSuspensionRule,
+    AppSuspensionSettings, AppThemeMode, BackgroundProcessorSelection, ByActivitySettings,
+    ByCpuLoadRule, ByCpuLoadSettings, ByFocusRule, ByFocusSettings, ByRunningAppRule,
+    ByRunningAppSettings, ByTimeRule, ByTimeSettings, CpuAllocationMethod, CpuAllocationPreset,
+    CpuAllocationRule, CpuAllocationSettings, CpuLimiterRule, CpuLimiterSettings,
+    CpuUsageComparison, DynamicPriorityBoostSettings, EfficiencyModeRule, EfficiencyModeSettings,
+    GeneralSettings, GpuPrioritySettings, InputDetectionSettings, IoPrioritySettings,
+    MemoryPrioritySettings, MemoryTrimSettings, NetworkThresholdUnit, PowerPlanSettings,
+    ProcessDynamicPriorityBoostSetting, ProcessExclusionRule, ProcessGpuPrioritySetting,
+    ProcessIoPrioritySetting, ProcessMemoryPrioritySetting, ProcessPrioritySetting,
+    ProcessPrioritySettings, ProcessRuleMode, ProcessThreadPrioritySetting, ThreadPrioritySettings,
+    TimerResolutionRule, TimerResolutionSettings, WeekdaySetting,
 };
 
 fn set_cpu_allocation_selections(settings: &mut Settings, mask: u64) {
@@ -798,9 +799,12 @@ fn omitted_restraint_settings_use_defaults_independent_of_sampling_interval() {
     let fields = settings.as_table_mut().unwrap();
     fields.insert("reaction_time_ms".into(), toml::Value::Integer(750));
     for key in [
+        "pressure_source",
         "restraint_trigger_time_ms",
         "pause_restraint_when_idle",
         "restraint_idle_timeout_seconds",
+        "restraint_priority",
+        "maximum_restraint_time_seconds",
     ] {
         assert!(fields.remove(key).is_some());
     }
@@ -817,15 +821,19 @@ fn omitted_restraint_settings_use_defaults_independent_of_sampling_interval() {
 
 #[test]
 fn invalid_restraint_durations_are_rejected_for_live_profiles_and_presets() {
-    for (trigger, idle, field) in [
-        (249, 300, "time above threshold"),
-        (60_001, 300, "time above threshold"),
-        (1_000, 0, "idle timeout"),
-        (1_000, 3_601, "idle timeout"),
+    let maximum_error = rust_i18n::t!("adaptive_engine_process.maximum_restraint_time_invalid");
+    for (trigger, idle, maximum, field) in [
+        (249, 300, 0, "time above threshold"),
+        (60_001, 300, 0, "time above threshold"),
+        (1_000, 0, 0, "idle timeout"),
+        (1_000, 3_601, 0, "idle timeout"),
+        (1_000, 300, 2, maximum_error.as_ref()),
+        (1_000, 300, 3_601, maximum_error.as_ref()),
     ] {
         let process = AdaptiveEngineProcessSettings {
             restraint_trigger_time_ms: trigger,
             restraint_idle_timeout_seconds: idle,
+            maximum_restraint_time_seconds: maximum,
             ..Default::default()
         };
         let root = Settings {
@@ -1348,6 +1356,7 @@ fn toml_round_trip_preserves_settings() {
             background_processor_selection: BackgroundProcessorSelection::LeastUsed,
             processor_limit_percent: 50,
             specific_processors: crate::cpu_topology::test_selection(0b101),
+            pressure_source: AdaptivePressureSource::Both,
             foreground_or_system_cpu_threshold_percent: 70,
             background_app_cpu_threshold_percent: 25,
             cpu_recovery_threshold_percent: 5,
@@ -1355,7 +1364,9 @@ fn toml_round_trip_preserves_settings() {
             restraint_trigger_time_ms: 2_700,
             pause_restraint_when_idle: true,
             restraint_idle_timeout_seconds: 120,
+            restraint_priority: AdaptiveRestraintPriority::Idle,
             cpu_restraint_time_seconds: 4,
+            maximum_restraint_time_seconds: crate::config::ADAPTIVE_RESTRAINT_MAX_TIME_SECONDS,
             cpu_recovery_time_seconds: 10,
             maximum_restrained_apps: 6,
             custom_rules: vec![ProcessExclusionRule {
@@ -1502,6 +1513,10 @@ fn toml_round_trip_preserves_settings() {
         .memory_trim
         .system_memory_load_threshold_percent = 72;
     settings.battery_profile_mut().sleep_prevention.enabled = false;
+    let battery_restraint = &mut settings.battery_profile_mut().adaptive_engine_process;
+    battery_restraint.pressure_source = AdaptivePressureSource::System;
+    battery_restraint.restraint_priority = AdaptiveRestraintPriority::BelowNormal;
+    battery_restraint.maximum_restraint_time_seconds = battery_restraint.cpu_restraint_time_seconds;
 
     for mode in AppThemeMode::ALL {
         settings.general.theme_mode = mode;

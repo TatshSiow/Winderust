@@ -231,11 +231,11 @@ impl Editor {
                     if self.preview.is_some() {
                         return;
                     }
-                    if let Err(error) = draft
-                        .adaptive_engine_process
-                        .dynamic_resource_zone_settings
-                        .validate(draft.adaptive_engine_process.dynamic_resource_zones_enabled)
-                    {
+                    let cpu = &draft.adaptive_engine_process;
+                    if let Err(error) = cpu.validate_cpu_pressure_restraint().and_then(|()| {
+                        cpu.dynamic_resource_zone_settings
+                            .validate(cpu.dynamic_resource_zones_enabled)
+                    }) {
                         self.error = error;
                         return;
                     }
@@ -263,6 +263,7 @@ impl Editor {
                             }
                         });
                         self.draft = None;
+                        self.error.clear();
                         self.preset_numbers.drafts.clear();
                     } else {
                         self.error = t!("adaptive_engine.duplicate_preset_name").to_string();
@@ -652,6 +653,26 @@ impl Editor {
                     )
                 });
                 let pressure = super::widgets::settings_rows([
+                    choice!(
+                        s,
+                        "adaptive_engine_process.pressure_source",
+                        AdaptivePressureSource,
+                        &[
+                            AdaptivePressureSource::Either,
+                            AdaptivePressureSource::System,
+                            AdaptivePressureSource::Foreground,
+                            AdaptivePressureSource::Both,
+                        ],
+                        pressure_source_label,
+                        adaptive_engine_process.pressure_source
+                    )
+                    .into(),
+                    number!(
+                        "adaptive_engine_process.pressure_threshold",
+                        1,
+                        100,
+                        adaptive_engine_process.foreground_or_system_cpu_threshold_percent
+                    ),
                     number!(
                         "adaptive_engine_process.background_app_cpu_threshold",
                         1,
@@ -669,12 +690,6 @@ impl Editor {
                         250,
                         5000,
                         adaptive_engine_process.reaction_time_ms
-                    ),
-                    number!(
-                        "adaptive_engine_process.foreground_or_system_cpu_threshold",
-                        1,
-                        100,
-                        adaptive_engine_process.foreground_or_system_cpu_threshold_percent
                     ),
                     number!(
                         "adaptive_engine_process.cpu_restraint_time",
@@ -703,11 +718,29 @@ impl Editor {
                     pressure,
                 ));
                 let restraint = super::widgets::settings_rows([
+                    choice!(
+                        s,
+                        "adaptive_engine_process.restraint_priority",
+                        AdaptiveRestraintPriority,
+                        &[
+                            AdaptiveRestraintPriority::BelowNormal,
+                            AdaptiveRestraintPriority::Idle,
+                        ],
+                        restraint_priority_label,
+                        adaptive_engine_process.restraint_priority
+                    )
+                    .into(),
                     number!(
                         "adaptive_engine_process.restraint_trigger_time",
                         ADAPTIVE_RESTRAINT_TRIGGER_MIN_MS,
                         ADAPTIVE_RESTRAINT_TRIGGER_MAX_MS,
                         adaptive_engine_process.restraint_trigger_time_ms
+                    ),
+                    number!(
+                        "adaptive_engine_process.maximum_restraint_time",
+                        0,
+                        ADAPTIVE_RESTRAINT_MAX_TIME_SECONDS,
+                        adaptive_engine_process.maximum_restraint_time_seconds
                     ),
                     super::widgets::setting_row(
                         "adaptive_engine_process.pause_restraint_when_idle",
@@ -1017,6 +1050,22 @@ fn allocation_label(v: CpuAllocationMethod) -> String {
     t!(match v {
         CpuAllocationMethod::CpuSetsSoft => "nav.cpu_sets_soft",
         CpuAllocationMethod::ProcessorAffinityHard => "nav.processor_affinity_hard",
+    })
+    .to_string()
+}
+fn pressure_source_label(source: AdaptivePressureSource) -> String {
+    t!(match source {
+        AdaptivePressureSource::Either => "adaptive_engine_process.pressure_source_either",
+        AdaptivePressureSource::System => "adaptive_engine_process.pressure_source_system",
+        AdaptivePressureSource::Foreground => "adaptive_engine_process.pressure_source_foreground",
+        AdaptivePressureSource::Both => "adaptive_engine_process.pressure_source_both",
+    })
+    .to_string()
+}
+fn restraint_priority_label(priority: AdaptiveRestraintPriority) -> String {
+    t!(match priority {
+        AdaptiveRestraintPriority::BelowNormal => "process_priority.priority_below_normal",
+        AdaptiveRestraintPriority::Idle => "process_priority.priority_idle",
     })
     .to_string()
 }
@@ -1572,6 +1621,63 @@ mod tests {
         editor.update(&mut settings, Message::RemoveExclusion(0));
         assert!(settings.adaptive_engine_process.custom_rules.is_empty());
     }
+
+    #[test]
+    fn preset_restraint_options_reject_a_maximum_below_the_minimum() {
+        let mut settings = SettingsEditor::with_settings(Settings::default());
+        let mut editor = Editor::default();
+        let maximum = |value: &str| {
+            Message::Number(
+                |s, n| s.adaptive_engine_process.maximum_restraint_time_seconds = n,
+                value.into(),
+                0,
+                ADAPTIVE_RESTRAINT_MAX_TIME_SECONDS,
+                "maximum_restraint_time_seconds",
+                "adaptive_engine_process.maximum_restraint_time",
+            )
+        };
+        for message in [
+            Message::New,
+            Message::Name("Restraint".into()),
+            Message::Choice(
+                |s, _| s.adaptive_engine_process.pressure_source = AdaptivePressureSource::Both,
+                0,
+            ),
+            Message::Choice(
+                |s, _| {
+                    s.adaptive_engine_process.restraint_priority = AdaptiveRestraintPriority::Idle
+                },
+                0,
+            ),
+            maximum("1"),
+            Message::Save,
+        ] {
+            editor.update(&mut settings, message);
+        }
+        assert!(settings.global().adaptive_engine_presets.is_empty());
+        assert_eq!(
+            editor.error,
+            t!("adaptive_engine_process.maximum_restraint_time_invalid").to_string()
+        );
+
+        editor.update(&mut settings, maximum("11"));
+        editor.update(&mut settings, Message::Save);
+        assert!(editor.draft.is_none());
+        assert!(editor.error.is_empty());
+        assert_eq!(
+            settings
+                .adaptive_engine_process
+                .maximum_restraint_time_seconds,
+            0
+        );
+
+        editor.update(&mut settings, Message::Apply(0));
+        let cpu = &settings.adaptive_engine_process;
+        assert_eq!(cpu.pressure_source, AdaptivePressureSource::Both);
+        assert_eq!(cpu.restraint_priority, AdaptiveRestraintPriority::Idle);
+        assert_eq!(cpu.maximum_restraint_time_seconds, 11);
+    }
+
     #[test]
     fn editing_process_preset_preserves_its_stored_processor_power() {
         let mut saved = capture_adaptive_engine_preset(&Settings::default(), "Saved".into());

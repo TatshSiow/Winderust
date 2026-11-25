@@ -47,8 +47,9 @@ CPU Behaviour has shared detection/timing followed by three independent policies
 - **Dynamic Resource Zones (Experimental)** uses separate settings and complementary CPU Sets (Soft).
   The Performance preset enables zoning; Speed, Balanced, and Power Save leave it off.
 
-Shared foreground/system pressure uses the existing aggregate metric. Background-app CPU demand
-is normalized against one logical processor; the thresholds are not directly interchangeable.
+Shared Detection and Timing can use total system CPU, foreground-group CPU, either reading, or
+both readings. The threshold and release band use the same selected source. Background-app CPU
+demand is normalized against one logical processor; the thresholds are not directly interchangeable.
 Reaction time, candidate cap, restraint hold, and recovery values retain their existing units.
 
 Zoning requires fresh foreground observations outside startup grace and current hot eligible
@@ -113,7 +114,9 @@ migration or copying from the limiter is performed.
   Restraint requires at least two valid hot observations for the same process
   instance and a continuous Time above threshold. Reaction time controls
   sampling. The default for both is one second. Restraint submits a temporary
-  Normal to Below Normal priority claim. Focused apps and their process groups,
+  priority claim for a process at Normal priority. Below Normal is the default and Idle is optional.
+  Windows can pass Idle priority to children launched while the parent is restrained.
+  Focused apps and their process groups,
   apps with visible windows, active audio, and exclusions are protected. Saved
   Process Priority and Efficiency Mode take precedence.
 - Pause when idle is off by default. When enabled, its Idle timeout uses the
@@ -127,6 +130,9 @@ migration or copying from the limiter is performed.
   occupied slot. Loss of aggregate pressure, a protected role, or unavailable
   required observations withdraw the priority claim. The background processor
   limit yields when its candidate enters recovery.
+- Maximum restraint time limits a continuous priority adjustment even if its process remains hot.
+  Zero leaves the adjustment uncapped. After expiration, the process must build fresh qualification
+  before being restrained again. Pending restoration retains its existing retry path.
 - Missing per-process samples or invalid CPU deltas discard that target's old
   baseline and restraint/recovery episode. Re-entry requires a fresh valid interval;
   skipped/excluded targets cannot retain stale candidate tracking.

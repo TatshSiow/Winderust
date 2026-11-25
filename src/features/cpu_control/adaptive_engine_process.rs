@@ -12,8 +12,8 @@ use crate::{
     action_log::{ActionLog, ActionLogFeature, ActionLogResult},
     audio_activity::active_audio_process_ids,
     config::{
-        AdaptiveEngineProcessSettings, BackgroundProcessorSelection, CpuAllocationMethod,
-        PowerSourceProfile,
+        AdaptiveEngineProcessSettings, AdaptivePressureSource, AdaptiveRestraintPriority,
+        BackgroundProcessorSelection, CpuAllocationMethod, PowerSourceProfile,
     },
     control::{
         cpu_allocation::CpuAllocationCoordinator,
@@ -228,6 +228,15 @@ impl PressureRestraintEpisode {
         now: Instant,
         usage_tenths: u16,
     ) -> bool {
+        if settings.maximum_restraint_time_seconds != 0
+            && self.selected_since.is_some_and(|selected_since| {
+                now.duration_since(selected_since)
+                    >= Duration::from_secs(settings.maximum_restraint_time_seconds)
+            })
+        {
+            *self = Self::default();
+            return false;
+        }
         let threshold = u16::from(settings.background_app_cpu_threshold_percent.min(100)) * 10;
         if usage_tenths >= threshold {
             self.below_since = None;
@@ -594,11 +603,18 @@ impl AdaptiveEngineProcessManager {
                 for process in self.tracked_processes.values_mut() {
                     process.pressure_restraint = PressureRestraintEpisode::default();
                 }
+            } else if previous.pressure_source != settings.pressure_source {
+                for process in self.tracked_processes.values_mut() {
+                    process.pressure_restraint.hot_since = None;
+                    process.pressure_restraint.below_since = None;
+                }
             }
             // Changes to restraint-only controls do not reset CPU placement selections.
             previous.restraint_trigger_time_ms = settings.restraint_trigger_time_ms;
             previous.pause_restraint_when_idle = settings.pause_restraint_when_idle;
             previous.restraint_idle_timeout_seconds = settings.restraint_idle_timeout_seconds;
+            previous.maximum_restraint_time_seconds = settings.maximum_restraint_time_seconds;
+            previous.restraint_priority = settings.restraint_priority;
         }
         if self.allocation_settings.as_ref() != Some(settings) || foreground_changed {
             self.invalidate_allocation_selection();
@@ -866,6 +882,14 @@ impl AdaptiveEngineProcessManager {
                     state.pressure_restraint = PressureRestraintEpisode::default();
                     continue;
                 };
+                if priority_efficiency_controller.adaptive_restraint_restore_pending(
+                    *process_id,
+                    creation_time,
+                    Path::new(&executable_path),
+                ) {
+                    state.pressure_restraint = PressureRestraintEpisode::default();
+                    continue;
+                }
                 if state
                     .pressure_restraint
                     .qualifies(settings, sample.sampled_at, usage)
@@ -1171,6 +1195,16 @@ impl AdaptiveEngineProcessManager {
             "process priority",
             &mut failures,
         );
+        let (restraint_priority, restraint_message) = match settings.restraint_priority {
+            AdaptiveRestraintPriority::BelowNormal => (
+                PriorityClassValue::BelowNormal,
+                "Lowered process priority to Below Normal during sustained background CPU pressure.",
+            ),
+            AdaptiveRestraintPriority::Idle => (
+                PriorityClassValue::Idle,
+                "Lowered process priority to Idle during sustained background CPU pressure.",
+            ),
+        };
         for (sampled_at, target) in selected_candidates {
             let process_id = target.id;
             let executable_path = target.executable_path.to_string_lossy();
@@ -1178,7 +1212,7 @@ impl AdaptiveEngineProcessManager {
                 PriorityClassClaim {
                     target: target.clone(),
                     owner: ControlOwner::AdaptiveEngine,
-                    priority: PriorityClassValue::BelowNormal,
+                    priority: restraint_priority,
                     preservation: PriorityClassPreservation::OnlyNormal,
                 },
                 allow_cross_session_process_control,
@@ -1203,7 +1237,7 @@ impl AdaptiveEngineProcessManager {
                         Some(process_id),
                         target.name,
                         ActionLogResult::Applied,
-                        "Lowered process priority to Below Normal during sustained background CPU pressure.",
+                        restraint_message,
                     );
                 }
                 Ok(ProcessPropertyApplyOutcome::Preserved) => {
@@ -1461,6 +1495,13 @@ impl AdaptiveEngineProcessManager {
         foreground_cpu_usage_percent: Option<f32>,
         total_cpu_usage_percent: Option<f32>,
     ) -> bool {
+        if self
+            .allocation_settings
+            .as_ref()
+            .is_some_and(|previous| previous.pressure_source != settings.pressure_source)
+        {
+            self.background_pressure_active = false;
+        }
         if cpu_pressure_restraint_should_run(
             settings,
             foreground_cpu_usage_percent,
@@ -1471,6 +1512,7 @@ impl AdaptiveEngineProcessManager {
         }
 
         if self.background_pressure_active
+            && settings.pressure_source == AdaptivePressureSource::Either
             && foreground_cpu_usage_percent.is_none()
             && total_cpu_usage_percent.is_none()
         {

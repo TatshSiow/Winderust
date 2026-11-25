@@ -3892,3 +3892,41 @@ fn adaptive_engine_source_selection_uses_effective_restraint_timing() {
         Some(false)
     ));
 }
+
+#[test]
+fn adaptive_engine_source_selection_checks_pressure_and_restraint_actions() {
+    use crate::config::{AdaptivePressureSource, AdaptiveRestraintPriority};
+
+    let mut settings = Settings::default();
+    settings.adaptive_engine.enabled = true;
+    settings
+        .adaptive_engine_process
+        .limit_background_processors_enabled = true;
+    let battery = &mut settings.battery_profile_mut().adaptive_engine_process;
+    battery.restraint_priority = AdaptiveRestraintPriority::Idle;
+    battery.maximum_restraint_time_seconds = 30;
+    assert!(!adaptive_engine_process_waits_for_source(&settings, None));
+
+    settings
+        .battery_profile_mut()
+        .adaptive_engine_process
+        .pressure_source = AdaptivePressureSource::System;
+    assert!(adaptive_engine_process_waits_for_source(&settings, None));
+    settings.adaptive_engine_process.pressure_source = AdaptivePressureSource::System;
+    assert!(!adaptive_engine_process_waits_for_source(&settings, None));
+
+    settings
+        .adaptive_engine_process
+        .cpu_pressure_restraint_enabled = true;
+    settings
+        .battery_profile_mut()
+        .adaptive_engine_process
+        .cpu_pressure_restraint_enabled = true;
+    assert!(adaptive_engine_process_waits_for_source(&settings, None));
+    settings.adaptive_engine_process.restraint_priority = AdaptiveRestraintPriority::Idle;
+    assert!(adaptive_engine_process_waits_for_source(&settings, None));
+    settings
+        .adaptive_engine_process
+        .maximum_restraint_time_seconds = 30;
+    assert!(!adaptive_engine_process_waits_for_source(&settings, None));
+}

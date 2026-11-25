@@ -134,12 +134,15 @@ pub(super) fn adaptive_engine_process_waits_for_source(
         (
             policy.cpu_pressure_restraint_enabled.then_some((
                 policy.restraint_trigger_time_ms,
+                policy.restraint_priority,
+                policy.maximum_restraint_time_seconds,
                 policy
                     .pause_restraint_when_idle
                     .then_some(policy.restraint_idle_timeout_seconds),
             )),
             policy.limit_background_processors_enabled,
             policy.dynamic_resource_zones_enabled,
+            policy.pressure_source,
             policy.foreground_or_system_cpu_threshold_percent,
             policy.background_app_cpu_threshold_percent,
             policy.cpu_recovery_threshold_percent,

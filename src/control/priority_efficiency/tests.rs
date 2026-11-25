@@ -605,6 +605,88 @@ fn restraint_does_not_write_a_priority_class_other_than_normal() {
 }
 
 #[test]
+fn idle_restraint_remains_eligible_and_verified_until_restored() {
+    let mut controller =
+        PriorityEfficiencyController::with_platform(platform_with(7, 1, NORMAL_PRIORITY_CLASS));
+    let process = identity(7, 1);
+    let mut claim = restraint_claim(7, 1);
+    let target = claim.target.clone();
+
+    assert_eq!(
+        controller.can_apply_adaptive_restraint(&target, true),
+        Ok(true)
+    );
+    assert_eq!(
+        controller.apply_priority_claim(claim.clone(), true),
+        Ok(ProcessPropertyApplyOutcome::Applied)
+    );
+    claim.priority = PriorityClassValue::Idle;
+    assert_eq!(
+        controller.can_apply_adaptive_restraint(&target, true),
+        Ok(true)
+    );
+    assert_eq!(
+        controller.apply_priority_claim(claim, true),
+        Ok(ProcessPropertyApplyOutcome::Applied)
+    );
+    assert_eq!(
+        controller.platform.processes[&7].priority,
+        IDLE_PRIORITY_CLASS
+    );
+    assert_eq!(
+        controller.can_apply_adaptive_restraint(&target, true),
+        Ok(true)
+    );
+    assert_eq!(
+        controller
+            .adaptive_restraint_processes()
+            .collect::<Vec<_>>(),
+        [(&process, AdaptiveRestraintState::Verified)],
+    );
+
+    controller.platform.deny_open = true;
+    assert_eq!(
+        controller
+            .release_all_priority_policy(ControlOwner::AdaptiveEngine)
+            .failures
+            .len(),
+        1
+    );
+    controller.platform.deny_open = false;
+    assert!(controller.adaptive_restraint_restore_pending(
+        target.id,
+        target.creation_time,
+        &target.executable_path
+    ));
+    assert_eq!(
+        controller.can_apply_adaptive_restraint(&target, true),
+        Ok(false)
+    );
+    assert_eq!(
+        controller.platform.processes[&7].priority,
+        IDLE_PRIORITY_CLASS
+    );
+
+    let retries = controller.retry_pending_releases(controller.release_retry_at.unwrap());
+    assert!(retries.other.failures.is_empty());
+    assert_eq!(
+        controller.platform.processes[&7].priority,
+        NORMAL_PRIORITY_CLASS
+    );
+    assert!(controller.adaptive_restraint_processes().next().is_none());
+    assert_eq!(
+        controller.can_apply_adaptive_restraint(&target, true),
+        Ok(true)
+    );
+
+    controller.platform.processes.get_mut(&7).unwrap().priority = IDLE_PRIORITY_CLASS;
+    assert_eq!(
+        controller.can_apply_adaptive_restraint(&target, true),
+        Ok(false)
+    );
+}
+
+#[test]
 fn unavailable_power_state_does_not_block_an_independent_priority_claim() {
     let mut platform = platform_with(7, 1, NORMAL_PRIORITY_CLASS);
     platform.power_unavailable = true;

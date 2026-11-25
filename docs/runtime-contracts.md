@@ -858,8 +858,8 @@ Read the relevant section before changing feature policy, ownership, restoration
   the existing reconciliation/restoration paths without losing pending cleanup.
 - CPU Pressure Restraint qualifies sustained CPU use per exact background process
   while aggregate pressure is high. It skips the focused group, visible windows,
-  active audio, and exclusions. The only restraint write is temporary Below
-  Normal priority for a process whose current priority is Normal. Efficiency Mode
+  active audio, and exclusions. Restraint writes temporary Below Normal or optional
+  Idle priority for a process whose baseline is Normal. Efficiency Mode
   and saved Process Priority take precedence on the same process.
   Status lists the exact process instances whose restraint is verified, whose
   priority restoration is pending, or whose priority ownership is unconfirmed.
@@ -870,7 +870,10 @@ Read the relevant section before changing feature policy, ownership, restoration
   dedicated settings.
 - CPU Pressure Restraint qualifies a process after at least two valid hot samples
   and the configured Time above threshold. Reaction time sets sampling
-  cadence independently. Optional Pause when idle uses the current Windows
+  cadence independently. The pressure source determines which aggregate CPU readings
+  qualify or maintain pressure. Foreground identity is still required for safe targeting.
+  A nonzero Maximum restraint time ends the current adjustment and requires fresh
+  qualification. Optional Pause when idle uses the current Windows
   session's last input and withdraws only restraint priority claims. Missing idle
   evidence pauses restraint while this option is enabled. Resumption requires
   fresh qualification, and restoration entries stay visible during the pause.

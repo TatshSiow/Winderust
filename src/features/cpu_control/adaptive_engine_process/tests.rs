@@ -181,6 +181,86 @@ fn cpu_pressure_restraint_uses_recovery_band_before_stopping() {
 }
 
 #[test]
+fn selected_pressure_source_controls_trigger_and_recovery() {
+    use AdaptivePressureSource::{Both, Either, Foreground, System};
+
+    for (source, trigger_inputs, recovery_inputs, rejected_inputs) in [
+        (
+            Either,
+            [Some(70.0), None],
+            [None, Some(65.0)],
+            [None, Some(64.0)],
+        ),
+        (
+            System,
+            [None, Some(70.0)],
+            [None, Some(65.0)],
+            [Some(75.0), None],
+        ),
+        (
+            Foreground,
+            [Some(70.0), None],
+            [Some(65.0), None],
+            [None, Some(75.0)],
+        ),
+        (
+            Both,
+            [Some(70.0), Some(70.0)],
+            [Some(65.0), Some(65.0)],
+            [Some(75.0), None],
+        ),
+    ] {
+        let settings = AdaptiveEngineProcessSettings {
+            cpu_pressure_restraint_enabled: true,
+            pressure_source: source,
+            foreground_or_system_cpu_threshold_percent: 70,
+            ..Default::default()
+        };
+        let mut manager = AdaptiveEngineProcessManager::default();
+        assert!(!manager.update_background_pressure(
+            &settings,
+            recovery_inputs[0],
+            recovery_inputs[1]
+        ));
+        assert!(manager.update_background_pressure(
+            &settings,
+            trigger_inputs[0],
+            trigger_inputs[1]
+        ));
+        assert!(manager.update_background_pressure(
+            &settings,
+            recovery_inputs[0],
+            recovery_inputs[1]
+        ));
+        assert!(!manager.update_background_pressure(
+            &settings,
+            rejected_inputs[0],
+            rejected_inputs[1]
+        ));
+    }
+}
+
+#[test]
+fn new_pressure_source_requires_fresh_trigger_instead_of_old_recovery_band() {
+    let settings = AdaptiveEngineProcessSettings {
+        cpu_pressure_restraint_enabled: true,
+        foreground_or_system_cpu_threshold_percent: 70,
+        ..Default::default()
+    };
+    let mut manager = AdaptiveEngineProcessManager::default();
+    assert!(manager.update_background_pressure(&settings, Some(70.0), Some(65.0)));
+    manager.allocation_settings = Some(settings.clone());
+    assert!(!manager.update_background_pressure(
+        &AdaptiveEngineProcessSettings {
+            pressure_source: AdaptivePressureSource::System,
+            ..settings
+        },
+        Some(70.0),
+        Some(65.0),
+    ));
+}
+
+#[test]
 fn adaptive_engine_process_selects_highest_scored_candidates() {
     let max_targeted = 6;
     let candidates = (0..=u32::from(max_targeted))
@@ -625,6 +705,30 @@ fn pressure_restraint_requires_sustained_hot_samples_and_clears_after_cooling() 
     assert!(episode.qualifies(&settings, at(5000), 0));
     assert!(!episode.qualifies(&settings, at(5500), 0));
     assert!(!episode.qualifies(&settings, at(6000), 600));
+}
+
+#[test]
+fn elapsed_restraint_cap_releases_hot_process_and_requires_new_hot_interval() {
+    let mut settings = AdaptiveEngineProcessSettings {
+        cpu_restraint_time_seconds: 1,
+        restraint_trigger_time_ms: 500,
+        ..Default::default()
+    };
+    let start = Instant::now();
+    let at = |millis| start + Duration::from_millis(millis);
+    let mut episode = PressureRestraintEpisode::default();
+
+    assert!(!episode.qualifies(&settings, at(0), 1000));
+    assert!(episode.qualifies(&settings, at(500), 1000));
+    episode.selected_since = Some(at(500));
+    assert!(episode.qualifies(&settings, at(1499), 1000));
+    // A live cap uses the elapsed time of the current claim.
+    settings.maximum_restraint_time_seconds = 1;
+    assert!(!episode.qualifies(&settings, at(1500), 1000));
+    assert!(episode.selected_since.is_none());
+    assert!(!episode.qualifies(&settings, at(1600), 1000));
+    assert!(!episode.qualifies(&settings, at(2099), 1000));
+    assert!(episode.qualifies(&settings, at(2100), 1000));
 }
 
 #[test]
@@ -1119,50 +1223,57 @@ fn native_pressure_restraint_idle_restores_priority() -> Result<(), String> {
         || current_process_priority(&target, false).map_err(|error| error.to_string());
     assert_eq!(read_priority()?, ProcessPrioritySetting::Normal);
 
-    let mut priority = PriorityEfficiencyController::default();
-    let outcome = priority
-        .apply_priority_claim(
-            PriorityClassClaim {
-                target: ProcessControlTarget::from_action_target(&target),
-                owner: ControlOwner::AdaptiveEngine,
-                priority: PriorityClassValue::BelowNormal,
-                preservation: PriorityClassPreservation::OnlyNormal,
-            },
-            false,
-        )
-        .map_err(|error| error.to_string())?;
-    assert_eq!(outcome, ProcessPropertyApplyOutcome::Applied);
-    assert_eq!(read_priority()?, ProcessPrioritySetting::BelowNormal);
-
     let settings = AdaptiveEngineProcessSettings {
         cpu_pressure_restraint_enabled: true,
         pause_restraint_when_idle: true,
         restraint_idle_timeout_seconds: 30,
         ..Default::default()
     };
-    let snapshot = AdaptiveEngineProcessManager::default().update(
-        AdaptiveEngineProcessUpdate {
-            settings: &settings,
-            automation_enabled: true,
-            allow_cross_session_process_control: false,
-            foreground_process_id: None,
-            total_cpu_usage_percent: Some(100.0),
-            user_idle_for: Some(Duration::from_secs(30)),
-            excluded_process_id: None,
-            explicit_cpu_allocation_paths: &[],
-            observations: &mut CycleObservations::default(),
-        },
-        &mut CpuAllocationCoordinator::default(),
-        &mut priority,
-        &mut ActionLog::default(),
-    );
-    assert_eq!(
-        snapshot.restraint_idle_pause,
-        Some(RestraintIdlePause::Idle)
-    );
-    assert!(!snapshot.cpu_pressure_restraint_active);
-    assert_eq!(snapshot.failed_processes, 0);
-    assert_eq!(read_priority()?, ProcessPrioritySetting::Normal);
-    assert!(priority.adaptive_restraint_processes().next().is_none());
+    let mut priority = PriorityEfficiencyController::default();
+    let control_target = ProcessControlTarget::from_action_target(&target);
+    for priority_class in [PriorityClassValue::BelowNormal, PriorityClassValue::Idle] {
+        let outcome = priority
+            .apply_priority_claim(
+                PriorityClassClaim {
+                    target: control_target.clone(),
+                    owner: ControlOwner::AdaptiveEngine,
+                    priority: priority_class,
+                    preservation: PriorityClassPreservation::OnlyNormal,
+                },
+                false,
+            )
+            .map_err(|error| error.to_string())?;
+        assert_eq!(outcome, ProcessPropertyApplyOutcome::Applied);
+        assert_eq!(read_priority()?, priority_class.setting());
+        assert_eq!(
+            priority.can_apply_adaptive_restraint(&control_target, false),
+            Ok(true)
+        );
+
+        let snapshot = AdaptiveEngineProcessManager::default().update(
+            AdaptiveEngineProcessUpdate {
+                settings: &settings,
+                automation_enabled: true,
+                allow_cross_session_process_control: false,
+                foreground_process_id: None,
+                total_cpu_usage_percent: Some(100.0),
+                user_idle_for: Some(Duration::from_secs(30)),
+                excluded_process_id: None,
+                explicit_cpu_allocation_paths: &[],
+                observations: &mut CycleObservations::default(),
+            },
+            &mut CpuAllocationCoordinator::default(),
+            &mut priority,
+            &mut ActionLog::default(),
+        );
+        assert_eq!(
+            snapshot.restraint_idle_pause,
+            Some(RestraintIdlePause::Idle)
+        );
+        assert!(!snapshot.cpu_pressure_restraint_active);
+        assert_eq!(snapshot.failed_processes, 0);
+        assert_eq!(read_priority()?, ProcessPrioritySetting::Normal);
+        assert!(priority.adaptive_restraint_processes().next().is_none());
+    }
     Ok(())
 }

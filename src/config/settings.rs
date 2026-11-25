@@ -28,6 +28,7 @@ pub const ADAPTIVE_RESTRAINT_TRIGGER_MIN_MS: u64 = 250;
 pub const ADAPTIVE_RESTRAINT_TRIGGER_MAX_MS: u64 = 60_000;
 pub const ADAPTIVE_RESTRAINT_IDLE_MIN_SECONDS: u64 = 1;
 pub const ADAPTIVE_RESTRAINT_IDLE_MAX_SECONDS: u64 = 3_600;
+pub const ADAPTIVE_RESTRAINT_MAX_TIME_SECONDS: u64 = 3_600;
 pub(crate) const DEFAULT_ADAPTIVE_RESTRAINT_IDLE_TIMEOUT_SECONDS: u64 = 300;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1088,6 +1089,24 @@ impl ByRunningAppRule {
     }
 }
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AdaptivePressureSource {
+    #[default]
+    Either,
+    System,
+    Foreground,
+    Both,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AdaptiveRestraintPriority {
+    #[default]
+    BelowNormal,
+    Idle,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "AdaptiveEngineProcessSettingsWire")]
 pub struct AdaptiveEngineProcessSettings {
@@ -1137,6 +1156,7 @@ pub struct AdaptiveEngineProcessSettings {
     pub background_processor_selection: BackgroundProcessorSelection,
     pub processor_limit_percent: u8,
     pub specific_processors: CpuSelection,
+    pub pressure_source: AdaptivePressureSource,
     pub foreground_or_system_cpu_threshold_percent: u8,
     pub background_app_cpu_threshold_percent: u8,
     pub cpu_recovery_threshold_percent: u8,
@@ -1144,7 +1164,9 @@ pub struct AdaptiveEngineProcessSettings {
     pub restraint_trigger_time_ms: u64,
     pub pause_restraint_when_idle: bool,
     pub restraint_idle_timeout_seconds: u64,
+    pub restraint_priority: AdaptiveRestraintPriority,
     pub cpu_restraint_time_seconds: u64,
+    pub maximum_restraint_time_seconds: u64,
     pub cpu_recovery_time_seconds: u64,
     pub maximum_restrained_apps: u8,
     pub custom_rules: Vec<ProcessExclusionRule>,
@@ -1200,6 +1222,8 @@ struct AdaptiveEngineProcessSettingsWire {
     pub background_processor_selection: BackgroundProcessorSelection,
     pub processor_limit_percent: u8,
     pub specific_processors: CpuSelection,
+    #[serde(default)]
+    pub pressure_source: AdaptivePressureSource,
     pub foreground_or_system_cpu_threshold_percent: u8,
     pub background_app_cpu_threshold_percent: u8,
     pub cpu_recovery_threshold_percent: u8,
@@ -1210,7 +1234,11 @@ struct AdaptiveEngineProcessSettingsWire {
     pub pause_restraint_when_idle: bool,
     #[serde(default = "default_restraint_idle_timeout_seconds")]
     pub restraint_idle_timeout_seconds: u64,
+    #[serde(default)]
+    pub restraint_priority: AdaptiveRestraintPriority,
     pub cpu_restraint_time_seconds: u64,
+    #[serde(default)]
+    pub maximum_restraint_time_seconds: u64,
     pub cpu_recovery_time_seconds: u64,
     pub maximum_restrained_apps: u8,
     pub custom_rules: Vec<ProcessExclusionRule>,
@@ -1269,6 +1297,7 @@ impl TryFrom<AdaptiveEngineProcessSettingsWire> for AdaptiveEngineProcessSetting
             background_processor_selection: wire.background_processor_selection,
             processor_limit_percent: wire.processor_limit_percent,
             specific_processors: wire.specific_processors,
+            pressure_source: wire.pressure_source,
             foreground_or_system_cpu_threshold_percent: wire
                 .foreground_or_system_cpu_threshold_percent,
             background_app_cpu_threshold_percent: wire.background_app_cpu_threshold_percent,
@@ -1277,7 +1306,9 @@ impl TryFrom<AdaptiveEngineProcessSettingsWire> for AdaptiveEngineProcessSetting
             restraint_trigger_time_ms: wire.restraint_trigger_time_ms,
             pause_restraint_when_idle: wire.pause_restraint_when_idle,
             restraint_idle_timeout_seconds: wire.restraint_idle_timeout_seconds,
+            restraint_priority: wire.restraint_priority,
             cpu_restraint_time_seconds: wire.cpu_restraint_time_seconds,
+            maximum_restraint_time_seconds: wire.maximum_restraint_time_seconds,
             cpu_recovery_time_seconds: wire.cpu_recovery_time_seconds,
             maximum_restrained_apps: wire.maximum_restrained_apps,
             custom_rules: wire.custom_rules,
@@ -2466,6 +2497,7 @@ impl Default for AdaptiveEngineProcessSettings {
             background_processor_selection: BackgroundProcessorSelection::LeastUsed,
             processor_limit_percent: 75,
             specific_processors: CpuSelection::default(),
+            pressure_source: AdaptivePressureSource::default(),
             foreground_or_system_cpu_threshold_percent: 75,
             background_app_cpu_threshold_percent: 30,
             cpu_recovery_threshold_percent: 10,
@@ -2473,7 +2505,9 @@ impl Default for AdaptiveEngineProcessSettings {
             restraint_trigger_time_ms: default_restraint_trigger_time_ms(),
             pause_restraint_when_idle: false,
             restraint_idle_timeout_seconds: default_restraint_idle_timeout_seconds(),
+            restraint_priority: AdaptiveRestraintPriority::default(),
             cpu_restraint_time_seconds: 3,
+            maximum_restraint_time_seconds: 0,
             cpu_recovery_time_seconds: 6,
             maximum_restrained_apps: 4,
             custom_rules: Vec::new(),
