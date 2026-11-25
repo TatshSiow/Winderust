@@ -983,10 +983,16 @@ adaptive_engine_process:
   processors_to_remove_invalid: "要移除的處理器數量須為 1 到 63 的整數。"
   preserve_custom_affinity: "保留自訂親和性"
   preserve_custom_affinity_help: "略過已縮減處理器親和性或設定自訂 CPU 集合的應用程式。縮減親和性一律略過有自訂 CPU 集合的應用程式。"
+  restore_child_affinity: "還原子處理程序親和性"
+  restore_child_affinity_help: "符合條件的直接子處理程序繼承自適應引擎縮減的親和性時，將其還原為父處理程序原有的親和性。明確的處理器配置規則優先。"
   restore_affinity_before_managed_restart: "重新啟動前還原親和性"
   restore_affinity_before_managed_restart_help: "資源門檻重新啟動應用程式時，先還原自適應引擎調整的親和性，讓新執行個體繼承應用程式原有的親和性。"
-  custom_rules_help: "將符合規則的處理程序排除於 CPU 壓力限制與處理器配置之外。以執行檔名稱比對時，規則適用於不同的安裝路徑。"
+  custom_rules_help: "將符合規則的處理程序排除於 CPU 壓力限制與處理器配置之外。名稱規則適用於不同的安裝路徑。"
   custom_rule_name_invalid: "自適應引擎的自訂規則必須指定確切的執行檔名稱。"
+  executable_name_pattern: "執行檔名稱模式"
+  rule_match_details: "比對詳細資料"
+  custom_rule_pattern_help: "以 * 代表任意數量的字元，以 ? 代表一個字元。模式僅比對檔案名稱。"
+  custom_rule_pattern_invalid: "請輸入含有 * 或 ? 的執行檔名稱，最多 255 個字元，且不含資料夾路徑。"
 
 
 priority_control:

@@ -271,7 +271,13 @@ pub(super) fn process_rules_table<'a, M: 'a>(
     rows: Vec<(u64, Element<'a, M>)>,
     show_status: bool,
 ) -> Element<'a, M> {
-    process_rules_table_with_columns(tiers, rows, show_status, false)
+    process_rules_table_with_columns(
+        tiers,
+        rows,
+        show_status,
+        false,
+        "process_list.executable_path",
+    )
 }
 
 pub(super) fn process_rules_table_with_notify<'a, M: 'a>(
@@ -279,7 +285,20 @@ pub(super) fn process_rules_table_with_notify<'a, M: 'a>(
     rows: Vec<(u64, Element<'a, M>)>,
     show_status: bool,
 ) -> Element<'a, M> {
-    process_rules_table_with_columns(tiers, rows, show_status, true)
+    process_rules_table_with_columns(
+        tiers,
+        rows,
+        show_status,
+        true,
+        "process_list.executable_path",
+    )
+}
+
+pub(super) fn process_rules_table_with_target<'a, M: 'a>(
+    rows: Vec<(u64, Element<'a, M>)>,
+    target_key: &str,
+) -> Element<'a, M> {
+    process_rules_table_with_columns([], rows, false, false, target_key)
 }
 
 fn process_rules_table_with_columns<'a, M: 'a>(
@@ -287,6 +306,7 @@ fn process_rules_table_with_columns<'a, M: 'a>(
     rows: Vec<(u64, Element<'a, M>)>,
     show_status: bool,
     show_notify: bool,
+    target_key: &str,
 ) -> Element<'a, M> {
     let tiers: Vec<_> = tiers.into_iter().collect();
     let min_width = 720.0
@@ -318,10 +338,7 @@ fn process_rules_table_with_columns<'a, M: 'a>(
             text(rust_i18n::t!("process_list.app_name").to_string())
                 .width(iced::Length::FillPortion(2)),
         )
-        .push(
-            text(rust_i18n::t!("process_list.executable_path").to_string())
-                .width(iced::Length::FillPortion(3)),
-        );
+        .push(text(rust_i18n::t!(target_key).to_string()).width(iced::Length::FillPortion(3)));
     for tier in tiers {
         header = header.push(text(tier).width(iced::Length::FillPortion(2)));
     }

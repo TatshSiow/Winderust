@@ -429,18 +429,14 @@ fn adaptive_custom_rules_keep_flat_selectors_for_profiles_and_presets() {
         path_rule,
         AdaptiveEngineExclusionRule::exact_path("C:/Apps/game.exe")
     );
-    let name_rule = AdaptiveEngineExclusionRule {
-        enabled: true,
-        selector: crate::config::ExecutableSelector::ExactName {
-            executable_name: "Game Tool.exe".into(),
-        },
-    };
+    let name_rule = AdaptiveEngineExclusionRule::exact_name("Game Tool.exe");
+    let pattern_rule = toml::from_str("executable_name_pattern = 'Game-?.exe'").unwrap();
 
     let mut settings = Settings::default();
     settings
         .battery_profile_mut()
         .adaptive_engine_process
-        .custom_rules = vec![name_rule.clone()];
+        .custom_rules = vec![name_rule.clone(), pattern_rule];
     settings.adaptive_engine_process.custom_rules = vec![path_rule, name_rule.clone()];
     settings.adaptive_engine_presets.push(AdaptiveEnginePreset {
         name: "Saved tuning".into(),
@@ -457,12 +453,14 @@ fn adaptive_custom_rules_keep_flat_selectors_for_profiles_and_presets() {
     let raw = toml::to_string(&settings).unwrap();
     assert!(raw.contains("executable_path = \"C:/Apps/game.exe\""));
     assert!(raw.contains("executable_name = \"Game Tool.exe\""));
+    assert!(raw.contains("executable_name_pattern = \"Game-?.exe\""));
     assert_eq!(parse_toml_settings(path, &raw).unwrap(), settings);
     let historical = raw.replace("executable_path = \"C:/Apps/game.exe\"", old_row);
     assert_eq!(parse_toml_settings(path, &historical).unwrap(), settings);
 
     let saved: toml::Value = toml::from_str(&raw).unwrap();
     let invalid_name = rust_i18n::t!("adaptive_engine_process.custom_rule_name_invalid");
+    let invalid_pattern = rust_i18n::t!("adaptive_engine_process.custom_rule_pattern_invalid");
     for (invalid, error) in [
         (
             "executable_path = 'C:/Apps/game.exe'\nexecutable_name = 'Game Tool.exe'",
@@ -473,6 +471,14 @@ fn adaptive_custom_rules_keep_flat_selectors_for_profiles_and_presets() {
             "exactly one executable path or executable name",
         ),
         ("executable_name = '*.exe'", invalid_name.as_ref()),
+        (
+            "executable_name = 'game.exe'\nexecutable_name_pattern = 'g*.exe'",
+            "exactly one executable path or executable name",
+        ),
+        (
+            "executable_name_pattern = 'C:/Apps/*.exe'",
+            invalid_pattern.as_ref(),
+        ),
         (
             "executable_name = 'C:/Apps/game.exe'",
             invalid_name.as_ref(),
@@ -924,6 +930,7 @@ fn omitted_cpu_behaviour_settings_use_defaults_independent_of_sampling_interval(
         foreground_cpu_threshold_percent: Some(35),
         limit_background_processors_enabled: true,
         limit_background_processors_during_restraint: true,
+        restore_child_affinity: true,
         restore_affinity_before_managed_restart: true,
         protect_focused_app: false,
         protect_focused_children: false,
@@ -939,6 +946,7 @@ fn omitted_cpu_behaviour_settings_use_defaults_independent_of_sampling_interval(
         "exclude_service_hosts",
         "limit_background_processors_during_restraint",
         "preserve_custom_affinity",
+        "restore_child_affinity",
         "restore_affinity_before_managed_restart",
         "processors_to_remove",
         "restraint_trigger_time_ms",
@@ -1599,6 +1607,7 @@ fn toml_round_trip_preserves_settings() {
             dynamic_resource_zone_settings: Default::default(),
             cpu_allocation_method: CpuAllocationMethod::ReduceAffinity,
             preserve_custom_affinity: true,
+            restore_child_affinity: true,
             restore_affinity_before_managed_restart: true,
             processors_to_remove: crate::config::ADAPTIVE_AFFINITY_REMOVAL_MAX,
             background_processor_selection: BackgroundProcessorSelection::Custom,

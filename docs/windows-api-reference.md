@@ -742,6 +742,14 @@ subset of the captured process affinity. Both guarded methods read the process's
 CPU Sets before writes. If a live mask or CPU Set assignment no longer matches a verified
 managed value, the coordinator relinquishes it without overwriting the external assignment.
 
+`src/control/cpu_allocation/child_affinity.rs` checks the inherited hard mask of
+direct child processes. It verifies Toolhelp parent identity against retained
+process handles and compares the child creation time with the verified narrowing
+time. It uses the existing group, affinity, CPU Set, and recovery boundaries. A
+live mask can match an inherited mask even when the child set the same value
+independently. [Process inheritance](https://learn.microsoft.com/en-us/windows/win32/procthread/inheritance)
+· [Toolhelp process entry](https://learn.microsoft.com/en-us/windows/win32/api/tlhelp32/ns-tlhelp32-processentry32w)
+
 Windows process affinity sets one group-relative mask. On Windows 11 and Windows
 Server 2022, default affinity may span groups while process mask readback exposes
 the primary group. CPU Sets (Soft) provide the cross-group placement workflow.

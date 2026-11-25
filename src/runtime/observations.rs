@@ -666,19 +666,14 @@ mod tests {
         use crate::{
             config::{
                 AdaptiveEngineExclusionRule, AdaptiveEngineProcessSettings, AdaptivePressureSource,
-                ExecutableSelector,
             },
             features::cpu_control::adaptive_engine_process::{
                 AdaptiveEngineProcessManager, AdaptiveEngineProcessUpdate,
             },
         };
 
-        let name = AdaptiveEngineExclusionRule {
-            enabled: true,
-            selector: ExecutableSelector::ExactName {
-                executable_name: "test.exe".to_owned(),
-            },
-        };
+        let name = AdaptiveEngineExclusionRule::exact_name("test.exe");
+        let pattern = toml::from_str("executable_name_pattern = 'test*.exe'").unwrap();
         let path = AdaptiveEngineExclusionRule::exact_path(r"C:\Apps\test.exe");
         let disabled_path = AdaptiveEngineExclusionRule {
             enabled: false,
@@ -687,6 +682,7 @@ mod tests {
         let _guard = TEST_LOCK.lock().unwrap();
         for (custom_rules, expected_enrichment) in [
             (vec![name.clone(), disabled_path], false),
+            (vec![pattern], false),
             (vec![name, path], true),
         ] {
             let settings = AdaptiveEngineProcessSettings {

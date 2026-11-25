@@ -20,6 +20,7 @@ use super::process::{
 };
 use windows_cpu_allocation::CpuSetRecord;
 
+mod child_affinity;
 mod eligibility;
 mod instance_balancing;
 mod restart_affinity;
@@ -374,6 +375,7 @@ pub(crate) struct CpuAllocationCoordinator<P: CpuAllocationPlatform = WindowsCpu
     adaptive_episode_keys: BTreeSet<ProcessTargetKey>,
     managed_affinity: BTreeMap<ProcessIdentity, ManagedValue<usize>>,
     managed_cpu_sets: BTreeMap<ProcessIdentity, ManagedValue<Vec<u32>>>,
+    child_affinity: child_affinity::ChildAffinityRestoration,
     pending_reconciliations: BTreeMap<ProcessTargetKey, PendingReconciliation>,
     next_apply_sequence: u64,
     instance_balancing: BTreeMap<ProcessIdentity, instance_balancing::GuardState>,
@@ -393,6 +395,7 @@ impl<P: CpuAllocationPlatform> CpuAllocationCoordinator<P> {
             adaptive_episode_keys: BTreeSet::new(),
             managed_affinity: BTreeMap::new(),
             managed_cpu_sets: BTreeMap::new(),
+            child_affinity: child_affinity::ChildAffinityRestoration::default(),
             pending_reconciliations: BTreeMap::new(),
             next_apply_sequence: 1,
             instance_balancing: BTreeMap::new(),
@@ -907,6 +910,7 @@ impl<P: CpuAllocationPlatform> CpuAllocationCoordinator<P> {
             .as_ref()
             .is_some_and(|managed| managed.expected != current)
         {
+            self.child_affinity.invalidate(identity);
             if let Err(error) = self.platform.relinquish_affinity(identity) {
                 if let Some(managed) = managed {
                     self.managed_affinity.insert(identity.clone(), managed);
@@ -918,6 +922,11 @@ impl<P: CpuAllocationPlatform> CpuAllocationCoordinator<P> {
         let baseline = managed.as_ref().map_or(current, |managed| managed.baseline);
         if current == desired {
             if let Some(mut managed) = managed {
+                if managed.owner != owner {
+                    self.child_affinity.invalidate(identity);
+                } else {
+                    self.child_affinity.record_unchanged(identity, &managed);
+                }
                 managed.owner = owner;
                 managed.expected = current;
                 self.managed_affinity.insert(identity.clone(), managed);
@@ -934,16 +943,15 @@ impl<P: CpuAllocationPlatform> CpuAllocationCoordinator<P> {
             CommitFailureBehavior::KeepManagedTarget,
         ) {
             Ok(()) => {
-                self.managed_affinity.insert(
-                    identity.clone(),
-                    ManagedValue {
-                        baseline,
-                        expected: desired,
-                        owner,
-                        apply_sequence: sequence,
-                        confirmed: managed.as_ref().is_none_or(|managed| managed.confirmed),
-                    },
-                );
+                let managed = ManagedValue {
+                    baseline,
+                    expected: desired,
+                    owner,
+                    apply_sequence: sequence,
+                    confirmed: managed.as_ref().is_none_or(|managed| managed.confirmed),
+                };
+                self.child_affinity.record_application(identity, &managed);
+                self.managed_affinity.insert(identity.clone(), managed);
                 Ok(CpuAllocationApplyOutcome::Applied)
             }
             Err(mut failure) => {
@@ -957,6 +965,7 @@ impl<P: CpuAllocationPlatform> CpuAllocationCoordinator<P> {
                     }
                 }
                 if failure.uncertain {
+                    self.child_affinity.invalidate(identity);
                     self.managed_affinity.insert(
                         identity.clone(),
                         ManagedValue {
@@ -1220,6 +1229,7 @@ impl<P: CpuAllocationPlatform> CpuAllocationCoordinator<P> {
             .cloned()
             .collect::<Vec<_>>();
         for stale in stale_affinity {
+            self.child_affinity.invalidate(&stale);
             self.platform.relinquish_affinity(&stale)?;
             self.managed_affinity.remove(&stale);
         }
@@ -1756,6 +1766,7 @@ impl<P: CpuAllocationPlatform> CpuAllocationCoordinator<P> {
         owner: ControlOwner,
         summary: &mut CpuAllocationReleaseSummary,
     ) {
+        self.child_affinity.invalidate(identity);
         self.instance_balancing.remove(identity);
         match self.platform.relinquish_affinity(identity) {
             Ok(()) => {
@@ -1816,6 +1827,7 @@ impl<P: CpuAllocationPlatform> CpuAllocationCoordinator<P> {
         let Some(managed) = self.managed_affinity.get(identity).cloned() else {
             return Ok(false);
         };
+        self.child_affinity.invalidate(identity);
         let current = self.platform.query_affinity(process)?.0;
         if current != managed.expected || current == managed.baseline {
             self.platform.relinquish_affinity(identity)?;
@@ -1975,6 +1987,7 @@ impl<P: CpuAllocationPlatform> CpuAllocationCoordinator<P> {
     }
 
     pub(crate) fn shutdown(&mut self) -> Result<(), String> {
+        self.set_restore_child_affinity(false);
         self.claims.clear();
         self.adaptive_episode_keys.clear();
         self.pending_reconciliations.clear();

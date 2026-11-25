@@ -415,17 +415,10 @@ fn adaptive_custom_rules_match_the_configured_selector_kind() {
                 enabled: false,
                 ..AdaptiveEngineExclusionRule::exact_path(r"C:\Apps\disabled.exe")
             },
-            AdaptiveEngineExclusionRule {
-                enabled: true,
-                selector: ExecutableSelector::ExactName {
-                    executable_name: "Éditeur.exe".into(),
-                },
-            },
+            AdaptiveEngineExclusionRule::exact_name("Éditeur.exe"),
             AdaptiveEngineExclusionRule {
                 enabled: false,
-                selector: ExecutableSelector::ExactName {
-                    executable_name: "disabled.exe".into(),
-                },
+                ..AdaptiveEngineExclusionRule::exact_name("disabled.exe")
             },
         ],
         ..Default::default()

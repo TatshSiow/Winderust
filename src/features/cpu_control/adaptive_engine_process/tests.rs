@@ -1400,7 +1400,7 @@ fn restraint_target_observations(
 #[test]
 #[ignore = "modifies and restores a disposable Windows process; run in explicit integration QA"]
 fn native_pressure_restraint_idle_restores_priority() -> Result<(), String> {
-    use crate::config::{AdaptiveEngineExclusionRule, ExecutableSelector, ProcessPrioritySetting};
+    use crate::config::{AdaptiveEngineExclusionRule, ProcessPrioritySetting};
     use crate::control::priority_efficiency::current_process_priority;
 
     let (_child, target) = disposable_restraint_target()?;
@@ -1416,10 +1416,22 @@ fn native_pressure_restraint_idle_restores_priority() -> Result<(), String> {
     };
     let mut priority = PriorityEfficiencyController::default();
     let control_target = ProcessControlTarget::from_action_target(&target);
-    for (priority_class, exclude_by_name) in [
-        (PriorityClassValue::BelowNormal, false),
-        (PriorityClassValue::Idle, false),
-        (PriorityClassValue::BelowNormal, true),
+    for (priority_class, exclusion) in [
+        (PriorityClassValue::BelowNormal, None),
+        (PriorityClassValue::Idle, None),
+        (
+            PriorityClassValue::BelowNormal,
+            Some(AdaptiveEngineExclusionRule::exact_name(
+                target.name.to_ascii_uppercase(),
+            )),
+        ),
+        (
+            PriorityClassValue::BelowNormal,
+            Some(
+                toml::from_str("executable_name_pattern = 'P?NG*.EXE'")
+                    .map_err(|error| format!("Invalid fixture exclusion: {error}"))?,
+            ),
+        ),
     ] {
         let outcome = priority
             .apply_priority_claim(
@@ -1444,14 +1456,11 @@ fn native_pressure_restraint_idle_restores_priority() -> Result<(), String> {
             Ok(true)
         );
 
-        let (foreground_id, mut observations) = if exclude_by_name {
+        settings.custom_rules.clear();
+        let exclude_by_name = exclusion.is_some();
+        let (foreground_id, mut observations) = if let Some(exclusion) = exclusion {
             settings.limit_background_processors_enabled = true;
-            settings.custom_rules.push(AdaptiveEngineExclusionRule {
-                enabled: true,
-                selector: ExecutableSelector::ExactName {
-                    executable_name: target.name.to_ascii_uppercase(),
-                },
-            });
+            settings.custom_rules.push(exclusion);
             (
                 Some(std::process::id()),
                 restraint_target_observations(&target),

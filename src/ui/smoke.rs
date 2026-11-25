@@ -3,6 +3,7 @@ use super::*;
 use crate::backend::power_source::is_plugged_in;
 use iced::advanced::widget::{operation, Id, Operation};
 use iced::{Rectangle, Vector};
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 static REQUESTED: AtomicBool = AtomicBool::new(false);
@@ -31,9 +32,11 @@ const GPU_MEMORY_COMPACT: usize = 115;
 const CPU_LIMITER_AFFINITY_WIDE: usize = 116;
 const CPU_LIMITER_AFFINITY_COMPACT: usize = 117;
 const CPU_LIMITER_PROCESSORS_COMPACT: usize = 118;
-const EXTRA_STATES: usize = 119;
+const ADAPTIVE_NAME_PATTERN: usize = 119;
+const EXTRA_STATES: usize = 120;
 pub(super) struct Run {
     pages: Vec<Page>,
+    remaining: VecDeque<usize>,
     index: usize,
     ticks: u8,
 }
@@ -54,11 +57,29 @@ impl Run {
     }
 
     pub(super) fn requested() -> Option<Self> {
-        REQUESTED.load(Ordering::Relaxed).then(|| Self {
-            pages: Self::pages(),
-            index: 0,
-            ticks: 0,
+        REQUESTED.load(Ordering::Relaxed).then(|| {
+            let pages = Self::pages();
+            let mut remaining = Self::scenarios(pages.len());
+            let index = remaining.pop_front().expect("smoke run has scenarios");
+            Self {
+                pages,
+                remaining,
+                index,
+                ticks: 0,
+            }
         })
+    }
+
+    fn scenarios(page_count: usize) -> VecDeque<usize> {
+        let extra_start = page_count * 2;
+        if std::env::args().any(|arg| arg == "--adaptive-restraint-only") {
+            [6, 7, 9, ADAPTIVE_NAME_PATTERN]
+                .into_iter()
+                .map(|extra| extra_start + extra)
+                .collect()
+        } else {
+            (0..extra_start + EXTRA_STATES).collect()
+        }
     }
 }
 pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
@@ -135,7 +156,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             ) => Page::CpuLimiter,
             Some(2) => Page::SettingsHome,
             Some(3) => Page::Home,
-            Some(4 | 6..=10) => Page::AdaptiveEngine,
+            Some(4 | 6..=10 | ADAPTIVE_NAME_PATTERN) => Page::AdaptiveEngine,
             Some(5 | 70 | 71) => Page::AdaptiveProcessorPower,
             Some(11 | MEMORY_TRIM_PARTIAL | MEMORY_TRIM_UNKNOWN) => Page::MemoryTrim,
             Some(RAIL_RESIZE_TALL) => Page::AdvancedControls,
@@ -755,25 +776,35 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                 } else if index == 8 {
                     let _ = app.update(Message::Adaptive(AdaptiveMessage::New));
                 } else if index == 6 || index == 9 {
+                    let _ = app.update(Message::Adaptive(AdaptiveMessage::Cancel));
+                    let source = if index == 6 {
+                        PowerSourceProfile::PluggedIn
+                    } else {
+                        PowerSourceProfile::OnBattery
+                    };
+                    let _ = app.update(Message::PowerSource(source));
+                    app.settings.adaptive_engine_process.cpu_allocation_method =
+                        crate::config::CpuAllocationMethod::ReduceAffinity;
+                    app.settings
+                        .adaptive_engine_process
+                        .limit_background_processors_enabled = true;
+                    let _ = app.update(Message::Adaptive(AdaptiveMessage::Toggle(
+                        |settings, enabled| {
+                            settings.adaptive_engine_process.restore_child_affinity = enabled;
+                        },
+                        index == 9,
+                    )));
+                    assert_eq!(
+                        app.settings.adaptive_engine_process.restore_child_affinity,
+                        index == 9
+                    );
                     let _ = app.update(Message::Adaptive(AdaptiveMessage::TuningTab(
                         TuningTab::CpuBehaviour,
                     )));
                     let _ = app.update(Message::Adaptive(AdaptiveMessage::Collapse(
                         TuningGroup::BackgroundProcessors,
                     )));
-                } else if index == 7 {
-                    app.settings.adaptive_engine_process.custom_rules.push(
-                        crate::config::AdaptiveEngineExclusionRule {
-                            enabled: false,
-                            ..crate::config::AdaptiveEngineExclusionRule::exact_path(
-                                r"C:\Apps\Example\example.exe",
-                            )
-                        },
-                    );
-                    let _ = app.update(Message::Adaptive(AdaptiveMessage::TuningTab(
-                        TuningTab::CustomRules,
-                    )));
-                } else {
+                } else if index == 10 {
                     let _ = app.update(Message::Adaptive(AdaptiveMessage::Cancel));
                     let open = || {
                         Message::Adaptive(AdaptiveMessage::ViewBuiltIn(
@@ -803,6 +834,26 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                 let _ = app.update(Message::Trim(memory_trim::Message::ToggleSettings));
                 assert_eq!(app.settings.memory_trim, before);
             }
+        }
+        if matches!(extra, Some(7 | ADAPTIVE_NAME_PATTERN)) {
+            use adaptive_engine::{ExclusionMatchBy, Message as AdaptiveMessage, TuningTab};
+
+            let prefix = if extra == Some(7) { "worker" } else { "helper" };
+            let initial = app.settings.adaptive_engine_process.custom_rules.len();
+            for message in [
+                AdaptiveMessage::TuningTab(TuningTab::CustomRules),
+                AdaptiveMessage::MatchBy(ExclusionMatchBy::NamePattern),
+                AdaptiveMessage::ExecutableNamePattern(format!("{prefix}-*.exe")),
+                AdaptiveMessage::AddExclusion,
+                AdaptiveMessage::ExecutableNamePattern(format!("{prefix}-?.exe")),
+            ] {
+                let _ = app.update(Message::Adaptive(message));
+            }
+            let rules = &app.settings.adaptive_engine_process.custom_rules;
+            assert_eq!(rules.len(), initial + 1);
+            assert!(rules[initial]
+                .selector
+                .matches_name(&format!("{prefix}-SAMPLE.EXE")));
         }
         if extra == Some(9) {
             let before = app.side_panel_open;
@@ -1431,7 +1482,10 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                 | KEEP_AWAKE_ACTIVE
                 | GPU_MEMORY_COMPACT
                 | CPU_LIMITER_AFFINITY_COMPACT
-                | CPU_LIMITER_PROCESSORS_COMPACT,
+                | CPU_LIMITER_PROCESSORS_COMPACT
+                | 7
+                | 9
+                | ADAPTIVE_NAME_PATTERN,
             ) => iced::Size::new(900.0, 620.0),
             Some(RESOURCE_PREVIEW_INSTANCE) => iced::Size::new(900.0, 620.0),
             Some(
@@ -1440,7 +1494,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                 | DOCK_FOCUS_WIDE
                 | KEEP_AWAKE_READY,
             ) => iced::Size::new(1120.0, 760.0),
-            Some(CONTRAST_DARK_APPEARANCE | HOME_HISTORY_WIDE | CPU_LIMITER_AFFINITY_WIDE) => {
+            Some(6 | CONTRAST_DARK_APPEARANCE | HOME_HISTORY_WIDE | CPU_LIMITER_AFFINITY_WIDE) => {
                 iced::Size::new(1120.0, 760.0)
             }
             Some(35..=37 | 40 | 42 | 44..=50 | 52..=69 | 71..=93) => iced::Size::new(900.0, 620.0),
@@ -1564,10 +1618,17 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             iced::widget::scrollable::RelativeOffset { x: 0.0, y: 1.0 },
         ));
     }
-    if matches!(extra, Some(84 | 92..=93)) && run.ticks == 3 {
+    if matches!(
+        extra,
+        Some(6 | 7 | 9 | 84 | 92..=93 | ADAPTIVE_NAME_PATTERN)
+    ) && run.ticks == 3
+    {
         return Some(iced::widget::operation::snap_to(
             "adaptive-engine-content",
-            iced::widget::scrollable::RelativeOffset { x: 0.0, y: 1.0 },
+            iced::widget::scrollable::RelativeOffset {
+                x: 0.0,
+                y: if extra == Some(9) { 0.92 } else { 1.0 },
+            },
         ));
     }
     if run.ticks
@@ -1828,7 +1889,10 @@ pub(super) fn captured(app: &mut WinderustApp, shot: iced::window::Screenshot) -
         image::ColorType::Rgba8,
     )
     .expect("save rendered smoke evidence");
-    run.index += 1;
+    run.index = run
+        .remaining
+        .pop_front()
+        .unwrap_or(run.pages.len() * 2 + EXTRA_STATES);
     run.ticks = 0;
     Task::none()
 }
@@ -1898,6 +1962,6 @@ pub(crate) fn render_all_pages() {
             .filter_map(Result::ok)
             .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "png"))
             .count(),
-        Run::pages().len() * 2 + EXTRA_STATES
+        Run::scenarios(Run::pages().len()).len()
     );
 }

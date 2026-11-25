@@ -4017,19 +4017,14 @@ fn adaptive_engine_source_selection_checks_only_effective_foreground_thresholds(
 
 #[test]
 fn adaptive_engine_source_selection_compares_enabled_exclusion_selectors() {
-    use crate::config::{AdaptiveEngineExclusionRule, ExecutableSelector};
+    use crate::config::AdaptiveEngineExclusionRule;
 
     let mut settings = Settings::default();
     settings.adaptive_engine.enabled = true;
     settings
         .adaptive_engine_process
         .limit_background_processors_enabled = true;
-    let name = AdaptiveEngineExclusionRule {
-        enabled: true,
-        selector: ExecutableSelector::ExactName {
-            executable_name: "worker.exe".to_owned(),
-        },
-    };
+    let name = AdaptiveEngineExclusionRule::exact_name("worker.exe");
     let path = AdaptiveEngineExclusionRule::exact_path(r"C:\Apps\worker.exe");
     settings.adaptive_engine_process.custom_rules = vec![path.clone()];
     settings

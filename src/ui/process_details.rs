@@ -96,7 +96,9 @@ pub(super) fn update(s: &mut SettingsEditor, image_path: &str, m: Message) -> Op
                 return None;
             }
             let matches_path = |rule: &AdaptiveEngineExclusionRule| {
-                selector_path_matches(&rule.selector, image_path)
+                rule.selector
+                    .exact()
+                    .is_some_and(|selector| selector_path_matches(selector, image_path))
             };
             let rules = &s.adaptive_engine_process.custom_rules;
             match (included, rules.iter().position(matches_path)) {
@@ -829,31 +831,29 @@ mod tests {
     }
 
     #[test]
-    fn details_keeps_executable_name_exclusions_in_custom_rules() {
+    fn details_keeps_name_exclusions_in_custom_rules() {
         let path = r"C:\Apps\Worker.exe";
-        let mut original = Settings::default();
-        original.adaptive_engine_process.custom_rules = vec![
-            AdaptiveEngineExclusionRule::exact_path(path),
-            AdaptiveEngineExclusionRule {
-                enabled: true,
-                selector: ExecutableSelector::ExactName {
-                    executable_name: "worker.exe".into(),
-                },
-            },
-        ];
-        let mut settings = SettingsEditor::with_settings(original.clone());
-        assert!(adaptive_name_excluded(&settings, path));
-        assert_eq!(update(&mut settings, path, Message::Adaptive(true)), None);
-        assert_eq!(
-            update(
-                &mut settings,
-                r"C:\Other\Worker.exe",
-                Message::Adaptive(false)
-            ),
-            None
-        );
-        assert_eq!(settings.global(), &original);
-        assert!(!settings.has_unsaved_changes());
+        for rule in [
+            AdaptiveEngineExclusionRule::exact_name("worker.exe"),
+            toml::from_str("executable_name_pattern = 'work*.exe'").unwrap(),
+        ] {
+            let mut original = Settings::default();
+            original.adaptive_engine_process.custom_rules =
+                vec![AdaptiveEngineExclusionRule::exact_path(path), rule];
+            let mut settings = SettingsEditor::with_settings(original.clone());
+            assert!(adaptive_name_excluded(&settings, path));
+            assert_eq!(update(&mut settings, path, Message::Adaptive(true)), None);
+            assert_eq!(
+                update(
+                    &mut settings,
+                    r"C:\Other\Worker.exe",
+                    Message::Adaptive(false)
+                ),
+                None
+            );
+            assert_eq!(settings.global(), &original);
+            assert!(!settings.has_unsaved_changes());
+        }
     }
 
     #[test]

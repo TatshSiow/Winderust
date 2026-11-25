@@ -981,10 +981,16 @@ adaptive_engine_process:
   processors_to_remove_invalid: "Enter a whole number from 1 to 63 for Processors to remove."
   preserve_custom_affinity: "Preserve custom affinity"
   preserve_custom_affinity_help: "Skip apps with narrower processor affinity or custom CPU Sets. Reduce affinity always skips apps with custom CPU Sets."
+  restore_child_affinity: "Restore child process affinity"
+  restore_child_affinity_help: "Give eligible direct children the parent's original affinity when they inherit Adaptive Engine's reduced mask. Explicit CPU placement rules take precedence."
   restore_affinity_before_managed_restart: "Restore affinity before restart"
   restore_affinity_before_managed_restart_help: "When Resource Thresholds restarts an app, restore the affinity Adaptive Engine changed so the replacement inherits the app’s original affinity."
-  custom_rules_help: "Exclude matching processes from CPU Pressure Restraint and processor placement. Executable name matches across installation paths."
+  custom_rules_help: "Exclude matching processes from CPU Pressure Restraint and processor placement. Name rules apply across installation paths."
   custom_rule_name_invalid: "Adaptive Engine Custom Rules require an exact executable name."
+  executable_name_pattern: "Executable name pattern"
+  rule_match_details: "Match details"
+  custom_rule_pattern_help: "Use * for any number of characters and ? for one character. Patterns match the file name only."
+  custom_rule_pattern_invalid: "Enter an executable name with * or ?, up to 255 characters. Leave out the folder path."
 
 priority_control:
   custom_rules_help: "An enabled app rule overrides the matching tier's setting. Choose Default to skip the app in that tier."

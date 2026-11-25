@@ -13,7 +13,7 @@ use crate::{
     audio_activity::active_audio_process_ids,
     config::{
         AdaptiveEngineProcessSettings, AdaptivePressureSource, AdaptiveRestraintPriority,
-        BackgroundProcessorSelection, CpuAllocationMethod, ExecutableSelector, PowerSourceProfile,
+        BackgroundProcessorSelection, CpuAllocationMethod, PowerSourceProfile,
     },
     control::{
         cpu_allocation::{CpuAllocationCoordinator, CpuAllocationReconciliationSummary},
@@ -374,6 +374,11 @@ impl AdaptiveEngineProcessManager {
             observations,
         } = input;
 
+        cpu_allocation_coordinator.set_restore_child_affinity(
+            automation_enabled
+                && settings.restore_child_affinity
+                && settings.cpu_allocation_method.is_hard_affinity(),
+        );
         if !automation_enabled {
             let failed = self.clear_all(
                 cpu_allocation_coordinator,
@@ -492,9 +497,10 @@ impl AdaptiveEngineProcessManager {
                     .exact_path()
                     .is_some_and(|path| Path::new(path.trim()).is_absolute())
         });
-        let name_exclusions_enabled = settings.custom_rules.iter().any(|rule| {
-            rule.enabled && matches!(&rule.selector, ExecutableSelector::ExactName { .. })
-        });
+        let name_exclusions_enabled = settings
+            .custom_rules
+            .iter()
+            .any(|rule| rule.enabled && rule.selector.exact_path().is_none());
         let excluded_by_name = |process: &ProcessInfo| {
             name_exclusions_enabled && settings.excludes_executable_name(&process.name)
         };
@@ -708,8 +714,10 @@ impl AdaptiveEngineProcessManager {
         let placement_applies = cpu_allocation_applies || dynamic_resource_zones_apply;
         let independent_placement_applies =
             (cpu_allocation_applies && !limit_during_restraint) || dynamic_resource_zones_apply;
+        let restore_child_affinity =
+            cpu_allocation_coordinator.has_adaptive_child_affinity_candidates();
         let service_process_ids = if settings.exclude_service_hosts
-            && (cpu_pressure_restraint_applies || placement_applies)
+            && (cpu_pressure_restraint_applies || placement_applies || restore_child_affinity)
         {
             match observations.service_process_ids() {
                 Ok(ids) => Some(ids),
@@ -734,6 +742,47 @@ impl AdaptiveEngineProcessManager {
                     || ids.contains(&process.id)
             })
         };
+        if restore_child_affinity {
+            if let Ok(catalog) = read_background_processes(observations) {
+                let release = cpu_allocation_coordinator.restore_adaptive_child_affinity(
+                    &catalog,
+                    |process, path| {
+                        let path = path.to_string_lossy();
+                        process.is_critical == Some(false)
+                            && process.can_set_information
+                            && !excluded_service_host(process)
+                            && !excluded_by_name(process)
+                            && !should_skip_process(
+                                process.id,
+                                &process.name,
+                                current_process_id,
+                                false,
+                                excluded_process_id,
+                            )
+                            && !settings.excludes_executable_path(&path)
+                            && !cpu_allocation::contains_process(
+                                explicit_cpu_allocation_paths,
+                                &path,
+                            )
+                    },
+                    allow_cross_session_process_control,
+                );
+                cpu_allocation::record_cpu_allocation_restorations(
+                    release.restored_owners,
+                    "restored original affinity for a child of a restricted process",
+                    action_log,
+                );
+                for failure in release.failures {
+                    failures.record_control_error(
+                        "Restore inherited processor affinity",
+                        failure.process_id,
+                        &failure.process_name,
+                        failure.error,
+                        action_log,
+                    );
+                }
+            }
+        }
         let mut restrainable_processes = BTreeMap::new();
         for process in processes.iter() {
             let focused_workload = should_skip_foreground_process(

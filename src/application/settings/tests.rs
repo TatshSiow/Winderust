@@ -751,14 +751,12 @@ fn auto_exclusion_patch_preserves_literal_executable_path_suffix() {
 
 #[test]
 fn adaptive_auto_exclusion_remains_path_scoped() {
-    use crate::config::{AdaptiveEngineExclusionRule, ExecutableSelector};
+    use crate::config::AdaptiveEngineExclusionRule;
 
     let (mut coordinator, mut draft, _) = load_ok_with_fixtures();
     let disabled_name = AdaptiveEngineExclusionRule {
         enabled: false,
-        selector: ExecutableSelector::ExactName {
-            executable_name: "worker.exe".into(),
-        },
+        ..AdaptiveEngineExclusionRule::exact_name("worker.exe")
     };
     let path = r"C:\Apps\worker.exe";
     let path_rule = AdaptiveEngineExclusionRule::exact_path(path);

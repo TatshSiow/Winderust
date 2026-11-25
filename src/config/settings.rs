@@ -2,10 +2,10 @@ use chrono::Weekday;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-use super::{ExecutableSelector, RuleTime};
+use super::{AdaptiveEngineExclusionRule, ExecutableSelector, RuleTime};
 
 use crate::cpu_topology::CpuSelection;
-use crate::foreground::{process_list::same_executable_name, same_executable_path};
+use crate::foreground::same_executable_path;
 use crate::power::plan::{
     AdaptivePowerBoostValues, AdvancedPowerPlanTuningValues, ProcessorBoostMode,
     ProcessorPowerValues,
@@ -1151,25 +1151,6 @@ pub enum AdaptiveRestraintIoPriority {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AdaptiveEngineExclusionRule {
-    #[serde(default = "default_true")]
-    pub enabled: bool,
-    #[serde(flatten)]
-    pub selector: ExecutableSelector,
-}
-
-impl AdaptiveEngineExclusionRule {
-    pub(crate) fn exact_path(path: impl Into<String>) -> Self {
-        Self {
-            enabled: true,
-            selector: ExecutableSelector::ExactPath {
-                executable_path: path.into(),
-            },
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "AdaptiveEngineProcessSettingsWire")]
 pub struct AdaptiveEngineProcessSettings {
     pub process_priority_enabled: bool,
@@ -1218,6 +1199,7 @@ pub struct AdaptiveEngineProcessSettings {
     pub dynamic_resource_zone_settings: DynamicResourceZoneSettings,
     pub cpu_allocation_method: CpuAllocationMethod,
     pub preserve_custom_affinity: bool,
+    pub restore_child_affinity: bool,
     pub restore_affinity_before_managed_restart: bool,
     pub processors_to_remove: u8,
     pub background_processor_selection: BackgroundProcessorSelection,
@@ -1302,6 +1284,8 @@ struct AdaptiveEngineProcessSettingsWire {
     pub cpu_allocation_method: CpuAllocationMethod,
     #[serde(default)]
     pub preserve_custom_affinity: bool,
+    #[serde(default)]
+    pub restore_child_affinity: bool,
     #[serde(default)]
     pub restore_affinity_before_managed_restart: bool,
     #[serde(default = "default_processors_to_remove")]
@@ -1403,6 +1387,7 @@ impl TryFrom<AdaptiveEngineProcessSettingsWire> for AdaptiveEngineProcessSetting
             dynamic_resource_zones_enabled: wire.dynamic_resource_zones_enabled,
             cpu_allocation_method: wire.cpu_allocation_method,
             preserve_custom_affinity: wire.preserve_custom_affinity,
+            restore_child_affinity: wire.restore_child_affinity,
             restore_affinity_before_managed_restart: wire.restore_affinity_before_managed_restart,
             processors_to_remove: wire.processors_to_remove,
             background_processor_selection: wire.background_processor_selection,
@@ -2240,7 +2225,7 @@ impl Default for InputDetectionSettings {
     }
 }
 
-const fn default_true() -> bool {
+pub(super) const fn default_true() -> bool {
     true
 }
 
@@ -2618,6 +2603,7 @@ impl Default for AdaptiveEngineProcessSettings {
             dynamic_resource_zone_settings: DynamicResourceZoneSettings::default(),
             cpu_allocation_method: CpuAllocationMethod::CpuSetsSoft,
             preserve_custom_affinity: false,
+            restore_child_affinity: false,
             restore_affinity_before_managed_restart: false,
             processors_to_remove: default_processors_to_remove(),
             background_processor_selection: BackgroundProcessorSelection::LeastUsed,
@@ -3042,6 +3028,7 @@ impl AdaptiveEngineProcessSettings {
         self.dynamic_resource_zone_settings = defaults.dynamic_resource_zone_settings;
         self.cpu_allocation_method = defaults.cpu_allocation_method;
         self.preserve_custom_affinity = defaults.preserve_custom_affinity;
+        self.restore_child_affinity = defaults.restore_child_affinity;
         self.restore_affinity_before_managed_restart =
             defaults.restore_affinity_before_managed_restart;
         self.processors_to_remove = defaults.processors_to_remove;
@@ -3072,11 +3059,9 @@ impl AdaptiveEngineProcessSettings {
     }
 
     pub(crate) fn excludes_executable_name(&self, name: &str) -> bool {
-        self.custom_rules.iter().any(|rule| {
-            rule.enabled
-                && matches!(&rule.selector, ExecutableSelector::ExactName { executable_name }
-                    if same_executable_name(executable_name, name))
-        })
+        self.custom_rules
+            .iter()
+            .any(|rule| rule.enabled && rule.selector.matches_name(name))
     }
 
     pub(crate) fn excludes_executable_path(&self, path: &str) -> bool {

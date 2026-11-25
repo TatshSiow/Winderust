@@ -761,6 +761,13 @@ Read the relevant section before changing feature policy, ownership, restoration
   CPU Sets. The preservation switch on each hard method also preserves narrowed external affinity.
   Guarded owner handoffs restore or relinquish the previous managed assignment if the target
   cannot be changed.
+- Restore child process affinity acts only on observed direct children of a verified
+  Adaptive Engine hard-affinity assignment. The coordinator requires a newer exact
+  child identity, a known matching session and single group 0, and a live mask equal
+  to the parent's narrowed mask. Existing placement owners, explicit rules, default
+  CPU Sets, and different external masks take precedence. The child's recovery journal
+  uses the parent's original mask so compensation or crash recovery cannot preserve the
+  inherited restriction as the desired baseline.
 - Adaptive per-process demand requires consecutive valid CPU observations for
   the same exact identity. Missing samples, invalid deltas, or a non-actionable
   target discard its old qualification/recovery state without resetting unrelated
@@ -929,8 +936,9 @@ Read the relevant section before changing feature policy, ownership, restoration
 - When Exclude service hosts is enabled, Adaptive Engine excludes observable active
   service hosts, known service accounts, and Session 0 or unknown-session processes. Unavailable
   service inventory pauses the process policies and restores managed state.
-- Adaptive Engine Custom Rules match exact executable names or paths. Name rules
-  use the observed basename across directories. Exact path rules and automatic
+- Adaptive Engine Custom Rules match exact executable names, exact paths, or
+  executable name patterns. Both name selectors use the observed basename
+  across directories. Exact path rules and automatic
   failure exclusions retain their path scope. The process identity required for
   any scheduling change is verified independently of the exclusion selector.
 - Adaptive Engine uses the shared right-rail Status / Presets pattern. Presets apply CPU Behaviour tuning while preserving master switches, exclusions, and Adaptive Processor Power settings.

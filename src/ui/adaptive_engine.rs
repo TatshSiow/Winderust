@@ -5,10 +5,9 @@ use super::widgets::{
 };
 use crate::application::SettingsEditor;
 use crate::config::*;
-use crate::foreground::process_list::normalize_path_slashes;
+use crate::foreground::process_list::{normalize_path_slashes, same_executable_name};
 use crate::ui::process_rules::{
     can_add_exact_process_candidate, can_add_executable_name, exact_path_input, picked_path_input,
-    selector_path_matches, MatchBy,
 };
 use crate::ui::scrolling::scrollable;
 use iced::widget::{column, row, text};
@@ -68,10 +67,11 @@ fn can_add_path_exclusion(settings: &AdaptiveEngineProcessSettings, path: &str) 
     can_add_exact_process_candidate(
         path,
         |path| {
-            settings
-                .custom_rules
-                .iter()
-                .any(|rule| selector_path_matches(&rule.selector, path))
+            settings.custom_rules.iter().any(|rule| {
+                rule.selector
+                    .exact_path()
+                    .is_some_and(|target| same_rule_executable_path(target, path))
+            })
         },
         crate::adaptive_engine_process::is_builtin_excluded,
     )
@@ -80,9 +80,45 @@ fn can_add_path_exclusion(settings: &AdaptiveEngineProcessSettings, path: &str) 
 fn can_add_name_exclusion(settings: &AdaptiveEngineProcessSettings, name: &str) -> bool {
     !crate::adaptive_engine_process::is_builtin_excluded(name)
         && can_add_executable_name(
-            settings.custom_rules.iter().map(|rule| &rule.selector),
+            settings
+                .custom_rules
+                .iter()
+                .filter_map(|rule| rule.selector.exact()),
             name,
         )
+}
+
+fn has_pattern_exclusion(settings: &AdaptiveEngineProcessSettings, pattern: &str) -> bool {
+    settings.custom_rules.iter().any(|rule| {
+        matches!(&rule.selector, AdaptiveEngineExclusionSelector::NamePattern { executable_name_pattern }
+            if same_executable_name(executable_name_pattern.as_str(), pattern))
+    })
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) enum ExclusionMatchBy {
+    #[default]
+    Path,
+    Name,
+    NamePattern,
+}
+
+impl ExclusionMatchBy {
+    const ALL: [Self; 3] = [Self::Path, Self::Name, Self::NamePattern];
+
+    fn key(self) -> &'static str {
+        match self {
+            Self::Path => "common.executable_path",
+            Self::Name => "common.executable_name",
+            Self::NamePattern => "adaptive_engine_process.executable_name_pattern",
+        }
+    }
+}
+
+impl std::fmt::Display for ExclusionMatchBy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&t!(self.key()))
+    }
 }
 
 #[derive(Default)]
@@ -94,9 +130,10 @@ pub(super) struct Editor {
     preview: Option<(PowerSourceProfile, usize)>,
     tuning_tabs: [TuningTab; 2],
     expanded: [[bool; TuningGroup::COUNT]; 2],
-    match_by: MatchBy,
+    match_by: ExclusionMatchBy,
     path: String,
     executable_name: String,
+    executable_name_pattern: String,
     error: String,
     live_numbers: NumberInputs,
     preset_numbers: NumberInputs,
@@ -170,9 +207,10 @@ pub(super) enum Message {
     Delete(usize),
     Cancel,
     UseCurrent,
-    MatchBy(MatchBy),
+    MatchBy(ExclusionMatchBy),
     Path(String),
     ExecutableName(String),
+    ExecutableNamePattern(String),
     Browse,
     AddExclusion,
     RemoveExclusion(usize),
@@ -342,10 +380,11 @@ impl Editor {
             Message::MatchBy(match_by) => self.match_by = match_by,
             Message::Path(v) => self.path = v,
             Message::ExecutableName(v) => self.executable_name = v,
+            Message::ExecutableNamePattern(v) => self.executable_name_pattern = v,
             Message::Browse => {}
             Message::AddExclusion => {
                 let rule = match self.match_by {
-                    MatchBy::ExecutablePath => {
+                    ExclusionMatchBy::Path => {
                         let path = exact_path_input(&self.path);
                         if !can_add_path_exclusion(&s.adaptive_engine_process, path) {
                             return;
@@ -355,17 +394,34 @@ impl Editor {
                         self.path.clear();
                         rule
                     }
-                    MatchBy::ExecutableName => {
+                    ExclusionMatchBy::Name => {
                         if !can_add_name_exclusion(
                             &s.adaptive_engine_process,
                             &self.executable_name,
                         ) {
                             return;
                         }
+                        AdaptiveEngineExclusionRule::exact_name(std::mem::take(
+                            &mut self.executable_name,
+                        ))
+                    }
+                    ExclusionMatchBy::NamePattern => {
+                        let Ok(executable_name_pattern) =
+                            ExecutableNamePattern::try_from(self.executable_name_pattern.clone())
+                        else {
+                            return;
+                        };
+                        if has_pattern_exclusion(
+                            &s.adaptive_engine_process,
+                            executable_name_pattern.as_str(),
+                        ) {
+                            return;
+                        }
+                        self.executable_name_pattern.clear();
                         AdaptiveEngineExclusionRule {
                             enabled: true,
-                            selector: ExecutableSelector::ExactName {
-                                executable_name: std::mem::take(&mut self.executable_name),
+                            selector: AdaptiveEngineExclusionSelector::NamePattern {
+                                executable_name_pattern,
                             },
                         }
                     }
@@ -1151,6 +1207,24 @@ impl Editor {
                     );
                     allocation = allocation.push(super::widgets::settings_divider()).push(
                         super::widgets::setting_row(
+                            "adaptive_engine_process.restore_child_affinity",
+                            super::widgets::switch(
+                                cpu.restore_child_affinity,
+                                editable.then_some(|value| {
+                                    Message::Toggle(
+                                        |settings, enabled| {
+                                            settings
+                                                .adaptive_engine_process
+                                                .restore_child_affinity = enabled
+                                        },
+                                        value,
+                                    )
+                                }),
+                            ),
+                        ),
+                    );
+                    allocation = allocation.push(super::widgets::settings_divider()).push(
+                        super::widgets::setting_row(
                             "adaptive_engine_process.restore_affinity_before_managed_restart",
                             super::widgets::switch(
                                 cpu.restore_affinity_before_managed_restart,
@@ -1299,7 +1373,7 @@ impl Editor {
         if !preset && tab == TuningTab::CustomRules {
             let cpu = &s.adaptive_engine_process;
             let target_input = match self.match_by {
-                MatchBy::ExecutablePath => super::app_picker::view_with_path_selection(
+                ExclusionMatchBy::Path => super::app_picker::view_with_path_selection(
                     &self.path,
                     candidates,
                     true,
@@ -1309,7 +1383,7 @@ impl Editor {
                         .then_some(Message::AddExclusion),
                     |path| can_add_path_exclusion(cpu, path).then_some(true),
                 ),
-                MatchBy::ExecutableName => {
+                ExclusionMatchBy::Name => {
                     let add = can_add_name_exclusion(cpu, &self.executable_name)
                         .then_some(Message::AddExclusion);
                     column![
@@ -1327,6 +1401,34 @@ impl Editor {
                     .spacing(design::space::SMALL)
                     .into()
                 }
+                ExclusionMatchBy::NamePattern => {
+                    let valid =
+                        ExecutableNamePattern::try_from(self.executable_name_pattern.clone());
+                    let add = (valid.is_ok()
+                        && !has_pattern_exclusion(cpu, &self.executable_name_pattern))
+                    .then_some(Message::AddExclusion);
+                    let help = match &valid {
+                        Err(error) if !self.executable_name_pattern.is_empty() => error.clone(),
+                        _ => t!("adaptive_engine_process.custom_rule_pattern_help").into_owned(),
+                    };
+                    column![
+                        super::widgets::setting_title(self.match_by.key()),
+                        row![
+                            text_input("worker-*.exe", &self.executable_name_pattern)
+                                .on_input(Message::ExecutableNamePattern)
+                                .on_submit_maybe(add.clone())
+                                .width(Fill),
+                            super::widgets::rule_add_button(add),
+                        ]
+                        .spacing(design::space::SMALL)
+                        .align_y(iced::Center),
+                        text(help)
+                            .size(design::typography::SECONDARY)
+                            .style(text::secondary),
+                    ]
+                    .spacing(design::space::SMALL)
+                    .into()
+                }
             };
             body = body.push(super::widgets::settings_card(
                 super::widgets::settings_rows([
@@ -1336,12 +1438,8 @@ impl Editor {
                         .into(),
                     super::widgets::setting_row(
                         "common.match_by",
-                        pick_list(
-                            [MatchBy::ExecutablePath, MatchBy::ExecutableName],
-                            Some(self.match_by),
-                            Message::MatchBy,
-                        )
-                        .width(design::SELECT_WIDTH),
+                        pick_list(ExclusionMatchBy::ALL, Some(self.match_by), Message::MatchBy)
+                            .width(design::SELECT_WIDTH),
                     )
                     .into(),
                     target_input,
@@ -1353,21 +1451,41 @@ impl Editor {
                 .iter()
                 .enumerate()
                 .map(|(i, rule)| {
-                    let (app, mut target) =
-                        super::widgets::process_rule_target(&rule.selector, candidates);
-                    let is_path = rule.selector.exact_path().is_some();
-                    if is_path {
-                        target = column![
-                            target,
-                            text(t!("common.executable_path").to_string())
+                    let (app, target, match_by, value) = match &rule.selector {
+                        AdaptiveEngineExclusionSelector::Exact(selector) => {
+                            let (app, target) =
+                                super::widgets::process_rule_target(selector, candidates);
+                            if selector.exact_path().is_some() {
+                                let target = column![
+                                    target,
+                                    text(t!("common.executable_path").to_string())
+                                        .size(design::typography::CAPTION)
+                                        .style(text::secondary),
+                                ]
+                                .spacing(design::space::TINY)
+                                .into();
+                                (app, target, ExclusionMatchBy::Path, selector.value())
+                            } else {
+                                (app, target, ExclusionMatchBy::Name, selector.value())
+                            }
+                        }
+                        AdaptiveEngineExclusionSelector::NamePattern {
+                            executable_name_pattern,
+                        } => {
+                            let value = executable_name_pattern.as_str();
+                            let match_by = ExclusionMatchBy::NamePattern;
+                            let app = text(value.to_owned())
+                                .wrapping(text::Wrapping::WordOrGlyph)
+                                .into();
+                            let target = text(t!(match_by.key()).into_owned())
                                 .size(design::typography::CAPTION)
-                                .style(text::secondary),
-                        ]
-                        .spacing(design::space::TINY)
-                        .into();
-                    }
+                                .style(text::secondary)
+                                .into();
+                            (app, target, match_by, value)
+                        }
+                    };
                     (
-                        super::widgets::stable_key(&(is_path, rule.selector.value())),
+                        super::widgets::stable_key(&(match_by.key(), value)),
                         column![
                             super::widgets::process_rule_header_with_target(
                                 app,
@@ -1388,7 +1506,10 @@ impl Editor {
                     )
                 })
                 .collect();
-            body = body.push(super::widgets::process_rules_table([], rules, false));
+            body = body.push(super::widgets::process_rules_table_with_target(
+                rules,
+                "adaptive_engine_process.rule_match_details",
+            ));
         }
 
         if !preset {
@@ -1654,12 +1775,7 @@ mod tests {
             settings.adaptive_engine_presets[0]
                 .adaptive_engine_process
                 .custom_rules
-                .push(AdaptiveEngineExclusionRule {
-                    enabled: true,
-                    selector: ExecutableSelector::ExactName {
-                        executable_name: "excluded.exe".into(),
-                    },
-                });
+                .push(AdaptiveEngineExclusionRule::exact_name("excluded.exe"));
         });
         let options = vec![
             Choice(1, built_in_adaptive_engine_preset_label(builtin)),
@@ -1767,7 +1883,7 @@ mod tests {
     }
 
     #[test]
-    fn custom_rules_accept_both_match_types_and_reject_duplicates() {
+    fn custom_rules_accept_match_types_and_reject_duplicates() {
         let mut settings = SettingsEditor::with_settings(Settings::default());
         let mut editor = Editor::default();
         for message in [
@@ -1775,7 +1891,7 @@ mod tests {
             Message::AddExclusion,
             Message::Path(r"c:\apps\worker.exe".into()),
             Message::AddExclusion,
-            Message::MatchBy(MatchBy::ExecutableName),
+            Message::MatchBy(ExclusionMatchBy::Name),
             Message::ExecutableName(r"C:\Apps\worker.exe".into()),
             Message::AddExclusion,
             Message::ExecutableName("*.exe".into()),
@@ -1792,18 +1908,27 @@ mod tests {
             Message::AddExclusion,
             Message::ExecutableName("WORKER.EXE".into()),
             Message::AddExclusion,
+            Message::MatchBy(ExclusionMatchBy::NamePattern),
+            Message::ExecutableNamePattern("C:/Apps/*.exe".into()),
+            Message::AddExclusion,
+            Message::ExecutableNamePattern("worker.exe".into()),
+            Message::AddExclusion,
+            Message::ExecutableNamePattern("worker-?.exe".into()),
+            Message::AddExclusion,
+            Message::ExecutableNamePattern("WORKER-?.EXE".into()),
+            Message::AddExclusion,
         ] {
             editor.update(&mut settings, message);
         }
         let rules = &settings.adaptive_engine_process.custom_rules;
-        assert_eq!(rules.len(), 2);
+        assert_eq!(rules.len(), 3);
         assert_eq!(rules[0].selector.exact_path(), Some(r"C:\Apps\worker.exe"));
         assert_eq!(
-            rules[1].selector,
-            ExecutableSelector::ExactName {
-                executable_name: "worker.exe".into()
-            }
+            rules[1],
+            AdaptiveEngineExclusionRule::exact_name("worker.exe")
         );
+        assert!(rules[2].selector.matches_name("WORKER-A.EXE"));
+        assert!(!rules[2].selector.matches_name("worker-ab.exe"));
         assert!(settings
             .persisted()
             .adaptive_engine_process
@@ -2039,12 +2164,7 @@ mod tests {
                 .adaptive_engine_process
                 .limit_background_processors_enabled
         );
-        let exclusion = AdaptiveEngineExclusionRule {
-            enabled: true,
-            selector: ExecutableSelector::ExactName {
-                executable_name: "app.exe".into(),
-            },
-        };
+        let exclusion = AdaptiveEngineExclusionRule::exact_name("app.exe");
         settings
             .adaptive_engine_process
             .custom_rules

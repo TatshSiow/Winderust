@@ -206,7 +206,7 @@ impl AdaptiveEngineProcessSettings {
             );
         }
         if self.custom_rules.iter().any(|rule| {
-            matches!(&rule.selector, ExecutableSelector::ExactName { executable_name }
+            matches!(rule.selector.exact(), Some(ExecutableSelector::ExactName { executable_name })
                 if !is_valid_executable_name(executable_name))
         }) {
             return Err(

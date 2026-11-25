@@ -1,3 +1,7 @@
+mod adaptive_engine_exclusion;
+pub use adaptive_engine_exclusion::{
+    AdaptiveEngineExclusionRule, AdaptiveEngineExclusionSelector, ExecutableNamePattern,
+};
 mod search_hotkeys;
 pub(crate) use search_hotkeys::ShowWinderustShortcutKey;
 pub use search_hotkeys::{KeyboardShortcut, SearchHotkeys, ShowWinderustShortcut};

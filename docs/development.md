@@ -197,6 +197,9 @@ and read-only queries:
 cargo run --locked --features render-smoke -- --render-smoke
 ```
 
+Append `--adaptive-restraint-only` to run the Adaptive Engine child-affinity
+and executable-name pattern scenarios in English and Traditional Chinese.
+
 Captures are written under `target/iced-smoke/`. Review relevant pages and states in
 both locales/themes and at minimum window size. Captures establish rendering coverage;
 they do not establish physical input, IME, DPI-transition, tray, accessibility, or

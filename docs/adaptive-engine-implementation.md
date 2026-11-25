@@ -43,9 +43,10 @@ source. Its Custom Rules, the Adaptive Engine master switch, the other power
 source, and Adaptive Processor Power retain their own settings. Save commits the
 draft and Discard restores the last saved tuning.
 
-Custom Rules can exclude an exact executable path or an exact executable name.
-A name rule covers the same executable name in every directory. Process Details
-shows name coverage and directs users to Custom Rules to edit it.
+Custom Rules can exclude an exact executable path, an exact executable name, or
+an executable name pattern. Patterns use `*` for any number of characters and
+`?` for one. Both name selectors match case-insensitively across directories.
+Process Details shows name coverage and directs users to Custom Rules to edit it.
 
 CPU Behaviour has shared detection/timing followed by three independent policies:
 
@@ -62,6 +63,12 @@ CPU Behaviour has shared detection/timing followed by three independent policies
   The option requires CPU Pressure Restraint and defaults off.
   Processor placement only selects this scope automatically and preserves the stored
   standalone limiter preferences for switching back.
+  Restore child process affinity is off by default. With a hard affinity method,
+  Adaptive Engine gives eligible direct children the parent's captured original mask
+  when a later process observation confirms that they inherited the narrowed mask.
+  The parent keeps its own placement. Explicit placement and external CPU Sets take
+  precedence. A child that independently sets the same mask is indistinguishable from
+  one that inherited it, so enable this only for workloads where that behavior fits.
   Restore affinity before restart optionally releases the exact parent’s Adaptive Engine
   hard-affinity assignment before Resource Thresholds creates a replacement. The replacement
   can inherit the parent’s restored affinity. This applies to Winderust-managed restarts.
