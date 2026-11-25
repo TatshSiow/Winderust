@@ -31,9 +31,9 @@ Prefer visible state, compact controls, and predictable rows. Use restrained acc
   first and reveal advanced options where users need them. Keep essential consequences
   beside the control and longer explanations in Info.
 - Distinguish a switch's configured state, an unsaved edit, and the last verified
-  result from Windows. Use the shared Save and Discard flow for settings changes.
-  Reserve space for the Save notice below editors so it leaves their controls
-  and scrollbars reachable at the minimum window size.
+  result from Windows. When edits are pending, show Save… in the shared page
+  header. It opens a centered dialog with Keep editing, Discard, and Save.
+  Keep editing and Escape return to the draft. Discard clears pending edits.
 - Make core tasks keyboard-operable with visible focus and predictable focus return.
   Give controls meaningful Windows UI Automation names and states. Use at least
   4.5:1 contrast for normal text across supported themes and accent choices. Use
@@ -63,7 +63,7 @@ Prefer visible state, compact controls, and predictable rows. Use restrained acc
   failures in text. Save commits the selection and Esc cancels recording.
 - The rail stays 88px wide plus its divider. Keep content geometry independent of flyout state and the right status rail independent.
 - Center the shared header and content canvas within the work area beside the primary rail and any open side panel, with shared padding and a 1440px width cap. Every page reserves the same 48px breadcrumb area and 32px toolbar, including pages without power-source selectors, so page content starts at a stable position.
-- The right side panel is a 320px dock beside the editor, reserving its own width without covering content. Both areas remain interactive. Start closed and retain its open state throughout navigation, search, focus changes, and settings edits. Close only through panel controls. Pages without panel content use the full canvas and preserve the session's open preference for the next supported page. Keep existing tabs, scrolling, and actions. The unsaved-settings notice stays within the editing area, and dialogs cover both areas. There is no collapsed strip or persisted mode setting.
+- The right side panel is a 320px dock beside the editor, reserving its own width without covering content. Both areas remain interactive. Start closed and retain its open state throughout navigation, search, focus changes, and settings edits. Close only through panel controls. Pages without panel content use the full canvas and preserve the session's open preference for the next supported page. Keep existing tabs, scrolling, and actions. Dialogs cover both areas. There is no collapsed strip or persisted mode setting.
 - The side panel Close button returns focus to the toolbar's Side panel button so keyboard navigation can continue in the editor.
 - Navigation labels and page sections live in `src/ui.rs`; page rendering
   dispatch stays in `WinderustApp::page_view` in `src/ui/app.rs`.
@@ -73,12 +73,10 @@ Prefer visible state, compact controls, and predictable rows. Use restrained acc
 - Use Iced rows and columns with explicit `Fill`, `Shrink`, and constrained widths for flexible children.
 - Rows and table headers should have stable heights across state changes.
 - Rules tables fill the same canvas width as settings cards. Use fixed or computed minimum widths for dense tables and policy columns, with horizontal scrolling when the dock leaves too little room. Do not let dynamic labels resize the process list.
-- Reserve room below scrollable rule editors where the Save notice would cover
-  their controls. Verify the last rule is reachable with the dock open at the
-  minimum window size, including when both scrollbars are needed.
-- A floating Save notice blocks pointer actions from reaching page controls
-  behind it. The rest of the page stays interactive. Process List hides the
-  notice while its context menu or dialog is open and keeps the pending edits.
+- Keep the last rule reachable with the dock open at the minimum window size,
+  including when both scrollbars are needed. Save lives in the header and leaves
+  the editor's scrolling area available. Process List hides Save while its
+  context menu or dialog is open and keeps the pending edits.
 - Constrain long process names, labels, and status values so they do not resize adjacent columns.
 - Group related settings beneath each section heading in one card, with shared internal dividers between complete rows. Every grouped card needs a concise, localized category heading outside its outline. Apply this to pages, preset editors, rule dialogs, and process details; independent collapsible groups use their own headers. Keep each label, description, and control together; avoid a separate card for every setting. Preserve independent collapsible feature groups.
 - Avoid nested cards. Cards are for repeated rows, setting groups, status blocks, popovers, and tool surfaces.
@@ -216,11 +214,11 @@ hover/press; background shading supplies feedback.
   configuration while Adaptive Engine is off.
 - In short Adaptive Engine workspaces, the feature toggle, preset picker, and
   editor tabs scroll with the selected tab. Keep the power-source toolbar and
-  Save footer outside this scroll area.
+  page header outside this scroll area.
 - Adaptive Engine uses the right-rail Info / Status / Presets tabs. Built-in presets are read-only. Custom presets can be added, renamed, refreshed from the current CPU Behaviour tuning, and deleted. The live page also exposes Custom Rules. The preset editor spans the available modal width and keeps its own draft.
 - Priority Control uses Focus / Visible Window / Background dropdown columns and expandable detail cards. Turning a row off does not lock its configuration. Runtime precedence and protection rules live in [Runtime contracts](runtime-contracts.md).
 - Adaptive Processor Power lives under Power Plan Control. Its Plugged In and On Battery editors each have an enable switch, off by default, with a Preset dropdown below it. Both editors share the preset library. The dropdown stages tuning for the selected source. The Presets tab opens a read-only preview of the base policy and demand values for that source. Use preset stages the preview, and closing it preserves existing edits. Add preset names a copy of the selected source's tuning. List edits and tuning use the shared Save and Discard flow. Configuration remains editable while the feature is off.
-- The Base Processor Policy tab shows the Idle settings and the baseline inherited by higher-demand profiles. The Demand Profiles tab explains automatic profile selection and shows one boost policy and one boost mode each for Background Pressure and Focus and Launch. The Save notice reserves space below the editor so the last dropdown stays reachable while editing.
+- The Base Processor Policy tab shows the Idle settings and the baseline inherited by higher-demand profiles. The Demand Profiles tab explains automatic profile selection and shows one boost policy and one boost mode each for Background Pressure and Focus and Launch.
 - The Adaptive Processor Power Status rail reports live ownership, errors, and restoration. The source profile selected for editing can differ from the live power source.
 - Prefer one setting per row when possible.
 - Use collapsible setting groups for advanced or multi-row settings.
@@ -245,16 +243,16 @@ hover/press; background shading supplies feedback.
   every power-plan rail uses Status, Current power plan, Successful actions, and Failed actions.
   Power-plan actions are recorded only after the controller verifies the Windows plan transition.
 - The Power Plan Control landing page shows the active Windows plan in a compact
-  selector with an automation summary. A different selection opens the shared
-  Save and Discard notice. Keep the active plan visible while a different plan
-  is staged. If a read fails, show the read failure in the automation summary.
+  selector with an automation summary. Choosing a different plan stages it and
+  makes Save available. The Save dialog names the staged plan. Keep the active
+  plan visible while a different plan is staged. If a read fails, show the read
+  failure in the automation summary.
   When Adaptive Processor Power owns the active plan, show Winderust Adaptive
   in the disabled selector next to its settings shortcut. Enable manual selection
   after Windows confirms the plan release. Keep restoration status in the Status rail.
 - Keep the Power Plan Control landing page in one scroll area. Align the active
   plan card, Switching settings group, and Automation and Advanced destination
-  cards to the same width. Reserve space below the scroll area for the Save and
-  Discard notice.
+  cards to the same width.
 - Keep the shared A/C pause, Restore previous plan when no rule selects a plan,
   and Fallback polling interval under Switching settings. Windows events and
   scheduled changes can trigger checks sooner than the fallback interval.

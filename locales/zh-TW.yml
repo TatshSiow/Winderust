@@ -267,7 +267,8 @@ status:
   action_log_export_failed: "無法將動作記錄匯出至 %{path}：%{error}"
 
 unsaved:
-  title: "未儲存的設定"
+  title: "儲存變更？"
+  keep_editing: "繼續編輯"
   message: "請先完成或放棄目前的編輯。"
 
 admin_rights:

@@ -114,6 +114,8 @@ fn page_canvas<'a>(
 
 const SIDE_PANEL_TOGGLE: &str = "side-panel-toggle";
 const SIDE_PANEL_CLOSE: &str = "side-panel-close";
+const SAVE_CHANGES_BUTTON: &str = "save-changes-button";
+const KEEP_EDITING_BUTTON: &str = "keep-editing-button";
 
 fn side_panel_button(open: bool) -> Element<'static, Message> {
     button(
@@ -291,6 +293,7 @@ pub(crate) fn run(
                 navigation: navigation::Flyout::default(),
                 side_panel_open: false,
                 side_panel_tab: SidePanelTab::Info,
+                save_dialog_open: false,
                 preferences: settings_pages::Editor::default(),
                 home: home::Model::default(),
                 action_log: action_log::Editor::default(),
@@ -604,6 +607,7 @@ struct WinderustApp {
     navigation: navigation::Flyout,
     side_panel_open: bool,
     side_panel_tab: SidePanelTab,
+    save_dialog_open: bool,
     preferences: settings_pages::Editor,
     home: home::Model,
     action_log: action_log::Editor,
@@ -732,6 +736,8 @@ enum Message {
     WindowCloseRequested(iced::window::Id),
     WindowClose,
     Close,
+    OpenSaveDialog,
+    DismissSaveDialog,
     Save,
     Cancel,
     PausePowerPlans(bool),
@@ -836,6 +842,21 @@ impl WinderustApp {
             } else {
                 Message::Preferences(settings_pages::Message::DismissUpdate)
             });
+        }
+        if !review_open && self.save_dialog_open {
+            return match key {
+                Key::Named(Named::Tab) if tab => {
+                    super::keyboard_focus::move_focus(!modifiers.shift(), true)
+                }
+                Key::Named(Named::Escape)
+                    if !repeat
+                        && modifiers.is_empty()
+                        && status == iced::event::Status::Ignored =>
+                {
+                    self.update(Message::DismissSaveDialog)
+                }
+                _ => Task::none(),
+            };
         }
         if !review_open && self.page == Page::WinderustBehaviour {
             if let Some(slot) = self.preferences.hotkey_capture {
@@ -1198,6 +1219,9 @@ impl WinderustApp {
     fn update(&mut self, message: Message) -> Task<Message> {
         if self.exiting && !message.allowed_during_exit() {
             return Task::none();
+        }
+        if matches!(message, Message::Save | Message::Cancel | Message::Close) {
+            self.save_dialog_open = false;
         }
         match message {
             Message::DismissPickers => {
@@ -1892,9 +1916,12 @@ impl WinderustApp {
                         if self
                             .power_plan_control
                             .discard_unavailable_plan(&self.power_plans)
-                            && self.error_message.is_empty()
                         {
-                            self.error_message = t!("common.selected_plan_unavailable").to_string();
+                            self.save_dialog_open = false;
+                            if self.error_message.is_empty() {
+                                self.error_message =
+                                    t!("common.selected_plan_unavailable").to_string();
+                            }
                         }
                         if self.page == Page::AdvancedPowerPlanTuning
                             && self.power_tuning.review_origin().is_none()
@@ -2303,6 +2330,17 @@ impl WinderustApp {
                 }
                 self.closing = true;
                 return self.show_window();
+            }
+            Message::OpenSaveDialog => {
+                if self.pending_changes() && self.power_plan_control.pending.is_none() {
+                    self.navigation.dismiss();
+                    self.save_dialog_open = true;
+                    return iced::widget::operation::focus(KEEP_EDITING_BUTTON);
+                }
+            }
+            Message::DismissSaveDialog => {
+                self.save_dialog_open = false;
+                return iced::widget::operation::focus(SAVE_CHANGES_BUTTON);
             }
             Message::Save if self.closing && self.exit_blocking_status().is_some() => {}
             Message::Save | Message::Cancel if self.power_plan_control.pending.is_some() => {}
@@ -2721,7 +2759,8 @@ impl WinderustApp {
     }
 
     fn blocking_editor_open(&self) -> bool {
-        self.preferences.replace_settings_open
+        self.save_dialog_open
+            || self.preferences.replace_settings_open
             || self.adaptive.preset_open()
             || self.preset_close_message().is_some()
             || self.pending_editor()
@@ -3256,6 +3295,9 @@ impl WinderustApp {
             .style(widgets::surface);
             return centered_modal(content, dialog.into());
         }
+        if self.save_dialog_open {
+            return centered_modal(content, self.save_dialog());
+        }
         if self.process_context_open() {
             iced::widget::stack![
                 content,
@@ -3492,8 +3534,27 @@ impl WinderustApp {
             };
             header = header.push(item);
         }
-        let breadcrumb =
-            container(header.wrap().vertical_spacing(design::space::TIGHT)).width(Fill);
+        let settings_are_pending = self.pending_settings_changes();
+        let mut breadcrumb =
+            row![container(header.wrap().vertical_spacing(design::space::TIGHT)).width(Fill),]
+                .spacing(design::space::MEDIUM)
+                .align_y(iced::Center);
+        if !process_actions_open
+            && (settings_are_pending || self.power_plan_control.selected_guid.is_some())
+        {
+            let switching = self.power_plan_control.pending.is_some();
+            let label = if switching {
+                t!("power_plan_control.switching").to_string()
+            } else {
+                format!("{}…", t!("common.save"))
+            };
+            breadcrumb = breadcrumb.push(
+                action_button(label)
+                    .style(widgets::primary_button)
+                    .focus_id(SAVE_CHANGES_BUTTON)
+                    .on_press_maybe((!switching).then_some(Message::OpenSaveDialog)),
+            );
+        }
         let mut profile_controls = None;
         if self.page.supports_power_source_profiles() {
             let plugged_in = read_power_source();
@@ -3543,41 +3604,6 @@ impl WinderustApp {
             profile_controls.map(Into::into),
             panel_button,
         );
-        let settings_are_pending = self.pending_settings_changes();
-        let save_notice_visible = !process_actions_open
-            && (settings_are_pending || self.power_plan_control.selected_guid.is_some());
-        let save_notice_in_editor = matches!(
-            self.page,
-            Page::PowerPlanControl
-                | Page::AdaptiveEngine
-                | Page::AdaptiveProcessorPower
-                | Page::AppSuspension
-                | Page::CpuLimiter
-                | Page::EfficiencyMode
-                | Page::TimerResolution
-                | Page::SleepPrevention
-                | Page::MemoryTrim
-                | Page::KeepRunning
-                | Page::InstanceLimits
-                | Page::InstanceBalancing
-                | Page::ByFocus
-                | Page::ByActivity
-                | Page::ByCpuLoad
-                | Page::ByTime
-                | Page::AdvancedPowerPlanTuning
-                | Page::ByRunningApp
-                | Page::CpuSetsSoft
-                | Page::ProcessorAffinityHard
-                | Page::ResourceThresholds
-                | Page::ActionLog
-                | Page::WinderustBehaviour
-                | Page::LanguageAndAppearance
-                | Page::ExperimentalFeatures
-                | Page::Win32PrioritySeparation
-                | Page::About
-        ) || priority_kind(self.page).is_some();
-        let save_card =
-            || widgets::settings_card(self.save_notice(settings_are_pending)).width(360);
         let content = container(super::motion::wrap(
             super::motion::wrap(
                 super::scrolling::repaint_group(self.page_view(
@@ -3593,22 +3619,7 @@ impl WinderustApp {
         ))
         .width(Fill)
         .height(Fill);
-        let content = if save_notice_in_editor {
-            column![content]
-                .extend(save_notice_visible.then(|| {
-                    container(save_card())
-                        .width(Fill)
-                        .align_x(iced::Right)
-                        .into()
-                }))
-                .spacing(design::space::MEDIUM)
-                .height(Fill)
-                .into()
-        } else {
-            content.into()
-        };
-        let body = page_canvas(shield(heading), content);
-        let panel_visible = side_panel.is_some();
+        let body = page_canvas(shield(heading), content.into());
         let layout = row![
             navigation,
             container(body)
@@ -3794,71 +3805,50 @@ impl WinderustApp {
         if let Some(modal) = modal {
             return centered_modal(layout, modal);
         }
-        if save_notice_in_editor {
-            // Match the background child in Search and other modal stacks.
-            return iced::widget::stack![layout].into();
-        }
-        iced::widget::stack![
-            layout,
-            shield(
-                container(super::motion::wrap(
-                    iced::widget::opaque(save_card()),
-                    save_notice_visible,
-                    super::motion::Effect::Visible
-                ))
-                .padding(iced::Padding {
-                    right: design::space::LARGE as f32
-                        + if panel_visible {
-                            side_panel_width + 1.0
-                        } else {
-                            0.0
-                        },
-                    ..iced::Padding::new(design::space::LARGE as f32)
-                })
-                .width(Fill)
-                .height(Fill)
-                .align_x(iced::Right)
-                .align_y(iced::Bottom)
-                .into()
-            )
-        ]
-        .into()
+        // Match the background child in Search and other modal stacks.
+        iced::widget::stack![layout].into()
     }
 
-    fn save_notice(&self, settings: bool) -> iced::widget::Column<'static, Message> {
+    fn save_dialog(&self) -> Element<'static, Message> {
         let plan = self.power_plan_control.selected_guid.as_deref();
-        let title = if plan.is_some() && !settings {
+        let title = if plan.is_some() && !self.pending_settings_changes() {
             "power_plan_control.save_title"
         } else {
             "unsaved.title"
         };
-        let mut notice = column![widgets::heading(
+        let mut body = column![widgets::heading(
             t!(title).to_string(),
-            design::typography::BODY
+            design::typography::DIALOG_TITLE
         )];
-        let ready = self.power_plan_control.pending.is_none();
-        if !ready {
-            notice = notice.push(text(t!("power_plan_control.switching").to_string()));
-        } else if let Some(guid) = plan {
+        if let Some(guid) = plan {
             let plan = power_plan_control::plan_name(&self.power_plans, guid);
-            notice = notice.push(text(
-                t!("power_plan_control.save_message", plan = plan).to_string(),
-            ));
+            body = body.push(
+                text(t!("power_plan_control.save_message", plan = plan).to_string())
+                    .wrapping(text::Wrapping::WordOrGlyph),
+            );
         }
-        notice
-            .push(
+        container(
+            body.push(
                 row![
                     iced::widget::Space::new().width(Fill),
-                    action_button(t!("common.discard").to_string())
+                    action_button(t!("unsaved.keep_editing").to_string())
                         .style(widgets::tertiary_button)
-                        .on_press_maybe(ready.then_some(Message::Cancel)),
+                        .focus_id(KEEP_EDITING_BUTTON)
+                        .on_press(Message::DismissSaveDialog),
+                    action_button(t!("common.discard").to_string()).on_press(Message::Cancel),
                     action_button(t!("common.save").to_string())
                         .style(widgets::primary_button)
-                        .on_press_maybe(ready.then_some(Message::Save)),
+                        .on_press(Message::Save),
                 ]
                 .spacing(design::space::SMALL),
             )
-            .spacing(design::space::MEDIUM)
+            .spacing(design::space::LARGE),
+        )
+        .padding(design::space::LARGE as u16)
+        .width(Fill)
+        .max_width(460)
+        .style(widgets::surface)
+        .into()
     }
 
     fn cpu_limiter_rule_status(

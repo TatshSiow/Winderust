@@ -431,7 +431,6 @@ impl Editor {
         interrupt_timing: &'a super::interrupt_timing::State,
         shell_height: f32,
     ) -> Element<'a, Message> {
-        // Use the shell height so the Save notice can appear without remounting focused fields.
         const PINNED_HEADER_MIN_HEIGHT: f32 = 750.0;
         self.tuning_view(
             live,

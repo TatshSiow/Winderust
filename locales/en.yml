@@ -267,7 +267,8 @@ status:
   action_log_export_failed: "Failed to export log to %{path}: %{error}"
 
 unsaved:
-  title: "Unsaved settings"
+  title: "Save changes?"
+  keep_editing: "Keep editing"
   message: "Finish or discard your pending edits before continuing."
 
 admin_rights:
