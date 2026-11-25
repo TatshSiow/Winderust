@@ -40,7 +40,7 @@ use crate::{
     },
     rules::{execution_failure_suppression_threshold, ExecutionFailureTracker},
     runtime::observations::{
-        foreground_process_group_ids, CycleObservations, ForegroundCpuHistory,
+        foreground_process_group_ids, AdaptiveWorkload, CycleObservations, ForegroundCpuHistory,
     },
 };
 
@@ -141,7 +141,7 @@ pub struct AdaptiveEngineProcessManager {
     cpu_allocation: CpuAllocationManager,
     cpu_allocation_selection: [Option<CpuAllocationSelection>; 2],
     allocation_settings: Option<AdaptiveEngineProcessSettings>,
-    allocation_foreground: Vec<(u32, u64)>,
+    allocation_foreground: Option<AdaptiveWorkload>,
     per_processor_usage: PerProcessorUsageMonitor,
     failure_suppression: ExecutionFailureTracker,
 }
@@ -158,7 +158,7 @@ impl Default for AdaptiveEngineProcessManager {
             ),
             cpu_allocation_selection: [None; 2],
             allocation_settings: None,
-            allocation_foreground: Vec::new(),
+            allocation_foreground: None,
             per_processor_usage: PerProcessorUsageMonitor::default(),
             failure_suppression: ExecutionFailureTracker::default(),
         }
@@ -540,15 +540,11 @@ impl AdaptiveEngineProcessManager {
                 action_log,
             );
         }
-        let foreground_identity = foreground_workload
-            .iter()
-            .map(|(&id, &creation)| (id, creation))
-            .collect::<Vec<_>>();
-        let foreground_changed = self.allocation_foreground != foreground_identity;
+        let foreground_changed = self.allocation_foreground.as_ref() != Some(&foreground_workload);
         let cpu_sample = observations.adaptive_cpu_sample(&foreground_workload);
         let foreground_cpu_usage_percent = self
             .foreground_cpu_history
-            .update(foreground_workload, cpu_sample);
+            .update(Arc::clone(&foreground_workload), cpu_sample);
         let foreground_cpu_usage_tenths = foreground_cpu_usage_percent.map(percent_tenths);
         let background_pressure_triggered = self.update_background_pressure(
             settings,
@@ -584,13 +580,15 @@ impl AdaptiveEngineProcessManager {
             .as_ref()
             .map_or(&[][..], |(processes, _)| processes.as_ref());
         let scanned_processes = processes.len();
-        let foreground_group = if background_pressure_triggered
-            && !std::ptr::eq(processes, foreground_processes.as_ref())
-        {
+        let foreground_group = if !background_pressure_triggered {
+            BTreeSet::new()
+        } else if std::ptr::eq(processes, foreground_processes.as_ref()) {
+            foreground_workload.keys().copied().collect()
+        } else {
             let group = foreground_process_group_ids(processes, foreground_process_id);
             // A new child or reused PID in the full scan invalidates the sampled workload.
-            if group.len() != foreground_identity.len()
-                || foreground_identity.iter().any(|&(id, creation)| {
+            if group.len() != foreground_workload.len()
+                || foreground_workload.iter().any(|(&id, &creation)| {
                     !group.contains(&id)
                         || !processes.iter().any(|process| {
                             process.id == id && process.creation_time == Some(creation)
@@ -606,8 +604,6 @@ impl AdaptiveEngineProcessManager {
                 );
             }
             group
-        } else {
-            foreground_identity.iter().map(|&(id, _)| id).collect()
         };
         let processes_by_id = processes
             .iter()
@@ -670,7 +666,7 @@ impl AdaptiveEngineProcessManager {
         if self.allocation_settings.as_ref() != Some(settings) || foreground_changed {
             self.invalidate_allocation_selection();
             self.allocation_settings = Some(settings.clone());
-            self.allocation_foreground = foreground_identity;
+            self.allocation_foreground = Some(foreground_workload);
         }
         let mut failures = PriorityFailures::default();
         let focus_and_launch_profile_target = foreground_processes

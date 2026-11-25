@@ -131,14 +131,26 @@ impl ExecutableNamePattern {
         let mut remaining = name;
         // Keep the last star so it can consume another character if the suffix fails.
         let mut retry = None;
-        while let Some(actual) = remaining.chars().next() {
-            match pattern.chars().next() {
-                Some('*') => {
+        while let Some(&actual) = remaining.as_bytes().first() {
+            match pattern.as_bytes().first().copied() {
+                Some(b'*') => {
                     pattern = &pattern[1..];
                     retry = Some((pattern, remaining));
                     continue;
                 }
-                Some(expected) => {
+                Some(expected) if expected.is_ascii() && actual.is_ascii() => {
+                    if expected == b'?' || expected.eq_ignore_ascii_case(&actual) {
+                        pattern = &pattern[1..];
+                        remaining = &remaining[1..];
+                        continue;
+                    }
+                }
+                Some(_) => {
+                    let (Some(expected), Some(actual)) =
+                        (pattern.chars().next(), remaining.chars().next())
+                    else {
+                        return false;
+                    };
                     let expected_len = expected.len_utf8();
                     let actual_len = actual.len_utf8();
                     if expected == '?'
@@ -181,6 +193,21 @@ mod tests {
             "\u{00e9}diteur-a.exe.old",
             "my-\u{00e9}diteur-a.exe",
         ] {
+            assert!(!pattern.matches(name), "{name}");
+        }
+    }
+
+    #[test]
+    fn executable_name_patterns_match_ascii_and_unicode_in_the_same_rule() {
+        let pattern = ExecutableNamePattern::try_from("worker-**?b.exe".to_owned()).unwrap();
+        for name in [
+            "WORKER-Ab.EXE",
+            "worker-\u{1f9ea}b.exe",
+            "worker-\u{1f9ea}xb.exe",
+        ] {
+            assert!(pattern.matches(name), "{name}");
+        }
+        for name in ["", "worker-b.exe", "worker-\u{1f9ea}xb.exe.old"] {
             assert!(!pattern.matches(name), "{name}");
         }
     }

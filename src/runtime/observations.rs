@@ -19,7 +19,7 @@ use crate::{
     },
 };
 
-type AdaptiveWorkload = Arc<BTreeMap<u32, u64>>;
+pub(crate) type AdaptiveWorkload = Arc<BTreeMap<u32, u64>>;
 
 #[derive(Debug, Default, PartialEq, Eq)]
 pub(crate) struct ForegroundCpuHistory(Option<(AdaptiveWorkload, ProcessCpuSample)>);
