@@ -8,6 +8,9 @@ use std::{
 };
 
 use super::*;
+
+mod adaptive_power;
+
 use crate::platform::windows::priority_efficiency::{
     POWER_CURRENT_VERSION as PROCESS_POWER_THROTTLING_CURRENT_VERSION,
     POWER_EXECUTION_SPEED as PROCESS_POWER_THROTTLING_EXECUTION_SPEED,
@@ -1214,6 +1217,8 @@ fn priority_efficiency_live_apply_and_clean_release() -> Result<(), String> {
     let expected_efficiency = !baseline_efficiency;
     let mut controller = PriorityEfficiencyController::default();
 
+    verify_live_adaptive_restraint_power(&mut controller, &target)?;
+
     controller
         .apply_process_list_efficiency_mode(&target, expected_efficiency, true)
         .map_err(|error| error.to_string())?;
@@ -1230,6 +1235,80 @@ fn priority_efficiency_live_apply_and_clean_release() -> Result<(), String> {
         current_efficiency_mode(&target, true).map_err(|error| error.to_string())?,
         baseline_efficiency
     );
+    Ok(())
+}
+
+fn verify_live_adaptive_restraint_power(
+    controller: &mut PriorityEfficiencyController,
+    target: &ProcessActionTarget,
+) -> Result<(), String> {
+    let control_target = ProcessControlTarget::from_action_target(target);
+    let (_, process) = controller
+        .platform
+        .open(&control_target, true)
+        .map_err(|error| error.to_string())?;
+    let original = controller
+        .platform
+        .query_power(&process)
+        .map_err(|error| error.to_string())?;
+    let speed = PROCESS_POWER_THROTTLING_EXECUTION_SPEED;
+    let baseline = PowerThrottlingState {
+        control_mask: original.control_mask & !speed,
+        state_mask: original.state_mask & !speed,
+        ..original
+    };
+    if baseline != original {
+        controller
+            .platform
+            .apply_power(&process, baseline)
+            .map_err(|error| error.to_string())?;
+    }
+
+    let priority_claim = PriorityClassClaim {
+        target: control_target.clone(),
+        owner: ControlOwner::AdaptiveEngine,
+        priority: PriorityClassValue::BelowNormal,
+        preservation: PriorityClassPreservation::OnlyNormal,
+    };
+    let outcome = controller
+        .apply_priority_claim(priority_claim, true)
+        .map_err(|error| error.to_string())?;
+    assert_eq!(outcome, ProcessPropertyApplyOutcome::Applied);
+    let outcome = controller
+        .apply_adaptive_restraint_power(control_target, true)
+        .map_err(|error| error.to_string())?;
+    assert_eq!(outcome, ProcessPropertyApplyOutcome::Applied);
+    assert_eq!(
+        controller
+            .platform
+            .query_power(&process)
+            .map_err(|error| error.to_string())?,
+        baseline.with_execution_speed_enabled()
+    );
+    let release = controller.release_adaptive_restraint_power_except(&BTreeSet::new());
+    assert!(release.failures.is_empty(), "{release:?}");
+    assert_eq!(release.restored_processes, 1);
+    assert_eq!(
+        controller
+            .platform
+            .query_power(&process)
+            .map_err(|error| error.to_string())?,
+        baseline
+    );
+    assert_eq!(
+        controller
+            .platform
+            .query_priority(&process)
+            .map_err(|error| error.to_string())?,
+        BELOW_NORMAL_PRIORITY_CLASS
+    );
+    controller.shutdown()?;
+    if baseline != original {
+        controller
+            .platform
+            .apply_power(&process, original)
+            .map_err(|error| error.to_string())?;
+    }
     Ok(())
 }
 #[test]

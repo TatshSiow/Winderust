@@ -13,7 +13,10 @@ use crate::{
         },
         memory_priority::MemoryPriorityReleaseOwner,
         power_plan::{AdaptiveProcessorPowerError, PowerPlanOwner},
-        priority_efficiency::{AdaptiveRestraintProcess, AdaptiveRestraintState},
+        priority_efficiency::{
+            AdaptiveRestraintProcess, AdaptiveRestraintState, PriorityEfficiencyReleaseSummary,
+            ProcessPropertyApplyOutcome,
+        },
         process::{ProcessControlError, ProcessControlTarget},
     },
     features::cpu_control::cpu_limiter::{
@@ -1269,7 +1272,7 @@ impl RuntimeCore {
         &mut self,
         shared: &SharedAutomationState,
         source: PowerSourceProfile,
-        io_settings: Option<&Settings>,
+        restraint_settings: Option<&Settings>,
         status: Option<AdaptiveEngineProcessSnapshot>,
     ) {
         if status.is_none()
@@ -1305,8 +1308,8 @@ impl RuntimeCore {
             }
             changed
         };
-        let io_failures = (audit_changed || status.is_some())
-            .then(|| self.reconcile_adaptive_restraint_io(io_settings));
+        let restraint_failures = (audit_changed || status.is_some())
+            .then(|| self.reconcile_adaptive_restraint_actions(restraint_settings));
         let Some(mut status) = status else {
             if audit_changed {
                 update_feature_status(
@@ -1320,7 +1323,7 @@ impl RuntimeCore {
         };
         status.restraint_processes = self.adaptive_restraint_processes.clone();
         status.source = (!status.waiting_for_power_source).then_some(source);
-        if let Some((count, error)) = io_failures {
+        if let Some((count, error)) = restraint_failures {
             status.failed_processes += count;
             status.last_error = status.last_error.or(error);
         }
@@ -1339,85 +1342,185 @@ impl RuntimeCore {
         update_adaptive_engine_process_status(shared, status);
     }
 
-    fn reconcile_adaptive_restraint_io(
+    fn reconcile_adaptive_restraint_actions(
         &mut self,
         settings: Option<&Settings>,
     ) -> (usize, Option<String>) {
-        let selection = settings.and_then(|settings| {
-            if !settings.general.enabled || !settings.adaptive_engine.enabled {
-                return None;
-            }
-            let priority = match settings.adaptive_engine_process.restraint_io_priority {
-                AdaptiveRestraintIoPriority::Unchanged => return None,
-                AdaptiveRestraintIoPriority::Low => ProcessIoPriority::Low,
-                AdaptiveRestraintIoPriority::VeryLow => ProcessIoPriority::VeryLow,
-            };
-            Some((
-                priority,
-                settings.general.allow_cross_session_process_control,
-            ))
+        let settings = settings.filter(|settings| {
+            settings.general.enabled
+                && settings.adaptive_engine.enabled
+                && settings
+                    .adaptive_engine_process
+                    .cpu_pressure_restraint_enabled
         });
-        if selection.is_none() && !self.io_priority_controller.has_adaptive_restraint_state() {
+        let io_priority = settings.and_then(|settings| {
+            match settings.adaptive_engine_process.restraint_io_priority {
+                AdaptiveRestraintIoPriority::Unchanged => None,
+                AdaptiveRestraintIoPriority::Low => Some(ProcessIoPriority::Low),
+                AdaptiveRestraintIoPriority::VeryLow => Some(ProcessIoPriority::VeryLow),
+            }
+        });
+        let energy_efficient_scheduling = settings.is_some_and(|settings| {
+            settings
+                .adaptive_engine_process
+                .restraint_energy_efficient_scheduling
+        });
+        let track_io =
+            io_priority.is_some() || self.io_priority_controller.has_adaptive_restraint_state();
+        let track_power = energy_efficient_scheduling
+            || self
+                .priority_efficiency_controller
+                .has_adaptive_restraint_power_state();
+        if !track_io && !track_power {
             return (0, None);
         }
+        let allow_cross_session =
+            settings.is_some_and(|settings| settings.general.allow_cross_session_process_control);
         let verified = self
             .adaptive_restraint_processes
             .as_deref()
             .unwrap_or_default()
             .iter()
             .filter(|row| row.state == AdaptiveRestraintState::Verified);
-        let episodes = verified.clone().map(|row| row.process.key()).collect();
-        let empty = BTreeSet::new();
-        let eligible = if selection.is_some() {
-            &episodes
-        } else {
-            &empty
-        };
-        let summary = self
-            .io_priority_controller
-            .reconcile_adaptive_restraint_targets(eligible, &episodes);
-        Self::record_adaptive_io_releases(&mut self.action_log, summary);
-
         let owner = ControlOwner::AdaptiveEngine;
+        if track_io {
+            let episodes = verified.clone().map(|row| row.process.key()).collect();
+            let empty = BTreeSet::new();
+            let eligible = if io_priority.is_some() {
+                &episodes
+            } else {
+                &empty
+            };
+            let summary = self
+                .io_priority_controller
+                .reconcile_adaptive_restraint_targets(eligible, &episodes);
+            Self::record_adaptive_io_releases(&mut self.action_log, summary);
+        }
         let mut pending = self.io_priority_controller.policy_release_failures(owner);
         let mut last_error = pending.next().map(|(_, error)| error.to_string());
         let mut failed = usize::from(last_error.is_some()) + pending.count();
-        if let Some((priority, allow_cross_session)) = selection {
+        let mut power_targets = BTreeSet::new();
+        if io_priority.is_some() || energy_efficient_scheduling {
             for row in verified {
                 let process = &row.process;
-                let claim = IoPriorityClaim {
-                    target: ProcessControlTarget::automatic(
+                let target = || {
+                    ProcessControlTarget::automatic(
                         process.id,
                         process.name.clone(),
                         process.executable_path.clone(),
                         process.creation_time,
-                    ),
-                    owner,
-                    priority,
-                    preservation: IoPriorityPreservation::PreserveLower,
+                    )
                 };
-                match self
-                    .io_priority_controller
-                    .apply_policy_claim(claim, allow_cross_session)
-                {
-                    Ok(IoPriorityApplyOutcome::Applied) => self.action_log.record(
-                        ActionLogFeature::AdaptiveEngine,
-                        Some(process.id),
-                        &process.name,
-                        ActionLogResult::Applied,
-                        "Lowered I/O priority during CPU Pressure Restraint.",
-                    ),
-                    Ok(_) | Err(ProcessControlError::ProcessExited) => {}
-                    Err(error) => {
-                        failed += 1;
-                        last_error.get_or_insert_with(|| {
-                            format!("Could not lower I/O priority for {}: {error}", process.name)
-                        });
+                if let Some(priority) = io_priority {
+                    let claim = IoPriorityClaim {
+                        target: target(),
+                        owner,
+                        priority,
+                        preservation: IoPriorityPreservation::PreserveLower,
+                    };
+                    match self
+                        .io_priority_controller
+                        .apply_policy_claim(claim, allow_cross_session)
+                    {
+                        Ok(IoPriorityApplyOutcome::Applied) => self.action_log.record(
+                            ActionLogFeature::AdaptiveEngine,
+                            Some(process.id),
+                            &process.name,
+                            ActionLogResult::Applied,
+                            "Lowered I/O priority during CPU Pressure Restraint.",
+                        ),
+                        Ok(_) | Err(ProcessControlError::ProcessExited) => {}
+                        Err(error) => {
+                            failed += 1;
+                            last_error.get_or_insert_with(|| {
+                                format!(
+                                    "Could not lower I/O priority for {}: {error}",
+                                    process.name
+                                )
+                            });
+                        }
+                    }
+                }
+                if energy_efficient_scheduling {
+                    match self
+                        .priority_efficiency_controller
+                        .apply_adaptive_restraint_power(target(), allow_cross_session)
+                    {
+                        Ok(ProcessPropertyApplyOutcome::Applied) => {
+                            power_targets.insert(process.key());
+                            self.action_log.record(
+                                ActionLogFeature::AdaptiveEngine,
+                                Some(process.id),
+                                &process.name,
+                                ActionLogResult::Applied,
+                                "Enabled energy-efficient scheduling during CPU Pressure Restraint.",
+                            );
+                        }
+                        Ok(
+                            ProcessPropertyApplyOutcome::Unchanged
+                            | ProcessPropertyApplyOutcome::Preserved,
+                        ) => {
+                            power_targets.insert(process.key());
+                        }
+                        Ok(ProcessPropertyApplyOutcome::Shadowed)
+                        | Err(ProcessControlError::ProcessExited) => {}
+                        Err(error) => {
+                            failed += 1;
+                            last_error.get_or_insert_with(|| {
+                                format!(
+                                    "Could not enable energy-efficient scheduling for {}: {error}",
+                                    process.name
+                                )
+                            });
+                        }
                     }
                 }
             }
         }
+        if track_power {
+            let summary = self
+                .priority_efficiency_controller
+                .release_adaptive_restraint_power_except(&power_targets);
+            Self::record_adaptive_power_releases(&mut self.action_log, summary);
+            for failure in self
+                .priority_efficiency_controller
+                .adaptive_restraint_power_release_failures()
+            {
+                failed += 1;
+                last_error.get_or_insert_with(|| failure.error.to_string());
+            }
+        }
         (failed, last_error)
+    }
+
+    fn record_adaptive_power_releases(
+        action_log: &mut ActionLog,
+        summary: PriorityEfficiencyReleaseSummary,
+    ) {
+        if summary.restored_processes > 0 {
+            action_log.record(
+                ActionLogFeature::AdaptiveEngine,
+                None,
+                "",
+                ActionLogResult::Restored,
+                format!(
+                    "Restored energy-efficient scheduling for {}.",
+                    process_count_label(summary.restored_processes)
+                ),
+            );
+        }
+        for failure in summary.failures {
+            action_log.record(
+                ActionLogFeature::AdaptiveEngine,
+                Some(failure.process_id),
+                failure.process_name,
+                ActionLogResult::Failed,
+                format!(
+                    "Could not restore energy-efficient scheduling: {}",
+                    failure.error
+                ),
+            );
+        }
     }
 
     fn record_adaptive_io_releases(action_log: &mut ActionLog, summary: IoPriorityReleaseSummary) {
@@ -2012,6 +2115,9 @@ impl RuntimeCore {
                 self.efficiency_mode_manager
                     .with_release_status(&self.priority_efficiency_controller, status),
             );
+        }
+        if let Some(summary) = retries.adaptive_restraint_power {
+            Self::record_adaptive_power_releases(&mut self.action_log, summary);
         }
         let mut errors = retries
             .other

@@ -775,6 +775,22 @@ impl Editor {
                         adaptive_engine_process.restraint_io_priority
                     )
                     .into(),
+                    super::widgets::setting_row(
+                        "adaptive_engine_process.restraint_energy_efficient_scheduling",
+                        super::widgets::switch(
+                            cpu.restraint_energy_efficient_scheduling,
+                            editable.then_some(|value| {
+                                Message::Toggle(
+                                    |s, enabled| {
+                                        s.adaptive_engine_process
+                                            .restraint_energy_efficient_scheduling = enabled
+                                    },
+                                    value,
+                                )
+                            }),
+                        ),
+                    )
+                    .into(),
                     number!(
                         "adaptive_engine_process.restraint_trigger_time",
                         ADAPTIVE_RESTRAINT_TRIGGER_MIN_MS,

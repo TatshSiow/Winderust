@@ -1192,6 +1192,7 @@ pub struct AdaptiveEngineProcessSettings {
     pub restraint_idle_timeout_seconds: u64,
     pub restraint_priority: AdaptiveRestraintPriority,
     pub restraint_io_priority: AdaptiveRestraintIoPriority,
+    pub restraint_energy_efficient_scheduling: bool,
     pub cpu_restraint_time_seconds: u64,
     pub maximum_restraint_time_seconds: u64,
     pub cpu_recovery_time_seconds: u64,
@@ -1271,6 +1272,8 @@ struct AdaptiveEngineProcessSettingsWire {
     pub restraint_priority: AdaptiveRestraintPriority,
     #[serde(default)]
     pub restraint_io_priority: AdaptiveRestraintIoPriority,
+    #[serde(default)]
+    pub restraint_energy_efficient_scheduling: bool,
     pub cpu_restraint_time_seconds: u64,
     #[serde(default)]
     pub maximum_restraint_time_seconds: u64,
@@ -1346,6 +1349,7 @@ impl TryFrom<AdaptiveEngineProcessSettingsWire> for AdaptiveEngineProcessSetting
             restraint_idle_timeout_seconds: wire.restraint_idle_timeout_seconds,
             restraint_priority: wire.restraint_priority,
             restraint_io_priority: wire.restraint_io_priority,
+            restraint_energy_efficient_scheduling: wire.restraint_energy_efficient_scheduling,
             cpu_restraint_time_seconds: wire.cpu_restraint_time_seconds,
             maximum_restraint_time_seconds: wire.maximum_restraint_time_seconds,
             cpu_recovery_time_seconds: wire.cpu_recovery_time_seconds,
@@ -2553,6 +2557,7 @@ impl Default for AdaptiveEngineProcessSettings {
             restraint_idle_timeout_seconds: default_restraint_idle_timeout_seconds(),
             restraint_priority: AdaptiveRestraintPriority::default(),
             restraint_io_priority: AdaptiveRestraintIoPriority::default(),
+            restraint_energy_efficient_scheduling: false,
             cpu_restraint_time_seconds: 3,
             maximum_restraint_time_seconds: 0,
             cpu_recovery_time_seconds: 6,

@@ -3907,6 +3907,7 @@ fn adaptive_engine_source_selection_checks_pressure_and_restraint_actions() {
     let battery = &mut settings.battery_profile_mut().adaptive_engine_process;
     battery.restraint_priority = AdaptiveRestraintPriority::Idle;
     battery.restraint_io_priority = AdaptiveRestraintIoPriority::VeryLow;
+    battery.restraint_energy_efficient_scheduling = true;
     battery.maximum_restraint_time_seconds = 30;
     assert!(!adaptive_engine_process_waits_for_source(&settings, None));
 
@@ -3929,6 +3930,10 @@ fn adaptive_engine_source_selection_checks_pressure_and_restraint_actions() {
     settings.adaptive_engine_process.restraint_priority = AdaptiveRestraintPriority::Idle;
     assert!(adaptive_engine_process_waits_for_source(&settings, None));
     settings.adaptive_engine_process.restraint_io_priority = AdaptiveRestraintIoPriority::VeryLow;
+    assert!(adaptive_engine_process_waits_for_source(&settings, None));
+    settings
+        .adaptive_engine_process
+        .restraint_energy_efficient_scheduling = true;
     assert!(adaptive_engine_process_waits_for_source(&settings, None));
     settings
         .adaptive_engine_process

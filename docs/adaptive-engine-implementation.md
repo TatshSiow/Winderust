@@ -141,6 +141,11 @@ migration or copying from the limiter is performed.
   priority restraint. The default is Unchanged. The shared I/O Priority controller preserves a
   lower baseline and yields to saved I/O policies and manual changes. It releases the Adaptive
   adjustment when restraint ends or the option changes to Unchanged.
+- Energy-efficient scheduling is an independent, default-off option during verified CPU Pressure
+  Restraint. Windows can use the hint when choosing cores and processor frequencies. The shared
+  priority and efficiency controller captures and restores the original power throttling state.
+  Saved Efficiency Mode, manual settings, and explicit Windows execution-speed settings take
+  precedence.
 - Missing per-process samples or invalid CPU deltas discard that target's old
   baseline and restraint/recovery episode. Re-entry requires a fresh valid interval;
   skipped/excluded targets cannot retain stale candidate tracking.

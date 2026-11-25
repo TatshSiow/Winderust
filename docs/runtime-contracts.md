@@ -877,6 +877,10 @@ Read the relevant section before changing feature policy, ownership, restoration
   episode. The dedicated I/O Priority policy reserves applicable targets even when its
   requested value requires no write. Process List manual choices also make Adaptive yield.
   The shared I/O controller keeps release and retry ownership separate for the two producers.
+  Optional Energy-efficient scheduling requires a verified CPU restraint for the same process.
+  It adds an execution-speed hint through the shared priority and efficiency controller,
+  preserves timer-resolution settings, and yields to saved Efficiency Mode, manual choices,
+  or external execution-speed control. Restoration uses the original raw power state.
 - CPU Pressure Restraint qualifies a process after at least two valid hot samples
   and the configured Time above threshold. Reaction time sets sampling
   cadence independently. The pressure source determines which aggregate CPU readings

@@ -136,6 +136,7 @@ pub(super) fn adaptive_engine_process_waits_for_source(
                 policy.restraint_trigger_time_ms,
                 policy.restraint_priority,
                 policy.restraint_io_priority,
+                policy.restraint_energy_efficient_scheduling,
                 policy.maximum_restraint_time_seconds,
                 policy
                     .pause_restraint_when_idle

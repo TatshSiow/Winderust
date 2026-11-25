@@ -927,6 +927,8 @@ adaptive_engine_process:
   restraint_io_priority: "受限時的 I/O 優先順序"
   restraint_io_priority_help: "確認 CPU 壓力限制已套用後，暫時調低 I/O 優先順序。原先較低的 I/O 優先順序、I/O 優先順序規則及手動設定優先適用。"
   restraint_io_priority_unchanged: "維持原狀"
+  restraint_energy_efficient_scheduling: "節能排程"
+  restraint_energy_efficient_scheduling_help: "應用程式受限制期間，Windows 可優先使用高能效核心或降低 CPU 頻率。"
   restraint_trigger_time: "達到門檻的持續時間"
   restraint_trigger_time_help: "背景應用程式的 CPU 使用率必須持續達到或超過門檻多久，才會開始限制。"
   maximum_restraint_time: "最長限制時間"

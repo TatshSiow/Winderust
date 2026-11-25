@@ -808,6 +808,7 @@ fn omitted_cpu_behaviour_settings_use_defaults_independent_of_sampling_interval(
         "restraint_idle_timeout_seconds",
         "restraint_priority",
         "restraint_io_priority",
+        "restraint_energy_efficient_scheduling",
         "maximum_restraint_time_seconds",
     ] {
         assert!(fields.remove(key).is_some());
@@ -1377,6 +1378,7 @@ fn toml_round_trip_preserves_settings() {
             restraint_idle_timeout_seconds: 120,
             restraint_priority: AdaptiveRestraintPriority::Idle,
             restraint_io_priority: AdaptiveRestraintIoPriority::Low,
+            restraint_energy_efficient_scheduling: true,
             cpu_restraint_time_seconds: 4,
             maximum_restraint_time_seconds: crate::config::ADAPTIVE_RESTRAINT_MAX_TIME_SECONDS,
             cpu_recovery_time_seconds: 10,
@@ -1530,6 +1532,7 @@ fn toml_round_trip_preserves_settings() {
     battery_restraint.exclude_service_hosts = false;
     battery_restraint.restraint_priority = AdaptiveRestraintPriority::BelowNormal;
     battery_restraint.restraint_io_priority = AdaptiveRestraintIoPriority::VeryLow;
+    battery_restraint.restraint_energy_efficient_scheduling = false;
     battery_restraint.maximum_restraint_time_seconds = battery_restraint.cpu_restraint_time_seconds;
     battery_restraint.cpu_allocation_method = CpuAllocationMethod::ProcessorAffinityHard;
     battery_restraint.preserve_custom_affinity = false;

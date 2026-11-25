@@ -173,6 +173,7 @@ pub(super) fn apply_adaptive_engine_process_preset(
     settings.restraint_idle_timeout_seconds = DEFAULT_ADAPTIVE_RESTRAINT_IDLE_TIMEOUT_SECONDS;
     settings.restraint_priority = AdaptiveRestraintPriority::default();
     settings.restraint_io_priority = AdaptiveRestraintIoPriority::default();
+    settings.restraint_energy_efficient_scheduling = false;
     settings.cpu_restraint_time_seconds = values.cpu_restraint_time_seconds;
     settings.maximum_restraint_time_seconds = 0;
     settings.cpu_recovery_time_seconds = values.cpu_recovery_time_seconds;
@@ -448,6 +449,7 @@ mod tests {
                 exclude_service_hosts: true,
                 restraint_priority: AdaptiveRestraintPriority::Idle,
                 restraint_io_priority: AdaptiveRestraintIoPriority::Low,
+                restraint_energy_efficient_scheduling: true,
                 maximum_restraint_time_seconds: 10,
                 cpu_allocation_method: CpuAllocationMethod::ReduceAffinity,
                 preserve_custom_affinity: true,
@@ -475,6 +477,7 @@ mod tests {
                 settings.restraint_io_priority,
                 AdaptiveRestraintIoPriority::Unchanged
             );
+            assert!(!settings.restraint_energy_efficient_scheduling);
         }
     }
 
@@ -492,6 +495,9 @@ mod tests {
         settings.adaptive_engine_process.restraint_priority = AdaptiveRestraintPriority::Idle;
         settings.adaptive_engine_process.restraint_io_priority =
             AdaptiveRestraintIoPriority::VeryLow;
+        settings
+            .adaptive_engine_process
+            .restraint_energy_efficient_scheduling = true;
         settings
             .adaptive_engine_process
             .maximum_restraint_time_seconds = 10;
