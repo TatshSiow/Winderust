@@ -27,6 +27,7 @@ impl std::fmt::Display for ResourceThresholdsAction {
         f.write_str(&t!(match self {
             Self::None => "resource_thresholds.no_action",
             Self::Alert => "resource_thresholds.alert",
+            Self::TrimMemory => "resource_thresholds.trim_memory",
             Self::Terminate => "resource_thresholds.terminate",
             Self::Restart => "resource_thresholds.restart",
         }))
@@ -433,7 +434,7 @@ impl Editor {
                 if let Some(draft) = self
                     .draft
                     .as_mut()
-                    .filter(|draft| draft.rule.allows_action(value))
+                    .filter(|draft| draft.rule.allows_action(resource, value))
                 {
                     response(draft.rule.monitor_mut(resource), critical).action = value;
                 }
@@ -636,11 +637,12 @@ impl Editor {
             let actions = [
                 ResourceThresholdsAction::None,
                 ResourceThresholdsAction::Alert,
+                ResourceThresholdsAction::TrimMemory,
                 ResourceThresholdsAction::Restart,
                 ResourceThresholdsAction::Terminate,
             ]
             .into_iter()
-            .filter(|action| rule.allows_action(*action))
+            .filter(|action| rule.allows_action(resource, *action))
             .collect::<Vec<_>>();
             widgets::settings_rows([
                 widgets::numeric_setting(label, unit, move || {
@@ -866,6 +868,14 @@ mod tests {
                 ResourceThresholdsResource::Cpu,
                 true,
                 ResourceThresholdsAction::Restart,
+            ),
+        );
+        editor.update(
+            &mut settings,
+            Message::Action(
+                ResourceThresholdsResource::Memory,
+                false,
+                ResourceThresholdsAction::TrimMemory,
             ),
         );
         editor.update(&mut settings, Message::SaveRule);
@@ -1283,6 +1293,15 @@ mod tests {
                 ResourceThresholdsAction::Restart,
             ),
         );
+        for resource in [
+            ResourceThresholdsResource::Cpu,
+            ResourceThresholdsResource::Memory,
+        ] {
+            editor.update(
+                &mut settings,
+                Message::Action(resource, false, ResourceThresholdsAction::TrimMemory),
+            );
+        }
         editor.update(&mut settings, Message::Tab(ResourceThresholdsResource::Cpu));
         editor.update(&mut settings, Message::SaveRule);
         assert!(!editor.has_pending_editor());
@@ -1291,8 +1310,12 @@ mod tests {
         assert_eq!(settings.rules[0].memory.warning.threshold, 70);
         assert_eq!(settings.rules[0].memory.critical.threshold, 95);
         assert_eq!(
-            settings.rules[0].cpu.critical.action,
+            settings.rules[0].cpu.warning.action,
             ResourceThresholdsAction::Alert
+        );
+        assert_eq!(
+            settings.rules[0].memory.warning.action,
+            ResourceThresholdsAction::TrimMemory
         );
         assert_eq!(
             settings.rules[0].memory.critical.action,

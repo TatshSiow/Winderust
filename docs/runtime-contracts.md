@@ -271,8 +271,8 @@ Read the relevant section before changing feature policy, ownership, restoration
   prior incident PIDs for exact identity verification. Each executable path
   has its own combined usage total and incident. A failed sample or replaced
   process cannot carry qualification into a later instance. Enabled rules evaluate
-  independently if their selectors overlap. Terminate and Restart require an
-  Executable path rule.
+  independently if their selectors overlap. Terminate, Restart, and Trim memory
+  require an Executable path rule. Trim memory is available for memory thresholds.
 - CPU deltas are calculated per exact instance and summed against total processor
   capacity (capped at 100%). Working Set uses a percentage of physical RAM or
   decimal MB. Summed working sets may count shared pages more than once. Each response
@@ -296,10 +296,17 @@ Read the relevant section before changing feature policy, ownership, restoration
   through observation gaps when the next sample confirms an exact member
   survives. New or unsampled members require a fresh CPU baseline. Power-source
   changes leave Resource Thresholds rules and incident state unchanged.
-- Before each automatic Terminate or Restart, the runtime checks the latest
+- Before each automatic process action, the runtime checks the latest
   Resource Thresholds settings, automation enablement, and cross-session policy.
   A changed policy or pending shutdown, suspend/resume, or session change cancels
   that incident's response before Keep Running is paused or a restart cooldown starts.
+- Trim memory works through the same working-set controller as Memory Trim.
+  The action skips the focused executable, already-stopped instances, and
+  the active power profile's saved exclusions. With unknown power it honors
+  exclusions from both profiles. The runtime spaces threshold trim attempts
+  for the same executable path at least 60 seconds apart. Action Log and
+  notifications report the result. Resource Thresholds owns qualification,
+  independently of the Memory Trim toggle and its pressure and idle thresholds.
 - Before Restart reserves a cooldown or pauses Keep Running, it checks each exact
   target against jobs App Suspension has frozen, including jobs awaiting a thaw
   retry. This covers descendants that inherited membership. A match records a
@@ -601,6 +608,10 @@ Read the relevant section before changing feature policy, ownership, restoration
 - The manual reply keeps the trim outcome. The UI reports skipped commands and
   failed attempts. The last completed result stays in memory and includes the
   observed working-set reduction and how many trims could be measured.
+- Process List's Trim memory targets the selected exact process or the eligible
+  processes in the selected stack. The controller revalidates identity and
+  protection on each working-set handle and logs each result in Action Log.
+  The command is independent of the automation features' settings.
 - Failure suppression is tracked by executable path. Native paths that cannot
   be represented in settings keep runtime suppression and an Action Log entry.
   Saved exclusions and auto-exclusions require a representable path. A successful

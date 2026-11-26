@@ -177,6 +177,8 @@ hover/press; background shading supplies feedback.
 - When elevated, use normal Windows process permissions for discovery and automation while retaining every critical, built-in, identity, and protected-process barrier.
 - With Advanced Controls enabled, keep Suspend/Resume present in the context menu and use the existing disabled style when the selected process cannot be safely suspended. Grouped rows apply the action to every captured process in the group. Keep unavailable App Suspension picker candidates visible, disabled, and explicitly labeled `Unavailable`. App Suspension safety must not disable unrelated process controls.
 - Stacked Process List parent rows expose only `Stop process tree`, covering every process in the stack and the union of their descendants; their expanded sub-items expose both stop actions. Non-stacked rows always expose `Stop process` and expose `Stop process tree` only while the selected process has a child in the current process snapshot.
+- Offer Trim memory in Process List's context menu. A stacked app row targets
+  the eligible processes in that stack. An expanded member targets one process.
 - The rows share one Tab stop. Up and Down move through rows, Enter opens details, and Space expands or collapses the focused group.
 - Shift+F10 or the Menu key opens the context menu at the focused row. Tab,
   Shift+Tab, and Up and Down move between its actions, Enter activates the focused
@@ -417,7 +419,8 @@ hover/press; background shading supplies feedback.
   as `abc*def.exe`. Match the whole filename without regard to case. `*` matches
   zero or more characters and `?` matches one.
   Combine usage by executable path. Name rules can send notifications.
-  Terminate and Restart require an executable path.
+  Terminate, Restart, and Trim memory require an executable path. Offer Trim
+  memory only for Working Set warning and critical actions.
 - Preview matches reads a fresh process snapshot on tab entry and every three
   seconds while visible. Show each eligible match with its app icon, PID, name,
   and executable path. Keep the current rows visible while the next snapshot loads.

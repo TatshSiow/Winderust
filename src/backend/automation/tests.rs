@@ -587,6 +587,51 @@ fn manual_memory_trim_request_starts_worker_and_always_replies() {
 }
 
 #[test]
+fn process_memory_trim_reports_each_target_failure_with_automation_disabled() {
+    let mut settings = Settings::default();
+    settings.general.enabled = false;
+    let automation = RuntimeHandle::start(&runtime_settings(settings));
+    assert!(lock_unpoisoned(&automation.thread).is_none());
+    let target = ProcessActionTarget {
+        id: std::process::id(),
+        name: "winderust.exe".into(),
+        executable_path: std::env::current_exe().expect("current test executable"),
+        creation_time: 0,
+        session_id: None,
+        is_service_account: None,
+    };
+
+    let idle_target = ProcessActionTarget {
+        id: 0,
+        ..target.clone()
+    };
+    let receiver = automation
+        .request_process_memory_trim(vec![
+            Ok(target),
+            Err(ProcessActionTargetError::IdentityUnavailable),
+            Ok(idle_target),
+        ])
+        .expect("request should queue");
+    let outcome = receiver
+        .recv_timeout(Duration::from_secs(2))
+        .expect("worker should reply")
+        .expect("runtime should process the request");
+    let access_denied = crate::control::process::ProcessControlError::AccessDenied(
+        "Winderust cannot modify this process.".to_owned(),
+    )
+    .to_string();
+    assert_eq!(
+        outcome.results,
+        [
+            Err(access_denied.clone()),
+            Err(ProcessActionTargetError::IdentityUnavailable.to_string()),
+            Err(access_denied),
+        ]
+    );
+    automation.shutdown().expect("shutdown");
+}
+
+#[test]
 fn manual_memory_trim_requires_a_known_source_only_when_manual_policies_differ() {
     use crate::memory_trim::MemoryTrimStatus;
 
@@ -3323,7 +3368,7 @@ fn resource_thresholds_actions_require_current_policy_and_no_shutdown_or_session
             r"C:\Apps\test.exe".into(),
         ));
     let shared = shared_automation_state(settings.clone());
-    assert!(resource_thresholds_action_is_current(&shared, &settings));
+    assert!(current_resource_thresholds_settings(&shared, &settings, None).is_some());
 
     {
         let mut state = lock_unpoisoned(&shared.state);
@@ -3334,7 +3379,9 @@ fn resource_thresholds_actions_require_current_policy_and_no_shutdown_or_session
         let current = Arc::make_mut(&mut state.settings);
         current.memory_trim.enabled = !current.memory_trim.enabled;
     }
-    assert!(resource_thresholds_action_is_current(&shared, &settings));
+    let current = current_resource_thresholds_settings(&shared, &settings, None)
+        .expect("unrelated changes retain the qualified response");
+    assert_ne!(current.memory_trim.enabled, settings.memory_trim.enabled);
 
     type Change<T> = (&'static str, fn(&mut T));
     let settings_changes: [Change<Settings>; 4] = [
@@ -3355,7 +3402,7 @@ fn resource_thresholds_actions_require_current_policy_and_no_shutdown_or_session
         change(&mut current);
         let shared = shared_automation_state(current);
         assert!(
-            !resource_thresholds_action_is_current(&shared, &settings),
+            current_resource_thresholds_settings(&shared, &settings, None).is_none(),
             "{name}"
         );
     }
@@ -3373,7 +3420,7 @@ fn resource_thresholds_actions_require_current_policy_and_no_shutdown_or_session
         let shared = shared_automation_state(settings.clone());
         queue(&mut lock_unpoisoned(&shared.state));
         assert!(
-            !resource_thresholds_action_is_current(&shared, &settings),
+            current_resource_thresholds_settings(&shared, &settings, None).is_none(),
             "{name}"
         );
     }
@@ -3392,37 +3439,21 @@ fn resource_thresholds_notification_rechecks_saved_flags_without_blocking_action
         .map(|path| ResourceThresholdsRule::new(path.into()))
         .collect();
     let shared = shared_automation_state(settings.clone());
-    assert!(resource_thresholds_policy_is_current(
-        &shared,
-        &settings,
-        Some(0)
-    ));
+    assert!(current_resource_thresholds_settings(&shared, &settings, Some(0)).is_some());
 
     Arc::make_mut(&mut lock_unpoisoned(&shared.state).settings)
         .resource_thresholds
         .rules[0]
         .notify = false;
-    assert!(!resource_thresholds_policy_is_current(
-        &shared,
-        &settings,
-        Some(0)
-    ));
-    assert!(resource_thresholds_policy_is_current(
-        &shared,
-        &settings,
-        Some(1)
-    ));
-    assert!(resource_thresholds_action_is_current(&shared, &settings));
+    assert!(current_resource_thresholds_settings(&shared, &settings, Some(0)).is_none());
+    assert!(current_resource_thresholds_settings(&shared, &settings, Some(1)).is_some());
+    assert!(current_resource_thresholds_settings(&shared, &settings, None).is_some());
 
     Arc::make_mut(&mut lock_unpoisoned(&shared.state).settings)
         .resource_thresholds
         .notify = false;
-    assert!(!resource_thresholds_policy_is_current(
-        &shared,
-        &settings,
-        Some(1)
-    ));
-    assert!(resource_thresholds_action_is_current(&shared, &settings));
+    assert!(current_resource_thresholds_settings(&shared, &settings, Some(1)).is_none());
+    assert!(current_resource_thresholds_settings(&shared, &settings, None).is_some());
 }
 
 #[test]

@@ -697,6 +697,8 @@ Implementation entry points:
 - `src/features/watchdog/memory_trim.rs`
 - `src/control/memory_trim.rs`
 - `src/platform/windows/memory_trim.rs`
+- `src/backend/automation/runner.rs` dispatches both the Resource Thresholds
+  memory response and the Process List command through the same controller.
 
 | API | Used for | Reference |
 | --- | --- | --- |

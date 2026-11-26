@@ -461,14 +461,14 @@ impl ResourceThresholdsManager {
                     } else {
                         value
                     };
-                    let critical = rule.responds_to(monitor.critical.action)
+                    let critical = rule.responds_to(resource, monitor.critical.action)
                         && thresholds.critical.observe(
                             value,
                             monitor.critical.threshold,
                             delay,
                             now,
                         );
-                    let warning_enabled = rule.responds_to(monitor.warning.action);
+                    let warning_enabled = rule.responds_to(resource, monitor.warning.action);
                     let warning = warning_enabled
                         && thresholds
                             .warning
@@ -779,6 +779,61 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].targets[0].creation_time, 20);
         assert_eq!(events[0].response.action, ResourceThresholdsAction::Restart);
+    }
+
+    #[test]
+    fn sustained_memory_trim_captures_only_instances_of_the_selected_path() {
+        let mut manager = ResourceThresholdsManager::default();
+        let mut settings = settings();
+        settings.rules[0].memory.warning.action = ResourceThresholdsAction::TrimMemory;
+        let first = process();
+        let second = ProcessInfo {
+            id: first.id + 1,
+            creation_time: Some(20),
+            ..first.clone()
+        };
+        let other = ProcessInfo {
+            id: first.id + 2,
+            image_path: Some(r"C:\Other\test.exe".into()),
+            ..first.clone()
+        };
+        let expected_path = first.image_path.clone().unwrap();
+        let expected_identities = [(first.id, 10), (second.id, 20)];
+        let processes = [first, second, other];
+        let start = Instant::now();
+        let mut evaluate = |seconds, bytes| {
+            let now = start + Duration::from_secs(seconds);
+            let samples = processes
+                .iter()
+                .flat_map(|process| sample(process, now, Some(bytes)))
+                .collect();
+            manager
+                .evaluate(&settings, &processes, &samples, Some(1000), now)
+                .1
+        };
+
+        assert!(evaluate(0, 350).is_empty());
+        assert!(evaluate(1, 350).is_empty());
+        let events = evaluate(2, 350);
+        assert!(matches!(&events[..], [event] if !event.critical
+            && event.response.action == ResourceThresholdsAction::TrimMemory
+            && event.value == 70.0));
+        let [event] = events.as_slice() else {
+            panic!("expected one trim event");
+        };
+        assert_eq!(
+            event
+                .targets
+                .iter()
+                .map(|target| (target.id, target.creation_time))
+                .collect::<Vec<_>>(),
+            expected_identities,
+        );
+        assert!(event
+            .targets
+            .iter()
+            .all(|target| target.executable_path == expected_path));
+        assert!(evaluate(3, 350).is_empty());
     }
 
     #[test]

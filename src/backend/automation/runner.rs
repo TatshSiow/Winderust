@@ -193,6 +193,7 @@ pub(super) struct RuntimeCore {
     memory_trim_controller: MemoryTrimController,
     resource_thresholds_manager: ResourceThresholdsManager,
     resource_thresholds_restart_cooldowns: Vec<(PathBuf, Instant)>,
+    resource_thresholds_trim_cooldowns: Vec<(PathBuf, Instant)>,
     process_termination_controller: ProcessTerminationController,
     timer_resolution_manager: TimerResolutionManager,
     timer_resolution_controller: TimerResolutionController,
@@ -212,6 +213,7 @@ pub(super) struct ProcessControlCommandStatuses {
 }
 
 const RESOURCE_THRESHOLDS_RESTART_COOLDOWN: Duration = Duration::from_secs(60);
+const RESOURCE_THRESHOLDS_TRIM_COOLDOWN: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ResourceThresholdsRestartOutcome {
@@ -228,6 +230,21 @@ struct ResourceThresholdsActionCycle {
         Vec<(u32, u64)>,
         Result<ResourceThresholdsRestartOutcome, String>,
     >,
+}
+
+fn resource_thresholds_trim_excluded(
+    settings: &Settings,
+    plugged_in: Option<bool>,
+    path: &str,
+) -> bool {
+    active_power_source_settings(settings, plugged_in)
+        .memory_trim
+        .exclusion_enabled_for(path)
+        || (plugged_in.is_none()
+            && settings
+                .battery_profile()
+                .memory_trim
+                .exclusion_enabled_for(path))
 }
 
 impl ResourceThresholdsActionCycle {
@@ -334,8 +351,12 @@ impl RuntimeCore {
             settings.general.enabled,
             observations,
         );
-        // Prepare replacements before a simultaneous termination can stop the same app.
-        events.sort_by_key(|event| event.response.action != ResourceThresholdsAction::Restart);
+        // Prepare replacements first and skip trimming a process already stopped in this pass.
+        events.sort_by_key(|event| match event.response.action {
+            ResourceThresholdsAction::Restart => 0,
+            ResourceThresholdsAction::TrimMemory => 2,
+            _ => 1,
+        });
         let mut actions = ResourceThresholdsActionCycle::default();
         let mut notification_error = None;
         for event in events {
@@ -358,13 +379,20 @@ impl RuntimeCore {
                 threshold = event.response.threshold
             )
             .into_owned();
-            if !resource_thresholds_action_is_current(shared, settings) {
+            let Some(current) = current_resource_thresholds_settings(shared, settings, None) else {
                 continue;
-            }
+            };
             let mut action_detail = t!("resource_thresholds.alert").into_owned();
             if event.response.action.mutates_process() {
                 let restarting = event.response.action == ResourceThresholdsAction::Restart;
-                let result = if restarting {
+                let result = if event.response.action == ResourceThresholdsAction::TrimMemory {
+                    self.trim_resource_thresholds_targets(
+                        &current,
+                        &event.targets,
+                        &actions,
+                        observations,
+                    )
+                } else if restarting {
                     actions
                         .restart_once(
                             &event.targets,
@@ -467,10 +495,12 @@ impl RuntimeCore {
                     Err(error) => {
                         snapshot.last_error = Some(error.clone());
                         action_detail = t!(
-                            if restarting {
-                                "resource_thresholds.restart_failed"
-                            } else {
-                                "resource_thresholds.termination_failed"
+                            match event.response.action {
+                                ResourceThresholdsAction::TrimMemory =>
+                                    "resource_thresholds.trim_failed",
+                                ResourceThresholdsAction::Restart =>
+                                    "resource_thresholds.restart_failed",
+                                _ => "resource_thresholds.termination_failed",
                             },
                             error = error
                         )
@@ -487,7 +517,8 @@ impl RuntimeCore {
                 );
             }
             if event.notify
-                && resource_thresholds_policy_is_current(shared, settings, Some(event.rule_index))
+                && current_resource_thresholds_settings(shared, settings, Some(event.rule_index))
+                    .is_some()
             {
                 let result = tray::show_notification(
                     &format!("Winderust {} · {level}", t!("nav.resource_thresholds")),
@@ -528,6 +559,97 @@ impl RuntimeCore {
         }
         snapshot.last_error = snapshot.last_error.or(notification_error);
         snapshot
+    }
+
+    fn trim_resource_thresholds_targets(
+        &mut self,
+        settings: &Settings,
+        targets: &[ProcessActionTarget],
+        actions: &ResourceThresholdsActionCycle,
+        observations: &mut CycleObservations,
+    ) -> Result<(ActionLogResult, std::borrow::Cow<'static, str>), String> {
+        let mut targets = targets.iter().filter(|target| {
+            !actions
+                .termination_handled
+                .contains(&(target.id, target.creation_time))
+        });
+        let Some(first) = targets.next() else {
+            return Ok((
+                ActionLogResult::Skipped,
+                t!("resource_thresholds.trim_no_targets"),
+            ));
+        };
+        let path = &first.executable_path;
+        let excluded = path.to_str().is_some_and(|path| {
+            resource_thresholds_trim_excluded(settings, power_source::is_plugged_in(), path)
+        });
+        if excluded {
+            return Ok((
+                ActionLogResult::Skipped,
+                t!("resource_thresholds.trim_excluded"),
+            ));
+        }
+        let Some(foreground) = observations
+            .foreground_process()
+            .filter(|process| process.executable_path.is_absolute())
+        else {
+            return Ok((
+                ActionLogResult::Skipped,
+                t!("memory_trim.manual_foreground_unknown"),
+            ));
+        };
+        if same_executable_path(path, &foreground.executable_path) {
+            return Ok((
+                ActionLogResult::Skipped,
+                t!("resource_thresholds.trim_foreground"),
+            ));
+        }
+        let now = Instant::now();
+        let cooldowns = &mut self.resource_thresholds_trim_cooldowns;
+        cooldowns.retain(|(_, deadline)| now < *deadline);
+        if cooldowns
+            .iter()
+            .any(|(active_path, _)| same_executable_path(active_path, path))
+        {
+            return Ok((
+                ActionLogResult::Skipped,
+                t!(
+                    "resource_thresholds.trim_cooldown",
+                    seconds = RESOURCE_THRESHOLDS_TRIM_COOLDOWN.as_secs()
+                ),
+            ));
+        }
+        cooldowns.push((path.clone(), now + RESOURCE_THRESHOLDS_TRIM_COOLDOWN));
+        let mut trimmed = 0;
+        let mut failed = 0;
+        let mut first_error = None;
+        for target in std::iter::once(first).chain(targets) {
+            match self.memory_trim_controller.trim(
+                &ProcessControlTarget::from_action_target(target),
+                settings.general.allow_cross_session_process_control,
+                0,
+            ) {
+                Ok(_) => trimmed += 1,
+                Err(error) => {
+                    failed += 1;
+                    first_error.get_or_insert(error);
+                }
+            }
+        }
+        if let Some(error) = first_error {
+            return Err(format!(
+                "{} {error}",
+                t!(
+                    "memory_trim.manual_failed",
+                    trimmed = trimmed,
+                    failed = failed
+                )
+            ));
+        }
+        Ok((
+            ActionLogResult::Applied,
+            t!("resource_thresholds.trimmed", count = trimmed),
+        ))
     }
 
     fn with_app_suspension<R>(
@@ -2114,6 +2236,19 @@ impl RuntimeCore {
                     let _ = result.try_send(reply);
                     statuses.memory_trim = Some(status);
                 }
+                ProcessControlCommand::ProcessMemoryTrim { targets, result } => {
+                    let results = targets
+                        .into_iter()
+                        .map(|target| {
+                            let target = target.map_err(|error| error.to_string())?;
+                            self.run_process_memory_trim(
+                                &target,
+                                settings.general.allow_cross_session_process_control,
+                            )
+                        })
+                        .collect();
+                    let _ = result.try_send(Ok(ProcessControlBatchResult { results }));
+                }
                 ProcessControlCommand::KeepAwake(command) => statuses.keep_awake.push(command),
                 ProcessControlCommand::StopProcesses { targets, result } => {
                     self.keep_running
@@ -2496,6 +2631,52 @@ impl RuntimeCore {
             observations,
             &mut self.action_log,
         )
+    }
+
+    fn run_process_memory_trim(
+        &mut self,
+        target: &ProcessActionTarget,
+        allow_cross_session_process_control: bool,
+    ) -> Result<(), String> {
+        use crate::control::memory_trim::MemoryTrimOutcome;
+        use crate::memory_trim::size_label;
+
+        let result = self.memory_trim_controller.trim(
+            &ProcessControlTarget::from_action_target(target),
+            allow_cross_session_process_control,
+            1,
+        );
+        let (outcome, reason) = match &result {
+            Ok(MemoryTrimOutcome::Trimmed {
+                working_set_reduction_bytes: Some(bytes),
+            }) => (
+                ActionLogResult::Applied,
+                t!(
+                    "memory_trim.manual_reduction",
+                    reduction = size_label(*bytes)
+                )
+                .into_owned(),
+            ),
+            Ok(MemoryTrimOutcome::Trimmed {
+                working_set_reduction_bytes: None,
+            }) => (
+                ActionLogResult::Applied,
+                t!("memory_trim.manual_reduction_unavailable").into_owned(),
+            ),
+            Ok(MemoryTrimOutcome::BelowMinimumWorkingSet) => (
+                ActionLogResult::Skipped,
+                t!("memory_trim.manual_no_trim").into_owned(),
+            ),
+            Err(error) => (ActionLogResult::Failed, error.to_string()),
+        };
+        self.action_log.record(
+            ActionLogFeature::MemoryTrim,
+            Some(target.id),
+            &target.name,
+            outcome,
+            reason,
+        );
+        result.map(|_| ()).map_err(|error| error.to_string())
     }
 
     pub(super) fn run_sleep_prevention_update(
@@ -3880,6 +4061,39 @@ mod settings_tests {
 mod resource_thresholds_action_tests {
     use super::*;
     use crate::{control::process_restart::RestartResult, foreground::ProcessActionTarget};
+
+    #[test]
+    fn threshold_trim_honors_exclusions_for_the_observed_power_source() {
+        let mut settings = Settings::default();
+        let path = r"C:\Apps\worker.exe";
+        settings.battery_profile_mut().memory_trim.exclusions.push(
+            crate::config::ProcessExclusionRule {
+                enabled: true,
+                executable_path: path.into(),
+                ..Default::default()
+            },
+        );
+
+        assert!(!resource_thresholds_trim_excluded(
+            &settings,
+            Some(true),
+            path
+        ));
+        assert!(resource_thresholds_trim_excluded(
+            &settings,
+            Some(false),
+            path
+        ));
+        assert!(resource_thresholds_trim_excluded(&settings, None, path));
+        assert!(!resource_thresholds_trim_excluded(
+            &settings,
+            None,
+            r"C:\Other\worker.exe"
+        ));
+
+        settings.battery_profile_mut().memory_trim.exclusions[0].enabled = false;
+        assert!(!resource_thresholds_trim_excluded(&settings, None, path));
+    }
 
     #[test]
     fn skipped_termination_reports_only_a_successful_restart_of_the_same_instances() {

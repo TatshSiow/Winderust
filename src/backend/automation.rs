@@ -273,6 +273,10 @@ enum ProcessControlCommand {
     MemoryTrim {
         result: SyncSender<Result<MemoryTrimSnapshot, RuntimeCommandError>>,
     },
+    ProcessMemoryTrim {
+        targets: Vec<Result<ProcessActionTarget, ProcessActionTargetError>>,
+        result: SyncSender<Result<ProcessControlBatchResult, RuntimeCommandError>>,
+    },
     KeepAwake(KeepAwakeCommand),
     StopProcesses {
         targets: Vec<ProcessActionTarget>,
@@ -300,6 +304,7 @@ impl ProcessControlCommand {
             | Self::IoPriority { result, .. }
             | Self::GpuPriority { result, .. }
             | Self::MemoryPriority { result, .. }
+            | Self::ProcessMemoryTrim { result, .. }
             | Self::AppSuspension { result, .. } => {
                 let _ = result.try_send(Err(error));
             }
@@ -986,6 +991,18 @@ impl RuntimeHandle {
         result: SyncSender<Result<MemoryTrimSnapshot, RuntimeCommandError>>,
     ) -> Result<(), RuntimeCommandError> {
         self.enqueue_process_control_command(ProcessControlCommand::MemoryTrim { result })
+    }
+
+    pub(crate) fn request_process_memory_trim(
+        &self,
+        targets: Vec<Result<ProcessActionTarget, ProcessActionTargetError>>,
+    ) -> Result<ProcessControlActionReceiver, RuntimeCommandError> {
+        let (result, receiver) = sync_channel(1);
+        self.enqueue_process_control_command(ProcessControlCommand::ProcessMemoryTrim {
+            targets,
+            result,
+        })?;
+        Ok(receiver)
     }
 
     pub(crate) fn request_keep_awake(
@@ -2592,21 +2609,14 @@ fn run_background_automation(
     runner.shutdown()
 }
 
-fn resource_thresholds_action_is_current(
-    shared: &SharedAutomationState,
-    expected: &Settings,
-) -> bool {
-    resource_thresholds_policy_is_current(shared, expected, None)
-}
-
-fn resource_thresholds_policy_is_current(
+fn current_resource_thresholds_settings(
     shared: &SharedAutomationState,
     expected: &Settings,
     notification_rule: Option<usize>,
-) -> bool {
+) -> Option<Arc<Settings>> {
     let state = lock_unpoisoned(&shared.state);
     let current = &state.settings.resource_thresholds;
-    !state.stop_requested
+    let allowed = !state.stop_requested
         && !state.pending_events.suspend_resume
         && !state.pending_events.session_changed
         && state.settings.general.enabled
@@ -2616,7 +2626,8 @@ fn resource_thresholds_policy_is_current(
             == expected.general.allow_cross_session_process_control
         && notification_rule.is_none_or(|index| {
             current.notify && current.rules.get(index).is_some_and(|rule| rule.notify)
-        })
+        });
+    allowed.then(|| Arc::clone(&state.settings))
 }
 
 fn reserve_keep_running_commit(

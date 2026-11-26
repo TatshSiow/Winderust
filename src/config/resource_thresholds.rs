@@ -79,13 +79,14 @@ impl ResourceThresholdsMemoryUnit {
 pub enum ResourceThresholdsAction {
     None,
     Alert,
+    TrimMemory,
     Restart,
     Terminate,
 }
 
 impl ResourceThresholdsAction {
     pub(crate) fn mutates_process(self) -> bool {
-        matches!(self, Self::Restart | Self::Terminate)
+        matches!(self, Self::TrimMemory | Self::Restart | Self::Terminate)
     }
 }
 
@@ -350,25 +351,44 @@ impl ResourceThresholdsRule {
         }
     }
 
-    pub fn allows_action(&self, action: ResourceThresholdsAction) -> bool {
-        !action.mutates_process() || self.selector.exact_path().is_some()
+    fn validate_action(
+        &self,
+        resource: ResourceThresholdsResource,
+        action: ResourceThresholdsAction,
+    ) -> Result<(), &'static str> {
+        if action == ResourceThresholdsAction::TrimMemory
+            && resource != ResourceThresholdsResource::Memory
+        {
+            return Err("Resource Thresholds supports Trim memory for Memory only.");
+        }
+        if action.mutates_process() && self.selector.exact_path().is_none() {
+            return Err("Resource Thresholds requires an exact executable path for Trim memory, Restart, or Terminate.");
+        }
+        Ok(())
     }
 
-    pub(crate) fn responds_to(&self, action: ResourceThresholdsAction) -> bool {
-        action != ResourceThresholdsAction::None && self.allows_action(action)
+    pub fn allows_action(
+        &self,
+        resource: ResourceThresholdsResource,
+        action: ResourceThresholdsAction,
+    ) -> bool {
+        self.validate_action(resource, action).is_ok()
+    }
+
+    pub(crate) fn responds_to(
+        &self,
+        resource: ResourceThresholdsResource,
+        action: ResourceThresholdsAction,
+    ) -> bool {
+        action != ResourceThresholdsAction::None && self.allows_action(resource, action)
     }
 
     pub fn validate(&self) -> Result<(), String> {
         self.selector.validate()?;
-        if ResourceThresholdsResource::ALL.into_iter().any(|resource| {
+        for resource in ResourceThresholdsResource::ALL {
             let monitor = self.monitor(resource);
-            !self.allows_action(monitor.warning.action)
-                || !self.allows_action(monitor.critical.action)
-        }) {
-            return Err(
-                "Resource Thresholds requires an exact executable path for Terminate or Restart."
-                    .into(),
-            );
+            self.validate_action(resource, monitor.warning.action)?;
+            self.validate_action(resource, monitor.critical.action)?;
         }
         if !self.cpu.enabled && !self.memory.enabled {
             return Err("Resource Thresholds requires an enabled monitor.".into());
@@ -421,8 +441,8 @@ impl ResourceThresholdsSettings {
                     && ResourceThresholdsResource::ALL.into_iter().any(|resource| {
                         let monitor = rule.monitor(resource);
                         monitor.enabled
-                            && (rule.responds_to(monitor.warning.action)
-                                || rule.responds_to(monitor.critical.action))
+                            && (rule.responds_to(resource, monitor.warning.action)
+                                || rule.responds_to(resource, monitor.critical.action))
                     })
             })
     }
@@ -553,6 +573,45 @@ mod tests {
                     "{resource:?}: {warning}, {critical}"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn trim_memory_round_trips_and_requires_an_exact_path_memory_rule() {
+        use ResourceThresholdsAction::TrimMemory;
+        use ResourceThresholdsResource::{Cpu, Memory};
+
+        let mut rule = ResourceThresholdsRule::new(r"C:\Apps\worker.exe".into());
+        rule.memory.enabled = true;
+        rule.memory.warning.action = TrimMemory;
+        assert!(rule.validate().is_ok());
+        assert!(rule.responds_to(Memory, TrimMemory));
+        assert!(!rule.responds_to(Cpu, TrimMemory));
+
+        let raw = toml::to_string(&rule).unwrap();
+        assert!(raw.contains("action = \"trim_memory\""));
+        assert_eq!(
+            toml::from_str::<ResourceThresholdsRule>(&raw).unwrap(),
+            rule
+        );
+
+        let mut invalid_cpu = rule.clone();
+        invalid_cpu.cpu.warning.action = TrimMemory;
+        invalid_cpu.cpu.enabled = false;
+        assert!(invalid_cpu.validate().is_err());
+
+        for selector in [
+            ResourceThresholdsSelector::ExactName {
+                executable_name: "worker.exe".into(),
+            },
+            ResourceThresholdsSelector::NamePattern {
+                executable_name_pattern: ExecutableNamePattern::try_from("worker*.exe".to_owned())
+                    .unwrap(),
+            },
+        ] {
+            rule.selector = selector;
+            assert!(!rule.responds_to(Memory, TrimMemory));
+            assert!(rule.validate().is_err());
         }
     }
 

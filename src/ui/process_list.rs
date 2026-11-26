@@ -120,6 +120,13 @@ impl Selection {
         self.processes.iter().map(snapshot_target).collect()
     }
 
+    fn memory_trim_candidates(&self) -> impl Iterator<Item = &ProcessInfo> {
+        self.processes.iter().filter(|process| {
+            live_action_available(process)
+                && !crate::memory_trim::is_builtin_excluded(&process.name)
+        })
+    }
+
     fn has_departed_process(&self, processes: &[ProcessInfo]) -> bool {
         self.processes.iter().any(|selected| {
             selected.creation_time.is_some_and(|expected| {
@@ -202,6 +209,7 @@ pub(super) enum Action {
     Priority(Value),
     Efficiency(bool),
     Suspend(bool),
+    TrimMemory,
 }
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(super) enum ProcessTab {
@@ -725,12 +733,20 @@ impl ProcessList {
             Message::Action(action) => {
                 let detail_action = self.begin_detail_action();
                 if let Some(selection) = &self.selected {
-                    let targets = selection.targets();
+                    let targets = || selection.targets();
                     let result = match action {
-                        Action::Efficiency(v) => runtime.request_efficiency_mode_action(targets, v),
-                        Action::Suspend(v) => {
-                            runtime.request_app_suspension_process_action(targets, v)
+                        Action::Efficiency(v) => {
+                            runtime.request_efficiency_mode_action(targets(), v)
                         }
+                        Action::Suspend(v) => {
+                            runtime.request_app_suspension_process_action(targets(), v)
+                        }
+                        Action::TrimMemory => runtime.request_process_memory_trim(
+                            selection
+                                .memory_trim_candidates()
+                                .map(snapshot_target)
+                                .collect(),
+                        ),
                         Action::Priority(value) => {
                             let kind = value_kind(value);
                             if !kind
@@ -743,7 +759,49 @@ impl ProcessList {
                                 );
                                 return Task::none();
                             }
-                            match value{Value::Process(v)=>runtime.request_process_priority_action(targets,v),Value::Thread(v)=>runtime.request_thread_priority_action(targets,v),Value::Io(v)=>if let Some(v)=v.priority(){runtime.request_io_priority_action(targets,v)}else{return Task::none()},Value::Gpu(v)=>if let Some(v)=v.priority(){runtime.request_gpu_priority_action(targets,v)}else{return Task::none()},Value::Memory(v)=>if let Some(v)=v.priority(){runtime.request_memory_priority_action(targets,v)}else{return Task::none()},Value::DynamicBoost(v)=>match v{ProcessDynamicPriorityBoostSetting::Enabled=>runtime.request_dynamic_priority_boost_action(targets,crate::control::dynamic_priority_boost::DynamicPriorityBoostState::Enabled),ProcessDynamicPriorityBoostSetting::Disabled=>runtime.request_dynamic_priority_boost_action(targets,crate::control::dynamic_priority_boost::DynamicPriorityBoostState::Disabled),ProcessDynamicPriorityBoostSetting::Default=>return Task::none()}}
+                            let targets = targets();
+                            match value {
+                                Value::Process(v) => {
+                                    runtime.request_process_priority_action(targets, v)
+                                }
+                                Value::Thread(v) => {
+                                    runtime.request_thread_priority_action(targets, v)
+                                }
+                                Value::Io(v) => {
+                                    let Some(priority) = v.priority() else {
+                                        return Task::none();
+                                    };
+                                    runtime.request_io_priority_action(targets, priority)
+                                }
+                                Value::Gpu(v) => {
+                                    let Some(priority) = v.priority() else {
+                                        return Task::none();
+                                    };
+                                    runtime.request_gpu_priority_action(targets, priority)
+                                }
+                                Value::Memory(v) => {
+                                    let Some(priority) = v.priority() else {
+                                        return Task::none();
+                                    };
+                                    runtime.request_memory_priority_action(targets, priority)
+                                }
+                                Value::DynamicBoost(v) => {
+                                    use crate::control::dynamic_priority_boost::DynamicPriorityBoostState;
+
+                                    let state = match v {
+                                        ProcessDynamicPriorityBoostSetting::Enabled => {
+                                            DynamicPriorityBoostState::Enabled
+                                        }
+                                        ProcessDynamicPriorityBoostSetting::Disabled => {
+                                            DynamicPriorityBoostState::Disabled
+                                        }
+                                        ProcessDynamicPriorityBoostSetting::Default => {
+                                            return Task::none()
+                                        }
+                                    };
+                                    runtime.request_dynamic_priority_boost_action(targets, state)
+                                }
+                            }
                         }
                     };
                     match result {
@@ -1973,6 +2031,7 @@ impl ProcessList {
             let can_copy_path = selection.path_text().is_some();
             let eligible = selection.processes.iter().any(live_action_available);
             let can_stop = selection.can_stop();
+            let can_trim_memory = selection.memory_trim_candidates().next().is_some();
             let tree = selection.processes.len() > 1;
             let (stop_process, stop_tree) = selection.stop_options(&self.processes);
             let stop_label = if tree {
@@ -2041,6 +2100,11 @@ impl ProcessList {
                                     !suspended,
                                 )))),
                                 suspendable,
+                            ),
+                            (
+                                "process_list.trim_memory",
+                                Message::Menu(Box::new(Message::Action(Action::TrimMemory))),
+                                can_trim_memory,
                             ),
                             ("process_list.stop_process", Message::Stop(false), can_stop),
                             (
@@ -3559,6 +3623,38 @@ mod tests {
         selection.nested = false;
         selection.processes.push(child);
         assert_eq!(selection.stop_options(&[]), (false, true));
+    }
+
+    #[test]
+    fn trim_memory_captures_verified_members_of_the_selected_row() {
+        let path = r"C:\Apps\app.exe";
+        let mut selection = Selection {
+            nested: true,
+            processes: vec![process(10, 100, path)],
+            name: "app.exe".into(),
+        };
+        let target = snapshot_target(selection.memory_trim_candidates().next().unwrap()).unwrap();
+        assert_eq!(target.id, 10);
+        assert_eq!(target.creation_time, 100);
+        assert_eq!(target.executable_path, Path::new(path));
+
+        selection.nested = false;
+        selection.processes.extend([
+            process(11, 200, path),
+            ProcessInfo {
+                name: "audiodg.exe".into(),
+                ..process(12, 300, path)
+            },
+            ProcessInfo {
+                creation_time: None,
+                ..process(13, 400, path)
+            },
+        ]);
+        let targets = selection
+            .memory_trim_candidates()
+            .map(|process| snapshot_target(process).unwrap().id)
+            .collect::<Vec<_>>();
+        assert_eq!(targets, [10, 11]);
     }
 
     #[test]

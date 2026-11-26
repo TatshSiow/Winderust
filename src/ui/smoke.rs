@@ -443,7 +443,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                     rule.memory.warning.threshold = 512;
                     rule.memory.critical.threshold = 1024;
                 }
-                rule.memory.critical.action = crate::config::ResourceThresholdsAction::Terminate;
+                rule.memory.critical.action = crate::config::ResourceThresholdsAction::TrimMemory;
             });
             app.resource_thresholds = resource_thresholds::Editor::default();
             let _ = app.update(Message::ResourceThresholds(
