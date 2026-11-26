@@ -35,6 +35,14 @@ allocation configurations. Applying a preset leaves Adaptive Processor Power,
 the master switch, and custom rules under their own controls. Existing custom
 preset records retain their stored power values when CPU Behaviour tuning is edited.
 
+Power Save and Balanced use the System only pressure source and temporarily lower
+eligible apps to Below Normal priority. Windows and separate CPU allocation rules
+handle processor placement. Balanced checks every 1.5 seconds and starts at 75%
+total CPU. Power Save checks every 2.5 seconds and starts at 85% to stay inactive
+during lighter work.
+Both require an eligible background app to stay over its own threshold for one
+sampling interval before applying restraint.
+
 Power Save, Balanced, and Performance use a three-second recovery interval.
 Speed uses four seconds. During continued CPU pressure, recovery starts after
 the minimum hold ends and requires app CPU use to stay at or below the recovery
@@ -89,6 +97,10 @@ both readings. Either and Both can use a separate foreground CPU threshold. Each
 has a release boundary five percentage points below its own threshold. The foreground-group
 reading is a share of total system CPU capacity. Background-app CPU demand is measured against
 one logical processor.
+With System only selected, a known load below the trigger can skip the foreground
+process scan while pressure is inactive. Zoning, allocation recovery, and the
+first pass after pressure falls keep their normal observation paths. Adaptive
+Processor Power still collects foreground demand when its own settings need it.
 Optional Exclude service hosts protects detected active service processes, Session 0,
 and processes whose session could not be determined. It applies to all three policies.
 Minimum restraint time is shared by CPU Pressure Restraint and Limit Background
@@ -253,8 +265,8 @@ not be presented as universal battery-life claims.
 - Broader media classification should be added only if active-audio protection
   proves insufficient in real usage.
 
-The runtime benchmark generates canonical Balanced settings, with zoning and
-CPU Pressure Restraint off unless explicitly requested. See the
+The runtime benchmark generates canonical Balanced settings with CPU Pressure
+Restraint enabled. See the
 [benchmark guide](adaptive-engine-benchmark.md#benchmark-command) for the opt-in
 host build, configuration export, activation checks, and runtime comparisons.
 Its excluded-host I/O and message-loop scenarios measure latency under load;

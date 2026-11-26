@@ -126,6 +126,13 @@ pub(super) fn apply_adaptive_engine_process_preset(
     preset: BuiltInAdaptiveEnginePreset,
 ) {
     let values = adaptive_engine_process_preset_values(preset);
+    let priority_restraint = matches!(
+        preset,
+        BuiltInAdaptiveEnginePreset::PowerSave | BuiltInAdaptiveEnginePreset::Balanced
+    );
+    if priority_restraint {
+        settings.cpu_pressure_restraint_enabled = true;
+    }
     settings.process_priority_enabled = values.process_priority_enabled;
     settings.process_priority_foreground_detection_enabled = true;
     settings.process_priority_visible_window_detection_enabled = true;
@@ -164,7 +171,11 @@ pub(super) fn apply_adaptive_engine_process_preset(
     settings.processors_to_remove = default_processors_to_remove();
     settings.background_processor_selection = values.background_processor_selection;
     settings.processor_limit_percent = values.processor_limit_percent;
-    settings.pressure_source = AdaptivePressureSource::default();
+    settings.pressure_source = if priority_restraint {
+        AdaptivePressureSource::System
+    } else {
+        AdaptivePressureSource::default()
+    };
     settings.exclude_service_hosts = false;
     settings.foreground_or_system_cpu_threshold_percent =
         values.foreground_or_system_cpu_threshold_percent;
@@ -222,6 +233,8 @@ pub(super) fn adaptive_engine_process_preset_values(
 ) -> AdaptiveEngineProcessPresetValues {
     match preset {
         BuiltInAdaptiveEnginePreset::PowerSave | BuiltInAdaptiveEnginePreset::Balanced => {
+            let power_save = preset == BuiltInAdaptiveEnginePreset::PowerSave;
+            let interval_ms = if power_save { 2_500 } else { 1_500 };
             AdaptiveEngineProcessPresetValues {
                 process_priority_enabled: true,
                 background_efficiency_enabled: true,
@@ -237,15 +250,15 @@ pub(super) fn adaptive_engine_process_preset_values(
                 focus_process_memory_priority: ProcessMemoryPrioritySetting::Default,
                 visible_window_memory_priority: ProcessMemoryPrioritySetting::Default,
                 background_memory_priority: ProcessMemoryPrioritySetting::Low,
-                limit_background_processors_enabled: true,
+                limit_background_processors_enabled: false,
                 dynamic_resource_zones_enabled: false,
                 background_processor_selection: BackgroundProcessorSelection::LeastUsed,
                 processor_limit_percent: 60,
-                foreground_or_system_cpu_threshold_percent: 75,
+                foreground_or_system_cpu_threshold_percent: if power_save { 85 } else { 75 },
                 background_app_cpu_threshold_percent: 10,
                 cpu_recovery_threshold_percent: 5,
-                reaction_time_ms: 1_500,
-                restraint_trigger_time_ms: 1_500,
+                reaction_time_ms: interval_ms,
+                restraint_trigger_time_ms: interval_ms,
                 minimum_restraint_time_ms: 2_000,
                 cpu_recovery_time_seconds: 3,
                 maximum_restrained_apps: 4,
@@ -445,14 +458,15 @@ mod tests {
 
     #[test]
     fn built_in_presets_set_restraint_timing_and_reset_advanced_controls() {
-        for (preset, (dwell_ms, minimum_ms, recovery_secs, hot_percent, recovery_percent)) in
-            BuiltInAdaptiveEnginePreset::ALL.into_iter().zip([
-                (1_500, 2_000, 3, 10, 5),
-                (1_500, 2_000, 3, 10, 5),
-                (750, 3_000, 3, 8, 4),
-                (1_000, 5_000, 4, 8, 7),
-            ])
-        {
+        for (
+            preset,
+            (dwell_ms, minimum_ms, recovery_secs, hot_percent, recovery_percent, system_threshold),
+        ) in BuiltInAdaptiveEnginePreset::ALL.into_iter().zip([
+            (2_500, 2_000, 3, 10, 5, Some(85)),
+            (1_500, 2_000, 3, 10, 5, Some(75)),
+            (750, 3_000, 3, 8, 4, None),
+            (1_000, 5_000, 4, 8, 7, None),
+        ]) {
             let mut settings = AdaptiveEngineProcessSettings {
                 pause_restraint_when_idle: true,
                 restraint_idle_timeout_seconds: 120,
@@ -481,7 +495,18 @@ mod tests {
             assert_eq!(settings.cpu_recovery_threshold_percent, recovery_percent);
             assert!(!settings.pause_restraint_when_idle);
             assert_eq!(settings.restraint_idle_timeout_seconds, 300);
-            assert_eq!(settings.pressure_source, AdaptivePressureSource::Either);
+            if let Some(threshold) = system_threshold {
+                assert!(settings.cpu_pressure_restraint_enabled);
+                assert!(!settings.limit_background_processors_enabled);
+                assert_eq!(settings.pressure_source, AdaptivePressureSource::System);
+                assert_eq!(
+                    settings.foreground_or_system_cpu_threshold_percent,
+                    threshold
+                );
+                assert_eq!(settings.reaction_time_ms, dwell_ms);
+            } else {
+                assert_eq!(settings.pressure_source, AdaptivePressureSource::Either);
+            }
             assert_eq!(settings.foreground_cpu_threshold_percent, None);
             assert!(!settings.exclude_service_hosts);
             assert_eq!(

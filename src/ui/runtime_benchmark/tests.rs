@@ -89,9 +89,14 @@ fn balanced_export_matches_the_process_preset_and_separate_power_tuning() {
     );
     assert_eq!(export_settings(&path, "Balanced").unwrap(), expected);
     assert!(
-        !expected
+        expected
             .adaptive_engine_process
             .cpu_pressure_restraint_enabled
+    );
+    assert!(
+        !expected
+            .adaptive_engine_process
+            .limit_background_processors_enabled
     );
 
     let host = std::env::current_exe().unwrap();

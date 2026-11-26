@@ -1,7 +1,7 @@
 # Adaptive Engine Benchmark Guide
 
 This guide documents the real-runtime and synthetic benchmarks used to tune
-Adaptive Engine presets and Adaptive Engine scheduling presets.
+Adaptive Engine presets.
 Synthetic results isolate mechanisms; release-binary runtime A/B results are
 the primary acceptance evidence.
 
@@ -16,8 +16,9 @@ the visible benchmark shell. They are created through the local WMI process
 provider so they are not descendants of that foreground shell; otherwise
 Winderust's foreground process-group protection would correctly protect the
 generated load. The runner also clears inherited Power Throttling before each
-measurement. The default runtime benchmark requires Windows to report an actual
-CPU Set allocation on a generated worker from a clean baseline.
+measurement. The runtime benchmark checks for a native worker change that
+matches the enabled process policy. CPU Set coverage is required when placement
+is enabled.
 
 The optional `IoLoop` foreground scenario measures foreground temp-file
 read/write completion time and reports foreground IOPS under the same generated
@@ -39,7 +40,8 @@ already open, then closes only the instance it started for each sample. This is
 the normal-user launch proxy when checking app startup behavior.
 
 The power-drain companion benchmark measures CPU package power directly from
-Windows performance counters. Lower median watts are better. It prefers the
+Windows performance counters. Compare completed work per joule when a setting
+changes throughput. The benchmark prefers the
 RAPL package counter, for example:
 
 ```text
@@ -163,7 +165,7 @@ because it can interfere with scheduler placement.
 | --- | --- | --- |
 | Policy unit tests | Prove pressure, saturation, restoration, bounded history, and topology decisions. | All deterministic state transitions pass. |
 | Synthetic mechanism matrix | Isolate priority, QoS, CPU Sets, affinity, and processor-policy effects. | Median and P95 improve in at least 2/3 paired passes; absolute values are used for direct preset ranking. |
-| Release-runtime A/B | Exercise the real automation loop and current canonical preset. | Required before accepting a global preset change. Run CPU, I/O, and message-loop latency proxies; the default runner requires native CPU Set allocation on a generated worker from a clean baseline. |
+| Release-runtime A/B | Exercise the real automation loop and current canonical preset. | Verify the enabled process policy with a native worker readback. Use CPU, I/O, and message-loop latency proxies to compare presets. |
 | Hardware matrix | Check topology portability. | At least Intel hybrid plus AMD/all-P evidence before claiming a universal default. |
 
 Do not rank presets as a linear slow-to-fast ladder. Compare foreground latency,
@@ -171,16 +173,17 @@ background retained throughput, package power, and action stability as a Pareto
 trade-off. A higher paired percentage does not mean one preset beats another
 when each percentage has a different adjacent Stock denominator.
 
-## Current Adaptive Engine Preset Model
+## Synthetic Preset Model
 
-Keep this in sync with the Adaptive Engine preset values in
-`src/ui/adaptive_presets.rs`.
+These cases model combinations of scheduler and processor-power controls.
+See [Adaptive Engine presets](adaptive-engine-implementation.md#presets) for
+the built-in CPU Behaviour settings used by the release runtime.
 
 | Preset | Benchmark model |
 | --- | --- |
 | Off | 12 background workers at `Normal`; foreground benchmark process at `Normal`. |
-| Powersave | Strict processor Saver policy (`max 45`, boost disabled) plus Low Impact scheduling, EcoQoS, Below Normal background process priority, and targeted restraint of at most 4 workers. Priority assists are disabled. |
-| Balanced | Moderate processor policy (`max 95`, efficient boost) plus the same Low Impact scheduling with a higher processor ceiling than Powersave. |
+| Power Save | Strict processor Saver policy (`max 45`, boost disabled) plus Low Impact scheduling, EcoQoS, Below Normal background process priority, and targeted restraint of at most 4 workers. Priority assists are disabled. |
+| Balanced | Moderate processor policy (`max 95`, efficient boost) plus the same Low Impact scheduling with a higher processor ceiling than Power Save. |
 | Performance | High processor policy (`min 25`, `max 100`, efficient aggressive boost) plus Foreground First scheduling, EcoQoS, Below Normal background process priority, Very Low background I/O and memory priority, Below Normal background thread/GPU priority, and at most 8 restrained workers. |
 | Speed | Aggressive processor policy (`parking 100`, `min 25`, `max 100`, aggressive boost) plus Maximum Foreground scheduling, a 10% background CPU target, foreground Above Normal/High assists, Very Low/Idle background assists, and at most 12 restrained workers. |
 
@@ -259,9 +262,10 @@ Use `-EnableCpuPressureRestraint`, `-DisableBackgroundProcessorLimit`,
 `-MaximumRestrainedApps <1-32>` only for controlled tuning variants. Use
 `-ForegroundOrSystemCpuThresholdPercent <1-100>` to force a known activation
 threshold during controlled Adaptive Engine comparisons. Only explicitly
-supplied tuning parameters override the canonical Balanced preset. CPU Pressure
-Restraint remains off unless requested; `-EnableDynamicResourceZones` enables a
-separate zoning variant.
+supplied tuning parameters override the canonical Balanced preset. Balanced
+enables CPU Pressure Restraint by default. Pass
+`-EnableCpuPressureRestraint:$false` to disable it for a comparison.
+`-EnableDynamicResourceZones` enables a separate zoning variant.
 
 Use `-BackgroundPressureAcBoostPolicy <0-100>` and
 `-BackgroundPressureAcBoostMode <mode>` to screen an A/C Background Pressure

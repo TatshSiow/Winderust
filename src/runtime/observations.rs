@@ -662,6 +662,81 @@ mod tests {
     }
 
     #[test]
+    fn adaptive_engine_skips_foreground_reads_only_during_known_quiet_system_pressure() {
+        use crate::{
+            config::{
+                AdaptiveEngineProcessSettings,
+                AdaptivePressureSource::{Either, System},
+            },
+            features::cpu_control::adaptive_engine_process::{
+                AdaptiveEngineProcessManager, AdaptiveEngineProcessUpdate,
+            },
+        };
+
+        let mut manager = AdaptiveEngineProcessManager::default();
+        let mut allocation = Default::default();
+        let mut priority = Default::default();
+        let mut log = ActionLog::default();
+        let ancestry_error = "foreground ancestry requested";
+        let catalog_error = "process list requested";
+        for (source, system_cpu, zones_enabled, expected_error) in [
+            (System, Some(74.0), false, None),
+            (System, Some(75.0), false, Some(catalog_error)),
+            (System, None, false, Some(ancestry_error)),
+            (Either, Some(74.0), false, Some(ancestry_error)),
+            (System, Some(74.0), true, Some(ancestry_error)),
+        ] {
+            let settings = AdaptiveEngineProcessSettings {
+                limit_background_processors_enabled: true,
+                dynamic_resource_zones_enabled: zones_enabled,
+                pressure_source: source,
+                foreground_or_system_cpu_threshold_percent: 75,
+                ..Default::default()
+            };
+            let mut observations = CycleObservations {
+                foreground_ancestry: Observation::Unavailable(ancestry_error.into()),
+                sources: ObservationSources {
+                    process_entries: || Err("process list requested".into()),
+                    ..ObservationSources::default()
+                },
+                ..CycleObservations::default()
+            };
+            let status = manager.update(
+                AdaptiveEngineProcessUpdate {
+                    settings: &settings,
+                    automation_enabled: true,
+                    allow_cross_session_process_control: true,
+                    foreground_process_id: Some(42),
+                    total_cpu_usage_percent: system_cpu,
+                    user_idle_for: None,
+                    excluded_process_id: None,
+                    explicit_cpu_allocation_paths: &[],
+                    observations: &mut observations,
+                },
+                &mut allocation,
+                &mut priority,
+                &mut log,
+            );
+            assert!(status.enabled);
+            assert_eq!(
+                status.last_error.as_deref(),
+                expected_error,
+                "{source:?} with load {system_cpu:?} and zones {zones_enabled}"
+            );
+            assert_eq!(status.observation_paused, expected_error.is_some());
+            if expected_error.is_none() {
+                assert_eq!(status.scanned_processes, 0);
+                assert!(observations.adaptive_workload.is_none());
+                assert!(observations.adaptive_cpu_sample.is_none());
+                assert_eq!(
+                    observations.availability().processes,
+                    ObservationAvailability::NotRequested
+                );
+            }
+        }
+    }
+
+    #[test]
     fn adaptive_engine_reuses_the_catalogue_only_for_known_system_pressure() {
         use crate::{
             config::{AdaptiveEngineProcessSettings, AdaptivePressureSource},

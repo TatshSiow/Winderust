@@ -516,41 +516,56 @@ impl AdaptiveEngineProcessManager {
         let system_pressure_held = !system_pressure_started
             && self.can_hold_background_pressure(settings)
             && cpu_pressure_above_recovery_threshold(settings, None, total_cpu_usage_percent);
-        // System pressure already requires the full catalog, which also contains the ancestry.
-        let foreground_processes = match if system_pressure_started || system_pressure_held {
-            read_background_processes(observations)
+        // With only system pressure enabled, a quiet cycle cannot admit any new targets.
+        // Leave shared observations untouched so Adaptive Processor Power can sample independently.
+        let quiet_system_only = settings.pressure_source == AdaptivePressureSource::System
+            && !settings.dynamic_resource_zones_enabled
+            && !self.background_pressure_active
+            && total_cpu_usage_percent.is_some_and(|usage| {
+                (0.0..f32::from(settings.pressure_thresholds().0)).contains(&usage)
+            })
+            && !cpu_allocation_coordinator.needs_topology_observation()
+            && !cpu_allocation_coordinator.has_adaptive_child_affinity_candidates();
+        let (foreground_processes, foreground_workload, cpu_sample) = if quiet_system_only {
+            (Arc::from([]), Arc::default(), None)
         } else {
-            observations.foreground_process_ancestry(foreground_id)
-        } {
-            Ok(processes) => processes,
-            Err(error) => {
-                let reason = if system_pressure_held {
-                    "process list unavailable"
-                } else {
-                    "foreground app is unknown"
-                };
-                return self.pause_for_observation_failure(
+            // A system-pressure catalog already contains the foreground ancestry.
+            let foreground_processes = match if system_pressure_started || system_pressure_held {
+                read_background_processes(observations)
+            } else {
+                observations.foreground_process_ancestry(foreground_id)
+            } {
+                Ok(processes) => processes,
+                Err(error) => {
+                    let reason = if system_pressure_held {
+                        "process list unavailable"
+                    } else {
+                        "foreground app is unknown"
+                    };
+                    return self.pause_for_observation_failure(
+                        settings.dynamic_resource_zones_enabled,
+                        restraint_idle_pause,
+                        cpu_allocation_coordinator,
+                        priority_efficiency_controller,
+                        action_log,
+                        (reason, Some(error)),
+                    );
+                }
+            };
+            let foreground_workload = observations.adaptive_workload(&foreground_processes);
+            if foreground_workload.is_empty() {
+                return self.pause_for_unknown_focus(
                     settings.dynamic_resource_zones_enabled,
                     restraint_idle_pause,
                     cpu_allocation_coordinator,
                     priority_efficiency_controller,
                     action_log,
-                    (reason, Some(error)),
                 );
             }
+            let cpu_sample = observations.adaptive_cpu_sample(&foreground_workload);
+            (foreground_processes, foreground_workload, cpu_sample)
         };
-        let foreground_workload = observations.adaptive_workload(&foreground_processes);
-        if foreground_workload.is_empty() {
-            return self.pause_for_unknown_focus(
-                settings.dynamic_resource_zones_enabled,
-                restraint_idle_pause,
-                cpu_allocation_coordinator,
-                priority_efficiency_controller,
-                action_log,
-            );
-        }
         let foreground_changed = self.allocation_foreground.as_ref() != Some(&foreground_workload);
-        let cpu_sample = observations.adaptive_cpu_sample(&foreground_workload);
         let foreground_cpu_usage_percent = self
             .foreground_cpu_history
             .update(Arc::clone(&foreground_workload), cpu_sample);
