@@ -6,13 +6,13 @@ use crate::platform::windows::sleep_prevention::{
 use std::cell::Cell;
 
 #[derive(Default)]
-struct KeepAwakePlatform {
+struct TemporaryRequestPlatform {
     system_set_count: Cell<usize>,
-    reject_set: bool,
+    reject_set: Option<RequestKind>,
     reject_clear_display: bool,
 }
 
-impl SleepPreventionPlatform for &KeepAwakePlatform {
+impl SleepPreventionPlatform for &TemporaryRequestPlatform {
     type Handle = ();
 
     fn create(&self, _reason: &str) -> Result<(), SleepPreventionError> {
@@ -20,7 +20,7 @@ impl SleepPreventionPlatform for &KeepAwakePlatform {
     }
 
     fn set(&self, _handle: &(), kind: RequestKind) -> Result<(), SleepPreventionError> {
-        if self.reject_set {
+        if self.reject_set == Some(kind) {
             return Err(SleepPreventionError {
                 operation: "set",
                 code: 5,
@@ -44,112 +44,124 @@ impl SleepPreventionPlatform for &KeepAwakePlatform {
 }
 
 #[test]
-fn keep_awake_expiry_and_rule_overlap_share_the_accepted_request() {
-    let platform = KeepAwakePlatform::default();
+fn temporary_timers_expire_independently_and_preserve_active_rule_requests() {
+    use TemporarySleepPrevention::{KeepAwake, KeepDisplayOn};
+
+    let platform = TemporaryRequestPlatform::default();
     let mut controller = SleepPreventionController::new(&platform);
     let mut manager = SleepPreventionManager::default();
     let mut log = ActionLog::default();
     let now = Instant::now();
-    let duration = Duration::from_secs(15 * 60);
-    assert_eq!(manager.keep_awake_wait(now), None);
-    manager.set_keep_awake(Some(KeepAwakeDuration::FifteenMinutes), now);
+    let awake = TemporarySleepPreventionDuration::from_minutes(47).unwrap();
+    let display = TemporarySleepPreventionDuration::from_minutes(17).unwrap();
+    assert_eq!(manager.temporary_wait(now), None);
+    manager.set_temporary(KeepAwake, Some(awake), now);
+    manager.set_temporary(KeepDisplayOn, Some(display), now);
+
     let apply = |manager: &mut SleepPreventionManager, controller: &mut _, log: &mut _, mode| {
         manager.apply(controller, mode, SleepPreventionSnapshot::default(), log)
     };
-    let manual = apply(
+    let both = apply(
         &mut manager,
         &mut controller,
         &mut log,
         SleepPreventionMode::Off,
     );
-    assert!(manual.system_requested && manual.keep_awake_until.is_some());
-    assert!(!manual.display_requested && !manager.rule_system_requested());
-    let overlapping = apply(
-        &mut manager,
-        &mut controller,
-        &mut log,
-        SleepPreventionMode::SystemAndDisplay,
-    );
-    assert!(overlapping.system_requested && overlapping.display_requested);
-    assert_eq!(manager.keep_awake_wait(now), Some(duration));
-    let before = now + duration - Duration::from_millis(1);
-    assert!(!manager.end_keep_awake_if_due(before, true));
+    assert!(both.system_requested && both.display_requested);
     assert_eq!(
-        manager.keep_awake_wait(before),
-        Some(Duration::from_millis(1))
+        both.temporary.until(KeepAwake),
+        Some(now + awake.duration())
     );
-    assert!(manager.end_keep_awake_if_due(now + duration, true));
-    assert_eq!(manager.keep_awake_wait(now + duration), None);
-    let rules_only = apply(
-        &mut manager,
-        &mut controller,
-        &mut log,
-        SleepPreventionMode::SystemAndDisplay,
+    assert_eq!(
+        both.temporary.until(KeepDisplayOn),
+        Some(now + display.duration())
     );
-    assert!(rules_only.system_requested && rules_only.display_requested);
-    assert_eq!(rules_only.keep_awake_until, None);
-    assert_eq!(platform.system_set_count.get(), 1);
-    let stopped = apply(
+    assert_eq!(manager.temporary_wait(now), Some(display.duration()));
+    let before_expiry = now + display.duration() - Duration::from_millis(1);
+    assert!(!manager.end_temporary_if_due(before_expiry, true));
+    assert!(manager.end_temporary_if_due(now + display.duration(), true));
+
+    let awake_only = apply(
         &mut manager,
         &mut controller,
         &mut log,
         SleepPreventionMode::Off,
     );
-    assert!(!stopped.system_requested && !stopped.display_requested);
+    assert!(awake_only.system_requested && !awake_only.display_requested);
+    assert_eq!(awake_only.temporary.until(KeepDisplayOn), None);
+
+    assert!(manager.end_temporary_if_due(now + awake.duration(), true));
+    let rules = apply(
+        &mut manager,
+        &mut controller,
+        &mut log,
+        SleepPreventionMode::SystemAndDisplay,
+    );
+    assert!(rules.system_requested && rules.display_requested);
+    assert!(!rules.temporary.any_active());
+    assert_eq!(platform.system_set_count.get(), 1);
 }
 
 #[test]
-fn keep_awake_ends_if_the_last_rule_display_count_cannot_be_cleared() {
-    let platform = KeepAwakePlatform {
+fn failed_display_request_does_not_leave_an_unclaimed_system_request() {
+    let platform = TemporaryRequestPlatform {
+        reject_set: Some(RequestKind::Display),
+        ..Default::default()
+    };
+    let mut controller = SleepPreventionController::new(&platform);
+    let mut manager = SleepPreventionManager::default();
+    let now = Instant::now();
+    let duration = TemporarySleepPreventionDuration::from_minutes(22).unwrap();
+    for awake in [true, false] {
+        manager.set_temporary(TemporarySleepPrevention::KeepDisplayOn, Some(duration), now);
+        manager.set_temporary(
+            TemporarySleepPrevention::KeepAwake,
+            awake.then_some(duration),
+            now,
+        );
+        let status = manager.apply(
+            &mut controller,
+            SleepPreventionMode::Off,
+            SleepPreventionSnapshot::default(),
+            &mut ActionLog::default(),
+        );
+        assert_eq!(status.system_requested, awake);
+        assert!(!status.display_requested && status.last_error.is_some());
+        assert_eq!(status.temporary.any_active(), awake);
+    }
+}
+
+#[test]
+fn failed_display_release_closes_the_shared_request() {
+    let platform = TemporaryRequestPlatform {
         reject_clear_display: true,
         ..Default::default()
     };
     let mut controller = SleepPreventionController::new(&platform);
     let mut manager = SleepPreventionManager::default();
     let mut log = ActionLog::default();
-    manager.set_keep_awake(Some(KeepAwakeDuration::FifteenMinutes), Instant::now());
+    let now = Instant::now();
+    let duration = TemporarySleepPreventionDuration::from_minutes(15).unwrap();
+    manager.set_temporary(TemporarySleepPrevention::KeepAwake, Some(duration), now);
+    manager.set_temporary(TemporarySleepPrevention::KeepDisplayOn, Some(duration), now);
     let active = manager.apply(
         &mut controller,
-        SleepPreventionMode::SystemAndDisplay,
+        SleepPreventionMode::Off,
         SleepPreventionSnapshot::default(),
         &mut log,
     );
     assert!(active.system_requested && active.display_requested);
+    manager.set_temporary(TemporarySleepPrevention::KeepDisplayOn, None, now);
     let stopped = manager.apply(
         &mut controller,
         SleepPreventionMode::Off,
         SleepPreventionSnapshot::default(),
         &mut log,
     );
-    assert_eq!(stopped.keep_awake_until, None);
+    assert!(!stopped.temporary.any_active());
     assert!(!stopped.system_requested && !stopped.display_requested);
     assert!(stopped.last_error.is_some());
     assert_eq!(platform.system_set_count.get(), 1);
-}
-
-#[test]
-fn keep_awake_failure_and_interruption_clear_the_deadline() {
-    let mut manager = SleepPreventionManager::default();
-    let now = Instant::now();
-    manager.set_keep_awake(Some(KeepAwakeDuration::OneHour), now);
-    assert!(manager.end_keep_awake_if_due(now, false));
-    assert_eq!(manager.keep_awake_wait(now), None);
-
-    let platform = KeepAwakePlatform {
-        reject_set: true,
-        ..Default::default()
-    };
-    let mut controller = SleepPreventionController::new(&platform);
-    manager.set_keep_awake(Some(KeepAwakeDuration::TwoHours), now);
-    let status = manager.apply(
-        &mut controller,
-        SleepPreventionMode::Off,
-        SleepPreventionSnapshot::default(),
-        &mut ActionLog::default(),
-    );
-    assert_eq!(status.keep_awake_until, None);
-    assert!(!status.system_requested && status.last_error.is_some());
-    assert_eq!(manager.keep_awake_wait(now), None);
 }
 
 fn process(id: u32, path: &str) -> ProcessInfo {
@@ -198,12 +210,8 @@ fn observe(
     manager.observe(settings, apps, u32::MAX, Some(1), false);
 }
 
-fn environment(
-    plugged_in: Option<bool>,
-    windows_event_watcher_active: bool,
-) -> SleepPreventionEnvironment<'static> {
+fn environment(windows_event_watcher_active: bool) -> SleepPreventionEnvironment<'static> {
     SleepPreventionEnvironment {
-        plugged_in,
         windows_event_watcher_active,
         suspended_instances: &[],
     }
@@ -242,30 +250,16 @@ fn app_suspension_withdraws_only_exact_frozen_instances() {
     let mut manager = SleepPreventionManager::default();
     observe(&mut manager, &settings, &apps);
 
-    for (frozen, mode, suspended) in [
-        (
-            &[(8, 8)][..],
-            SleepPreventionMode::SystemAndDisplay,
-            &[][..],
-        ),
-        (&[(8, 8), (9, 9)], SleepPreventionMode::System, &[video][..]),
-        (
-            &[(7, 7), (8, 8), (9, 9)],
-            SleepPreventionMode::Off,
-            &[video, worker],
-        ),
-        (
-            &[(7, 7), (8, 8)],
-            SleepPreventionMode::SystemAndDisplay,
-            &[worker],
-        ),
+    for (frozen, mode) in [
+        (&[(8, 8)][..], SleepPreventionMode::SystemAndDisplay),
+        (&[(8, 8), (9, 9)], SleepPreventionMode::System),
+        (&[(7, 7), (8, 8), (9, 9)], SleepPreventionMode::Off),
+        (&[(7, 7), (8, 8)], SleepPreventionMode::SystemAndDisplay),
     ] {
         manager.update_app_suspension(frozen);
         assert_eq!(manager.desired_mode(), mode);
-        let snapshot = manager.matching_snapshot();
-        assert_eq!(snapshot.suspended_apps, suspended);
-        assert_eq!(snapshot.matched_processes, 3);
-        assert!(snapshot.suppressed_apps.is_empty());
+        assert_eq!(manager.matches.apps.len(), 3);
+        assert!(manager.suppressed.is_empty());
     }
 
     apps[1].creation_time = Some(10);
@@ -301,7 +295,7 @@ fn literal_filename_whitespace_keeps_sleep_requests_and_rearms_separate() {
     configured.sleep_prevention.rules[1].executable_path = format!(" {other}");
     let apps = [process(7, worker), process(8, other)];
     let mut manager = SleepPreventionManager::default();
-    manager.note_configuration(&configured, Some(true));
+    manager.note_configuration(&configured);
     observe(&mut manager, &configured.sleep_prevention, &apps[..1]);
     assert_eq!(manager.desired_mode(), SleepPreventionMode::System);
     observe(&mut manager, &configured.sleep_prevention, &apps);
@@ -309,9 +303,9 @@ fn literal_filename_whitespace_keeps_sleep_requests_and_rearms_separate() {
     manager.suppress_current();
 
     configured.sleep_prevention.rules[0].enabled = false;
-    manager.note_configuration(&configured, Some(true));
+    manager.note_configuration(&configured);
     configured.sleep_prevention.rules[0].enabled = true;
-    manager.note_configuration(&configured, Some(true));
+    manager.note_configuration(&configured);
     observe(&mut manager, &configured.sleep_prevention, &apps);
     assert_eq!(manager.desired_mode(), SleepPreventionMode::System);
     assert!(manager.suppressed.contains_key(&(8, 8)));
@@ -358,32 +352,6 @@ fn matching_rejects_wrong_paths_protected_apps_and_disallowed_sessions() {
         assert!(matches.apps.is_empty());
         assert!(!matches.known);
     }
-}
-
-#[test]
-fn requesting_instances_share_their_path_and_take_precedence_over_suppression() {
-    let settings = settings();
-    let path = settings.rules[1].executable_path.as_str();
-    let mut manager = SleepPreventionManager::default();
-    let original = process(8, path);
-    observe(&mut manager, &settings, std::slice::from_ref(&original));
-    manager.suppress_current();
-    observe(&mut manager, &settings, std::slice::from_ref(&original));
-
-    let replacement = process(9, path);
-    let duplicate = process(10, path);
-    observe(&mut manager, &settings, &[original, replacement, duplicate]);
-    let snapshot = manager.matching_snapshot();
-    assert_eq!(manager.suppressed.len(), 1);
-    assert_eq!(snapshot.matched_processes, 3);
-    assert!(snapshot.suppressed_apps.is_empty());
-    assert_eq!(
-        snapshot.requesting_apps,
-        [RequestingApp {
-            path: path.into(),
-            keep_display_on: true,
-        }]
-    );
 }
 
 #[test]
@@ -498,48 +466,6 @@ fn cross_session_opt_out_releases_old_claims_even_when_observations_are_unavaila
 }
 
 #[test]
-fn inactive_profiles_and_missing_rules_preserve_sleep_suppression_until_explicit_rearm() {
-    let settings = settings();
-    let inactive = SleepPreventionSettings::default();
-    let mut manager = SleepPreventionManager::default();
-    let mut configured = Settings {
-        sleep_prevention: settings.clone(),
-        ..Default::default()
-    };
-    configured.battery_profile_mut().sleep_prevention = inactive.clone();
-    manager.note_configuration(&configured, Some(true));
-    manager.change_power_source(Some(true));
-    let worker = process(7, r"C:\Apps\worker.exe");
-    observe(&mut manager, &settings, std::slice::from_ref(&worker));
-    manager.suppress_current();
-    observe(&mut manager, &settings, std::slice::from_ref(&worker));
-    let mut controller = SleepPreventionController::default();
-    let mut log = ActionLog::new(4);
-    manager.update_profile(
-        &mut controller,
-        configured.battery_profile(),
-        true,
-        &[],
-        &mut CycleObservations::default(),
-        &mut log,
-    );
-    assert_eq!(manager.suppressed.len(), 1);
-    observe(&mut manager, &inactive, std::slice::from_ref(&worker));
-    assert_eq!(manager.suppressed.len(), 1);
-    observe(&mut manager, &settings, std::slice::from_ref(&worker));
-    assert_eq!(manager.desired_mode(), SleepPreventionMode::Off);
-    configured.battery_profile_mut().sleep_prevention = settings.clone();
-    manager.note_configuration(&configured, None);
-    assert_eq!(manager.desired_mode(), SleepPreventionMode::Off);
-    configured.sleep_prevention = inactive;
-    manager.note_configuration(&configured, None);
-    configured.sleep_prevention = settings.clone();
-    manager.note_configuration(&configured, None);
-    observe(&mut manager, &settings, &[worker]);
-    assert_eq!(manager.desired_mode(), SleepPreventionMode::System);
-}
-
-#[test]
 fn missing_sleep_events_before_any_accepted_request_does_not_suppress_apps() {
     let settings = settings();
     let mut manager = SleepPreventionManager::default();
@@ -570,15 +496,14 @@ fn suspend_before_first_observation_suppresses_running_apps_and_disabling_rearms
     assert_eq!(manager.desired_mode(), SleepPreventionMode::Off);
     let previous = settings.clone();
     settings.enabled = false;
-    manager.rearm_withdrawn(&(true, previous), &(true, settings.clone()), None);
-    let snapshot = manager.update_profile(
+    manager.rearm_withdrawn(&(true, previous), &(true, settings.clone()));
+    let snapshot = manager.update(
         &mut controller,
         &Settings {
             sleep_prevention: settings.clone(),
             ..Default::default()
         },
-        true,
-        &[],
+        environment(true),
         &mut CycleObservations::default(),
         &mut log,
     );
@@ -587,108 +512,6 @@ fn suspend_before_first_observation_suppresses_running_apps_and_disabling_rearms
     settings.enabled = true;
     observe(&mut manager, &settings, &[worker]);
     assert_eq!(manager.desired_mode(), SleepPreventionMode::System);
-}
-
-#[test]
-fn unavailable_power_samples_do_not_start_new_profile_transitions() {
-    let mut manager = SleepPreventionManager::default();
-    assert!(!manager.change_power_source(None));
-    assert_eq!(manager.last_known_power_source(), None);
-    assert!(!manager.change_power_source(Some(true)));
-    assert!(!manager.change_power_source(None));
-    assert_eq!(manager.last_known_power_source(), Some(true));
-    assert!(!manager.change_power_source(Some(true)));
-    assert!(manager.change_power_source(Some(false)));
-    assert!(!manager.change_power_source(None));
-    assert!(!manager.change_power_source(Some(false)));
-    assert_eq!(manager.last_known_power_source(), Some(false));
-}
-
-#[test]
-fn shared_power_source_policy_requires_the_same_native_rule_paths_and_request_types() {
-    let mut ac = Settings {
-        sleep_prevention: settings(),
-        ..Default::default()
-    };
-    ac.sleep_prevention.rules[0].executable_path = r"\\?\C:\Apps\worker.exe".into();
-    let mut battery = ac.clone();
-    battery.sleep_prevention.rules.push(SleepPreventionRule {
-        enabled: false,
-        executable_path: r"C:\Apps\ignored.exe".into(),
-        keep_display_on: true,
-    });
-    assert!(same_sleep_prevention_policy(&ac, &battery));
-
-    battery.sleep_prevention.rules[0].executable_path = r"\\?\C:\Apps/worker.exe".into();
-    assert!(!same_sleep_prevention_policy(&ac, &battery));
-    battery.sleep_prevention.rules[0] = ac.sleep_prevention.rules[0].clone();
-    battery.sleep_prevention.rules[0].keep_display_on = true;
-    assert!(!same_sleep_prevention_policy(&ac, &battery));
-}
-
-#[test]
-fn simultaneous_profile_switch_and_explicit_disable_rearms_only_withdrawn_paths() {
-    let rules = settings().rules;
-    let shared = SleepPreventionRule {
-        executable_path: r"C:\Apps\shared.exe".into(),
-        ..rules[0].clone()
-    };
-    let mut configured = Settings {
-        sleep_prevention: SleepPreventionSettings {
-            enabled: true,
-            rules: vec![rules[0].clone(), shared.clone()],
-        },
-        ..Settings::default()
-    };
-    configured.battery_profile_mut().sleep_prevention = SleepPreventionSettings {
-        enabled: true,
-        rules: vec![rules[1].clone(), shared],
-    };
-    let mut manager = SleepPreventionManager::default();
-    manager.note_configuration(&configured, Some(true));
-    manager.change_power_source(Some(true));
-    let apps = [
-        process(7, r"C:\Apps\worker.exe"),
-        process(8, r"C:\Apps\video.exe"),
-        process(9, r"C:\Apps\shared.exe"),
-    ];
-    observe(&mut manager, &configured.sleep_prevention, &apps);
-    manager.suppress_current();
-    observe(
-        &mut manager,
-        &configured.battery_profile().sleep_prevention,
-        &apps,
-    );
-    manager.suppress_current();
-    assert_eq!(manager.suppressed.len(), 3);
-
-    configured.sleep_prevention.enabled = false;
-    let mut controller = SleepPreventionController::default();
-    let mut log = ActionLog::new(4);
-    manager.update(
-        &mut controller,
-        &configured,
-        environment(Some(false), false),
-        &mut CycleObservations::default(),
-        &mut log,
-    );
-    assert_eq!(manager.last_known_power_source(), Some(false));
-    assert!(!manager.suppressed.contains_key(&(7, 7)));
-    assert!(manager.suppressed.contains_key(&(8, 8)));
-    assert!(manager.suppressed.contains_key(&(9, 9)));
-
-    configured.sleep_prevention.enabled = true;
-    manager.update(
-        &mut controller,
-        &configured,
-        environment(Some(true), false),
-        &mut CycleObservations::default(),
-        &mut log,
-    );
-    observe(&mut manager, &configured.sleep_prevention, &apps);
-    assert_eq!(manager.desired_mode(), SleepPreventionMode::System);
-    assert!(manager.suppressed.contains_key(&(8, 8)));
-    assert!(!manager.suppressed.contains_key(&(9, 9)));
 }
 
 #[test]
@@ -711,10 +534,10 @@ fn fresh_rule_opt_ins_do_not_inherit_pending_sleep_suppression() {
             ..Settings::default()
         };
         let mut manager = SleepPreventionManager::default();
-        manager.note_configuration(&configured, Some(true));
+        manager.note_configuration(&configured);
         manager.suppress_current();
         configured.sleep_prevention = rules.clone();
-        manager.note_configuration(&configured, Some(true));
+        manager.note_configuration(&configured);
         observe(
             &mut manager,
             &configured.sleep_prevention,
@@ -739,8 +562,7 @@ fn pending_sleep_takes_precedence_over_a_saved_opt_in() {
     };
     let mut manager = SleepPreventionManager::default();
     configured.sleep_prevention.rules[0].enabled = false;
-    manager.change_power_source(Some(true));
-    manager.note_configuration(&configured, Some(true));
+    manager.note_configuration(&configured);
 
     configured.sleep_prevention.rules[0].enabled = true;
     manager.suppress_and_release(
@@ -748,7 +570,7 @@ fn pending_sleep_takes_precedence_over_a_saved_opt_in() {
         &configured,
         &mut ActionLog::new(4),
     );
-    manager.note_configuration(&configured, Some(true));
+    manager.note_configuration(&configured);
     observe(
         &mut manager,
         &configured.sleep_prevention,
@@ -759,50 +581,35 @@ fn pending_sleep_takes_precedence_over_a_saved_opt_in() {
 }
 
 #[test]
-fn first_unknown_power_source_blocks_enabled_requests_without_suppressing_apps() {
-    let configured = Settings {
-        sleep_prevention: settings(),
-        ..Settings::default()
-    };
+fn disabled_automation_preserves_manual_requests() {
+    let mut configured = Settings::default();
+    configured.general.enabled = false;
+    let platform = TemporaryRequestPlatform::default();
+    let mut controller = SleepPreventionController::new(&platform);
     let mut manager = SleepPreventionManager::default();
-    let mut controller = SleepPreventionController::default();
     let mut log = ActionLog::new(4);
-    let snapshot = manager.update(
+    let now = Instant::now();
+    let duration = TemporarySleepPreventionDuration::from_minutes(37).unwrap();
+    manager.set_temporary(TemporarySleepPrevention::KeepDisplayOn, Some(duration), now);
+    let active = manager.update(
         &mut controller,
         &configured,
-        environment(None, true),
+        environment(false),
         &mut CycleObservations::default(),
         &mut log,
     );
-    assert!(snapshot.enabled);
-    assert!(!snapshot.observation_known);
-    assert!(!snapshot.system_requested);
-    assert!(manager.suppressed.is_empty());
-    assert!(snapshot.last_error.is_some());
-    assert_eq!(manager.last_known_power_source(), None);
-    let mut disabled = Settings::default();
-    let snapshot = manager.update(
+    assert!(!active.enabled);
+    assert!(active.system_requested && active.display_requested);
+    assert!(manager.end_temporary_if_due(now, false));
+    let stopped = manager.update(
         &mut controller,
-        &disabled,
-        environment(None, true),
+        &configured,
+        environment(false),
         &mut CycleObservations::default(),
         &mut log,
     );
-    assert!(!snapshot.enabled);
-    assert!(!snapshot.system_requested);
-    assert!(snapshot.last_error.is_none());
-    disabled.sleep_prevention.enabled = true;
-    let snapshot = manager.update(
-        &mut controller,
-        &disabled,
-        environment(None, true),
-        &mut CycleObservations::default(),
-        &mut log,
-    );
-    assert!(snapshot.enabled);
-    assert!(snapshot.observation_known);
-    assert_eq!(snapshot.matched_rules, 0);
-    assert!(snapshot.last_error.is_none());
+    assert!(!stopped.temporary.any_active());
+    assert!(!stopped.system_requested && !stopped.display_requested);
 }
 
 #[test]
@@ -850,7 +657,7 @@ fn native_running_app_requests_and_releases_system_sleep_prevention() {
     let snapshot = manager.update(
         &mut controller,
         &settings,
-        environment(Some(true), true),
+        environment(true),
         &mut CycleObservations::default(),
         &mut log,
     );
@@ -867,7 +674,7 @@ fn native_running_app_requests_and_releases_system_sleep_prevention() {
         let snapshot = manager.update(
             &mut controller,
             &settings,
-            environment(Some(false), watcher_active),
+            environment(watcher_active),
             &mut CycleObservations::default(),
             &mut log,
         );
@@ -882,7 +689,7 @@ fn native_running_app_requests_and_releases_system_sleep_prevention() {
     manager.update(
         &mut controller,
         &settings,
-        environment(Some(false), true),
+        environment(true),
         &mut CycleObservations::default(),
         &mut log,
     );
@@ -890,7 +697,7 @@ fn native_running_app_requests_and_releases_system_sleep_prevention() {
     let snapshot = manager.update(
         &mut controller,
         &settings,
-        environment(Some(false), true),
+        environment(true),
         &mut CycleObservations::default(),
         &mut log,
     );
@@ -900,7 +707,7 @@ fn native_running_app_requests_and_releases_system_sleep_prevention() {
     let snapshot = manager.update(
         &mut controller,
         &settings,
-        environment(Some(true), true),
+        environment(true),
         &mut CycleObservations::default(),
         &mut log,
     );

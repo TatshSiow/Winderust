@@ -44,8 +44,9 @@ Read the relevant section before changing feature policy, ownership, restoration
 ## Keep Running
 
 - Keep Running is a global, opt-in Watchdog feature. Each rule names one
-  executable, literal argument tail, and absolute working directory. Arguments are
-  stored as plain text in the portable settings file. Enabling a rule with no
+  executable and optional literal arguments. Keep Running launches from the
+  resolved executable's folder. Arguments are stored as plain text in the
+  portable settings file. Enabling a rule with no
   existing eligible app never launches it. First observe an ordinary app with the
   current shell's verified user/logon/session token facts, then retain its exact
   handles. Fresh launches bind to the verified shell desktop; matching token facts
@@ -127,34 +128,28 @@ Read the relevant section before changing feature policy, ownership, restoration
   process handle, creation time, full image path and SID/session checks. Query-only
   access may exclude a known different path/scope, but cannot prove liveness.
   The collector returns exact PID/creation/path members with retained observation
-  handles, rechecking liveness before publication. Instance Limits projects these
-  observations to counts and releases the handles before publishing runtime status.
+  handles, rechecking liveness before returning them. Instance Limits counts those
+  observations and releases the handles after collecting the sample.
   Retained observation is not mutation authority: placement still needs fresh scope,
   safety, identity and settings preflight. A discovered catalog/image-name
   contradiction invalidates the pass. Basename agreement was measured on ordinary
   and elevated fixtures, not established for every rename or filesystem behavior.
 - Counts are sampled and non-atomic: short-lived processes may be missed. Incomplete
-  counts expose a verified lower bound; incomplete zero says Count incomplete,
-  never a reassuring zero. Old samples become Unknown with their age. A missing
-  event watcher pauses count sampling until coverage returns. The rule shows
-  that it is waiting for context without a sample age. Native queries run outside
-  the shared intake mutex; one-second visible/tray cadence is not a Windows-call
-  deadline.
+  counts provide a verified lower bound to the incident policy. A missing event
+  watcher pauses sampling until coverage returns. Native queries run outside
+  the shared intake mutex; one-second visible/tray cadence is not a Windows-call deadline.
 - Excess and recovery each need two fresh qualifying samples at least one second
   apart. A lower bound above the maximum proves excess; only complete within-limit
   counts prove recovery. Uncertainty and gaps longer than three seconds restart
   qualification while preserving an unresolved incident. Each incident allows one
   notification attempt, including failures. Acceptance confirms delivery to Windows.
 - Rule edits reset only that rule, while feature/master disable clears all state.
-  Status uses the saved rule identities while the worker refreshes, preserving
-  reports for unchanged rules and the recorded Action Log history.
   Notify-only edits and power-source changes preserve incidents. Delivery requires
   both the feature-wide switch and the rule's Notify setting. Enabling Notify
   requires fresh excess evidence before an unattempted notification, including
-  when the setting is turned off and on between worker snapshots. Live count
-  status follows count availability, and previous notification failures remain in
-  Last Failed and the rule card. Pending reset intents survive rapid edits and
-  toggles between worker snapshots. Suspend/session
+  when the setting is turned off and on between worker snapshots. Notification
+  outcomes are recorded in the Action Log. Pending reset intents survive rapid
+  edits and toggles between worker snapshots. Suspend/session
   events discard continuity and stale results while preserving attempted incidents.
   Results are accepted under the intake mutex before notification delivery outside
   it; a later intent cannot retract an already reserved notification attempt.
@@ -302,8 +297,7 @@ Read the relevant section before changing feature policy, ownership, restoration
   that incident's response before Keep Running is paused or a restart cooldown starts.
 - Trim memory works through the same working-set controller as Memory Trim.
   The action skips the focused executable, already-stopped instances, and
-  the active power profile's saved exclusions. With unknown power it honors
-  exclusions from both profiles. The runtime spaces threshold trim attempts
+  the shared saved Memory Trim exclusions. The runtime spaces threshold trim attempts
   for the same executable path at least 60 seconds apart. Action Log and
   notifications report the result. Resource Thresholds owns qualification,
   independently of the Memory Trim toggle and its pressure and idle thresholds.
@@ -583,7 +577,7 @@ Read the relevant section before changing feature policy, ownership, restoration
 ## Memory Trim
 
 - Automatic trimming and Trim now honor Exclude focused apps and Exclude apps
-  with visible windows in the active power profile. Focus exclusion is on by
+  with visible windows on either power source. Focus exclusion is on by
   default and requires an observed foreground executable path for the catalog
   process generation. Visible-window exclusion is opt-in and uses the same
   top-level window detection as Process Priority. Both exclusions skip window
@@ -595,9 +589,6 @@ Read the relevant section before changing feature policy, ownership, restoration
   below the size threshold break idle qualification without rearming a process
   already trimmed during that idle episode. Observed activity or a new exact
   process identity may rearm it; explicitly disabling automation clears tracking.
-- If Windows cannot confirm the power source, differing pressure or idle thresholds pause
-  automatic trimming. Differing enablement, working-set thresholds or exclusions also block
-  Trim now. Waiting breaks the idle interval and preserves the prior trim and cooldown.
 - The controller checks the working-set threshold on the verified process handle
   immediately before either automatic or manual trimming. A working set below
   the minimum returns to waiting and clears idle qualification.
@@ -657,11 +648,8 @@ Read the relevant section before changing feature policy, ownership, restoration
   ready to suspend. Manual Suspend and existing resume signals remain available.
 - Network wake compares payload byte counts across two samples of the same
   IPv4 or IPv6 TCP connection.
-- App Suspension waits when Windows cannot verify the power source and the
-  saved A/C and Battery policies differ. It pauses new automatic freezes and
-  Suspend on the App Suspension page, releases rule-owned freezes, and starts
-  fresh background grace once the source is verified. Process List freezes,
-  explicit resume, and unexpired user-initiated thaw holds remain available.
+- App Suspension shares one policy across power sources. Power-source changes
+  preserve background grace, rule-owned freezes, and active thaw holds.
 - App Suspension releases a rule-owned freeze when its stored executable path
   no longer matches an enabled rule, even if focus, session, or process
   observations are unavailable. Process List freezes have separate ownership.
@@ -671,9 +659,8 @@ Read the relevant section before changing feature policy, ownership, restoration
   or unavailable accounting cannot establish that inherited processes have exited.
 - App Suspension shows Not running only for an enabled saved rule covered by a
   successful scan with no unresolved candidate for that path. Suspend requires
-  a matching enabled rule in the current saved power profile. Temporarily
-  resume remains available for a matching
-  known freeze regardless of the profile being edited.
+  a matching enabled rule in saved settings. Temporarily resume remains
+  available for a matching known freeze.
 - Automatic rules, Suspend on the App Suspension page, and Process List
   Suspend/Resume share the controller in `src/control/suspension.rs`. Feature
   code owns grace, wake, and reporting policy. Automatic rules require executable
@@ -1103,26 +1090,27 @@ Read the relevant section before changing feature policy, ownership, restoration
 
 ## Sleep Prevention
 
-- Sleep Prevention is an explicit running-app rule under Watchdog. It
-  starts disabled, follows the existing Plugged In/On Battery profile selection,
-  and never changes power-plan timeouts. A matching eligible executable requests
-  idle system sleep prevention; keeping the display on is a separate opt-in that
-  also retains the system request. Focus does not affect matching.
+- Sleep Prevention is an explicit running-app rule under Watchdog. It starts
+  disabled and uses the same rules on A/C and battery. A matching eligible
+  executable requests idle system sleep prevention. Keeping the display on is
+  a separate opt-in that also retains the system request. Focus does not affect
+  matching.
 - The feature manager combines exact eligible process instances across rules.
   One controller owns the shared Windows request object and changes only the
   required request types. Removing one app cannot release another app's request.
-  Disable, confirmed last-app exit, profile handoff, and Exit release owned
-  requests. Process teardown closes the request object without a crash journal.
-- The Keep awake action takes a 15-minute, 30-minute, one-hour, or two-hour
-  system sleep request. It is off at startup and requires automation and Sleep
-  Prevention to be enabled in the saved active power profile. The runtime keeps
-  one monotonic expiry deadline while the request is active. Expiry, Stop, a
-  suspend or session event, a switch to a disabled or unconfirmed power profile,
-  disabling the feature, losing Windows event coverage, or Exit ends the action.
-  Stop and expiry preserve requests still needed by running apps, including
-  display requests. If Windows rejects release of the last app's display request
-  during a timed session, Winderust closes the shared request and ends the
-  session. Windows applies its ordinary power policy to accepted requests.
+  Disabling the rules or confirming the last app's exit releases the claims
+  held for those apps. Exit releases all claims. Process teardown closes the
+  request object without a crash journal.
+- Temporary keep awake requests system sleep prevention. Temporary keep display
+  on requests both display and system sleep prevention. Each action accepts
+  1–1440 minutes and has a separate monotonic deadline. Both work with automated
+  rules off and continue across power-source changes. Stop or expiry releases
+  only that timer's claim. Suspend/resume, a session change, loss of the
+  temporary action's Windows event watcher, or Exit cancels both timers.
+  The dedicated watcher runs only while temporary requests are active.
+  If Windows rejects clearing the display request when its last claim ends,
+  Winderust closes the shared handle. Windows applies its ordinary power policy
+  to accepted requests.
 - A confirmed App Suspension freeze withdraws that exact instance's request.
   Other runnable instances still contribute their system and display requests.
   The next complete observation after thaw can restore an eligible request.
@@ -1135,30 +1123,22 @@ Read the relevant section before changing feature policy, ownership, restoration
 - Suspend/resume releases requests and suppresses the observed exact instances
   until they exit or the user explicitly disables/re-enables their rules or the
   feature. Suspend/resume takes precedence over saved settings first observed
-  in the same worker pass. Power-profile changes preserve this suppression.
-  Editing an inactive profile cannot rearm an app in the active profile.
+  in the same worker pass. Power-source changes preserve this suppression.
   Winderust can preserve a quick disable and re-enable between worker passes
-  when the active power source stays known and Windows event coverage remains
-  continuous. Winderust retains up to four intermediate saves per worker pass.
-  Overflow or an uncertain power, session, or watcher transition discards that
-  history and the worker evaluates the latest saved configuration normally.
+  while Windows event coverage remains continuous. Winderust retains up to four
+  intermediate saves per worker pass. Overflow or a session or watcher
+  transition discards that history and the worker evaluates the latest saved
+  configuration normally.
   User sleep, lid actions, critical-battery handling, and Windows policy remain
   authoritative.
   A missing or stopped Windows event watcher blocks new requests, releases owned
   requests, and suppresses the current cohort until explicitly rearmed. A stop
   and restart between worker passes also releases an accepted request and
   suppresses its apps. Settings observed in the same pass keep that suppression.
-- Running-app reconciliation remains at one second in visible and tray modes;
-  Windows sleep and power-source notifications wake it independently of the UI.
+- Running-app reconciliation remains at one second in visible and tray modes.
+  Windows suspend/resume and session notifications wake it independently of the UI.
   Path enrichment covers enabled rule candidates and processes that can still
   match an accepted or suppressed instance, including an unknown creation time.
-  Transient power-source read failures retain the last confirmed profile. When
-  the saved policies differ, new system or display requests wait for a confirmed
-  source. Accepted types remain shared across apps. Confirmed exits and withdrawn
-  rules can still release them. Before the first confirmed source, requests stay
-  off.
-  Enabled rule rows show Unknown until the selected profile has a matching
-  observation. A confirmed source change invalidates the previous profile's rows.
 
 ## Timer Resolution
 

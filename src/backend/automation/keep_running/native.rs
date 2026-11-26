@@ -20,12 +20,7 @@ fn spec(rule: &KeepRunningRule) -> Result<control::LaunchSpec, Failure> {
         message,
         kind: FailureKind::UnsupportedContext,
     })?;
-    control::LaunchSpec::new(
-        Path::new(&rule.executable_path),
-        &rule.arguments,
-        Path::new(&rule.working_directory),
-    )
-    .map_err(failure)
+    control::LaunchSpec::new(Path::new(&rule.executable_path), &rule.arguments).map_err(failure)
 }
 
 impl Platform for Windows {

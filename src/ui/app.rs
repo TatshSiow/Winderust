@@ -804,7 +804,7 @@ enum Message {
     ExportLog(Option<PathBuf>),
     Suspension(app_suspension::Message),
     SleepPrevention(sleep_prevention::Message),
-    KeepAwakeFinished(Result<(), String>),
+    TemporarySleepPreventionFinished(Result<(), String>),
     Trim(memory_trim::Message),
     TrimFinished(Result<crate::memory_trim::MemoryTrimSnapshot, String>),
     ResourceThresholds(resource_thresholds::Message),
@@ -1751,8 +1751,8 @@ impl WinderustApp {
             Message::SleepPrevention(sleep_prevention::Message::Browse) => {
                 return self.browse(Page::SleepPrevention);
             }
-            Message::SleepPrevention(sleep_prevention::Message::KeepAwake(duration)) => {
-                if self.sleep_prevention.keep_awake_pending {
+            Message::SleepPrevention(sleep_prevention::Message::Temporary(kind, duration)) => {
+                if self.sleep_prevention.temporary_pending {
                     return Task::none();
                 }
                 let (reply, receiver) = std::sync::mpsc::sync_channel(1);
@@ -1767,19 +1767,22 @@ impl WinderustApp {
                         return Task::none();
                     }
                 };
-                if let Err(error) = self.runtime.request_keep_awake(duration, reply) {
+                if let Err(error) = self
+                    .runtime
+                    .request_temporary_sleep_prevention(kind, duration, reply)
+                {
                     self.error_message = error.to_string();
                 } else {
-                    self.sleep_prevention.keep_awake_pending = true;
+                    self.sleep_prevention.temporary_pending = true;
                     return task.map(|result| {
-                        Message::KeepAwakeFinished(
+                        Message::TemporarySleepPreventionFinished(
                             result.and_then(|reply| reply.map_err(|error| error.to_string())),
                         )
                     });
                 }
             }
-            Message::KeepAwakeFinished(result) => {
-                self.sleep_prevention.keep_awake_pending = false;
+            Message::TemporarySleepPreventionFinished(result) => {
+                self.sleep_prevention.temporary_pending = false;
                 if let Err(error) = result {
                     self.error_message = error;
                 } else {
@@ -2246,42 +2249,28 @@ impl WinderustApp {
                         tray::MenuAction::MasterSwitch(enabled) => {
                             self.settings.set_master_enabled(enabled)
                         }
-                        tray::MenuAction::Feature { id, enabled, .. }
-                            if id == Page::ResourceThresholds as usize =>
-                        {
-                            self.settings.set_resource_thresholds_enabled(enabled)
-                        }
-                        tray::MenuAction::Feature { id, enabled, .. }
-                            if id == Page::InstanceLimits as usize =>
-                        {
-                            self.settings.set_instance_limits_enabled(enabled)
-                        }
-                        tray::MenuAction::Feature { id, enabled, .. }
-                            if id == Page::InstanceBalancing as usize =>
-                        {
-                            self.settings.set_instance_balancing_enabled(enabled)
-                        }
-                        tray::MenuAction::Feature { id, enabled, .. }
-                            if id == Page::KeepRunning as usize =>
-                        {
-                            self.settings.set_keep_running_enabled(enabled)
-                        }
                         tray::MenuAction::Feature {
                             id,
                             profile,
                             enabled,
                         } => {
-                            let field = Page::sections()
+                            let feature = Page::sections()
                                 .iter()
                                 .flat_map(|section| section.pages)
                                 .find(|page| **page as usize == id)
-                                .and_then(|page| navigation::feature_toggle(*page));
-                            let Some(field) = field else {
+                                .and_then(|&page| {
+                                    navigation::feature_toggle(page).map(|field| (page, field))
+                                });
+                            let Some((page, field)) = feature else {
                                 self.error_message = "Unknown tray feature toggle.".into();
                                 tray_error = true;
                                 continue;
                             };
-                            self.settings.set_feature_enabled(profile, field, enabled)
+                            if page.supports_power_source_profiles() {
+                                self.settings.set_feature_enabled(profile, field, enabled)
+                            } else {
+                                self.settings.set_shared_feature_enabled(field, enabled)
+                            }
                         }
                     };
                     match result {
@@ -3068,16 +3057,10 @@ impl WinderustApp {
                         .filter(|page| **page != Page::AdaptiveProcessorPower)
                         .filter_map(|page| {
                             navigation::feature_page_enabled(
-                                if matches!(
-                                    *page,
-                                    Page::ResourceThresholds
-                                        | Page::KeepRunning
-                                        | Page::InstanceLimits
-                                        | Page::InstanceBalancing
-                                ) {
-                                    saved
-                                } else {
+                                if page.supports_power_source_profiles() {
                                     settings
+                                } else {
+                                    saved
                                 },
                                 *page,
                             )
@@ -3817,27 +3800,14 @@ impl WinderustApp {
             })
         };
         match self.page {
-            Page::SleepPrevention => {
-                let status = &self.status.feature_status.sleep_prevention;
-                let selected_is_plugged_in = self.power_source == PowerSourceProfile::PluggedIn;
-                let plugged_in = read_power_source();
-                let keep_awake = sleep_prevention::KeepAwakeView::new(
-                    self.settings.persisted(),
-                    plugged_in,
-                    status,
-                );
-                let status = (status.source == Some(self.power_source)
-                    && plugged_in.is_none_or(|plugged_in| plugged_in == selected_is_plugged_in))
-                .then_some(status);
-                self.sleep_prevention
-                    .view(
-                        &self.settings.sleep_prevention,
-                        status,
-                        &self.candidates,
-                        keep_awake,
-                    )
-                    .map(Message::SleepPrevention)
-            }
+            Page::SleepPrevention => self
+                .sleep_prevention
+                .view(
+                    &self.settings.global().sleep_prevention,
+                    &self.candidates,
+                    self.status.feature_status.sleep_prevention.temporary,
+                )
+                .map(Message::SleepPrevention),
             Page::AppSuspension => self
                 .suspension
                 .view(
@@ -3845,7 +3815,6 @@ impl WinderustApp {
                     &self.status.feature_status.app_suspension,
                     &self.unavailable_candidates,
                     &self.candidates,
-                    read_power_source(),
                 )
                 .map(Message::Suspension),
             Page::ResourceThresholds => self
@@ -3857,11 +3826,7 @@ impl WinderustApp {
                 .map(Message::ResourceThresholds),
             Page::InstanceLimits => self
                 .instance_limits
-                .view(
-                    &self.settings.global().instance_limits,
-                    &self.status.feature_status.instance_limits,
-                    &self.candidates,
-                )
+                .view(&self.settings.global().instance_limits, &self.candidates)
                 .map(Message::InstanceLimits),
             Page::InstanceBalancing => self
                 .instance_balancing
@@ -3882,18 +3847,11 @@ impl WinderustApp {
                 )
                 .map(Message::KeepRunning),
             Page::MemoryTrim => {
-                let live = status_rail::saved_runtime_settings(&self.settings, read_power_source());
-                let trim_available = live.general.enabled
-                    && live.memory_trim.enabled
-                    && !matches!(
-                        self.status.feature_status.memory_trim.status,
-                        crate::memory_trim::MemoryTrimStatus::WaitingForPowerSource {
-                            manual_trim_blocked: true
-                        }
-                    );
+                let live = self.settings.persisted();
+                let trim_available = live.general.enabled && live.memory_trim.enabled;
                 self.trim
                     .view(
-                        &self.settings.memory_trim,
+                        &self.settings.global().memory_trim,
                         &self.candidates,
                         trim_available,
                         self.manual_trim_pending,

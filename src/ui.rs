@@ -197,13 +197,10 @@ impl Page {
                 | Self::CpuSetsSoft
                 | Self::AdaptiveEngine
                 | Self::EfficiencyMode
-                | Self::AppSuspension
-                | Self::SleepPrevention
                 | Self::ByRunningApp
                 | Self::IoPriority
                 | Self::GpuPriority
                 | Self::MemoryPriority
-                | Self::MemoryTrim
                 | Self::ProcessorAffinityHard
                 | Self::ByFocus
                 | Self::ByTime
@@ -345,9 +342,9 @@ mod tests {
         assert!(Page::TimerResolution.supports_power_source_profiles());
         assert!(!Page::Home.supports_power_source_profiles());
         assert!(!Page::Watchdog.supports_power_source_profiles());
-        assert!(!Page::ResourceThresholds.supports_power_source_profiles());
-        assert!(!Page::KeepRunning.supports_power_source_profiles());
-        assert!(!Page::InstanceLimits.supports_power_source_profiles());
+        for page in WATCHDOG_PAGES {
+            assert!(!page.supports_power_source_profiles(), "{page:?}");
+        }
         assert!(!Page::InstanceBalancing.supports_power_source_profiles());
         assert!(!Page::PowerPlanControl.supports_power_source_profiles());
         assert!(!Page::ProcessList.supports_power_source_profiles());

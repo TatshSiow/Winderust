@@ -45,22 +45,14 @@ pub(super) fn input_hook_should_check_app_switch(
     settings: &Settings,
     events: InputHookEvents,
 ) -> bool {
-    std::iter::once(settings)
-        .chain(settings.on_battery.as_deref())
-        .any(|settings| {
-            settings.general.enabled && settings.app_suspension.enabled && events.app_switch
-        })
+    settings.general.enabled && settings.app_suspension.enabled && events.app_switch
 }
 
 pub(super) fn input_hook_should_check_app_switch_mouse_click(
     settings: &Settings,
     events: InputHookEvents,
 ) -> bool {
-    std::iter::once(settings)
-        .chain(settings.on_battery.as_deref())
-        .any(|settings| {
-            settings.general.enabled && settings.app_suspension.enabled && events.mouse_click
-        })
+    settings.general.enabled && settings.app_suspension.enabled && events.mouse_click
 }
 
 pub(super) fn process_ids_have_new_entries(

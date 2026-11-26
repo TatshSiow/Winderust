@@ -148,6 +148,9 @@ impl Settings {
         battery.resource_thresholds = self.resource_thresholds.clone();
         battery.keep_running = self.keep_running.clone();
         battery.instance_limits = self.instance_limits.clone();
+        battery.app_suspension = self.app_suspension.clone();
+        battery.memory_trim = self.memory_trim.clone();
+        battery.sleep_prevention = self.sleep_prevention.clone();
         battery.instance_balancing = self.instance_balancing.clone();
         battery.adaptive_engine_presets = self.adaptive_engine_presets.clone();
         battery.adaptive_processor_power_presets = self.adaptive_processor_power_presets.clone();

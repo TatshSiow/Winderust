@@ -103,7 +103,9 @@ fn resource_thresholds_is_global_when_editing_or_toggling_from_battery() {
     );
     assert!(editor.global().resource_thresholds.rules[0].memory.enabled);
     editor.save().unwrap();
-    editor.set_resource_thresholds_enabled(true).unwrap();
+    editor
+        .set_shared_feature_enabled(|settings| &mut settings.resource_thresholds.enabled, true)
+        .unwrap();
     let runtime = editor.runtime_settings_snapshot();
     assert!(runtime.value.resource_thresholds.enabled);
     assert_eq!(
@@ -115,7 +117,9 @@ fn resource_thresholds_is_global_when_editing_or_toggling_from_battery() {
         editor.global().resource_thresholds,
         editor.resource_thresholds
     );
-    editor.set_resource_thresholds_enabled(false).unwrap();
+    editor
+        .set_shared_feature_enabled(|settings| &mut settings.resource_thresholds.enabled, false)
+        .unwrap();
     assert!(
         !editor
             .runtime_settings_snapshot()
@@ -143,7 +147,9 @@ fn keep_running_edits_and_tray_toggle_are_global_from_either_profile() {
     });
     assert_eq!(editor.global().keep_running, editor.keep_running);
     editor.save().unwrap();
-    editor.set_keep_running_enabled(true).unwrap();
+    editor
+        .set_shared_feature_enabled(|settings| &mut settings.keep_running.enabled, true)
+        .unwrap();
     let runtime = editor.runtime_settings_snapshot();
     assert!(runtime.value.keep_running.enabled);
     assert_eq!(
@@ -151,7 +157,9 @@ fn keep_running_edits_and_tray_toggle_are_global_from_either_profile() {
         runtime.value.battery_profile().keep_running
     );
     editor.select_power_source(PowerSourceProfile::PluggedIn);
-    editor.set_keep_running_enabled(false).unwrap();
+    editor
+        .set_shared_feature_enabled(|settings| &mut settings.keep_running.enabled, false)
+        .unwrap();
     assert!(
         !editor
             .runtime_settings_snapshot()
@@ -179,7 +187,9 @@ fn instance_limits_edits_and_tray_toggle_are_global_from_either_profile() {
     });
     assert_eq!(editor.global().instance_limits, editor.instance_limits);
     editor.save().unwrap();
-    editor.set_instance_limits_enabled(true).unwrap();
+    editor
+        .set_shared_feature_enabled(|settings| &mut settings.instance_limits.enabled, true)
+        .unwrap();
     let runtime = editor.runtime_settings_snapshot();
     assert!(runtime.value.instance_limits.enabled);
     assert_eq!(
@@ -187,7 +197,9 @@ fn instance_limits_edits_and_tray_toggle_are_global_from_either_profile() {
         runtime.value.battery_profile().instance_limits
     );
     editor.select_power_source(PowerSourceProfile::PluggedIn);
-    editor.set_instance_limits_enabled(false).unwrap();
+    editor
+        .set_shared_feature_enabled(|settings| &mut settings.instance_limits.enabled, false)
+        .unwrap();
     assert!(
         !editor
             .runtime_settings_snapshot()
@@ -227,8 +239,10 @@ fn instance_balancing_global_toggles_preserve_unsaved_rules_and_profile_edits() 
             editor.global().battery_profile().instance_balancing
         );
 
-        assert!(editor.set_instance_balancing_enabled(true).unwrap());
-        assert!(!editor.set_instance_balancing_enabled(true).unwrap());
+        let enabled: fn(&mut Settings) -> &mut bool =
+            |settings| &mut settings.instance_balancing.enabled;
+        assert!(editor.set_shared_feature_enabled(enabled, true).unwrap());
+        assert!(!editor.set_shared_feature_enabled(enabled, true).unwrap());
         let live = editor.runtime_settings_snapshot();
         assert!(live.value.instance_balancing.enabled);
         assert!(live.value.instance_balancing.rules.is_empty());
@@ -271,7 +285,9 @@ fn instance_balancing_global_toggles_preserve_unsaved_rules_and_profile_edits() 
         editor.cancel();
         assert_eq!(editor.instance_balancing, saved.value.instance_balancing);
         assert!(!editor.has_unsaved_changes());
-        editor.set_instance_balancing_enabled(false).unwrap();
+        editor
+            .set_shared_feature_enabled(|settings| &mut settings.instance_balancing.enabled, false)
+            .unwrap();
         let disabled = editor.runtime_settings_snapshot();
         assert!(!disabled.value.instance_balancing.enabled);
         assert!(!disabled.value.battery_profile().instance_balancing.enabled);

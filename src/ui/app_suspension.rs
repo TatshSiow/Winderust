@@ -119,23 +119,38 @@ impl Editor {
         unavailable: &[String],
         m: Message,
     ) -> Option<(String, bool)> {
-        let s = &settings.app_suspension;
         match m {
             Message::ToggleSettings => self.settings_expanded = !self.settings_expanded,
-            Message::Enabled(v) if s.enabled != v => settings.app_suspension.enabled = v,
             Message::Group(i) => {
                 if let Some(v) = self.expanded.get_mut(i) {
                     *v = !*v;
                 }
             }
             Message::Path(v) => self.path = v,
+            Message::Toggle(i) => {
+                let rule = settings.global().app_suspension.suspendable_apps.get(i)?;
+                let path = rule.executable_path.trim_start();
+                let frozen = app_suspension::contains_process(&status.suspended_apps, path);
+                let blocked = app_suspension::contains_process(unavailable, path);
+                return (frozen
+                    || can_suspend(rule, status, blocked, live_suspension_settings(settings)))
+                .then(|| (path.to_owned(), !frozen));
+            }
+            Message::Browse => {}
+            edit => settings.edit_global(|settings| {
+                self.edit(&mut settings.app_suspension, unavailable, edit);
+            }),
+        }
+        None
+    }
+
+    fn edit(&mut self, s: &mut AppSuspensionSettings, unavailable: &[String], message: Message) {
+        match message {
+            Message::Enabled(value) => s.enabled = value,
             Message::Add => {
                 let path = exact_path_input(&self.path);
                 if Self::can_add(s, path, unavailable) {
-                    settings
-                        .app_suspension
-                        .suspendable_apps
-                        .push(new_app_suspension_rule(path));
+                    s.suspendable_apps.push(new_app_suspension_rule(path));
                     self.path.clear();
                 }
             }
@@ -144,7 +159,6 @@ impl Editor {
                     .parse(&value)
                     .filter(|&value| field.seconds(s) != value)
                 {
-                    let s = &mut settings.app_suspension;
                     *match field {
                         Delay::Background => &mut s.background_delay_seconds,
                         Delay::ThawInterval => &mut s.temporary_thaw_interval_seconds,
@@ -155,37 +169,22 @@ impl Editor {
                 }
                 self.delay_drafts.insert(field, value);
             }
-            Message::Thaw(v) if s.temporary_thaw_enabled != v => {
-                settings.app_suspension.temporary_thaw_enabled = v;
-            }
-            Message::Audio(v) if s.audio_wake_enabled != v => {
-                settings.app_suspension.audio_wake_enabled = v
-            }
-            Message::Network(v) if s.network_wake_enabled != v => {
-                settings.app_suspension.network_wake_enabled = v
-            }
+            Message::Thaw(value) => s.temporary_thaw_enabled = value,
+            Message::Audio(value) => s.audio_wake_enabled = value,
+            Message::Network(value) => s.network_wake_enabled = value,
             Message::RuleEnabled(i, v) => {
-                if s.suspendable_apps
-                    .get(i)
-                    .is_some_and(|rule| rule.enabled != v)
-                {
-                    settings.app_suspension.suspendable_apps[i].enabled = v;
+                if let Some(rule) = s.suspendable_apps.get_mut(i) {
+                    rule.enabled = v;
                 }
             }
             Message::RuleAudio(i, v) => {
-                if s.suspendable_apps
-                    .get(i)
-                    .is_some_and(|rule| rule.audio_wake_enabled != v)
-                {
-                    settings.app_suspension.suspendable_apps[i].audio_wake_enabled = v;
+                if let Some(rule) = s.suspendable_apps.get_mut(i) {
+                    rule.audio_wake_enabled = v;
                 }
             }
             Message::RuleNetwork(i, v) => {
-                if s.suspendable_apps
-                    .get(i)
-                    .is_some_and(|rule| rule.network_wake_enabled != v)
-                {
-                    settings.app_suspension.suspendable_apps[i].network_wake_enabled = v;
+                if let Some(rule) = s.suspendable_apps.get_mut(i) {
+                    rule.network_wake_enabled = v;
                 }
             }
             Message::Threshold(i, upload, value) => {
@@ -204,11 +203,7 @@ impl Editor {
                     };
                     let bytes = unit.parse_threshold(&value);
                     if let Some(bytes) = bytes.filter(|&bytes| bytes != current) {
-                        set_threshold_bytes(
-                            &mut settings.app_suspension.suspendable_apps[i],
-                            upload,
-                            bytes,
-                        );
+                        set_threshold_bytes(&mut s.suspendable_apps[i], upload, bytes);
                     }
                     self.threshold_drafts
                         .resize_with(rule_count, || [None, None]);
@@ -224,7 +219,7 @@ impl Editor {
                         rule.network_download_threshold_unit
                     };
                     if current != v {
-                        let rule = &mut settings.app_suspension.suspendable_apps[i];
+                        let rule = &mut s.suspendable_apps[i];
                         if upload {
                             rule.network_upload_threshold_unit = v;
                         } else {
@@ -244,42 +239,21 @@ impl Editor {
                     }
                 }
             }
-            Message::Toggle(i) => {
-                if let Some(r) = s.suspendable_apps.get(i) {
-                    let path = r.executable_path.trim_start();
-                    let frozen = app_suspension::contains_process(&status.suspended_apps, path);
-                    let blocked = app_suspension::contains_process(unavailable, path);
-                    if frozen
-                        || can_suspend(
-                            r,
-                            status,
-                            blocked,
-                            live_suspension_settings(
-                                settings,
-                                crate::backend::power_source::is_plugged_in(),
-                            ),
-                        )
-                    {
-                        return Some((path.to_owned(), !frozen));
-                    }
-                }
-            }
             Message::Remove(i) => {
                 if i < s.suspendable_apps.len() {
-                    settings.app_suspension.suspendable_apps.remove(i);
+                    s.suspendable_apps.remove(i);
                     if i < self.threshold_drafts.len() {
                         self.threshold_drafts.remove(i);
                     }
                 }
             }
 
-            Message::Enabled(_)
-            | Message::Thaw(_)
-            | Message::Audio(_)
-            | Message::Network(_)
-            | Message::Browse => {}
+            Message::ToggleSettings
+            | Message::Group(_)
+            | Message::Path(_)
+            | Message::Toggle(_)
+            | Message::Browse => unreachable!("UI-only messages are handled before settings edits"),
         }
-        None
     }
     fn can_add(s: &AppSuspensionSettings, path: &str, unavailable: &[String]) -> bool {
         can_add_app_suspension_process(s, path)
@@ -291,10 +265,9 @@ impl Editor {
         status: &AppSuspensionSnapshot,
         unavailable: &[String],
         candidates: &'a [super::app_picker::Candidate],
-        observed_plugged_in: Option<bool>,
     ) -> Element<'a, Message> {
-        let s = &settings.app_suspension;
-        let live = live_suspension_settings(settings, observed_plugged_in);
+        let s = &settings.global().app_suspension;
+        let live = live_suspension_settings(settings);
         let mut body = column![super::widgets::setting_group(
             "app_suspension.enable".to_string(),
             self.settings_expanded,
@@ -494,11 +467,8 @@ fn set_threshold_bytes(rule: &mut AppSuspensionRule, upload: bool, bytes: u64) {
     }
 }
 
-fn live_suspension_settings(
-    settings: &SettingsEditor,
-    observed_plugged_in: Option<bool>,
-) -> Option<&AppSuspensionSettings> {
-    let saved = super::status_rail::saved_runtime_settings(settings, observed_plugged_in);
+fn live_suspension_settings(settings: &SettingsEditor) -> Option<&AppSuspensionSettings> {
+    let saved = settings.persisted();
     (saved.general.enabled && saved.app_suspension.enabled).then_some(&saved.app_suspension)
 }
 
@@ -510,7 +480,6 @@ fn can_suspend(
 ) -> bool {
     let path = rule.executable_path.trim_start();
     status.enabled
-        && status.status != app_suspension::AppSuspensionStatus::PowerSourceUnknown
         && !status.unsupported
         && rule.enabled
         && !unavailable
@@ -630,7 +599,9 @@ mod tests {
     #[test]
     fn pending_delays_keep_independent_text_and_bounds() {
         let mut editor = Editor::default();
-        let mut settings = SettingsEditor::with_settings(Settings::default());
+        let mut configured = Settings::default();
+        configured.battery_profile_mut();
+        let mut settings = SettingsEditor::with_settings(configured);
         settings.select_power_source(PowerSourceProfile::OnBattery);
         let status = AppSuspensionSnapshot::default();
         for (field, input) in [(Delay::Background, ""), (Delay::ThawDuration, "3601")] {
@@ -644,7 +615,7 @@ mod tests {
         assert_eq!(editor.invalid_delay(), Some(Delay::Background));
         assert_eq!(editor.delay_drafts[&Delay::Background], "");
         assert!(settings.app_suspension.validate().is_ok());
-        assert!(settings.global().on_battery.is_none());
+        assert!(!settings.has_unsaved_changes());
 
         editor.update(
             &mut settings,
@@ -665,6 +636,14 @@ mod tests {
         assert_eq!(
             settings.app_suspension.temporary_thaw_duration_seconds,
             3600
+        );
+        assert_eq!(
+            settings.global().app_suspension,
+            settings.global().battery_profile().app_suspension,
+        );
+        assert_eq!(
+            settings.global().app_suspension.background_delay_seconds,
+            86_400,
         );
     }
 
@@ -763,12 +742,14 @@ mod tests {
         let live = &s.app_suspension;
         let rule = &live.suspendable_apps[0];
         assert!(can_suspend(rule, &status, false, Some(live)));
-        status.status = app_suspension::AppSuspensionStatus::PowerSourceUnknown;
-        assert!(!can_suspend(rule, &status, false, Some(live)));
-        status.status = app_suspension::AppSuspensionStatus::Active;
+        assert!(!can_suspend(
+            rule,
+            &status,
+            false,
+            live_suspension_settings(&s)
+        ));
         status.unsupported = true;
         assert!(!can_suspend(rule, &status, false, Some(live)));
-        status.status = app_suspension::AppSuspensionStatus::PowerSourceUnknown;
         status.suspended_apps.push(p.clone());
         assert_eq!(
             e.update(&mut s, &status, &unavailable, Message::Toggle(0)),

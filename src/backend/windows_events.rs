@@ -61,6 +61,7 @@ thread_local! {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WindowsEventWatcherMode {
     Full,
+    SuspendResumeAndSession,
     SuspendResumeOnly,
 }
 
@@ -155,6 +156,7 @@ fn event_thread(
     mode: WindowsEventWatcherMode,
 ) {
     let full = mode == WindowsEventWatcherMode::Full;
+    let session = mode != WindowsEventWatcherMode::SuspendResumeOnly;
     // SAFETY: GetCurrentThreadId takes no arguments and has no caller requirements.
     let thread_id = unsafe { GetCurrentThreadId() };
     let mut msg = MSG::default();
@@ -163,7 +165,9 @@ fn event_thread(
         callback
     } else {
         Arc::new(move |event| {
-            if event == WindowsAutomationEvent::SuspendResume {
+            if event == WindowsAutomationEvent::SuspendResume
+                || (session && event == WindowsAutomationEvent::SessionChanged)
+            {
                 callback(event);
             }
         })
@@ -196,7 +200,7 @@ fn event_thread(
     let mut session_notifications_registered = false;
     if !window.is_null() {
         power_notifications = register_power_notifications(window, full);
-        if full {
+        if session {
             // SAFETY: window is the live hidden event window owned by this thread.
             session_notifications_registered =
                 unsafe { WTSRegisterSessionNotification(window, NOTIFY_FOR_THIS_SESSION) } != 0;
@@ -204,7 +208,7 @@ fn event_thread(
     }
 
     if !event_sources_ready(
-        full,
+        mode,
         window,
         foreground_hook,
         window_hook,
@@ -251,7 +255,7 @@ fn event_thread(
 }
 
 fn event_sources_ready(
-    full: bool,
+    mode: WindowsEventWatcherMode,
     window: HWND,
     foreground_hook: HWINEVENTHOOK,
     window_hook: HWINEVENTHOOK,
@@ -260,11 +264,11 @@ fn event_sources_ready(
 ) -> bool {
     !window.is_null()
         && power_notifications.suspend_resume != 0
-        && (!full
+        && (mode == WindowsEventWatcherMode::SuspendResumeOnly || session_notifications_registered)
+        && (mode != WindowsEventWatcherMode::Full
             || (!foreground_hook.is_null()
                 && !window_hook.is_null()
-                && power_notifications.settings_complete
-                && session_notifications_registered))
+                && power_notifications.settings_complete))
 }
 
 fn cleanup_event_sources(
@@ -576,7 +580,7 @@ mod tests {
         };
 
         assert!(event_sources_ready(
-            true,
+            WindowsEventWatcherMode::Full,
             handle,
             handle,
             handle,
@@ -584,7 +588,7 @@ mod tests {
             true,
         ));
         assert!(!event_sources_ready(
-            true,
+            WindowsEventWatcherMode::Full,
             std::ptr::null_mut(),
             handle,
             handle,
@@ -597,7 +601,7 @@ mod tests {
             ..complete_power
         };
         assert!(!event_sources_ready(
-            true,
+            WindowsEventWatcherMode::Full,
             handle,
             handle,
             handle,
@@ -607,7 +611,23 @@ mod tests {
 
         let no_hook = std::ptr::null_mut();
         assert!(event_sources_ready(
+            WindowsEventWatcherMode::SuspendResumeAndSession,
+            handle,
+            no_hook,
+            no_hook,
+            &incomplete_power,
+            true,
+        ));
+        assert!(!event_sources_ready(
+            WindowsEventWatcherMode::SuspendResumeAndSession,
+            handle,
+            no_hook,
+            no_hook,
+            &incomplete_power,
             false,
+        ));
+        assert!(event_sources_ready(
+            WindowsEventWatcherMode::SuspendResumeOnly,
             handle,
             no_hook,
             no_hook,
@@ -619,7 +639,7 @@ mod tests {
             ..incomplete_power
         };
         assert!(!event_sources_ready(
-            false,
+            WindowsEventWatcherMode::SuspendResumeOnly,
             handle,
             no_hook,
             no_hook,

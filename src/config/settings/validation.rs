@@ -17,6 +17,8 @@ impl Settings {
         self.validate_instance_balancing()?;
         self.validate_dynamic_resource_zones()?;
         self.validate_by_cpu_load_rules()?;
+        self.app_suspension.validate()?;
+        self.sleep_prevention.validate()?;
         for profile in self.profiles() {
             let processor_power = &profile.adaptive_engine;
             if processor_power.restraint_core_parking_min > 100
@@ -55,8 +57,6 @@ impl Settings {
                     ));
                 }
             }
-            profile.app_suspension.validate()?;
-            profile.sleep_prevention.validate()?;
             for rule in &profile.cpu_limiter.rules {
                 if let Some(limit) = &rule.affinity_limit {
                     if !std::path::Path::new(&rule.executable_path).is_absolute()
@@ -122,24 +122,15 @@ impl Settings {
     }
 
     pub fn validate_resource_thresholds(&self) -> Result<(), String> {
-        for profile in self.profiles() {
-            profile.resource_thresholds.validate()?;
-        }
-        Ok(())
+        self.resource_thresholds.validate()
     }
 
     pub fn validate_keep_running(&self) -> Result<(), String> {
-        for profile in self.profiles() {
-            profile.keep_running.validate()?;
-        }
-        Ok(())
+        self.keep_running.validate()
     }
 
     pub fn validate_instance_limits(&self) -> Result<(), String> {
-        for profile in self.profiles() {
-            profile.instance_limits.validate()?;
-        }
-        Ok(())
+        self.instance_limits.validate()
     }
 
     pub fn validate_instance_balancing(&self) -> Result<(), String> {

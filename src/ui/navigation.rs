@@ -655,9 +655,10 @@ pub(super) fn dashboard_page_search_text(page: Page) -> String {
             t!("app_suspension.suspendable_help"),
         ),
         Page::SleepPrevention => format!(
-            "{label} {section} {} {} sleep prevention awake system idle display monitor running app power request",
+            "{label} {section} {} {} {} sleep prevention awake system idle display monitor running app power request",
             t!("sleep_prevention.enable_help"),
-            t!("sleep_prevention.keep_display_on"),
+            t!("sleep_prevention.temporary_keep_awake"),
+            t!("sleep_prevention.temporary_keep_display_on"),
         ),
         Page::ByRunningApp => format!(
             "{label} {section} {} {} running app performance mode power plan process game gaming active restore",
@@ -695,7 +696,7 @@ pub(super) fn dashboard_page_search_text(page: Page) -> String {
             t!("instance_balancing.enable_help"),
         ),
         Page::KeepRunning => format!(
-            "{label} {section} {} keep running relaunch restart app process exit arguments working directory retry resume",
+            "{label} {section} {} keep running relaunch restart app process exit arguments retry resume",
             t!("keep_running.enable_help"),
         ),
         Page::MemoryTrim => format!(

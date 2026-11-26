@@ -4,32 +4,6 @@ use crate::{config::InstanceLimitsSettings, control::instance_limits::CountObser
 
 pub(crate) const MAX_SAMPLE_AGE: Duration = Duration::from_secs(3);
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) struct InstanceLimitsSnapshot {
-    pub(crate) enabled: bool,
-    pub(crate) rules: Vec<InstanceLimitsRuleSnapshot>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct InstanceLimitsRuleSnapshot {
-    pub(crate) executable_path: String,
-    pub(crate) max_instances: u32,
-    pub(crate) enabled: bool,
-    pub(crate) count: CountObservation,
-    pub(crate) sampled_at: Option<Instant>,
-    pub(crate) incident: bool,
-    pub(crate) notification: NotificationStatus,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) enum NotificationStatus {
-    #[default]
-    NotAttempted,
-    Pending,
-    Accepted,
-    Failed(String),
-}
-
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum InstanceLimitsEvent {
     Excess(usize),
@@ -38,32 +12,15 @@ pub(crate) enum InstanceLimitsEvent {
     Error(usize, String),
 }
 
+#[derive(Default)]
 struct RuleState {
-    count: CountObservation,
     sampled_at: Option<Instant>,
     excess_since: Option<Instant>,
     notification_since: Option<Instant>,
     recovery_since: Option<Instant>,
     incident: bool,
-    notification: NotificationStatus,
+    notification_attempted: bool,
     last_error: Option<String>,
-}
-
-impl Default for RuleState {
-    fn default() -> Self {
-        Self {
-            count: CountObservation::Unavailable {
-                reason: "Waiting for a fresh process count.".into(),
-            },
-            sampled_at: None,
-            excess_since: None,
-            notification_since: None,
-            recovery_since: None,
-            incident: false,
-            notification: NotificationStatus::NotAttempted,
-            last_error: None,
-        }
-    }
 }
 
 #[derive(Default)]
@@ -113,7 +70,7 @@ impl InstanceLimitsManager {
 
     pub(crate) fn requalify_notifications(&mut self) {
         for state in &mut self.rules {
-            if state.notification == NotificationStatus::NotAttempted {
+            if !state.notification_attempted {
                 state.excess_since = None;
                 state.notification_since = None;
             }
@@ -128,11 +85,8 @@ impl InstanceLimitsManager {
         }
     }
 
-    pub(crate) fn invalidate(&mut self, reason: &str) {
+    pub(crate) fn invalidate(&mut self) {
         for state in &mut self.rules {
-            state.count = CountObservation::Unavailable {
-                reason: reason.into(),
-            };
             state.sampled_at = None;
             state.excess_since = None;
             state.notification_since = None;
@@ -209,7 +163,6 @@ impl InstanceLimitsManager {
             };
             let complete_within_limit =
                 matches!(count, CountObservation::Complete(n) if n <= rule.max_instances);
-            state.count = count;
             if fresh {
                 state.sampled_at = Some(now);
             }
@@ -221,11 +174,11 @@ impl InstanceLimitsManager {
                 }
                 if self.settings.notify
                     && rule.notify
-                    && state.notification == NotificationStatus::NotAttempted
+                    && !state.notification_attempted
                     && qualifying_sample(&mut state.notification_since, now)
                     && state.incident
                 {
-                    state.notification = NotificationStatus::Pending;
+                    state.notification_attempted = true;
                     events.push(InstanceLimitsEvent::Notify(index));
                 }
             } else {
@@ -234,7 +187,7 @@ impl InstanceLimitsManager {
                 if complete_within_limit && state.incident {
                     if qualifying_sample(&mut state.recovery_since, now) {
                         state.incident = false;
-                        state.notification = NotificationStatus::NotAttempted;
+                        state.notification_attempted = false;
                         state.recovery_since = None;
                         events.push(InstanceLimitsEvent::Recovered(index));
                     }
@@ -244,46 +197,6 @@ impl InstanceLimitsManager {
             }
         }
         events
-    }
-
-    pub(crate) fn notification_result(
-        &mut self,
-        index: usize,
-        result: Result<(), String>,
-    ) -> Result<(), String> {
-        let state = self
-            .rules
-            .get_mut(index)
-            .ok_or("Instance Limits notification refers to a missing rule.")?;
-        if state.notification != NotificationStatus::Pending {
-            return Err("Instance Limits notification has no pending attempt.".into());
-        }
-        state.notification = match result {
-            Ok(()) => NotificationStatus::Accepted,
-            Err(error) => NotificationStatus::Failed(error),
-        };
-        Ok(())
-    }
-
-    pub(crate) fn snapshot(&self) -> InstanceLimitsSnapshot {
-        InstanceLimitsSnapshot {
-            enabled: self.enabled,
-            rules: self
-                .settings
-                .rules
-                .iter()
-                .zip(&self.rules)
-                .map(|(rule, state)| InstanceLimitsRuleSnapshot {
-                    executable_path: rule.executable_path.clone(),
-                    max_instances: rule.max_instances,
-                    enabled: rule.enabled,
-                    count: state.count.clone(),
-                    sampled_at: state.sampled_at,
-                    incident: state.incident,
-                    notification: state.notification.clone(),
-                })
-                .collect(),
-        }
     }
 }
 

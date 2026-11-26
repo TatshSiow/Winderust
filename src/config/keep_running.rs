@@ -16,21 +16,15 @@ pub struct KeepRunningRule {
     pub executable_path: String,
     #[serde(default)]
     pub arguments: String,
-    pub working_directory: String,
 }
 
 impl KeepRunningRule {
     pub fn new(executable_path: String) -> Self {
-        let working_directory = Path::new(&executable_path)
-            .parent()
-            .map(|path| path.to_string_lossy().into_owned())
-            .unwrap_or_default();
         Self {
             enabled: true,
             notify: false,
             executable_path,
             arguments: String::new(),
-            working_directory,
         }
     }
 
@@ -39,22 +33,16 @@ impl KeepRunningRule {
     }
 
     pub(crate) fn same_launch_command(&self, other: &Self) -> bool {
-        self.executable_path == other.executable_path
-            && self.arguments == other.arguments
-            && self.working_directory == other.working_directory
+        self.executable_path == other.executable_path && self.arguments == other.arguments
     }
 
     pub fn validate(&self) -> Result<(), String> {
-        if [&self.executable_path, &self.working_directory]
-            .iter()
-            .any(|value| {
-                !Path::new(value).is_absolute()
-                    || value.contains(['\0', '"'])
-                    || value.trim() != value.as_str()
-            })
+        if !Path::new(&self.executable_path).is_absolute()
+            || self.executable_path.contains(['\0', '"'])
+            || self.executable_path.trim() != self.executable_path
             || self.arguments.contains('\0')
         {
-            return Err("Keep Running requires absolute executable and working-directory paths without quotes or NUL characters, and arguments without NUL characters.".into());
+            return Err("Keep Running requires an absolute executable path without quotes or NUL characters, and arguments without NUL characters.".into());
         }
         // Quoted executable, optional separating space, literal argument tail, and terminating NUL.
         let command_line_units = self.executable_path.encode_utf16().count()
@@ -94,7 +82,6 @@ mod tests {
     #[test]
     fn launch_fields_round_trip_and_reject_invalid_paths_and_duplicate_rules() {
         let mut rule = KeepRunningRule::new(r"C:\Apps\app.exe".into());
-        assert_eq!(rule.working_directory, r"C:\Apps");
         rule.arguments = r#"--document "C:\Documents\example.txt""#.into();
         assert!(rule.validate().is_ok());
         let settings = KeepRunningSettings {
@@ -105,9 +92,14 @@ mod tests {
             toml::from_str::<KeepRunningSettings>(&toml::to_string(&settings).unwrap()).unwrap(),
             settings
         );
-        for invalid in ["relative", "C:\\Apps\0", "C:\\Apps\"", " C:\\Apps"] {
+        for invalid in [
+            "relative.exe",
+            "C:\\Apps\\app.exe\0",
+            "C:\\Apps\\app.exe\"",
+            " C:\\Apps\\app.exe",
+        ] {
             let mut invalid_rule = rule.clone();
-            invalid_rule.working_directory = invalid.into();
+            invalid_rule.executable_path = invalid.into();
             assert!(invalid_rule.validate().is_err());
         }
         let mut duplicate = rule.clone();

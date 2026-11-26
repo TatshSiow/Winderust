@@ -192,39 +192,33 @@ fn file_identity(path: &Path) -> Result<ExecutableIdentity> {
 pub(crate) struct LaunchSpec {
     executable: PathBuf,
     arguments: String,
-    directory: PathBuf,
     executable_identity: ExecutableIdentity,
 }
 
 impl LaunchSpec {
-    pub(crate) fn new(executable: &Path, arguments: &str, directory: &Path) -> Result<Self> {
-        if !executable.is_absolute() || !directory.is_absolute() || arguments.contains('\0') {
+    pub(crate) fn new(executable: &Path, arguments: &str) -> Result<Self> {
+        if !executable.is_absolute() || arguments.contains('\0') {
             return Err(KeepRunningError::Unsupported(
-                "Keep Running requires absolute executable and working-directory paths without NUL characters.",
+                "Keep Running requires an absolute executable path and arguments without NUL characters.",
             ));
         }
         let executable = executable.canonicalize().map_err(|_| {
             KeepRunningError::Unsupported("The executable path could not be resolved.")
         })?;
-        let directory = directory.canonicalize().map_err(|_| {
-            KeepRunningError::Unsupported("The working directory could not be resolved.")
-        })?;
         if !executable.is_file()
-            || !directory.is_dir()
             || executable
                 .extension()
                 .and_then(|ext| ext.to_str())
                 .is_none_or(|ext| !ext.eq_ignore_ascii_case("exe"))
         {
             return Err(KeepRunningError::Unsupported(
-                "Keep Running requires an executable file and an existing working directory.",
+                "Keep Running requires an executable file.",
             ));
         }
         let executable_identity = file_identity(&executable)?;
         let spec = Self {
             executable,
             arguments: arguments.to_owned(),
-            directory,
             executable_identity,
         };
         spec.command_line()?;
@@ -1248,6 +1242,12 @@ pub(crate) fn prepare(
     expected_binding: &str,
 ) -> std::result::Result<Box<PreparedLaunch>, PrepareFailure> {
     let executable_identity = spec.identity()?;
+    let directory = spec
+        .executable
+        .parent()
+        .ok_or(KeepRunningError::Unsupported(
+            "The executable directory could not be resolved.",
+        ))?;
     let context = DesktopContext::capture()?;
     if context.binding_key() != expected_binding {
         return Err(KeepRunningError::Unsupported(
@@ -1315,7 +1315,7 @@ pub(crate) fn prepare(
     )?;
     let environment = Environment(environment);
     let executable = wide(&spec.executable);
-    let directory = wide(&spec.directory);
+    let directory = wide(directory);
     let mut desktop: Vec<u16> = context.desktop.encode_utf16().chain(Some(0)).collect();
     let mut command = spec.command_line()?;
     let mut startup = STARTUPINFOEXW::default();
@@ -1555,8 +1555,7 @@ mod tests {
         use crate::platform::windows::process::{open, ProcessAccess};
 
         let executable = std::env::current_exe().expect("test executable path");
-        let directory = executable.parent().expect("test executable directory");
-        let mut spec = LaunchSpec::new(&executable, "", directory).expect("test launch spec");
+        let mut spec = LaunchSpec::new(&executable, "").expect("test launch spec");
         let pid = std::process::id();
         let process = open(pid, ProcessAccess::Observation).expect("open the test process");
         let creation_time = process
@@ -1586,6 +1585,9 @@ mod tests {
     #[test]
     #[ignore = "Disposable subprocess fixture, invoked only by the native lifecycle test."]
     fn disposable_child() {
+        let executable = std::env::current_exe().unwrap().canonicalize().unwrap();
+        let directory = std::env::current_dir().unwrap().canonicalize().unwrap();
+        assert_eq!(Some(directory.as_path()), executable.parent());
         fs::write(marker(std::process::id()), b"started").unwrap();
         thread::sleep(Duration::from_millis(1500));
     }
@@ -1608,7 +1610,7 @@ mod tests {
             "--exact {}::disposable_child --ignored --nocapture",
             module_path!().split_once("::").unwrap().1
         );
-        let spec = LaunchSpec::new(&executable, &fixture, executable.parent().unwrap()).unwrap();
+        let spec = LaunchSpec::new(&executable, &fixture).unwrap();
         let mut canceled = prepare(&spec, context.binding_key())
             .unwrap_or_else(|failure| panic!("prepare cancellation: {}", failure.error));
         let canceled_marker = Marker(marker(canceled.identity().unwrap().id));

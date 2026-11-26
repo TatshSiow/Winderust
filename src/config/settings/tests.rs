@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn sleep_prevention_is_opt_in_and_round_trips_independent_power_profiles() {
+fn sleep_prevention_is_opt_in_and_round_trips_shared_policy() {
     let mut settings = Settings::default();
     assert!(!settings.sleep_prevention.enabled);
     assert!(settings.sleep_prevention.rules.is_empty());
@@ -13,7 +13,11 @@ fn sleep_prevention_is_opt_in_and_round_trips_independent_power_profiles() {
         executable_path: r"C:\Apps\worker.exe".into(),
         keep_display_on: true,
     });
-    assert!(!settings.battery_profile().sleep_prevention.enabled);
+    settings.sync_shared_settings_to_battery();
+    assert_eq!(
+        settings.battery_profile().sleep_prevention,
+        settings.sleep_prevention
+    );
     assert!(settings
         .sleep_prevention
         .contains_rule_for(r"c:/apps/WORKER.exe"));
@@ -29,7 +33,7 @@ fn sleep_prevention_is_opt_in_and_round_trips_independent_power_profiles() {
 }
 
 #[test]
-fn sleep_prevention_rejects_unqualified_paths_in_both_power_profiles() {
+fn sleep_prevention_validates_paths_in_the_shared_policy() {
     for battery in [false, true] {
         for path in ["", "worker.exe", r"C:\Apps\worker.exe\0"] {
             let path = path.replace("\\0", "\0");
@@ -44,12 +48,35 @@ fn sleep_prevention_rejects_unqualified_paths_in_both_power_profiles() {
                 executable_path: path,
                 keep_display_on: false,
             });
-            assert!(settings
-                .validate()
-                .unwrap_err()
-                .contains("Sleep Prevention"));
+            let result = settings.validate();
+            if battery {
+                assert!(result.is_ok());
+            } else {
+                assert!(result.unwrap_err().contains("Sleep Prevention"));
+            }
         }
     }
+}
+
+#[test]
+fn keep_running_and_resource_thresholds_validate_shared_settings() {
+    use crate::config::KeepRunningRule;
+
+    let mut settings = Settings::default();
+    let battery = settings.battery_profile_mut();
+    battery.resource_thresholds.sustained_seconds = 0;
+    battery
+        .keep_running
+        .rules
+        .push(KeepRunningRule::new("relative.exe".into()));
+
+    assert!(settings.validate().is_ok());
+
+    let battery = settings.on_battery.take().unwrap();
+    settings.resource_thresholds = battery.resource_thresholds;
+    settings.keep_running = battery.keep_running;
+    assert!(settings.validate_resource_thresholds().is_err());
+    assert!(settings.validate_keep_running().is_err());
 }
 
 #[test]

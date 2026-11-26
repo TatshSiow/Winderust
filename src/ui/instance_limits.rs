@@ -1,10 +1,7 @@
 use super::{app_picker, design, widgets};
 use crate::{
     config::{InstanceLimitsRule, InstanceLimitsSettings},
-    control::instance_limits::{paths_equal, validate_path, CountObservation},
-    features::watchdog::instance_limits::{
-        InstanceLimitsRuleSnapshot, InstanceLimitsSnapshot, NotificationStatus, MAX_SAMPLE_AGE,
-    },
+    control::instance_limits::{paths_equal, validate_path},
 };
 use iced::{
     widget::{column, text},
@@ -116,7 +113,6 @@ impl Editor {
     pub(super) fn view<'a>(
         &'a self,
         settings: &'a InstanceLimitsSettings,
-        status: &'a InstanceLimitsSnapshot,
         candidates: &'a [app_picker::Candidate],
     ) -> Element<'a, Message> {
         let rules = settings
@@ -124,116 +120,25 @@ impl Editor {
             .iter()
             .enumerate()
             .map(|(index, rule)| {
-                // An unsaved rule must never inherit counts or incidents from a different maximum.
-                let runtime = rule_status(status, rule);
-                let label = if !settings.enabled || !status.enabled || !rule.enabled {
-                    t!("common.off").to_string()
-                } else {
-                    count_label(
-                        runtime
-                            .filter(|entry| sample_fresh(entry.sampled_at))
-                            .map(|entry| &entry.count),
-                        rule.max_instances,
-                    )
-                };
-                let header = widgets::process_rule_header_with_notify(
-                    &rule.executable_path,
-                    candidates,
-                    widgets::checkbox(rule.enabled)
-                        .on_toggle(move |value| Message::RuleEnabled(index, value))
-                        .into(),
-                    widgets::rule_notify_checkbox(rule.notify, move |value| {
-                        Message::RuleNotify(index, value)
-                    }),
-                    Some(
-                        text(label)
-                            .size(design::typography::SECONDARY)
-                            .style(
-                                if settings.enabled
-                                    && status.enabled
-                                    && rule.enabled
-                                    && runtime.is_some_and(|entry| {
-                                        sample_fresh(entry.sampled_at)
-                                            && exceeds(&entry.count, rule.max_instances)
-                                    })
-                                {
-                                    text::danger
-                                } else {
-                                    text::default
-                                },
-                            )
-                            .into(),
-                    ),
-                    Vec::new(),
-                    widgets::rule_actions(Some(Message::Edit(index)), Some(Message::Remove(index))),
-                );
-                let mut details = column![text(
-                    t!(
-                        "instance_limits.maximum_value",
-                        maximum = rule.max_instances
-                    )
-                    .to_string()
-                )
-                .size(design::typography::SECONDARY)]
-                .spacing(design::space::SMALL);
-                if settings.enabled && status.enabled && rule.enabled {
-                    if let Some(runtime) = runtime {
-                        if let Some(reason) = count_reason(&runtime.count) {
-                            details =
-                                details.push(text(reason).size(design::typography::SECONDARY));
-                        }
-                        if runtime.incident {
-                            details = details.push(
-                                text(t!("instance_limits.incident").to_string())
-                                    .style(text::danger),
-                            );
-                        }
-                        let notification = match &runtime.notification {
-                            NotificationStatus::NotAttempted => None,
-                            NotificationStatus::Pending => {
-                                Some(t!("instance_limits.notification_pending").to_string())
-                            }
-                            NotificationStatus::Accepted => {
-                                Some(t!("instance_limits.notification_accepted").to_string())
-                            }
-                            NotificationStatus::Failed(error) => Some(
-                                t!("instance_limits.notification_failed", error = error)
-                                    .to_string(),
-                            ),
-                        };
-                        if let Some(notification) = notification {
-                            details = details
-                                .push(text(notification).size(design::typography::SECONDARY));
-                        }
-                        if let Some(sampled_at) = runtime.sampled_at {
-                            let seconds = sampled_at.elapsed().as_secs();
-                            details = details.push(
-                                text(
-                                    t!(
-                                        if sample_fresh(Some(sampled_at)) {
-                                            "instance_limits.sample_age"
-                                        } else {
-                                            "instance_limits.stale_sample"
-                                        },
-                                        seconds = seconds
-                                    )
-                                    .to_string(),
-                                )
-                                .size(design::typography::SECONDARY),
-                            );
-                        }
-                    }
-                }
                 (
                     widgets::stable_key(&rule.executable_path),
                     column![
-                        header,
-                        iced::widget::container(details).padding(iced::Padding {
-                            top: 0.0,
-                            right: widgets::CARD_PADDING as f32,
-                            bottom: widgets::CARD_PADDING as f32,
-                            left: widgets::CARD_PADDING as f32
-                        }),
+                        widgets::process_rule_header_with_notify(
+                            &rule.executable_path,
+                            candidates,
+                            widgets::checkbox(rule.enabled)
+                                .on_toggle(move |value| Message::RuleEnabled(index, value))
+                                .into(),
+                            widgets::rule_notify_checkbox(rule.notify, move |value| {
+                                Message::RuleNotify(index, value)
+                            }),
+                            None,
+                            vec![text(rule.max_instances.to_string()).into()],
+                            widgets::rule_actions(
+                                Some(Message::Edit(index)),
+                                Some(Message::Remove(index)),
+                            ),
+                        ),
                         widgets::settings_divider(),
                     ]
                     .into(),
@@ -278,7 +183,11 @@ impl Editor {
                     )],
                 ),
                 widgets::settings_card(picker),
-                widgets::process_rules_table_with_notify([], rules, true),
+                widgets::process_rules_table_with_notify(
+                    [t!("instance_limits.maximum").into_owned()],
+                    rules,
+                    false,
+                ),
             ]
             .spacing(widgets::CARD_GAP),
         )
@@ -329,99 +238,9 @@ impl Editor {
     }
 }
 
-pub(super) fn rule_status<'a>(
-    status: &'a InstanceLimitsSnapshot,
-    rule: &InstanceLimitsRule,
-) -> Option<&'a InstanceLimitsRuleSnapshot> {
-    status.rules.iter().find(|entry| {
-        entry.executable_path == rule.executable_path
-            && entry.max_instances == rule.max_instances
-            && entry.enabled == rule.enabled
-    })
-}
-
-fn count_label(count: Option<&CountObservation>, maximum: u32) -> String {
-    match count {
-        Some(CountObservation::Complete(count)) => format!("{count} / {maximum}"),
-        Some(CountObservation::Incomplete {
-            known_lower_bound: 0,
-            ..
-        }) => t!("instance_limits.incomplete").to_string(),
-        Some(CountObservation::Incomplete {
-            known_lower_bound, ..
-        }) => t!(
-            "instance_limits.at_least",
-            count = known_lower_bound,
-            maximum = maximum
-        )
-        .to_string(),
-        Some(CountObservation::Conflict) => t!("instance_limits.conflict").to_string(),
-        Some(CountObservation::Unavailable { .. }) | None => {
-            t!("instance_limits.unknown").to_string()
-        }
-    }
-}
-
-fn count_reason(count: &CountObservation) -> Option<&str> {
-    match count {
-        CountObservation::Incomplete { reason, .. } | CountObservation::Unavailable { reason } => {
-            Some(reason)
-        }
-        _ => None,
-    }
-}
-
-pub(super) fn sample_fresh(sampled_at: Option<std::time::Instant>) -> bool {
-    sampled_at.is_some_and(|sampled_at| sampled_at.elapsed() <= MAX_SAMPLE_AGE)
-}
-
-fn exceeds(count: &CountObservation, maximum: u32) -> bool {
-    match count {
-        CountObservation::Complete(count)
-        | CountObservation::Incomplete {
-            known_lower_bound: count,
-            ..
-        } => *count > maximum,
-        _ => false,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn uncertain_counts_never_appear_as_complete_zero() {
-        assert!(!sample_fresh(None));
-        assert!(sample_fresh(Some(std::time::Instant::now())));
-        assert!(!sample_fresh(Some(
-            std::time::Instant::now() - std::time::Duration::from_secs(4)
-        )));
-        let incomplete = CountObservation::Incomplete {
-            known_lower_bound: 0,
-            reason: "Access denied".into(),
-        };
-        assert_eq!(
-            count_label(Some(&CountObservation::Complete(0)), 1),
-            "0 / 1"
-        );
-        assert_ne!(count_label(Some(&incomplete), 1), "0 / 1");
-        assert_eq!(count_reason(&incomplete), Some("Access denied"));
-        assert!(!exceeds(&incomplete, 1));
-        assert!(exceeds(
-            &CountObservation::Incomplete {
-                known_lower_bound: 2,
-                reason: "Access denied".into(),
-            },
-            1
-        ));
-        assert!(!exceeds(
-            &CountObservation::Unavailable {
-                reason: "No catalog".into()
-            },
-            1
-        ));
-    }
 
     #[test]
     fn invalid_maximum_stays_in_draft_and_cancel_preserves_saved_rule() {

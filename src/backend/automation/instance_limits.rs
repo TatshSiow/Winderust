@@ -2,7 +2,6 @@ use super::*;
 use crate::{
     action_log::{ActionLogFeature, ActionLogResult},
     control::instance_limits::{self, CountObservation},
-    features::watchdog::instance_limits::InstanceLimitsRuleSnapshot,
 };
 use rust_i18n::t;
 
@@ -14,10 +13,7 @@ pub(super) struct PendingResets {
     pub(super) paths: Vec<String>,
 }
 
-pub(super) fn record_settings_changes(
-    state: &mut AutomationWorkerState,
-    settings: &Settings,
-) -> bool {
+pub(super) fn record_settings_changes(state: &mut AutomationWorkerState, settings: &Settings) {
     let previous = &state.settings;
     let pending = &mut state.pending_instance_limits_resets;
     pending.all |= previous.general.enabled != settings.general.enabled
@@ -63,45 +59,6 @@ pub(super) fn record_settings_changes(
             }
         }
     }
-
-    let affected = |rule: &InstanceLimitsRuleSnapshot| {
-        pending.all || pending.paths.contains(&rule.executable_path)
-    };
-    if !state
-        .status
-        .feature_status
-        .instance_limits
-        .rules
-        .iter()
-        .any(affected)
-    {
-        return false;
-    }
-    Arc::make_mut(&mut state.status.feature_status)
-        .instance_limits
-        .rules
-        .retain(|rule| !affected(rule));
-    true
-}
-
-pub(super) fn publish_status(
-    shared: &SharedAutomationState,
-    settings: &Arc<Settings>,
-    watcher_active: bool,
-    status: InstanceLimitsSnapshot,
-) {
-    let mut state = lock_unpoisoned(&shared.state);
-    let current = if status.enabled {
-        sample_is_current(&state, settings, watcher_active)
-    } else {
-        // Disabling clears observations before snapshotting. The watcher can stop independently.
-        !state.stop_requested && Arc::ptr_eq(&state.settings, settings)
-    };
-    if !current || state.status.feature_status.instance_limits == status {
-        return;
-    }
-    Arc::make_mut(&mut state.status.feature_status).instance_limits = status;
-    bump_status_generation(shared, &mut state);
 }
 
 impl RuntimeCore {
@@ -110,14 +67,13 @@ impl RuntimeCore {
         shared: &SharedAutomationState,
         settings: &Arc<Settings>,
         watcher_active: bool,
-    ) -> InstanceLimitsSnapshot {
+    ) {
         if !instance_limits_required(settings) {
-            return self.instance_limits.snapshot();
+            return;
         }
         if !watcher_active {
-            self.instance_limits
-                .invalidate(&t!("instance_limits.waiting_context"));
-            return self.instance_limits.snapshot();
+            self.instance_limits.invalidate();
+            return;
         }
         let mut counts = vec![
             CountObservation::Unavailable {
@@ -152,8 +108,7 @@ impl RuntimeCore {
             if sample_is_current(&state, settings, watcher_active) {
                 self.instance_limits.observe(&counts, Instant::now())
             } else {
-                self.instance_limits
-                    .invalidate(&t!("instance_limits.discarded_sample"));
+                self.instance_limits.invalidate();
                 Vec::new()
             }
         };
@@ -205,7 +160,7 @@ impl RuntimeCore {
                         false,
                     )
                     .map_err(tray::NotificationError::localized);
-                    let report = match &result {
+                    match result {
                         Ok(()) => (
                             ActionLogResult::Applied,
                             t!("instance_limits.notification_accepted").to_string(),
@@ -214,11 +169,7 @@ impl RuntimeCore {
                             ActionLogResult::Failed,
                             t!("instance_limits.notification_failed", error = error).to_string(),
                         ),
-                    };
-                    if let Err(error) = self.instance_limits.notification_result(index, result) {
-                        update_worker_error(shared, Some(error));
                     }
-                    report
                 }
             };
             self.action_log.record(
@@ -229,7 +180,6 @@ impl RuntimeCore {
                 reason,
             );
         }
-        self.instance_limits.snapshot()
     }
 }
 
@@ -299,7 +249,7 @@ mod tests {
     }
 
     #[test]
-    fn watcher_outage_clears_sample_age() {
+    fn watcher_outage_restarts_excess_qualification() {
         let runtime = runtime();
         let settings = {
             let mut state = lock_unpoisoned(&runtime.shared.state);
@@ -308,6 +258,7 @@ mod tests {
             let mut settings = (*state.settings).clone();
             settings.general.enabled = true;
             settings.instance_limits.enabled = true;
+            settings.instance_limits.notify = false;
             settings
                 .instance_limits
                 .rules
@@ -319,16 +270,19 @@ mod tests {
         };
         let mut runner = RuntimeCore::default();
         runner.instance_limits.sync(&settings.instance_limits, true);
-        runner
+        let start = Instant::now();
+        let excess = [CountObservation::Complete(2)];
+        assert!(runner.instance_limits.observe(&excess, start).is_empty());
+        runner.run_instance_limits_update(&runtime.shared, &settings, false);
+        assert!(runner
             .instance_limits
-            .observe(&[CountObservation::Complete(1)], Instant::now());
-        let paused = runner.run_instance_limits_update(&runtime.shared, &settings, false);
-        assert_eq!(paused.rules[0].sampled_at, None);
+            .observe(&excess, start + Duration::from_secs(1))
+            .is_empty());
         assert_eq!(
-            paused.rules[0].count,
-            CountObservation::Unavailable {
-                reason: t!("instance_limits.waiting_context").to_string(),
-            }
+            runner
+                .instance_limits
+                .observe(&excess, start + Duration::from_secs(2)),
+            [InstanceLimitsEvent::Excess(0)]
         );
     }
 

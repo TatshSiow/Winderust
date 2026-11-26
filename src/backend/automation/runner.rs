@@ -44,19 +44,7 @@ fn app_suspension_lock_failure(error: String) -> AppSuspensionSnapshot {
 pub(super) fn app_suspension_release_status(
     mut status: AppSuspensionSnapshot,
     settings: &Settings,
-    waits_for_source: bool,
 ) -> AppSuspensionSnapshot {
-    if waits_for_source {
-        if !matches!(status.status, AppSuspensionStatus::Error(_)) {
-            status.status = if status.unsupported {
-                AppSuspensionStatus::Unsupported
-            } else {
-                AppSuspensionStatus::PowerSourceUnknown
-            };
-        }
-        status.status_unknown = true;
-        return status;
-    }
     status.status = if !settings.general.enabled {
         AppSuspensionStatus::AutomationDisabled
     } else if !settings.app_suspension.enabled {
@@ -209,7 +197,7 @@ pub(super) struct RuntimeCore {
 pub(super) struct ProcessControlCommandStatuses {
     pub(super) memory_trim: Option<MemoryTrimSnapshot>,
     pub(super) app_suspension: Option<AppSuspensionSnapshot>,
-    pub(super) keep_awake: Vec<KeepAwakeCommand>,
+    pub(super) temporary_sleep_prevention: Vec<TemporarySleepPreventionCommand>,
 }
 
 const RESOURCE_THRESHOLDS_RESTART_COOLDOWN: Duration = Duration::from_secs(60);
@@ -230,21 +218,6 @@ struct ResourceThresholdsActionCycle {
         Vec<(u32, u64)>,
         Result<ResourceThresholdsRestartOutcome, String>,
     >,
-}
-
-fn resource_thresholds_trim_excluded(
-    settings: &Settings,
-    plugged_in: Option<bool>,
-    path: &str,
-) -> bool {
-    active_power_source_settings(settings, plugged_in)
-        .memory_trim
-        .exclusion_enabled_for(path)
-        || (plugged_in.is_none()
-            && settings
-                .battery_profile()
-                .memory_trim
-                .exclusion_enabled_for(path))
 }
 
 impl ResourceThresholdsActionCycle {
@@ -580,9 +553,9 @@ impl RuntimeCore {
             ));
         };
         let path = &first.executable_path;
-        let excluded = path.to_str().is_some_and(|path| {
-            resource_thresholds_trim_excluded(settings, power_source::is_plugged_in(), path)
-        });
+        let excluded = path
+            .to_str()
+            .is_some_and(|path| settings.memory_trim.exclusion_enabled_for(path));
         if excluded {
             return Ok((
                 ActionLogResult::Skipped,
@@ -713,7 +686,7 @@ impl RuntimeCore {
         collect_restore_error(
             &mut errors,
             "App Suspension",
-            self.run_app_suspension_update(&settings, false, &[], &mut observations)
+            self.run_app_suspension_update(&settings, &[], &mut observations)
                 .last_error,
         );
         let suspension = Arc::clone(&self.app_suspension_controller);
@@ -775,11 +748,7 @@ impl RuntimeCore {
         }
     }
 
-    pub(super) fn replay_sleep_prevention_settings(
-        &mut self,
-        snapshot: &AutomationSnapshot,
-        plugged_in: Option<bool>,
-    ) {
+    pub(super) fn replay_sleep_prevention_settings(&mut self, snapshot: &AutomationSnapshot) {
         let events = snapshot.wake_events;
         let Some(previous) = &self.last_settings else {
             return;
@@ -787,12 +756,8 @@ impl RuntimeCore {
         if snapshot.sleep_prevention_settings.is_empty()
             || !snapshot.windows_event_watcher_active
             || events.windows_event_watcher_change.is_some()
-            || events.power_changed
             || events.suspend_resume
             || events.session_changed
-            || plugged_in.is_none()
-            || previous.plugged_in != plugged_in
-            || self.sleep_prevention_power_source() != plugged_in
         {
             return;
         }
@@ -804,7 +769,6 @@ impl RuntimeCore {
             .all(|settings| {
                 windows_event_watcher_required(settings)
                     && [
-                        WindowsAutomationEvent::PowerChanged,
                         WindowsAutomationEvent::SuspendResume,
                         WindowsAutomationEvent::SessionChanged,
                     ]
@@ -813,8 +777,7 @@ impl RuntimeCore {
             });
         if covered {
             for settings in &snapshot.sleep_prevention_settings {
-                self.sleep_prevention_manager
-                    .note_configuration(settings, plugged_in);
+                self.sleep_prevention_manager.note_configuration(settings);
             }
         }
     }
@@ -1004,21 +967,15 @@ impl RuntimeCore {
     pub(super) fn run_app_suspension_update(
         &mut self,
         settings: &Settings,
-        waits_for_source: bool,
         manual_freeze_processes: &[String],
         observations: &mut CycleObservations,
     ) -> AppSuspensionSnapshot {
-        let foreground_process_id = if waits_for_source {
-            None
-        } else {
-            observations.foreground_process_id()
-        };
+        let foreground_process_id = observations.foreground_process_id();
         self.with_app_suspension(|manager, controller, action_log| {
             let status = manager.update(
                 controller,
                 &settings.app_suspension,
                 settings.general.enabled,
-                waits_for_source,
                 settings.general.allow_cross_session_process_control,
                 foreground_process_id,
                 manual_freeze_processes,
@@ -1982,7 +1939,6 @@ impl RuntimeCore {
     pub(super) fn run_process_control_commands(
         &mut self,
         settings: &Settings,
-        app_suspension_waits_for_source: bool,
         commands: VecDeque<ProcessControlCommand>,
         observations: &mut CycleObservations,
     ) -> ProcessControlCommandStatuses {
@@ -2172,7 +2128,6 @@ impl RuntimeCore {
                     let (status, reply) = if freeze {
                         let status = self.run_app_suspension_update(
                             settings,
-                            app_suspension_waits_for_source,
                             std::slice::from_ref(&executable_path),
                             observations,
                         );
@@ -2200,11 +2155,7 @@ impl RuntimeCore {
                                 Path::new(&executable_path),
                                 action_log,
                             );
-                            let status = app_suspension_release_status(
-                                status,
-                                settings,
-                                app_suspension_waits_for_source,
-                            );
+                            let status = app_suspension_release_status(status, settings);
                             let reply = match &status.last_error {
                                 Some(error) => {
                                     Err(RuntimeCommandError::CommandFailed(error.clone()))
@@ -2217,7 +2168,6 @@ impl RuntimeCore {
                             let status = app_suspension_release_status(
                                 app_suspension_lock_failure(error.clone()),
                                 settings,
-                                app_suspension_waits_for_source,
                             );
                             (status, Err(RuntimeCommandError::CommandFailed(error)))
                         })
@@ -2249,7 +2199,9 @@ impl RuntimeCore {
                         .collect();
                     let _ = result.try_send(Ok(ProcessControlBatchResult { results }));
                 }
-                ProcessControlCommand::KeepAwake(command) => statuses.keep_awake.push(command),
+                ProcessControlCommand::TemporarySleepPrevention(command) => {
+                    statuses.temporary_sleep_prevention.push(command)
+                }
                 ProcessControlCommand::StopProcesses { targets, result } => {
                     self.keep_running
                         .pause_targets(&targets, PauseReason::IntentionalStop);
@@ -2586,14 +2538,6 @@ impl RuntimeCore {
         )
     }
 
-    pub(super) fn pause_memory_trim_for_power_source(
-        &mut self,
-        manual_trim_blocked: bool,
-    ) -> MemoryTrimSnapshot {
-        self.memory_trim_manager.break_idle_intervals();
-        MemoryTrimSnapshot::waiting_for_power_source(manual_trim_blocked)
-    }
-
     pub(super) fn run_memory_trim_update(
         &mut self,
         settings: &Settings,
@@ -2614,13 +2558,6 @@ impl RuntimeCore {
         settings: &Settings,
         observations: &mut CycleObservations,
     ) -> MemoryTrimSnapshot {
-        if self.last_settings.as_ref().is_some_and(|observed| {
-            observed.plugged_in.is_none()
-                && memory_trim_policy_difference(&observed.configured)
-                    == MemoryTrimPolicyDifference::ManualAndAutomatic
-        }) {
-            return MemoryTrimSnapshot::waiting_for_power_source(true);
-        }
         self.memory_trim_manager.trim_now(
             &mut self.memory_trim_controller,
             &settings.memory_trim,
@@ -2682,7 +2619,6 @@ impl RuntimeCore {
         settings: &Settings,
         observations: &mut CycleObservations,
         windows_event_watcher_active: bool,
-        plugged_in: Option<bool>,
     ) -> SleepPreventionSnapshot {
         let suspended_instances: Vec<_> = if self.app_suspension_manager.has_tracked_suspensions() {
             match self.app_suspension_controller.lock() {
@@ -2705,17 +2641,12 @@ impl RuntimeCore {
             &mut self.sleep_prevention_controller,
             settings,
             SleepPreventionEnvironment {
-                plugged_in,
                 windows_event_watcher_active,
                 suspended_instances: &suspended_instances,
             },
             observations,
             &mut self.action_log,
         )
-    }
-
-    pub(super) fn sleep_prevention_power_source(&self) -> Option<bool> {
-        self.sleep_prevention_manager.last_known_power_source()
     }
 
     pub(super) fn timer_resolution_request_active(&self) -> bool {
@@ -4059,39 +3990,6 @@ mod settings_tests {
 mod resource_thresholds_action_tests {
     use super::*;
     use crate::{control::process_restart::RestartResult, foreground::ProcessActionTarget};
-
-    #[test]
-    fn threshold_trim_honors_exclusions_for_the_observed_power_source() {
-        let mut settings = Settings::default();
-        let path = r"C:\Apps\worker.exe";
-        settings.battery_profile_mut().memory_trim.exclusions.push(
-            crate::config::ProcessExclusionRule {
-                enabled: true,
-                executable_path: path.into(),
-                ..Default::default()
-            },
-        );
-
-        assert!(!resource_thresholds_trim_excluded(
-            &settings,
-            Some(true),
-            path
-        ));
-        assert!(resource_thresholds_trim_excluded(
-            &settings,
-            Some(false),
-            path
-        ));
-        assert!(resource_thresholds_trim_excluded(&settings, None, path));
-        assert!(!resource_thresholds_trim_excluded(
-            &settings,
-            None,
-            r"C:\Other\worker.exe"
-        ));
-
-        settings.battery_profile_mut().memory_trim.exclusions[0].enabled = false;
-        assert!(!resource_thresholds_trim_excluded(&settings, None, path));
-    }
 
     #[test]
     fn skipped_termination_reports_only_a_successful_restart_of_the_same_instances() {

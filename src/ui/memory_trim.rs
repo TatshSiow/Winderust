@@ -110,9 +110,6 @@ impl Editor {
         let key = match result.status {
             MemoryTrimStatus::AutomationDisabled => "memory_trim.manual_automation_disabled",
             MemoryTrimStatus::Disabled => "memory_trim.manual_disabled",
-            MemoryTrimStatus::WaitingForPowerSource { .. } => {
-                "memory_trim.manual_power_source_unknown"
-            }
             MemoryTrimStatus::ForegroundUnknown => "memory_trim.manual_foreground_unknown",
             MemoryTrimStatus::VisibleWindowsUnknown => "memory_trim.manual_visible_windows_unknown",
             MemoryTrimStatus::ManualCompleted => {
@@ -180,65 +177,44 @@ impl Editor {
     }
 
     pub(super) fn update(&mut self, settings: &mut SettingsEditor, message: Message) {
+        settings.edit_global(|settings| self.update_settings(&mut settings.memory_trim, message));
+    }
+
+    fn update_settings(&mut self, settings: &mut MemoryTrimSettings, message: Message) {
         match message {
             Message::ToggleSettings => self.settings_expanded = !self.settings_expanded,
-            Message::Enabled(v) if settings.memory_trim.enabled != v => {
-                settings.memory_trim.enabled = v;
-            }
+            Message::Enabled(v) => settings.enabled = v,
             Message::Path(v) => self.path = v,
             Message::Add => {
                 let path = exact_path_input(&self.path);
-                if can_add_memory_trim_exclusion(&settings.memory_trim, path) {
-                    settings
-                        .memory_trim
-                        .exclusions
-                        .push(new_process_exclusion_rule(path));
+                if can_add_memory_trim_exclusion(settings, path) {
+                    settings.exclusions.push(new_process_exclusion_rule(path));
                     self.path.clear();
                 }
             }
             Message::Threshold(field, raw) => {
-                if let Some(value) = field
-                    .parse(&raw)
-                    .filter(|&value| value != field.value(&settings.memory_trim))
-                {
-                    let trim = &mut settings.memory_trim;
+                if let Some(value) = field.parse(&raw) {
                     match field {
-                        Threshold::Load => trim.system_memory_load_threshold_percent = value as u8,
-                        Threshold::WorkingSet => trim.process_working_set_threshold_mb = value,
-                        Threshold::Idle => trim.process_idle_seconds = value,
+                        Threshold::Load => {
+                            settings.system_memory_load_threshold_percent = value as u8
+                        }
+                        Threshold::WorkingSet => settings.process_working_set_threshold_mb = value,
+                        Threshold::Idle => settings.process_idle_seconds = value,
                     }
                 }
                 self.thresholds[field as usize] = Some(raw);
             }
-            Message::ExcludeForeground(value)
-                if settings.memory_trim.exclude_foreground != value =>
-            {
-                settings.memory_trim.exclude_foreground = value;
+            Message::ExcludeForeground(value) => settings.exclude_foreground = value,
+            Message::ExcludeVisibleWindows(value) => settings.exclude_visible_windows = value,
+            Message::RuleEnabled(i, v) => {
+                if let Some(rule) = settings.exclusions.get_mut(i) {
+                    rule.enabled = v;
+                }
             }
-            Message::ExcludeVisibleWindows(value)
-                if settings.memory_trim.exclude_visible_windows != value =>
-            {
-                settings.memory_trim.exclude_visible_windows = value;
+            Message::Remove(i) if i < settings.exclusions.len() => {
+                settings.exclusions.remove(i);
             }
-            Message::RuleEnabled(i, v)
-                if settings
-                    .memory_trim
-                    .exclusions
-                    .get(i)
-                    .is_some_and(|r| r.enabled != v) =>
-            {
-                settings.memory_trim.exclusions[i].enabled = v;
-            }
-            Message::Remove(i) if i < settings.memory_trim.exclusions.len() => {
-                settings.memory_trim.exclusions.remove(i);
-            }
-            Message::Enabled(_)
-            | Message::ExcludeForeground(_)
-            | Message::ExcludeVisibleWindows(_)
-            | Message::RuleEnabled(..)
-            | Message::Remove(_)
-            | Message::TrimNow
-            | Message::Browse => {}
+            Message::Remove(_) | Message::TrimNow | Message::Browse => {}
         }
     }
     pub(super) fn view<'a>(
@@ -418,9 +394,11 @@ mod tests {
     }
 
     #[test]
-    fn window_exclusion_switches_update_only_the_selected_power_profile() {
+    fn window_exclusion_switches_edit_shared_settings_from_either_power_profile() {
         let mut editor = Editor::default();
-        let mut settings = SettingsEditor::with_settings(Settings::default());
+        let mut saved = Settings::default();
+        saved.battery_profile_mut().cpu_limiter.enabled = true;
+        let mut settings = SettingsEditor::with_settings(saved);
         settings.select_power_source(PowerSourceProfile::OnBattery);
 
         editor.update(&mut settings, Message::ExcludeForeground(false));
@@ -429,11 +407,10 @@ mod tests {
 
         let saved = toml::to_string(settings.global()).unwrap();
         let reloaded: Settings = toml::from_str(&saved).unwrap();
-        let battery = &reloaded.battery_profile().memory_trim;
-        assert!(!battery.exclude_foreground);
-        assert!(battery.exclude_visible_windows);
-        assert!(reloaded.memory_trim.exclude_foreground);
-        assert!(!reloaded.memory_trim.exclude_visible_windows);
+        assert!(!reloaded.memory_trim.exclude_foreground);
+        assert!(reloaded.memory_trim.exclude_visible_windows);
+        assert_eq!(reloaded.battery_profile().memory_trim, reloaded.memory_trim);
+        assert!(reloaded.battery_profile().cpu_limiter.enabled);
 
         settings.cancel();
         assert!(settings.memory_trim.exclude_foreground);
@@ -478,9 +455,12 @@ mod tests {
         assert_eq!(s.memory_trim.process_idle_seconds, 10);
         assert_eq!(e.invalid_threshold(), None);
         let path = r"C:\Apps\test.exe";
-        s.memory_trim
-            .exclusions
-            .push(new_process_exclusion_rule(path));
+        s.edit_global(|settings| {
+            settings
+                .memory_trim
+                .exclusions
+                .push(new_process_exclusion_rule(path));
+        });
         e.update(&mut s, Message::Remove(0));
         assert!(s.memory_trim.exclusions.is_empty());
     }

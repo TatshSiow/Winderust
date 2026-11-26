@@ -28,7 +28,6 @@ pub(super) enum Message {
     RuleEnabled(usize, bool),
     RuleNotify(usize, bool),
     Arguments(String),
-    WorkingDirectory(String),
     SaveRule,
     CancelRule,
     Resume(String),
@@ -90,11 +89,6 @@ impl Editor {
             Message::Arguments(value) => {
                 if let Some((_, rule)) = &mut self.draft {
                     rule.arguments = value;
-                }
-            }
-            Message::WorkingDirectory(value) => {
-                if let Some((_, rule)) = &mut self.draft {
-                    rule.working_directory = value;
                 }
             }
             Message::SaveRule => {
@@ -208,7 +202,7 @@ impl Editor {
             ),
             widgets::settings_card(
                 column![
-                    widgets::setting_title_with_help("common.rules", "", "keep_running.rules_help"),
+                    widgets::setting_title("common.rules"),
                     app_picker::view_with_path_selection(
                         &self.path,
                         candidates,
@@ -243,36 +237,20 @@ impl Editor {
     ) -> Option<Element<'a, Message>> {
         let (index, rule) = self.draft.as_ref()?;
         let valid = rule.validate().is_ok();
-        let mut fields = widgets::settings_rows([
-            column![
-                widgets::setting_title("keep_running.arguments"),
-                widgets::text_input("", &rule.arguments).on_input(Message::Arguments),
-            ]
-            .spacing(design::space::SMALL)
-            .into(),
-            column![
-                widgets::setting_title("keep_running.working_directory"),
-                widgets::text_input("", &rule.working_directory)
-                    .on_input(Message::WorkingDirectory),
-            ]
-            .spacing(design::space::SMALL)
-            .into(),
-        ])
-        .push(
+        let mut fields = column![
+            widgets::setting_title("keep_running.arguments"),
+            widgets::text_input("", &rule.arguments).on_input(Message::Arguments),
             text(t!("keep_running.launch_help").to_string())
                 .size(design::typography::SECONDARY)
                 .style(text::secondary),
-        );
+        ]
+        .spacing(design::space::SMALL);
         if !valid {
             fields = fields.push(text(t!("keep_running.invalid").to_string()).style(text::danger));
         }
         let body = column![
             app_picker::app_name(&rule.executable_path, candidates),
             text(rule.executable_path.clone()).style(text::secondary),
-            widgets::heading(
-                t!("keep_running.launch_settings").to_string(),
-                design::typography::BODY
-            ),
             widgets::settings_card(fields),
         ]
         .spacing(widgets::CARD_GAP);
@@ -286,7 +264,7 @@ impl Editor {
             super::scrolling::scrollable_pane(body).height(Fill),
             Message::CancelRule,
             valid.then_some(Message::SaveRule),
-            (760, 460),
+            (760, 340),
         ))
     }
 }
@@ -296,7 +274,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn drafts_prefill_explicit_cwd_preserve_literal_arguments_and_cancel_without_changes() {
+    fn drafts_preserve_literal_arguments_and_cancel_without_changes() {
         let mut editor = Editor::default();
         let mut settings = KeepRunningSettings::default();
         editor.update(
@@ -309,10 +287,6 @@ mod tests {
         assert!(settings.rules.is_empty());
         editor.update(&mut settings, Message::Path(" C:\\Apps\\app.exe ".into()));
         editor.update(&mut settings, Message::Add);
-        assert_eq!(
-            editor.draft.as_ref().unwrap().1.working_directory,
-            r"C:\Apps"
-        );
         editor.update(
             &mut settings,
             Message::Arguments(r#"--file "literal value""#.into()),
@@ -321,10 +295,13 @@ mod tests {
         assert_eq!(settings.rules[0].arguments, r#"--file "literal value""#);
         assert!(Editor::addable_rule(&settings, "c:/apps/APP.exe").is_none());
         editor.update(&mut settings, Message::Edit(0));
-        editor.update(&mut settings, Message::WorkingDirectory("relative".into()));
+        editor.update(
+            &mut settings,
+            Message::Arguments("invalid\0argument".into()),
+        );
         editor.update(&mut settings, Message::SaveRule);
         assert!(editor.has_pending_editor());
         editor.update(&mut settings, Message::CancelRule);
-        assert_eq!(settings.rules[0].working_directory, r"C:\Apps");
+        assert_eq!(settings.rules[0].arguments, r#"--file "literal value""#);
     }
 }

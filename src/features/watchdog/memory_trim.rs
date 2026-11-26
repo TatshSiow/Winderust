@@ -1,9 +1,8 @@
 use std::{
-    borrow::Cow,
     collections::{BTreeMap, BTreeSet},
     ffi::{OsStr, OsString},
     ops::Bound::{Excluded, Unbounded},
-    path::{Path, PathBuf},
+    path::PathBuf,
     time::{Duration, Instant},
 };
 
@@ -14,7 +13,7 @@ use windows_sys::Win32::System::{
 
 use crate::{
     action_log::{ActionLog, ActionLogFeature, ActionLogResult},
-    config::{MemoryTrimSettings, Settings},
+    config::MemoryTrimSettings,
     control::{
         memory_trim::{MemoryTrimController, MemoryTrimOutcome, MemoryTrimPlatform},
         process::{ProcessControlError, ProcessControlTarget},
@@ -22,8 +21,7 @@ use crate::{
     cpu::{process_cpu_usage_percent, ProcessCpuSample},
     foreground::{
         contains_process_name, executable_grouping_key, is_foreground_process,
-        process_executable_path,
-        process_list::{catalog_process_executable_path, power_profile_executable_path_key},
+        process_executable_path, process_list::catalog_process_executable_path,
         same_executable_path, ProtectedProcesses, EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS,
     },
     rules::{execution_failure_suppression_threshold, ExecutionFailureTracker},
@@ -67,9 +65,6 @@ pub enum MemoryTrimStatus {
     Disabled,
     ForegroundUnknown,
     VisibleWindowsUnknown,
-    WaitingForPowerSource {
-        manual_trim_blocked: bool,
-    },
     WaitingForMemoryLoad {
         threshold_percent: u8,
     },
@@ -78,74 +73,12 @@ pub enum MemoryTrimStatus {
     Error(String),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum MemoryTrimPolicyDifference {
-    Common,
-    AutomaticOnly,
-    ManualAndAutomatic,
-}
-
-pub(crate) fn memory_trim_policy_difference(settings: &Settings) -> MemoryTrimPolicyDifference {
-    use MemoryTrimPolicyDifference::*;
-
-    let Some(battery) = settings
-        .on_battery
-        .as_deref()
-        .filter(|_| settings.general.enabled)
-    else {
-        return Common;
-    };
-    let ac = &settings.memory_trim;
-    let battery = &battery.memory_trim;
-    if ac == battery || (!ac.enabled && !battery.enabled) {
-        return Common;
-    }
-    if ac.enabled != battery.enabled
-        || ac.exclude_foreground != battery.exclude_foreground
-        || ac.exclude_visible_windows != battery.exclude_visible_windows
-        || working_set_threshold_bytes(ac) != working_set_threshold_bytes(battery)
-        || (ac.exclusions != battery.exclusions
-            && enabled_exclusions(ac) != enabled_exclusions(battery))
-    {
-        return ManualAndAutomatic;
-    }
-    if load_threshold(ac) != load_threshold(battery)
-        || ac.process_idle_seconds != battery.process_idle_seconds
-    {
-        return AutomaticOnly;
-    }
-    Common
-}
-
-fn enabled_exclusions(settings: &MemoryTrimSettings) -> BTreeSet<Cow<'_, str>> {
-    settings
-        .exclusions
-        .iter()
-        .filter(|rule| rule.enabled)
-        .map(|rule| rule.executable_path.trim_start())
-        .filter(|path| Path::new(path).is_absolute())
-        .map(power_profile_executable_path_key)
-        .collect()
-}
-
 fn load_threshold(settings: &MemoryTrimSettings) -> u8 {
     settings.system_memory_load_threshold_percent.min(100)
 }
 
 fn working_set_threshold_bytes(settings: &MemoryTrimSettings) -> u64 {
     settings.process_working_set_threshold_mb.saturating_mul(MB)
-}
-
-impl MemoryTrimSnapshot {
-    pub(crate) fn waiting_for_power_source(manual_trim_blocked: bool) -> Self {
-        Self {
-            enabled: true,
-            status: MemoryTrimStatus::WaitingForPowerSource {
-                manual_trim_blocked,
-            },
-            ..Self::default()
-        }
-    }
 }
 
 #[derive(Default)]
@@ -685,7 +618,7 @@ impl MemoryTrimManager {
         self.last_automatic_trim_pid = 0;
     }
 
-    pub(crate) fn break_idle_intervals(&mut self) {
+    fn break_idle_intervals(&mut self) {
         for state in self.tracked.values_mut() {
             state.break_idle_interval();
         }

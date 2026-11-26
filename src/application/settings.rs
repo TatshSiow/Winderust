@@ -400,10 +400,11 @@ impl SettingsEditor {
         &self.draft.value
     }
 
-    pub(crate) fn edit_global(&mut self, edit: impl FnOnce(&mut Settings)) {
+    pub(crate) fn edit_global<T>(&mut self, edit: impl FnOnce(&mut Settings) -> T) -> T {
         self.draft.mark_changed();
-        edit(&mut self.draft.value);
+        let result = edit(&mut self.draft.value);
         self.draft.value.sync_shared_settings_to_battery();
+        result
     }
 
     pub(crate) fn runtime_settings_snapshot(&mut self) -> RuntimeSettingsSnapshot {
@@ -431,51 +432,16 @@ impl SettingsEditor {
         )
     }
 
-    pub(crate) fn set_resource_thresholds_enabled(
+    pub(crate) fn set_shared_feature_enabled(
         &mut self,
+        field: fn(&mut Settings) -> &mut bool,
         enabled: bool,
     ) -> SettingsResult<bool> {
         self.coordinator.apply_runtime_patch(
             &mut self.draft,
             self.coordinator.persisted_revision,
             |settings| {
-                let changed = set_enabled_value(&mut settings.resource_thresholds.enabled, enabled);
-                settings.sync_shared_settings_to_battery();
-                changed
-            },
-        )
-    }
-
-    pub(crate) fn set_keep_running_enabled(&mut self, enabled: bool) -> SettingsResult<bool> {
-        self.coordinator.apply_runtime_patch(
-            &mut self.draft,
-            self.coordinator.persisted_revision,
-            |settings| {
-                let changed = set_enabled_value(&mut settings.keep_running.enabled, enabled);
-                settings.sync_shared_settings_to_battery();
-                changed
-            },
-        )
-    }
-
-    pub(crate) fn set_instance_limits_enabled(&mut self, enabled: bool) -> SettingsResult<bool> {
-        self.coordinator.apply_runtime_patch(
-            &mut self.draft,
-            self.coordinator.persisted_revision,
-            |settings| {
-                let changed = set_enabled_value(&mut settings.instance_limits.enabled, enabled);
-                settings.sync_shared_settings_to_battery();
-                changed
-            },
-        )
-    }
-
-    pub(crate) fn set_instance_balancing_enabled(&mut self, enabled: bool) -> SettingsResult<bool> {
-        self.coordinator.apply_runtime_patch(
-            &mut self.draft,
-            self.coordinator.persisted_revision,
-            |settings| {
-                let changed = set_enabled_value(&mut settings.instance_balancing.enabled, enabled);
+                let changed = set_enabled_value(field(settings), enabled);
                 settings.sync_shared_settings_to_battery();
                 changed
             },

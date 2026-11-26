@@ -36,21 +36,29 @@ fn resource_thresholds_alone_keeps_automation_alive_without_power_plan_rules() {
         WindowsAutomationEvent::PowerChanged
     ));
     assert!(!power_plan_checks_required(&settings));
+    settings.battery_profile_mut();
     settings.resource_thresholds.rules[0].enabled = false;
     assert!(!automation_worker_required(&settings));
+    assert!(!windows_event_wake_required(
+        &settings,
+        WindowsAutomationEvent::PowerChanged
+    ));
     settings.resource_thresholds.rules[0].enabled = true;
     settings.general.enabled = false;
     assert!(!automation_worker_required(&settings));
 }
 
 #[test]
-fn sleep_prevention_keeps_battery_only_automation_and_sleep_events_alive() {
+fn sleep_prevention_rules_use_shared_settings_and_only_needed_events() {
     let mut settings = Settings::default();
     settings.general.enabled = true;
-    let mut battery = settings.clone();
-    battery.sleep_prevention.enabled = true;
-    assert!(!automation_worker_required(&battery));
-    battery
+    settings.general.theme_mode = AppThemeMode::Amoled;
+    settings.general.accent.source = AccentColorSource::Custom;
+    settings.sleep_prevention.enabled = true;
+    assert!(!automation_worker_required(&settings));
+    assert_eq!(windows_event_watcher_mode(&settings), None);
+    settings.battery_profile_mut().sleep_prevention.enabled = false;
+    settings
         .sleep_prevention
         .rules
         .push(crate::config::SleepPreventionRule {
@@ -58,11 +66,9 @@ fn sleep_prevention_keeps_battery_only_automation_and_sleep_events_alive() {
             executable_path: r"C:\Apps\worker.exe".into(),
             keep_display_on: false,
         });
-    settings.on_battery = Some(Box::new(battery));
     assert!(automation_worker_required(&settings));
     assert!(windows_event_watcher_required(&settings));
     for event in [
-        WindowsAutomationEvent::PowerChanged,
         WindowsAutomationEvent::SuspendResume,
         WindowsAutomationEvent::SessionChanged,
         WindowsAutomationEvent::WindowCreated,
@@ -73,60 +79,44 @@ fn sleep_prevention_keeps_battery_only_automation_and_sleep_events_alive() {
         &settings,
         WindowsAutomationEvent::ForegroundChanged,
     ));
-    assert!(!power_plan_checks_required(settings.battery_profile()));
+    assert!(!windows_event_wake_required(
+        &settings,
+        WindowsAutomationEvent::PowerChanged,
+    ));
+    assert!(!power_plan_checks_required(&settings));
     assert_eq!(input_hook_config(&settings), InputHookConfig::default());
-    settings.on_battery.as_mut().unwrap().sleep_prevention.rules[0].enabled = false;
+    settings.sleep_prevention.rules[0].enabled = false;
     assert!(!automation_worker_required(&settings));
 }
 
 #[test]
-fn keep_awake_without_rules_requires_event_coverage_but_no_idle_worker() {
-    let mut settings = Settings::default();
-    settings.general.enabled = true;
-    settings.general.theme_mode = AppThemeMode::Amoled;
-    settings.general.accent.source = AccentColorSource::Custom;
-    settings.sleep_prevention.enabled = true;
-    assert_eq!(
-        windows_event_watcher_mode(&settings),
-        Some(WindowsEventWatcherMode::Full)
-    );
-    assert!(!automation_worker_required(&settings));
-    let shared = shared_automation_state(settings);
-    notify_windows_event(&shared, WindowsAutomationEvent::SessionChanged);
+fn temporary_sleep_events_wake_an_accepting_worker_even_before_status_is_published() {
+    let shared = shared_automation_state(Settings::default());
+    notify_temporary_sleep_watcher(&shared, true);
     assert_eq!(
         automation_snapshot(&shared).unwrap().wake_events,
         AutomationWakeEvents::default()
     );
     lock_unpoisoned(&shared.state).worker_accepting_work = true;
-    notify_windows_event(&shared, WindowsAutomationEvent::SessionChanged);
-    let events = automation_snapshot(&shared).unwrap().wake_events;
-    assert!(events.session_changed && events.keep_awake_interrupted_at.is_some());
+    let initial = automation_snapshot(&shared).unwrap();
+    notify_temporary_sleep_watcher(&shared, false);
+    let stopped = automation_snapshot(&shared).unwrap();
+    assert_eq!(stopped.change_generation, initial.change_generation + 1);
+    assert_eq!(stopped.wake_events, AutomationWakeEvents::default());
+    let before_interruption = Instant::now();
+    notify_temporary_sleep_watcher(&shared, true);
+    let interrupted = automation_snapshot(&shared).unwrap();
+    assert_eq!(interrupted.change_generation, stopped.change_generation + 1);
+    assert!(interrupted
+        .wake_events
+        .temporary_sleep_prevention_interrupted_at
+        .is_some_and(|time| time >= before_interruption));
 }
 
 #[test]
-fn keep_awake_stops_after_a_power_change_when_only_one_profile_permits_it() {
-    let mut settings = Settings::default();
-    settings.general.enabled = true;
-    settings.sleep_prevention.enabled = true;
-    settings.battery_profile_mut().sleep_prevention.enabled = false;
-
-    assert!(keep_awake_power_allowed(&settings, None, Some(true), false));
-    assert!(!keep_awake_power_allowed(&settings, None, Some(true), true));
-    assert!(!keep_awake_power_allowed(
-        &settings,
-        Some(false),
-        Some(true),
-        true
-    ));
-    settings.battery_profile_mut().sleep_prevention.enabled = true;
-    assert!(keep_awake_power_allowed(&settings, None, Some(true), true));
-}
-
-#[test]
-fn restored_watcher_retains_a_coalesced_keep_awake_interruption() {
+fn restored_watcher_retains_a_coalesced_rule_watcher_loss() {
     let shared = shared_automation_state(Settings::default());
     set_windows_event_watcher_active(&shared, true);
-    let before_loss = Instant::now();
     set_windows_event_watcher_active(&shared, false);
     set_windows_event_watcher_active(&shared, true);
 
@@ -138,20 +128,23 @@ fn restored_watcher_retains_a_coalesced_keep_awake_interruption() {
     );
     assert!(snapshot
         .wake_events
-        .keep_awake_interrupted_at
-        .is_some_and(|loss| loss >= before_loss));
+        .temporary_sleep_prevention_interrupted_at
+        .is_none());
 }
 
 #[test]
-#[ignore = "briefly holds a real Windows system sleep request"]
-fn native_keep_awake_accepts_and_releases_the_windows_request() {
+#[ignore = "briefly holds real Windows system and display power requests"]
+fn native_temporary_sleep_prevention_accepts_and_releases_both_requests() {
+    use TemporarySleepPrevention::{KeepAwake, KeepDisplayOn};
+
     let mut settings = Settings::default();
-    settings.general.enabled = true;
-    settings.sleep_prevention.enabled = true;
+    settings.general.enabled = false;
     let runtime = RuntimeHandle::start(&runtime_settings(settings));
-    let request = |duration| {
+    let request = |kind, duration| {
         let (reply, result) = sync_channel(1);
-        runtime.request_keep_awake(duration, reply).unwrap();
+        runtime
+            .request_temporary_sleep_prevention(kind, duration, reply)
+            .unwrap();
         result
             .recv_timeout(Duration::from_secs(5))
             .unwrap()
@@ -159,13 +152,30 @@ fn native_keep_awake_accepts_and_releases_the_windows_request() {
     };
     let status = || runtime.status_snapshot_since(0).unwrap().feature_status;
 
-    request(Some(KeepAwakeDuration::FifteenMinutes));
-    let active = &status().sleep_prevention;
-    assert!(active.system_requested && active.keep_awake_until.is_some());
-    assert!(!active.display_requested);
-    request(None);
+    request(
+        KeepAwake,
+        TemporarySleepPreventionDuration::from_minutes(17),
+    );
+    let awake = &status().sleep_prevention;
+    assert!(awake.system_requested && !awake.display_requested);
+    assert!(awake.temporary.until(KeepAwake).is_some());
+    request(
+        KeepDisplayOn,
+        TemporarySleepPreventionDuration::from_minutes(37),
+    );
+    let both = &status().sleep_prevention;
+    assert!(both.system_requested && both.display_requested);
+    assert!(both.temporary.until(KeepAwake).is_some());
+    assert!(both.temporary.until(KeepDisplayOn).is_some());
+    request(KeepAwake, None);
+    let display = &status().sleep_prevention;
+    assert!(display.system_requested && display.display_requested);
+    assert!(display.temporary.until(KeepAwake).is_none());
+    assert!(display.temporary.until(KeepDisplayOn).is_some());
+    request(KeepDisplayOn, None);
     let stopped = &status().sleep_prevention;
-    assert!(!stopped.system_requested && stopped.keep_awake_until.is_none());
+    assert!(!stopped.system_requested && !stopped.display_requested);
+    assert!(!stopped.temporary.any_active());
     assert_eq!(stopped.last_error, None);
     runtime.shutdown().unwrap();
 }
@@ -632,61 +642,28 @@ fn process_memory_trim_reports_each_target_failure_with_automation_disabled() {
 }
 
 #[test]
-fn manual_memory_trim_requires_a_known_source_only_when_manual_policies_differ() {
+fn manual_memory_trim_uses_shared_settings_with_or_without_a_known_source() {
     use crate::memory_trim::MemoryTrimStatus;
 
-    let reply = |settings: Settings, plugged_in| {
-        let configured = Arc::new(settings);
+    let mut settings = Settings::default();
+    settings.memory_trim.enabled = true;
+    settings.battery_profile_mut().memory_trim.enabled = false;
+    let configured = Arc::new(settings);
+    for plugged_in in [None, Some(true), Some(false)] {
         let mut runner = RuntimeCore::default();
         runner.note_settings(&configured, AutomationWakeEvents::default(), plugged_in);
         let (result, receiver) = sync_channel(1);
         let mut observations = CycleObservations::with_adaptive_cpu_sample(Vec::new(), None, None);
         runner.run_process_control_commands(
-            active_power_source_settings(&configured, plugged_in),
-            false,
+            &configured,
             VecDeque::from([ProcessControlCommand::MemoryTrim { result }]),
             &mut observations,
         );
-        receiver.try_recv().unwrap().unwrap().status
-    };
-    let mut settings = Settings::default();
-    settings.memory_trim.enabled = true;
-    settings
-        .battery_profile_mut()
-        .memory_trim
-        .process_idle_seconds += 1;
-    assert_eq!(
-        reply(settings.clone(), None),
-        MemoryTrimStatus::ForegroundUnknown
-    );
-
-    for (exclude_foreground, exclude_visible_windows) in [(false, false), (true, true)] {
-        let mut split = settings.clone();
-        let battery = &mut split.battery_profile_mut().memory_trim;
-        battery.exclude_foreground = exclude_foreground;
-        battery.exclude_visible_windows = exclude_visible_windows;
         assert_eq!(
-            reply(split, None),
-            MemoryTrimStatus::WaitingForPowerSource {
-                manual_trim_blocked: true
-            }
+            receiver.try_recv().unwrap().unwrap().status,
+            MemoryTrimStatus::ForegroundUnknown
         );
     }
-
-    settings
-        .battery_profile_mut()
-        .memory_trim
-        .process_working_set_threshold_mb += 1;
-    assert_eq!(
-        reply(settings.clone(), None),
-        MemoryTrimStatus::WaitingForPowerSource {
-            manual_trim_blocked: true
-        }
-    );
-    assert_eq!(
-        reply(settings, Some(false)),
-        MemoryTrimStatus::ForegroundUnknown
-    );
 }
 
 #[test]
@@ -2428,6 +2405,9 @@ fn input_hook_config_ignores_inactive_power_profile_devices() {
 
     settings.battery_profile_mut().general.enabled = true;
     settings.battery_profile_mut().by_activity.enabled = false;
+    assert_eq!(input_hook_config(&settings), keyboard_only);
+
+    settings.app_suspension.enabled = true;
     assert_eq!(input_hook_config(&settings), both_devices);
 }
 
@@ -2440,61 +2420,37 @@ fn app_suspension_uses_own_refresh_without_process_appearance_scan() {
         .suspendable_apps
         .push(app_suspension_rule(r"C:\Apps\chat.exe"));
 
-    assert!(feature_refresh_required(
-        &settings,
-        app_suspension_required(&settings)
-    ));
+    assert!(app_suspension_required(&settings));
     assert!(!process_appearance_scan_required(&settings));
 }
 
 #[test]
-fn app_suspension_uses_windows_events_without_enabling_process_scan() {
+fn app_suspension_uses_shared_policy_for_windows_events_without_process_scan() {
     let mut settings = Settings::default();
-    settings.app_suspension.enabled = true;
-    settings
+    settings.general.theme_mode = AppThemeMode::Dark;
+    settings.general.accent.source = AccentColorSource::Custom;
+    let battery = settings.battery_profile_mut();
+    battery.app_suspension.enabled = true;
+    battery
         .app_suspension
         .suspendable_apps
         .push(app_suspension_rule(r"C:\Apps\chat.exe"));
 
+    assert!(!automation_worker_required(&settings));
+    assert!(!windows_event_watcher_required(&settings));
+    assert!(!windows_event_wake_required(
+        &settings,
+        WindowsAutomationEvent::WindowCreated
+    ));
+
+    settings.app_suspension = std::mem::take(&mut settings.battery_profile_mut().app_suspension);
+    assert!(automation_worker_required(&settings));
     assert!(windows_event_watcher_required(&settings));
     assert!(windows_event_wake_required(
         &settings,
         WindowsAutomationEvent::WindowCreated
     ));
     assert!(!process_appearance_scan_required(&settings));
-}
-
-#[test]
-fn app_suspension_source_checks_follow_actionable_rules() {
-    let mut settings = Settings::default();
-    let battery = &mut settings.battery_profile_mut().app_suspension;
-    battery.enabled = true;
-    battery
-        .suspendable_apps
-        .push(app_suspension_rule("chat.exe"));
-    assert!(!app_suspension_policy_varies_by_source(&settings));
-
-    settings
-        .battery_profile_mut()
-        .app_suspension
-        .suspendable_apps[0]
-        .executable_path = r"C:\Apps\chat.exe".to_owned();
-    assert!(app_suspension_policy_varies_by_source(&settings));
-    assert!(automation_worker_required(&settings));
-
-    settings.app_suspension = settings.battery_profile().app_suspension.clone();
-    settings
-        .battery_profile_mut()
-        .app_suspension
-        .suspendable_apps[0]
-        .executable_path = "  C:/Apps/chat.exe".to_owned();
-    assert!(!app_suspension_policy_varies_by_source(&settings));
-    settings
-        .battery_profile_mut()
-        .app_suspension
-        .suspendable_apps[0]
-        .executable_path = "C:/Apps/CHAT.EXE".to_owned();
-    assert!(app_suspension_policy_varies_by_source(&settings));
 }
 
 #[test]
@@ -3560,13 +3516,13 @@ fn callbacks_deliver_events_for_either_profile_without_polling() {
             let snapshot = automation_snapshot(&shared).unwrap();
             let mut expected = AutomationWakeEvents::default();
             expected.insert_windows_event(event);
-            if expected.keep_awake_interrupted_at.is_some() {
+            if expected.temporary_sleep_prevention_interrupted_at.is_some() {
                 let interrupted_at = snapshot
                     .wake_events
-                    .keep_awake_interrupted_at
+                    .temporary_sleep_prevention_interrupted_at
                     .expect("a session or suspend event records its receipt time");
                 assert!((notified_at..=Instant::now()).contains(&interrupted_at));
-                expected.keep_awake_interrupted_at = Some(interrupted_at);
+                expected.temporary_sleep_prevention_interrupted_at = Some(interrupted_at);
             }
             assert_eq!(snapshot.wake_events, expected);
             assert_eq!(snapshot.change_generation, before + 1);
@@ -3592,7 +3548,7 @@ fn callbacks_deliver_events_for_either_profile_without_polling() {
         profile.by_activity.enabled = true;
         profile.by_activity.input_detection.keyboard = true;
         profile.by_activity.input_detection.mouse = false;
-        profile.app_suspension.enabled = true;
+        settings.app_suspension.enabled = true;
         lock_unpoisoned(&shared.state).settings = Arc::new(settings.clone());
         let before = lock_unpoisoned(&shared.state).change_generation;
         notify_input_event(

@@ -49,12 +49,8 @@ impl DesktopContext {
 pub(crate) struct LaunchSpec(native::LaunchSpec);
 
 impl LaunchSpec {
-    pub(crate) fn new(
-        executable: &Path,
-        arguments: &str,
-        working_directory: &Path,
-    ) -> Result<Self, KeepRunningError> {
-        native::LaunchSpec::new(executable, arguments, working_directory)
+    pub(crate) fn new(executable: &Path, arguments: &str) -> Result<Self, KeepRunningError> {
+        native::LaunchSpec::new(executable, arguments)
             .map(Self)
             .map_err(Into::into)
     }

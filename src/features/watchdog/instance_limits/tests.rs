@@ -64,13 +64,10 @@ fn stale_sample_gaps_restart_excess_and_recovery_qualification() {
             InstanceLimitsEvent::Notify(0)
         ]
     );
-    manager.notification_result(0, Ok(())).unwrap();
-
     assert!(counts(&mut manager, 1, 8).is_empty());
     assert!(counts(&mut manager, 1, 12).is_empty());
-    let snapshot = manager.snapshot();
-    assert!(snapshot.rules[0].incident);
-    assert_eq!(snapshot.rules[0].notification, NotificationStatus::Accepted);
+    assert!(manager.rules[0].incident);
+    assert!(manager.rules[0].notification_attempted);
     assert_eq!(
         counts(&mut manager, 1, 15),
         vec![InstanceLimitsEvent::Recovered(0)]
@@ -96,10 +93,9 @@ fn reset_intents_clear_only_affected_rules_even_when_settings_revert() {
     );
     manager.reset_paths(&[settings.rules[0].executable_path.clone()]);
     manager.sync(&settings, true);
-    let snapshot = manager.snapshot();
-    assert!(!snapshot.rules[0].incident);
-    assert!(snapshot.rules[0].sampled_at.is_none());
-    assert!(snapshot.rules[1].incident);
+    assert!(!manager.rules[0].incident);
+    assert!(manager.rules[0].sampled_at.is_none());
+    assert!(manager.rules[1].incident);
 }
 
 #[test]
@@ -127,9 +123,6 @@ fn lower_bound_excess_notifies_once_and_only_complete_samples_recover() {
             InstanceLimitsEvent::Notify(0)
         ]
     );
-    manager
-        .notification_result(0, Err("Notification rejected.".into()))
-        .unwrap();
     assert!(manager
         .observe(&[excess], now + Duration::from_secs(2))
         .is_empty());
@@ -148,7 +141,7 @@ fn lower_bound_excess_notifies_once_and_only_complete_samples_recover() {
         &[CountObservation::Complete(0)],
         now + Duration::from_secs(5),
     );
-    assert!(manager.snapshot().rules[0].incident);
+    assert!(manager.rules[0].incident);
     assert_eq!(
         manager.observe(
             &[CountObservation::Complete(0)],
@@ -156,10 +149,7 @@ fn lower_bound_excess_notifies_once_and_only_complete_samples_recover() {
         ),
         vec![InstanceLimitsEvent::Recovered(0)]
     );
-    assert_eq!(
-        manager.snapshot().rules[0].notification,
-        NotificationStatus::NotAttempted
-    );
+    assert!(!manager.rules[0].notification_attempted);
 }
 
 #[test]
@@ -167,7 +157,7 @@ fn gaps_break_continuity_preserve_incidents_and_notification_toggles_do_not_rear
     let mut manager = manager();
     let now = Instant::now();
     manager.observe(&[CountObservation::Complete(2)], now);
-    manager.invalidate("Session changed.");
+    manager.invalidate();
     assert!(manager
         .observe(
             &[CountObservation::Complete(2)],
@@ -178,9 +168,8 @@ fn gaps_break_continuity_preserve_incidents_and_notification_toggles_do_not_rear
         &[CountObservation::Complete(2)],
         now + Duration::from_secs(3),
     );
-    manager.notification_result(0, Ok(())).unwrap();
-    manager.invalidate("Suspended.");
-    assert!(manager.snapshot().rules[0].incident);
+    manager.invalidate();
+    assert!(manager.rules[0].incident);
     let mut settings = manager.settings.clone();
     settings.notify = false;
     manager.sync(&settings, true);
@@ -196,10 +185,7 @@ fn gaps_break_continuity_preserve_incidents_and_notification_toggles_do_not_rear
             now + Duration::from_secs(6)
         )
         .is_empty());
-    assert_eq!(
-        manager.snapshot().rules[0].notification,
-        NotificationStatus::Accepted
-    );
+    assert!(manager.rules[0].notification_attempted);
 }
 
 #[test]
@@ -217,14 +203,13 @@ fn edits_reset_only_changed_rules_and_master_disable_clears_state() {
         .push(InstanceLimitsRule::new(r"C:\Apps\other.exe".into()));
     settings.rules.swap(0, 1);
     manager.sync(&settings, true);
-    assert!(manager.snapshot().rules[1].incident);
+    assert!(manager.rules[1].incident);
     settings.rules[1].max_instances = 2;
     manager.sync(&settings, true);
-    assert!(!manager.snapshot().rules[1].incident);
+    assert!(!manager.rules[1].incident);
     manager.sync(&settings, false);
-    assert!(!manager.snapshot().enabled);
+    assert!(!manager.enabled);
     assert!(manager
-        .snapshot()
         .rules
         .iter()
         .all(|rule| !rule.incident && rule.sampled_at.is_none()));
@@ -263,7 +248,7 @@ fn notification_opt_in_during_an_unattempted_incident_needs_fresh_proof() {
 }
 
 #[test]
-fn rule_notify_changes_preserve_counts_and_do_not_rearm_attempted_incidents() {
+fn rule_notify_changes_preserve_incidents_and_do_not_repeat_attempts() {
     let mut manager = manager();
     let mut settings = manager.settings.clone();
     settings.rules[0].notify = false;
@@ -277,13 +262,15 @@ fn rule_notify_changes_preserve_counts_and_do_not_rearm_attempted_incidents() {
     assert!(observe(&mut manager, 0).is_empty());
     assert_eq!(observe(&mut manager, 1), [InstanceLimitsEvent::Excess(0)]);
 
-    let before_opt_in = manager.snapshot();
     settings.rules[0].notify = true;
     manager.sync(&settings, true);
-    assert_eq!(manager.snapshot(), before_opt_in);
+    assert_eq!(
+        manager.rules[0].sampled_at,
+        Some(start + Duration::from_secs(1))
+    );
+    assert!(manager.rules[0].incident);
     assert!(observe(&mut manager, 2).is_empty());
     assert_eq!(observe(&mut manager, 3), [InstanceLimitsEvent::Notify(0)]);
-    manager.notification_result(0, Ok(())).unwrap();
 
     for notify in [false, true] {
         settings.rules[0].notify = notify;
@@ -291,8 +278,5 @@ fn rule_notify_changes_preserve_counts_and_do_not_rearm_attempted_incidents() {
     }
     assert!(observe(&mut manager, 4).is_empty());
     assert!(observe(&mut manager, 5).is_empty());
-    assert_eq!(
-        manager.snapshot().rules[0].notification,
-        NotificationStatus::Accepted
-    );
+    assert!(manager.rules[0].notification_attempted);
 }

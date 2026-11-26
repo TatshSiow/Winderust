@@ -95,6 +95,22 @@ impl Run {
                 .into_iter()
                 .map(|extra| extra_start + extra)
                 .collect()
+        } else if std::env::args().any(|arg| arg == "--watchdog-only") {
+            [11, 21, 51, 52, 53]
+                .into_iter()
+                .chain(58..=65)
+                .chain([
+                    72,
+                    RESOURCE_PREVIEW_WIDE,
+                    RESOURCE_PREVIEW_COMPACT,
+                    MEMORY_TRIM_PARTIAL,
+                    MEMORY_TRIM_UNKNOWN,
+                    KEEP_AWAKE_READY,
+                    KEEP_AWAKE_ACTIVE,
+                    RESOURCE_NAME_INPUT,
+                ])
+                .map(|extra| extra_start + extra)
+                .collect()
         } else {
             (0..extra_start + EXTRA_STATES).collect()
         }
@@ -254,14 +270,19 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                 .edit_global(|settings| settings.advanced.show_advanced_controls = true);
         }
         if matches!(extra, Some(KEEP_AWAKE_READY | KEEP_AWAKE_ACTIVE)) {
-            let mut settings = app.settings.global().clone();
-            settings.general.enabled = true;
-            settings.sleep_prevention.enabled = true;
-            settings.on_battery = None;
-            app.settings = SettingsEditor::with_settings(settings);
+            use crate::sleep_prevention::TemporarySleepPrevention;
+
             let status = &mut Arc::make_mut(&mut app.status.feature_status).sleep_prevention;
-            status.keep_awake_until = (extra == Some(KEEP_AWAKE_ACTIVE))
-                .then(|| std::time::Instant::now() + Duration::from_secs(15 * 60));
+            let now = std::time::Instant::now();
+            let active = extra == Some(KEEP_AWAKE_ACTIVE);
+            status.temporary.set(
+                TemporarySleepPrevention::KeepAwake,
+                active.then(|| now + Duration::from_secs(15 * 60)),
+            );
+            status.temporary.set(
+                TemporarySleepPrevention::KeepDisplayOn,
+                active.then(|| now + Duration::from_secs(37 * 60)),
+            );
         }
         if matches!(
             extra,
@@ -303,12 +324,6 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
         }
         // Exercise disclosure messages and long/compact navigation without enabling automation.
         if matches!(extra, Some(62..=65)) {
-            use crate::{
-                control::instance_limits::CountObservation,
-                features::watchdog::instance_limits::{
-                    InstanceLimitsRuleSnapshot, NotificationStatus,
-                },
-            };
             let paths = [
                 r"C:\Apps\Long Application Name\renderer.exe",
                 r"C:\Apps\editor.exe",
@@ -317,41 +332,14 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             app.settings.edit_global(|settings| {
                 settings.instance_limits.enabled = true;
                 settings.instance_limits.rules = paths
-                    .iter()
-                    .map(|path| crate::config::InstanceLimitsRule::new((*path).into()))
+                    .into_iter()
+                    .zip([2, 4, 8])
+                    .map(|(path, max_instances)| crate::config::InstanceLimitsRule {
+                        max_instances,
+                        ..crate::config::InstanceLimitsRule::new(path.into())
+                    })
                     .collect();
             });
-            let status = &mut Arc::make_mut(&mut app.status.feature_status).instance_limits;
-            status.enabled = true;
-            status.rules = paths
-                .iter()
-                .enumerate()
-                .map(|(index, path)| InstanceLimitsRuleSnapshot {
-                    executable_path: (*path).into(),
-                    max_instances: 1,
-                    enabled: true,
-                    count: match index {
-                        0 => CountObservation::Complete(3),
-                        1 => CountObservation::Incomplete {
-                            known_lower_bound: 2,
-                            reason: "A matching process could not be queried.".into(),
-                        },
-                        _ => CountObservation::Incomplete {
-                            known_lower_bound: 0,
-                            reason: "Process scope could not be verified.".into(),
-                        },
-                    },
-                    sampled_at: Some(std::time::Instant::now()),
-                    incident: index == 0,
-                    notification: if index == 0 {
-                        NotificationStatus::Failed(
-                            "Windows rejected the notification request.".into(),
-                        )
-                    } else {
-                        NotificationStatus::NotAttempted
-                    },
-                })
-                .collect();
             let mut expected = app.settings.global().instance_limits.clone();
             expected.rules[1].notify = false;
             let _ = app.update(Message::InstanceLimits(
@@ -1669,14 +1657,6 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                 620.0
             };
             assert!((app.window_settings.size.height - height).abs() <= 1.0);
-        }
-        if matches!(extra, Some(62..=65)) {
-            for rule in &mut Arc::make_mut(&mut app.status.feature_status)
-                .instance_limits
-                .rules
-            {
-                rule.sampled_at = Some(std::time::Instant::now());
-            }
         }
         Some(iced::window::screenshot(window).map(Message::SmokeScreenshot))
     } else {

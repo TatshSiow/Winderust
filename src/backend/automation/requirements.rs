@@ -33,17 +33,17 @@ pub(super) fn process_appearance_refresh_interval(
 }
 
 pub(super) fn input_hook_config(settings: &Settings) -> InputHookConfig {
+    if feature_refresh_required(settings, settings.app_suspension.enabled) {
+        return InputHookConfig {
+            keyboard: true,
+            mouse: true,
+        };
+    }
     let mut config = InputHookConfig::default();
     for profile in std::iter::once(settings)
         .chain(settings.on_battery.as_deref())
         .filter(|profile| profile.general.enabled)
     {
-        if profile.app_suspension.enabled {
-            return InputHookConfig {
-                keyboard: true,
-                mouse: true,
-            };
-        }
         if activity_power_plan_required(profile) {
             config.keyboard |= profile.by_activity.input_detection.keyboard;
             config.mouse |= profile.by_activity.input_detection.mouse;
@@ -219,17 +219,9 @@ pub(super) fn efficiency_mode_policy_varies_by_source(settings: &Settings) -> bo
 }
 
 pub(super) fn app_suspension_required(settings: &Settings) -> bool {
-    settings.app_suspension.enabled && app_suspension::has_enabled_rules(&settings.app_suspension)
-}
-
-pub(super) fn app_suspension_policy_varies_by_source(settings: &Settings) -> bool {
     settings.general.enabled
-        && settings.on_battery.as_deref().is_some_and(|battery| {
-            !app_suspension::same_app_suspension_policy(
-                &settings.app_suspension,
-                &battery.app_suspension,
-            )
-        })
+        && settings.app_suspension.enabled
+        && app_suspension::has_enabled_rules(&settings.app_suspension)
 }
 
 #[derive(Clone, Copy)]
@@ -447,6 +439,9 @@ pub(super) fn automation_worker_required(settings: &Settings) -> bool {
     keep_running_required(settings)
         || instance_limits_required(settings)
         || instance_balancing_required(settings)
+        || app_suspension_required(settings)
+        || feature_refresh_required(settings, sleep_prevention_required(settings))
+        || feature_refresh_required(settings, resource_thresholds_required(settings))
         || automation_worker_required_for_profile(settings)
         || settings
             .on_battery
@@ -456,14 +451,11 @@ pub(super) fn automation_worker_required(settings: &Settings) -> bool {
 
 fn automation_worker_required_for_profile(settings: &Settings) -> bool {
     settings.general.enabled
-        && (resource_thresholds_required(settings)
-            || power_plan_checks_required(settings)
+        && (power_plan_checks_required(settings)
             || adaptive_power_plan_required(settings)
             || bottleneck_classifier_required(settings)
-            || app_suspension_required(settings)
             || process_appearance_scan_required(settings)
-            || timer_resolution_required(settings)
-            || sleep_prevention_required(settings))
+            || timer_resolution_required(settings))
 }
 
 pub(super) fn bottleneck_classifier_required(settings: &Settings) -> bool {
@@ -511,13 +503,9 @@ pub(super) fn instance_balancing_required(settings: &Settings) -> bool {
 
 pub(super) fn windows_event_watcher_mode(settings: &Settings) -> Option<WindowsEventWatcherMode> {
     if windows_event_watcher_required(settings)
-        || [settings, settings.battery_profile()]
-            .into_iter()
-            .any(keep_awake_enabled)
         || adaptive_enablement_varies_by_source(settings)
         || cpu_limiter_policy_varies_by_source(settings)
         || timer_resolution_enablement_varies_by_source(settings)
-        || memory_trim_policy_difference(settings) != MemoryTrimPolicyDifference::Common
     {
         Some(WindowsEventWatcherMode::Full)
     } else if std::iter::once(settings)
@@ -554,6 +542,8 @@ pub(super) fn windows_event_watcher_required(settings: &Settings) -> bool {
     keep_running_required(settings)
         || instance_limits_required(settings)
         || instance_balancing_required(settings)
+        || app_suspension_required(settings)
+        || feature_refresh_required(settings, sleep_prevention_required(settings))
         || windows_event_watcher_required_for_profile(settings)
         || settings
             .on_battery
@@ -568,26 +558,53 @@ fn windows_event_watcher_required_for_profile(settings: &Settings) -> bool {
 
 pub(super) fn automation_windows_event_watcher_required(settings: &Settings) -> bool {
     settings.general.enabled
-        && (power_plan_checks_required(settings)
-            || event_driven_process_work_required(settings)
-            || sleep_prevention_required(settings))
+        && (power_plan_checks_required(settings) || event_driven_process_work_required(settings))
 }
 
 pub(super) fn event_driven_process_work_required(settings: &Settings) -> bool {
-    app_suspension_required(settings)
-        || (!settings.adaptive_engine.enabled && process_appearance_scan_required(settings))
+    !settings.adaptive_engine.enabled && process_appearance_scan_required(settings)
 }
 
 pub(super) fn windows_event_wake_required(
     settings: &Settings,
     event: WindowsAutomationEvent,
 ) -> bool {
+    if app_suspension_required(settings)
+        && matches!(
+            event,
+            WindowsAutomationEvent::ForegroundChanged
+                | WindowsAutomationEvent::WindowCreated
+                | WindowsAutomationEvent::PowerChanged
+                | WindowsAutomationEvent::SuspendResume
+                | WindowsAutomationEvent::SessionChanged
+        )
+    {
+        return true;
+    }
+    if feature_refresh_required(settings, sleep_prevention_required(settings))
+        && matches!(
+            event,
+            WindowsAutomationEvent::SuspendResume
+                | WindowsAutomationEvent::SessionChanged
+                | WindowsAutomationEvent::WindowCreated
+        )
+    {
+        return true;
+    }
     if (keep_running_required(settings)
         || instance_limits_required(settings)
         || instance_balancing_required(settings))
         && matches!(
             event,
             WindowsAutomationEvent::SuspendResume | WindowsAutomationEvent::SessionChanged
+        )
+    {
+        return true;
+    }
+    if feature_refresh_required(settings, resource_thresholds_required(settings))
+        && matches!(
+            event,
+            WindowsAutomationEvent::PowerChanged | WindowsAutomationEvent::SuspendResume
         )
     {
         return true;
@@ -616,13 +633,13 @@ fn windows_event_wake_required_for_profile(
                             || timer_resolution_required(settings)
                             || adaptive_power_plan_required(settings)))
             }
-            WindowsAutomationEvent::WindowCreated => {
-                event_driven_process_work_required(settings) || sleep_prevention_required(settings)
-            }
+            WindowsAutomationEvent::WindowCreated => event_driven_process_work_required(settings),
             WindowsAutomationEvent::PowerChanged | WindowsAutomationEvent::SuspendResume => {
                 automation_worker_required_for_profile(settings)
             }
-            WindowsAutomationEvent::SessionChanged => windows_event_watcher_required(settings),
+            WindowsAutomationEvent::SessionChanged => {
+                windows_event_watcher_required_for_profile(settings)
+            }
             WindowsAutomationEvent::ClockChanged => by_time_rules_required(settings),
             WindowsAutomationEvent::AppearanceChanged => false,
         }

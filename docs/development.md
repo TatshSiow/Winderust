@@ -67,12 +67,14 @@ running app locks the debug executable, add `--target-dir target/recovery-smoke`
 
 ## Sleep Prevention checks
 
-The ignored native checks briefly create Winderust-owned system/display sleep
-requests. One also starts a hidden, bounded-lifetime `ping.exe` worker to verify
-running-app matching and disable/release through production observations:
+The ignored native checks verify both independent temporary timers and release
+of their Windows system and display requests. The running-app check starts a
+hidden, bounded-lifetime `ping.exe` worker to verify matching and release when
+the rule is disabled.
 
 ```powershell
 cargo test --locked sleep_prevention::tests::native_ -- --ignored --nocapture --test-threads=1
+cargo test --locked native_temporary_sleep_prevention_accepts_and_releases_both_requests -- --ignored --nocapture --test-threads=1
 ```
 
 These checks do not suspend Windows or change saved settings or power plans.
@@ -203,6 +205,8 @@ Append `--resource-thresholds-only` to check Resource Thresholds settings,
 action selectors, and Preview matches at wide and compact sizes.
 Append `--memory-trim-only` to check Memory Trim settings in both languages and
 at wide and compact sizes.
+Append `--watchdog-only` to capture the configured Watchdog pages and rule
+editors in both languages.
 
 Captures are written under `target/iced-smoke/`. Review relevant pages and states in
 both locales/themes and at minimum window size. Captures establish rendering coverage;

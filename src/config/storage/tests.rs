@@ -114,31 +114,24 @@ fn instance_limits_validation_guards_persistence_without_overwriting_files() {
         "winderust-instance-limits-{}.toml",
         std::process::id()
     ));
-    for battery in [false, true] {
-        for invalid in 0..3 {
-            let mut settings = Settings::default();
-            let profile = if battery {
-                settings.battery_profile_mut()
-            } else {
-                &mut settings
-            };
-            let mut rule = crate::config::InstanceLimitsRule::new(r"C:\Apps\app.exe".into());
-            match invalid {
-                0 => rule.max_instances = 0,
-                1 => rule.executable_path = "relative.exe".into(),
-                _ => profile.instance_limits.rules.push(rule.clone()),
-            }
-            profile.instance_limits.rules.push(rule);
-            let raw = toml::to_string(&settings).unwrap();
-            fs::write(&path, &raw).unwrap();
-            assert!(load_from_path(&path).is_err());
-            assert!(import_toml_from(&path).is_err());
-            assert_eq!(fs::read_to_string(&path).unwrap(), raw);
-            fs::write(&path, "original settings").unwrap();
-            assert!(write_toml_settings(&path, &settings).is_err());
-            assert!(export_toml_to(&path, &settings).is_err());
-            assert_eq!(fs::read_to_string(&path).unwrap(), "original settings");
+    for invalid in 0..3 {
+        let mut settings = Settings::default();
+        let mut rule = crate::config::InstanceLimitsRule::new(r"C:\Apps\app.exe".into());
+        match invalid {
+            0 => rule.max_instances = 0,
+            1 => rule.executable_path = "relative.exe".into(),
+            _ => settings.instance_limits.rules.push(rule.clone()),
         }
+        settings.instance_limits.rules.push(rule);
+        let raw = toml::to_string(&settings).unwrap();
+        fs::write(&path, &raw).unwrap();
+        assert!(load_from_path(&path).is_err());
+        assert!(import_toml_from(&path).is_err());
+        assert_eq!(fs::read_to_string(&path).unwrap(), raw);
+        fs::write(&path, "original settings").unwrap();
+        assert!(write_toml_settings(&path, &settings).is_err());
+        assert!(export_toml_to(&path, &settings).is_err());
+        assert_eq!(fs::read_to_string(&path).unwrap(), "original settings");
     }
     fs::remove_file(path).unwrap();
 }
@@ -149,38 +142,31 @@ fn keep_running_launch_validation_guards_load_import_save_and_export() {
         "winderust-keep-running-{}.toml",
         std::process::id()
     ));
-    for battery in [false, true] {
-        for invalid in 0..4 {
-            let mut settings = Settings::default();
-            let profile = if battery {
-                settings.battery_profile_mut()
-            } else {
-                &mut settings
-            };
-            let mut rule = crate::config::KeepRunningRule::new(r"C:\Apps\test.exe".into());
-            match invalid {
-                0 => rule.executable_path = "relative.exe".into(),
-                1 => rule.working_directory.push('\0'),
-                2 => rule.arguments = "x".repeat(32_767),
-                _ => profile.keep_running.rules.push(rule.clone()),
-            }
-            profile.keep_running.rules.push(rule);
-            let raw = toml::to_string(&settings).unwrap();
-            fs::write(&path, &raw).unwrap();
-            assert!(load_from_path(&path).is_err());
-            assert!(import_toml_from(&path).is_err());
-            assert_eq!(fs::read_to_string(&path).unwrap(), raw);
-            fs::write(&path, "original settings").unwrap();
-            assert!(write_toml_settings(&path, &settings).is_err());
-            assert!(export_toml_to(&path, &settings).is_err());
-            assert_eq!(fs::read_to_string(&path).unwrap(), "original settings");
+    for invalid in 0..4 {
+        let mut settings = Settings::default();
+        let mut rule = crate::config::KeepRunningRule::new(r"C:\Apps\test.exe".into());
+        match invalid {
+            0 => rule.executable_path = "relative.exe".into(),
+            1 => rule.arguments.push('\0'),
+            2 => rule.arguments = "x".repeat(32_767),
+            _ => settings.keep_running.rules.push(rule.clone()),
         }
+        settings.keep_running.rules.push(rule);
+        let raw = toml::to_string(&settings).unwrap();
+        fs::write(&path, &raw).unwrap();
+        assert!(load_from_path(&path).is_err());
+        assert!(import_toml_from(&path).is_err());
+        assert_eq!(fs::read_to_string(&path).unwrap(), raw);
+        fs::write(&path, "original settings").unwrap();
+        assert!(write_toml_settings(&path, &settings).is_err());
+        assert!(export_toml_to(&path, &settings).is_err());
+        assert_eq!(fs::read_to_string(&path).unwrap(), "original settings");
     }
     fs::remove_file(path).unwrap();
 }
 
 #[test]
-fn app_suspension_delay_limits_apply_to_both_profiles_before_io() {
+fn app_suspension_delay_limits_apply_to_the_shared_policy_before_io() {
     let path = std::env::temp_dir().join(format!(
         "winderust-suspension-delay-{}.toml",
         std::process::id()
@@ -205,7 +191,7 @@ fn app_suspension_delay_limits_apply_to_both_profiles_before_io() {
                 profile["app_suspension"][field] = seconds.into();
                 let raw = toml::to_string(&value).unwrap();
                 fs::write(&path, &raw).unwrap();
-                let valid = (1..=maximum).contains(&seconds);
+                let valid = battery || (1..=maximum).contains(&seconds);
                 assert_eq!(
                     load_from_path(&path).is_ok(),
                     valid,
@@ -1806,7 +1792,6 @@ fn toml_round_trip_preserves_settings() {
                 notify: true,
                 executable_path: r"C:\Apps\keeper.exe".into(),
                 arguments: r#"--document "C:\Documents\notes.txt""#.into(),
-                working_directory: r"C:\Documents".into(),
             }],
         },
         instance_limits: crate::config::InstanceLimitsSettings {
@@ -1855,12 +1840,20 @@ fn toml_round_trip_preserves_settings() {
     battery_restraint.preserve_custom_affinity = false;
     battery_restraint.processors_to_remove = 1;
 
+    settings.sync_shared_settings_to_battery();
     for mode in AppThemeMode::ALL {
         settings.general.theme_mode = mode;
         let raw = toml::to_string_pretty(&settings).expect("settings should serialize");
         let parsed: Settings = toml::from_str(&raw).expect("TOML should parse");
 
         assert_eq!(parsed, settings);
+        let battery = parsed.battery_profile();
+        assert_eq!(battery.resource_thresholds, parsed.resource_thresholds);
+        assert_eq!(battery.memory_trim, parsed.memory_trim);
+        assert_eq!(battery.keep_running, parsed.keep_running);
+        assert_eq!(battery.sleep_prevention, parsed.sleep_prevention);
+        assert_eq!(battery.instance_limits, parsed.instance_limits);
+        assert_eq!(battery.app_suspension, parsed.app_suspension);
     }
 }
 

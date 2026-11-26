@@ -1,13 +1,12 @@
 use std::{
     collections::BTreeMap,
     path::Path,
-    sync::Arc,
     time::{Duration, Instant},
 };
 
 use crate::{
     action_log::{ActionLog, ActionLogFeature, ActionLogResult},
-    config::{PowerSourceProfile, Settings, SleepPreventionSettings},
+    config::{Settings, SleepPreventionSettings},
     control::sleep_prevention::{
         SleepPreventionController, SleepPreventionMode, SleepPreventionRequests,
     },
@@ -20,77 +19,60 @@ use crate::{
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SleepPreventionSnapshot {
-    pub(crate) source: Option<PowerSourceProfile>,
     pub enabled: bool,
     pub matched_rules: usize,
     pub matched_processes: usize,
-    pub running_apps: Vec<String>,
-    pub suppressed_apps: Vec<String>,
-    pub(crate) suspended_apps: Vec<String>,
-    pub(crate) requesting_apps: Vec<RequestingApp>,
-    pub(crate) observed_rule_paths: Option<Arc<[String]>>,
     pub system_requested: bool,
     pub display_requested: bool,
     pub observation_known: bool,
-    pub(crate) waiting_for_power_source: bool,
     pub failed_actions: usize,
     pub last_error: Option<String>,
-    pub(crate) keep_awake_until: Option<Instant>,
+    pub(crate) temporary: TemporarySleepPreventionTimers,
 }
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum KeepAwakeDuration {
-    #[default]
-    FifteenMinutes,
-    ThirtyMinutes,
-    OneHour,
-    TwoHours,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TemporarySleepPrevention {
+    KeepAwake,
+    KeepDisplayOn,
 }
 
-impl KeepAwakeDuration {
-    pub(crate) const OPTIONS: [Self; 4] = [
-        Self::FifteenMinutes,
-        Self::ThirtyMinutes,
-        Self::OneHour,
-        Self::TwoHours,
-    ];
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct TemporarySleepPreventionDuration(u16);
+
+impl TemporarySleepPreventionDuration {
+    pub(crate) const MAX_MINUTES: u16 = 24 * 60;
+
+    pub(crate) fn from_minutes(minutes: u16) -> Option<Self> {
+        (1..=Self::MAX_MINUTES)
+            .contains(&minutes)
+            .then_some(Self(minutes))
+    }
 
     fn duration(self) -> Duration {
-        Duration::from_secs(match self {
-            Self::FifteenMinutes => 15 * 60,
-            Self::ThirtyMinutes => 30 * 60,
-            Self::OneHour => 60 * 60,
-            Self::TwoHours => 2 * 60 * 60,
-        })
+        Duration::from_secs(u64::from(self.0) * 60)
     }
 }
 
-impl std::fmt::Display for KeepAwakeDuration {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let key = match self {
-            Self::FifteenMinutes => "sleep_prevention.keep_awake_15_minutes",
-            Self::ThirtyMinutes => "sleep_prevention.keep_awake_30_minutes",
-            Self::OneHour => "sleep_prevention.keep_awake_one_hour",
-            Self::TwoHours => "sleep_prevention.keep_awake_two_hours",
-        };
-        formatter.write_str(&rust_i18n::t!(key))
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct TemporarySleepPreventionTimers([Option<Instant>; 2]);
+
+impl TemporarySleepPreventionTimers {
+    pub(crate) fn until(self, kind: TemporarySleepPrevention) -> Option<Instant> {
+        self.0[kind as usize]
     }
-}
 
-pub(crate) fn keep_awake_enabled(settings: &Settings) -> bool {
-    settings.general.enabled && settings.sleep_prevention.enabled
-}
+    pub(crate) fn any_active(self) -> bool {
+        self.0.iter().any(Option::is_some)
+    }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct RequestingApp {
-    pub(crate) path: Box<str>,
-    pub(crate) keep_display_on: bool,
+    pub(crate) fn set(&mut self, kind: TemporarySleepPrevention, deadline: Option<Instant>) {
+        self.0[kind as usize] = deadline;
+    }
 }
 
 type AppIdentity = (u32, u64);
 
 pub(crate) struct SleepPreventionEnvironment<'a> {
-    pub(crate) plugged_in: Option<bool>,
     pub(crate) windows_event_watcher_active: bool,
     pub(crate) suspended_instances: &'a [AppIdentity],
 }
@@ -101,11 +83,10 @@ pub struct SleepPreventionManager {
     suppressed: BTreeMap<AppIdentity, String>,
     suppress_next_observation: bool,
     rearmed_paths: Vec<String>,
-    power_source: Option<bool>,
-    configuration: Option<[(bool, SleepPreventionSettings); 2]>,
+    configuration: Option<(bool, SleepPreventionSettings)>,
     snapshot: SleepPreventionSnapshot,
-    keep_awake: Option<Instant>,
-    rule_system_requested: bool,
+    temporary: TemporarySleepPreventionTimers,
+    rule_requests: SleepPreventionRequests,
 }
 
 #[derive(Default)]
@@ -123,229 +104,85 @@ struct MatchedApp {
 }
 
 impl SleepPreventionManager {
-    pub(crate) fn set_keep_awake(&mut self, duration: Option<KeepAwakeDuration>, now: Instant) {
-        self.keep_awake = duration.map(|duration| now + duration.duration());
+    pub(crate) fn set_temporary(
+        &mut self,
+        kind: TemporarySleepPrevention,
+        duration: Option<TemporarySleepPreventionDuration>,
+        now: Instant,
+    ) {
+        self.temporary
+            .set(kind, duration.map(|duration| now + duration.duration()));
     }
 
-    pub(crate) fn keep_awake_wait(&self, now: Instant) -> Option<Duration> {
-        self.keep_awake
+    pub(crate) fn temporary_wait(&self, now: Instant) -> Option<Duration> {
+        self.temporary
+            .0
+            .into_iter()
+            .flatten()
+            .min()
             .map(|deadline| deadline.saturating_duration_since(now))
     }
 
-    pub(crate) fn end_keep_awake_if_due(&mut self, now: Instant, permitted: bool) -> bool {
-        if self
-            .keep_awake
-            .is_some_and(|deadline| !permitted || now >= deadline)
-        {
-            self.keep_awake = None;
-            return true;
+    pub(crate) fn end_temporary_if_due(&mut self, now: Instant, permitted: bool) -> bool {
+        let previous = self.temporary;
+        for deadline in &mut self.temporary.0 {
+            if deadline.is_some_and(|expiry| !permitted || now >= expiry) {
+                *deadline = None;
+            }
         }
-        false
+        self.temporary != previous
     }
 
     pub(crate) fn rule_system_requested(&self) -> bool {
-        self.rule_system_requested
+        self.rule_requests.system
     }
 
-    pub(crate) fn update(
+    pub(crate) fn update<P: crate::platform::windows::sleep_prevention::SleepPreventionPlatform>(
         &mut self,
-        controller: &mut SleepPreventionController,
+        controller: &mut SleepPreventionController<P>,
         configured_settings: &Settings,
         environment: SleepPreventionEnvironment<'_>,
         observations: &mut CycleObservations,
         action_log: &mut ActionLog,
     ) -> SleepPreventionSnapshot {
         let SleepPreventionEnvironment {
-            plugged_in,
             windows_event_watcher_active,
             suspended_instances,
         } = environment;
-        // Preserve the accepted cohort before a profile handoff closes its request.
-        if !windows_event_watcher_active && self.rule_system_requested() {
-            self.suppress_current();
-        }
-        self.note_configuration(configured_settings, plugged_in);
-        if self.change_power_source(plugged_in) {
-            self.clear_rule_requests(controller, action_log);
-        }
-        let Some(last_power_source) = self.power_source else {
-            let profiles = [configured_settings, configured_settings.battery_profile()];
-            let enabled = profiles
-                .iter()
-                .any(|profile| profile.general.enabled && profile.sleep_prevention.enabled);
-            if !profiles.iter().any(|profile| {
-                profile.general.enabled
-                    && profile.sleep_prevention.enabled
-                    && profile.sleep_prevention.rules.iter().any(|rule| {
-                        rule.enabled && Path::new(rule.executable_path.trim_start()).is_absolute()
-                    })
-            }) {
-                self.matches = Matches::default();
-                return self.apply(
-                    controller,
-                    SleepPreventionMode::Off,
-                    SleepPreventionSnapshot {
-                        enabled,
-                        observation_known: true,
-                        ..Default::default()
-                    },
-                    action_log,
-                );
-            }
-            return self.unavailable(
-                controller,
-                action_log,
-                &rust_i18n::t!("sleep_prevention.power_source_unavailable"),
-            );
-        };
-        let profile = if last_power_source {
-            configured_settings
-        } else {
-            configured_settings.battery_profile()
-        };
-        if profile.general.enabled
-            && profile.sleep_prevention.enabled
-            && !windows_event_watcher_active
-            && profile
-                .sleep_prevention
+        let settings = &configured_settings.sleep_prevention;
+        let enabled = configured_settings.general.enabled && settings.enabled;
+        self.note_configuration(configured_settings);
+        if !enabled
+            || !settings
                 .rules
                 .iter()
-                .any(|rule| rule.enabled)
+                .any(|rule| rule.enabled && matchable_target(&rule.executable_path).is_some())
         {
+            self.matches = Matches::default();
+            return self.apply(
+                controller,
+                SleepPreventionMode::Off,
+                SleepPreventionSnapshot {
+                    enabled,
+                    observation_known: true,
+                    ..Default::default()
+                },
+                action_log,
+            );
+        }
+        if !windows_event_watcher_active {
+            if self.rule_system_requested() {
+                self.suppress_current();
+            }
             return self.unavailable(
                 controller,
                 action_log,
                 &rust_i18n::t!("sleep_prevention.watcher_unavailable"),
             );
         }
-        let allow_new_requests = plugged_in.is_some()
-            || same_sleep_prevention_policy(
-                configured_settings,
-                configured_settings.battery_profile(),
-            );
-        self.update_profile(
-            controller,
-            profile,
-            allow_new_requests,
-            suspended_instances,
-            observations,
-            action_log,
-        )
-    }
-
-    pub(crate) fn last_known_power_source(&self) -> Option<bool> {
-        self.power_source
-    }
-
-    fn change_power_source(&mut self, plugged_in: Option<bool>) -> bool {
-        let Some(plugged_in) = plugged_in else {
-            return false;
-        };
-        let changed = self
-            .power_source
-            .is_some_and(|previous| previous != plugged_in);
-        self.power_source = Some(plugged_in);
-        changed
-    }
-
-    pub(crate) fn note_configuration(&mut self, settings: &Settings, plugged_in: Option<bool>) {
-        let profiles = [settings, settings.battery_profile()];
-        if self.configuration.as_ref().is_some_and(|previous| {
-            previous.iter().zip(&profiles).all(|(previous, profile)| {
-                previous.0 == profile.general.enabled && previous.1 == profile.sleep_prevention
-            })
-        }) {
-            return;
-        }
-        let current = capture_configuration(profiles);
-        if let (Some(previous), Some(active_source)) =
-            (self.configuration.take(), plugged_in.or(self.power_source))
-        {
-            for (index, (before, after)) in previous.iter().zip(&current).enumerate() {
-                let source = index == 0;
-                let protected = if source == active_source {
-                    None
-                } else if Some(source) == self.power_source {
-                    // An edit to the outgoing profile must preserve the incoming profile's claims.
-                    Some(&current[usize::from(!active_source)])
-                } else {
-                    continue;
-                };
-                self.rearm_withdrawn(before, after, protected);
-                // Fresh opt-ins must not inherit a pending capture from an earlier sleep.
-                self.rearm_withdrawn(after, before, protected);
-            }
-        }
-        self.configuration = Some(current);
-    }
-
-    fn rearm_withdrawn(
-        &mut self,
-        previous: &(bool, SleepPreventionSettings),
-        current: &(bool, SleepPreventionSettings),
-        protected: Option<&(bool, SleepPreventionSettings)>,
-    ) {
-        if !previous.0 || !previous.1.enabled {
-            return;
-        }
-        for rule in previous.1.rules.iter().filter(|rule| rule.enabled) {
-            let path = Path::new(rule.executable_path.trim_start());
-            if std::iter::once(current)
-                .chain(protected)
-                .any(|(enabled, settings)| {
-                    *enabled
-                        && settings.enabled
-                        && settings.rules.iter().any(|rule| {
-                            rule.enabled
-                                && same_executable_path(
-                                    Path::new(rule.executable_path.trim_start()),
-                                    path,
-                                )
-                        })
-                })
-            {
-                continue;
-            }
-            self.suppressed
-                .retain(|_, suppressed| !same_executable_path(Path::new(suppressed), path));
-            if self.suppress_next_observation {
-                self.rearmed_paths.push(rule.executable_path.clone());
-            }
-        }
-    }
-
-    fn update_profile(
-        &mut self,
-        controller: &mut SleepPreventionController,
-        profile: &Settings,
-        allow_new_requests: bool,
-        suspended_instances: &[AppIdentity],
-        observations: &mut CycleObservations,
-        action_log: &mut ActionLog,
-    ) -> SleepPreventionSnapshot {
-        let settings = &profile.sleep_prevention;
-        let allow_cross_session_process_control =
-            profile.general.allow_cross_session_process_control;
-        if !profile.general.enabled || !settings.enabled {
-            self.matches = Matches::default();
-            return self.reset(controller, action_log);
-        }
-        if !settings
-            .rules
-            .iter()
-            .any(|rule| rule.enabled && Path::new(rule.executable_path.trim_start()).is_absolute())
-        {
-            self.matches = Matches {
-                known: true,
-                ..Default::default()
-            };
-            return self.apply(
-                controller,
-                SleepPreventionMode::Off,
-                self.matching_snapshot(),
-                action_log,
-            );
-        }
+        let allow_cross_session_process_control = configured_settings
+            .general
+            .allow_cross_session_process_control;
         let error = match observations
             .processes_for_path_matching(|process| self.needs_path_observation(process, settings))
         {
@@ -368,33 +205,61 @@ impl SleepPreventionManager {
             }
         };
         self.update_app_suspension(suspended_instances);
-        let mut snapshot = self.matching_snapshot();
-        if snapshot.observation_known {
-            let paths = settings
-                .rules
-                .iter()
-                .filter(|rule| rule.enabled)
-                .filter_map(|rule| matchable_target(&rule.executable_path).map(|(path, _)| path));
-            snapshot.observed_rule_paths = Some(
-                self.snapshot
-                    .observed_rule_paths
-                    .as_ref()
-                    .filter(|previous| previous.iter().map(String::as_str).eq(paths.clone()))
-                    .cloned()
-                    .unwrap_or_else(|| paths.map(str::to_owned).collect()),
-            );
-        }
-        snapshot.last_error = error;
-        let mut accepted = controller.requests();
-        accepted.system &= self.rule_system_requested();
-        let observed = self.permitted_mode(accepted);
-        let mode = if allow_new_requests {
-            observed
-        } else {
-            retain_accepted_requests(observed, accepted)
+        let snapshot = SleepPreventionSnapshot {
+            enabled,
+            matched_rules: self.matches.rules,
+            matched_processes: self.matches.apps.len(),
+            observation_known: self.matches.known,
+            last_error: error,
+            ..Default::default()
         };
-        snapshot.waiting_for_power_source = mode != observed;
+        let mode = self.permitted_mode(self.rule_requests);
         self.apply(controller, mode, snapshot, action_log)
+    }
+
+    pub(crate) fn note_configuration(&mut self, settings: &Settings) {
+        let enabled = settings.general.enabled;
+        let rules = &settings.sleep_prevention;
+        if self
+            .configuration
+            .as_ref()
+            .is_some_and(|(old_enabled, old_rules)| *old_enabled == enabled && old_rules == rules)
+        {
+            return;
+        }
+        let current = (enabled, rules.clone());
+        if let Some(previous) = self.configuration.take() {
+            self.rearm_withdrawn(&previous, &current);
+            self.rearm_withdrawn(&current, &previous);
+        }
+        self.configuration = Some(current);
+    }
+
+    fn rearm_withdrawn(
+        &mut self,
+        previous: &(bool, SleepPreventionSettings),
+        current: &(bool, SleepPreventionSettings),
+    ) {
+        if !previous.0 || !previous.1.enabled {
+            return;
+        }
+        for rule in previous.1.rules.iter().filter(|rule| rule.enabled) {
+            let path = Path::new(rule.executable_path.trim_start());
+            if current.0
+                && current.1.enabled
+                && current.1.rules.iter().any(|rule| {
+                    rule.enabled
+                        && same_executable_path(Path::new(rule.executable_path.trim_start()), path)
+                })
+            {
+                continue;
+            }
+            self.suppressed
+                .retain(|_, suppressed| !same_executable_path(Path::new(suppressed), path));
+            if self.suppress_next_observation {
+                self.rearmed_paths.push(rule.executable_path.clone());
+            }
+        }
     }
 
     fn update_app_suspension(&mut self, suspended_instances: &[AppIdentity]) {
@@ -403,73 +268,19 @@ impl SleepPreventionManager {
         }
     }
 
-    fn matching_snapshot(&self) -> SleepPreventionSnapshot {
-        let mut snapshot = SleepPreventionSnapshot {
-            enabled: true,
-            matched_rules: self.matches.rules,
-            matched_processes: self.matches.apps.len(),
-            observation_known: self.matches.known,
-            ..Default::default()
-        };
-        // Insert distinct paths directly into the sorted status lists.
-        for (identity, app) in &self.matches.apps {
-            let path = &app.path;
-            if let Err(index) = snapshot.running_apps.binary_search(path) {
-                snapshot.running_apps.insert(index, path.clone());
-            }
-            let inactive = if self.suppressed.contains_key(identity) {
-                Some(&mut snapshot.suppressed_apps)
-            } else if app.suspended {
-                Some(&mut snapshot.suspended_apps)
-            } else {
-                None
-            };
-            if let Some(paths) = inactive {
-                if let Err(index) = paths.binary_search(path) {
-                    paths.insert(index, path.clone());
-                }
-            } else {
-                let requests = &mut snapshot.requesting_apps;
-                match requests.binary_search_by(|entry| entry.path.as_ref().cmp(path.as_str())) {
-                    Ok(index) => requests[index].keep_display_on |= app.display,
-                    Err(index) => requests.insert(
-                        index,
-                        RequestingApp {
-                            path: path.as_str().into(),
-                            keep_display_on: app.display,
-                        },
-                    ),
-                }
-            }
-        }
-        for paths in [&mut snapshot.suppressed_apps, &mut snapshot.suspended_apps] {
-            paths.retain(|path| {
-                snapshot
-                    .requesting_apps
-                    .binary_search_by(|request| request.path.as_ref().cmp(path.as_str()))
-                    .is_err()
-            });
-        }
-        snapshot
-    }
-
     pub(crate) fn suppress_and_release(
         &mut self,
         controller: &mut SleepPreventionController,
         configured_settings: &Settings,
         action_log: &mut ActionLog,
     ) -> SleepPreventionSnapshot {
-        self.keep_awake = None;
         // Settings observed with the interruption may have been saved before it.
-        self.configuration = Some(capture_configuration([
-            configured_settings,
-            configured_settings.battery_profile(),
-        ]));
+        self.configuration = Some((
+            configured_settings.general.enabled,
+            configured_settings.sleep_prevention.clone(),
+        ));
         self.suppress_current();
         let mut snapshot = self.snapshot.clone();
-        snapshot.suppressed_apps.clone_from(&snapshot.running_apps);
-        snapshot.requesting_apps.clear();
-        snapshot.waiting_for_power_source = false;
         snapshot.failed_actions = 0;
         snapshot.last_error = None;
         self.apply(controller, SleepPreventionMode::Off, snapshot, action_log)
@@ -480,15 +291,7 @@ impl SleepPreventionManager {
         controller: &mut SleepPreventionController,
         action_log: &mut ActionLog,
     ) -> SleepPreventionSnapshot {
-        self.keep_awake = None;
-        self.clear_rule_requests(controller, action_log)
-    }
-
-    fn clear_rule_requests(
-        &mut self,
-        controller: &mut SleepPreventionController,
-        action_log: &mut ActionLog,
-    ) -> SleepPreventionSnapshot {
+        self.temporary = TemporarySleepPreventionTimers::default();
         self.apply(
             controller,
             SleepPreventionMode::Off,
@@ -500,16 +303,21 @@ impl SleepPreventionManager {
         )
     }
 
-    pub(crate) fn unavailable(
+    pub(crate) fn unavailable<
+        P: crate::platform::windows::sleep_prevention::SleepPreventionPlatform,
+    >(
         &mut self,
-        controller: &mut SleepPreventionController,
+        controller: &mut SleepPreventionController<P>,
         action_log: &mut ActionLog,
         reason: &str,
     ) -> SleepPreventionSnapshot {
-        let mut snapshot = self.matching_snapshot();
-        snapshot.observation_known = false;
-        snapshot.requesting_apps.clear();
-        snapshot.last_error = Some(reason.to_owned());
+        let snapshot = SleepPreventionSnapshot {
+            enabled: true,
+            matched_rules: self.matches.rules,
+            matched_processes: self.matches.apps.len(),
+            last_error: Some(reason.to_owned()),
+            ..Default::default()
+        };
         self.apply(controller, SleepPreventionMode::Off, snapshot, action_log)
     }
 
@@ -678,38 +486,41 @@ impl SleepPreventionManager {
     ) -> SleepPreventionSnapshot {
         let before = controller.requests();
         let reason = rust_i18n::t!("sleep_prevention.request_reason");
-        let requested = if mode == SleepPreventionMode::Off && self.keep_awake.is_some() {
+        let requested = if self
+            .temporary
+            .until(TemporarySleepPrevention::KeepDisplayOn)
+            .is_some()
+        {
+            SleepPreventionMode::SystemAndDisplay
+        } else if mode == SleepPreventionMode::Off && self.temporary.any_active() {
             SleepPreventionMode::System
         } else {
             mode
         };
         if let Err(error) = controller.reconcile(requested, &reason) {
-            if mode == SleepPreventionMode::Off
-                && requested == SleepPreventionMode::System
-                && before.display
-            {
-                // The timed session cannot keep an unwanted display request. Close the
-                // shared object even if Windows also rejects another explicit clear.
+            if requested == SleepPreventionMode::System && before.display {
+                // A failed clear must not keep a display request alive after its last claim.
                 let _ = controller.shutdown();
             }
             snapshot.last_error = Some(error.to_string());
         }
         let after = controller.requests();
         if !after.system {
-            self.keep_awake = None;
-        }
-        snapshot.keep_awake_until = self.keep_awake;
-        snapshot.source = self.power_source.map(|plugged_in| {
-            if plugged_in {
-                PowerSourceProfile::PluggedIn
-            } else {
-                PowerSourceProfile::OnBattery
+            self.temporary = TemporarySleepPreventionTimers::default();
+        } else if !after.display {
+            self.temporary
+                .set(TemporarySleepPrevention::KeepDisplayOn, None);
+            // A failed display-only start may have established an unclaimed System request.
+            if mode == SleepPreventionMode::Off && !self.temporary.any_active() {
+                let _ = controller.shutdown();
             }
-        });
-        self.rule_system_requested = mode != SleepPreventionMode::Off && after.system;
-        if !self.rule_system_requested {
-            snapshot.requesting_apps.clear();
         }
+        let after = controller.requests();
+        snapshot.temporary = self.temporary;
+        self.rule_requests = SleepPreventionRequests {
+            system: mode != SleepPreventionMode::Off && after.system,
+            display: mode == SleepPreventionMode::SystemAndDisplay && after.display,
+        };
         snapshot.system_requested = after.system;
         snapshot.display_requested = after.display;
         if before != after {
@@ -766,45 +577,6 @@ fn retain_accepted_requests(
         SleepPreventionMode::SystemAndDisplay if accepted.display => desired,
         _ => SleepPreventionMode::System,
     }
-}
-
-fn same_sleep_prevention_policy(ac: &Settings, battery: &Settings) -> bool {
-    fn enabled_rules(profile: &Settings) -> BTreeMap<&str, bool> {
-        let mut rules = BTreeMap::new();
-        if profile.general.enabled && profile.sleep_prevention.enabled {
-            for rule in profile
-                .sleep_prevention
-                .rules
-                .iter()
-                .filter(|rule| rule.enabled)
-            {
-                let Some((path, _)) = matchable_target(&rule.executable_path) else {
-                    continue;
-                };
-                rules
-                    .entry(path)
-                    .and_modify(|display| *display |= rule.keep_display_on)
-                    .or_insert(rule.keep_display_on);
-            }
-        }
-        rules
-    }
-
-    let same_session_scope = ac.general.allow_cross_session_process_control
-        == battery.general.allow_cross_session_process_control;
-    if same_session_scope
-        && ac.general.enabled == battery.general.enabled
-        && ac.sleep_prevention == battery.sleep_prevention
-    {
-        return true;
-    }
-    // Compare saved spellings without opening or resolving executable paths.
-    let ac_rules = enabled_rules(ac);
-    (same_session_scope || ac_rules.is_empty()) && ac_rules == enabled_rules(battery)
-}
-
-fn capture_configuration(profiles: [&Settings; 2]) -> [(bool, SleepPreventionSettings); 2] {
-    profiles.map(|profile| (profile.general.enabled, profile.sleep_prevention.clone()))
 }
 
 fn matchable_target(executable: &str) -> Option<(&str, &str)> {

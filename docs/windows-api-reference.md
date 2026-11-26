@@ -1473,19 +1473,23 @@ simple string, checks the create call's `INVALID_HANDLE_VALUE` failure, and
 retains native error codes. The owned request handle uses the existing
 `WinHandle` cleanup; it is never inherited or duplicated.
 
-`src/control/sleep_prevention.rs` keeps one accepted System request while an
-eligible rule or timed Keep awake session claims it. Only app rules can add a
-Display request. Display always
-holds System too. Unchanged reconciliation and display-mode changes do not
-renew the System count. Shutdown clears accepted counts and closes the object
-even when a clear fails; process termination also closes Winderust's handles.
-These self-owned requests do not mutate another process or a persistent power
-plan, and need no crash-recovery journal.
+`src/control/sleep_prevention.rs` combines app rules and temporary timers into
+one accepted count per required request type. Display also claims System as
+required by `PowerSetRequest`. Unchanged reconciliation and display-mode
+changes leave the existing System count in place. Shutdown clears accepted
+counts and closes the object even when a clear fails. Windows closes
+Winderust's handles on process termination. Requests are scoped to the
+process lifetime and leave power-plan settings intact.
 
-The Keep awake deadline uses Rust's monotonic `Instant` and the existing runtime
-worker wait. Session and suspend events discard the temporary claim. It shares
-the controller with app rules, so Stop and expiry preserve an eligible app's
-request without creating or renewing a second native request.
+The temporary actions have independent monotonic `Instant` deadlines and use
+the existing runtime worker wait. While either timer is active,
+`src/backend/windows_events.rs` registers a dedicated window for
+[`RegisterSuspendResumeNotification`](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-registersuspendresumenotification)
+and
+[`WTSRegisterSessionNotification`](https://learn.microsoft.com/en-us/windows/win32/api/wtsapi32/nf-wtsapi32-wtsregistersessionnotification)
+for the current session. Suspend/resume, session changes, or loss of the watcher
+discard both timers. Stop and expiry remove one timer's claim and preserve
+counts still required by another timer or an eligible app.
 
 Accepted calls do not prove effective sleep inhibition. Windows policy and user
 actions still govern sleep. User-initiated sleep terminates these requests; on
@@ -1515,8 +1519,10 @@ acquisition checks. The raw boundary is `src/platform/windows/keep_running.rs`.
   privileges and calls no token-based process-creation API.
 - [CreateEnvironmentBlock](https://learn.microsoft.com/en-us/windows/win32/api/userenv/nf-userenv-createenvironmentblock)
   builds a fresh shell-user environment with inheritance disabled. Explicit
-  executable, literal arguments, and working directory go to
+  executable and literal arguments go to
   [CreateProcessW](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-createprocessw).
+  `src/platform/windows/keep_running.rs::prepare` supplies the resolved
+  executable's parent folder as `lpCurrentDirectory`.
   No shell expansion, command-line discovery, or Winderust environment inheritance
   is used. Creation is suspended at Normal priority with no inherited handles.
 - [UpdateProcThreadAttribute](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-updateprocthreadattribute)

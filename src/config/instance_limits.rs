@@ -169,7 +169,7 @@ mod tests {
     }
 
     #[test]
-    fn settings_are_shared_across_power_sources_and_validate_both_profiles() {
+    fn settings_are_shared_across_power_sources_and_validate_the_shared_limit() {
         let mut settings = crate::config::Settings::default();
         settings
             .instance_limits
@@ -183,6 +183,8 @@ mod tests {
             settings.battery_profile().instance_limits
         );
         settings.battery_profile_mut().instance_limits.rules[0].max_instances = 0;
+        assert!(settings.validate_instance_limits().is_ok());
+        settings.instance_limits.rules[0].max_instances = 0;
         assert!(settings.validate_instance_limits().is_err());
     }
 }

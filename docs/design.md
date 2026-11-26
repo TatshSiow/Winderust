@@ -393,6 +393,8 @@ hover/press; background shading supplies feedback.
   and App Suspension in that order. Reuse the existing landing-page cards and
   link each one to its own editor. Use the full canvas for the Watchdog landing
   page and each Watchdog editor. Keep feature actions and help on their pages.
+- Each Watchdog feature uses shared settings across power sources and omits the
+  Plugged In and On Battery selector.
 - Keep shared options for Resource Thresholds, Memory Trim, Instance Limits,
   and the App Suspension background delay in their feature's expandable toggle
   card. Let users configure these while the feature is off. Keep rule tables
@@ -403,12 +405,18 @@ hover/press; background shading supplies feedback.
   working-set reduction and measurement coverage.
 - Put Exclude focused apps and Exclude apps with visible windows in the
   expandable Memory Trim toggle card. Both apply to automatic trimming and
-  Trim now for the selected power profile.
+  Trim now.
 - Place Notify beside Enable in the Resource Thresholds, Instance Limits, and
   Keep Running rule tables. Enable controls whether the rule runs. Notify
   controls Windows alert delivery. Resource Thresholds and Instance Limits
   also retain their feature-wide notification switches. For Keep Running,
   Notify opts the rule into a single alert when retries run out and Resume is needed.
+- The Keep Running rule editor shows the selected application and one optional
+  arguments field. Show Custom Rules with a title and the app picker.
+- Give Temporary keep awake and Temporary keep display on their own action rows.
+  Show an editable duration and Start when idle, then the end time and Stop when active.
+- Keep the Instance Limits rule table focused on the configured maximum and rule
+  controls. Report detected incidents and notification outcomes in the Action Log.
 - Keep Instance Balancing under CPU Control. Advanced Controls contains Timer
   Resolution and Win32 Priority Separation.
 
