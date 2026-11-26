@@ -327,7 +327,7 @@ impl RuntimeCore {
         restore_affinity_before_restart: bool,
         observations: &mut CycleObservations,
     ) -> ResourceThresholdsSnapshot {
-        use crate::config::{ResourceThresholdsAction, ResourceThresholdsScope};
+        use crate::config::ResourceThresholdsAction;
         use rust_i18n::t;
         let (mut snapshot, mut events) = self.resource_thresholds_manager.update(
             &settings.resource_thresholds,
@@ -347,34 +347,16 @@ impl RuntimeCore {
             let metric = t!(event.metric.label_key());
             let process_id = event.process_id;
             let value = format!("{:.1}", event.value);
-            let comparison = event.comparison.symbol();
-            let detail = match (event.scope, process_id) {
-                (ResourceThresholdsScope::PerInstance, Some(pid)) => t!(
-                    "resource_thresholds.instance_trigger_detail",
-                    level = level,
-                    app = &event.name,
-                    pid = pid,
-                    metric = metric,
-                    value = value,
-                    comparison = comparison,
-                    threshold = event.response.threshold
-                ),
-                (ResourceThresholdsScope::PerInstance, None) => {
-                    snapshot.last_error =
-                        Some("Resource Thresholds per-instance event has no process ID.".into());
-                    continue;
-                }
-                (ResourceThresholdsScope::Combined, _) => t!(
-                    "resource_thresholds.trigger_detail",
-                    level = level,
-                    app = &event.name,
-                    count = event.process_count,
-                    metric = metric,
-                    value = value,
-                    comparison = comparison,
-                    threshold = event.response.threshold
-                ),
-            }
+            let detail = t!(
+                "resource_thresholds.trigger_detail",
+                level = level,
+                app = &event.name,
+                count = event.process_count,
+                metric = metric,
+                value = value,
+                comparison = "≥",
+                threshold = event.response.threshold
+            )
             .into_owned();
             let mut action_detail = t!("resource_thresholds.no_action").to_string();
             if event.response.action != ResourceThresholdsAction::None {

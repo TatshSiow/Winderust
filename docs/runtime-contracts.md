@@ -247,43 +247,36 @@ Read the relevant section before changing feature policy, ownership, restoration
 ## Resource Thresholds
 
 - Resource sampling in `src/foreground/process_list.rs` reads CPU and verifies
-  creation time for Resource Thresholds. When an enabled rule monitors Memory,
-  one query returns both working set and private commit. Process List always requests
-  memory counters for its Working Set and optional Private Commit columns, which
-  share that query. Group totals require a known value for every displayed
+  creation time for Resource Thresholds. Memory rules use the working set from
+  the existing memory query. Process List uses both working set and private
+  commit from that query. Group totals require a known value for every displayed
   process. Process List requests Efficiency Mode and queries priority class
   only when EcoQoS is enabled.
 
 - `src/features/watchdog/resource_thresholds.rs` owns CPU and memory
   sampling, sustained thresholds, escalation, and rearming. Rules are global across
-  power sources. Each uses the default sustained duration or its own override
-  (1–3,600 seconds), shared by both monitors and severities. Notification settings
+  power sources. Sustained time (1–3,600 seconds) applies to every rule,
+  monitor, and severity. Notification settings
   apply to both monitors. Delivery requires both the feature-wide switch and the
   rule's Notify setting. Sampling runs once a second in visible and tray modes.
   Portable settings use the existing `watchdog` TOML key for these rules.
+  The parser rejects rules with removed comparison, scope, duration override,
+  or memory unit options before a policy can run. Supported saved rules retain
+  `memory_unit = "percent"` as a fixed unit marker.
 - Each rule selects one absolute `executable_path` or one exact `executable_name`.
   Executable name rules resolve known absolute image paths from current process
   observations. The scoped catalog includes enabled selector candidates and
-  prior incident PIDs for exact identity verification. Combined by
-  path is the default scope and keeps a separate usage total and incident for
-  each path. Per instance evaluates each verified PID and
-  creation time independently and includes the PID in notifications. A failed
-  sample or replaced process cannot carry qualification into a later instance.
-  Enabled rules evaluate independently if their selectors overlap. Terminate and
-  Restart require an At or above monitor, Combined by path scope, and an
+  prior incident PIDs for exact identity verification. Each executable path
+  has its own combined usage total and incident. A failed sample or replaced
+  process cannot carry qualification into a later instance. Enabled rules evaluate
+  independently if their selectors overlap. Terminate and Restart require an
   Executable path rule.
 - CPU deltas are calculated per exact instance and summed against total processor
-  capacity (capped at 100%). Working Set uses decimal MB (1 MB = 1,000,000 bytes)
-  or percent of physical RAM, including possible shared-page double counting.
-  Private Commit (MB) sums private committed bytes and uses the same decimal unit.
-  Each threshold response uses the eligible processes in its configured scope.
-- Each monitor independently chooses At or above or At or below. At or above is
-  the default. It requires `0 < warning < critical <= maximum` and rearms below
-  95% of the threshold. At or below uses monitoring with optional notification and requires
-  `0 <= critical < warning < maximum`. It rearms above the threshold once usage
-  reaches 105% of the threshold or the metric maximum, whichever is lower. A zero
-  threshold rearms on any positive measurement. Low readings represent resource
-  usage only. Both comparisons include equality when qualifying a threshold.
+  capacity (capped at 100%). Working Set is measured as a percentage of physical
+  RAM. Summed working sets may count shared pages more than once. Each response
+  uses the eligible processes at the matching executable path.
+- Each monitor qualifies at or above its threshold, requires
+  `0 < warning < critical <= 100`, and rearms below 95% of the threshold.
 - Warning and critical default to monitoring with optional notification. The
   feature defaults off. A rule-level Notify edit preserves sustained samples,
   incident state, and actions. Delivery checks the current rule's saved Notify

@@ -407,36 +407,20 @@ hover/press; background shading supplies feedback.
 
 - Keep Resource Thresholds global across power sources, with the shared app
   picker and rule table. CPU and Memory columns show warning
-  and critical thresholds, and the Memory column identifies the selected metric.
-  Pencil dialogs show app identity and an optional sustained duration shared by
-  the CPU / Memory tabs. A blank duration inherits the page default. Drafts apply
-  only on OK. Cancel, Close, and Escape discard, including when a numeric field
-  has focus. If a picker is open, Escape closes the picker first.
+  and critical percentages. The main page owns Sustained time and Windows
+  notification. The rule dialog shows the app identity and CPU, Memory, and Match
+  Preview tabs. OK stages the draft. Cancel, Close, and Escape discard it, including
+  when a numeric field has focus. If a picker is open, Escape closes it first.
 - Choose Executable path to use the app picker or Executable name to enter an
-  exact filename such as `worker.exe`. Executable name rules monitor each
-  resolved path separately and can send notifications. Choose Combined by path or Per
-  instance in the rule dialog. Terminate and Restart require an At or above
-  monitor in a Combined by path rule with an executable path.
-- Match Preview reads a fresh process snapshot when opened or refreshed. It
-  groups matching PIDs by executable path in Combined by path mode and lists
-  each PID with its own path in Per instance mode. It identifies unavailable
-  instances and explains that evaluation requires valid resource samples.
-  Matching rows identify other enabled rules by their position in the current
-  Resource Thresholds rule list.
-  For an Executable path rule, it also lists same-named executables elsewhere.
+  exact filename such as `worker.exe`. Combine usage by executable path. Name
+  rules can send notifications. Terminate and Restart require an executable path.
+- Match Preview reads a fresh process snapshot when opened or refreshed. Show
+  each eligible match with its app icon, PID, name, and executable path.
 - Each resource tab starts with a collapsed Enable CPU monitoring or Enable memory
-  monitoring card. Its switch controls monitoring. The header reveals the
-  comparison, memory metric where applicable, thresholds, and eligible actions
-  independently of the switch. At or below clears the draft automatic actions
-  for that resource. Where action controls are available, default to monitoring
-  with optional notification and explain the restart rate limit and risk of
-  losing unsaved work inline.
-  The main page owns the default sustained duration and one notification switch.
-- Explain that the chosen scope evaluates eligible instances at each matching path
-  together or individually. Working Set measures resident memory and may double-count
-  shared pages when combined. Private Commit (MB) measures committed private memory.
-  Restart preserves the original user and privileges, supports non-service apps in
-  the current session, and launches without previous arguments.
+  monitoring card. The switch controls monitoring. Expanding the card reveals the
+  percentage fields (CPU Warning, CPU Critical, Memory Warning, Memory Critical)
+  and eligible actions. Memory uses Working Set as a percentage of physical RAM.
+  Action help explains the restart rate limit and risk of losing unsaved work.
 - Notifications lead with the action result, including cooldown skips, then trigger
   details. Keep the registered tray icon for enabled notifications independently of
   hide-on-close and respect Windows notification suppression. Runtime sequencing

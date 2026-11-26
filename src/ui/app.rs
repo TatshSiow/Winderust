@@ -1690,7 +1690,7 @@ impl WinderustApp {
             Message::ResourceThresholds(resource_thresholds::Message::PreviewMatches) => {
                 return self
                     .resource_thresholds
-                    .preview_matches(&self.settings.global().resource_thresholds)
+                    .preview_matches()
                     .map(Message::ResourceThresholds);
             }
             Message::ResourceThresholds(resource_thresholds::Message::MatchPreviewLoaded(

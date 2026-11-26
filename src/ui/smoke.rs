@@ -15,8 +15,8 @@ const CONTRAST_DARK_APPEARANCE: usize = 98;
 const CONTRAST_LIGHT_PROCESS_LIST: usize = 99;
 const HOME_HISTORY_WIDE: usize = 100;
 const HOME_HISTORY_COMPACT: usize = 101;
-const RESOURCE_PREVIEW_COMBINED: usize = 102;
-const RESOURCE_PREVIEW_INSTANCE: usize = 103;
+const RESOURCE_PREVIEW_WIDE: usize = 102;
+const RESOURCE_PREVIEW_COMPACT: usize = 103;
 const SHOW_SHORTCUT_INVALID: usize = 104;
 const SHOW_SHORTCUT_READY: usize = 105;
 const DOCK_FOCUS_WIDE: usize = 106;
@@ -135,7 +135,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                     | HOME_ENABLED_FEATURES_COMPACT
                     | CONTRAST_LIGHT_PROCESS_LIST
                     | HOME_HISTORY_COMPACT
-                    | RESOURCE_PREVIEW_INSTANCE
+                    | RESOURCE_PREVIEW_COMPACT
                     | SHOW_SHORTCUT_READY
                     | DOCK_FOCUS_COMPACT
                     | MEMORY_TRIM_UNKNOWN
@@ -198,7 +198,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             Some(50 | 77..=78 | SHOW_SHORTCUT_INVALID | SHOW_SHORTCUT_READY) => {
                 Page::WinderustBehaviour
             }
-            Some(51..=53 | RESOURCE_PREVIEW_COMBINED | RESOURCE_PREVIEW_INSTANCE) => {
+            Some(51..=53 | RESOURCE_PREVIEW_WIDE | RESOURCE_PREVIEW_COMPACT) => {
                 Page::ResourceThresholds
             }
             Some(54..=57 | 81 | DOCK_FOCUS_WIDE | DOCK_FOCUS_COMPACT) => Page::ByCpuLoad,
@@ -423,9 +423,8 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             app.settings.edit_global(|settings| {
                 let rule = &mut settings.resource_thresholds.rules[0];
                 rule.memory.enabled = true;
-                rule.memory_unit = crate::config::ResourceThresholdsMemoryUnit::Megabytes;
-                rule.memory.warning.threshold = 1000;
-                rule.memory.critical.threshold = 2000;
+                rule.memory.warning.threshold = 50;
+                rule.memory.critical.threshold = 75;
                 rule.memory.critical.action = crate::config::ResourceThresholdsAction::Terminate;
             });
             app.resource_thresholds = resource_thresholds::Editor::default();
@@ -1379,13 +1378,8 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
         }
         if matches!(
             extra,
-            Some(RESOURCE_PREVIEW_COMBINED | RESOURCE_PREVIEW_INSTANCE)
+            Some(RESOURCE_PREVIEW_WIDE | RESOURCE_PREVIEW_COMPACT)
         ) {
-            let scope = if extra == Some(RESOURCE_PREVIEW_COMBINED) {
-                crate::config::ResourceThresholdsScope::Combined
-            } else {
-                crate::config::ResourceThresholdsScope::PerInstance
-            };
             app.settings.edit_global(|settings| {
                 settings.resource_thresholds.rules =
                     vec![crate::config::ResourceThresholdsRule::with_selector(
@@ -1396,9 +1390,6 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             });
             let _ = app.update(Message::ResourceThresholds(
                 resource_thresholds::Message::Edit(0),
-            ));
-            let _ = app.update(Message::ResourceThresholds(
-                resource_thresholds::Message::Scope(scope),
             ));
             app.resource_thresholds.set_smoke_match_preview();
         }
@@ -1477,12 +1468,9 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                 | 9
                 | ADAPTIVE_NAME_PATTERN,
             ) => iced::Size::new(900.0, 620.0),
-            Some(RESOURCE_PREVIEW_INSTANCE) => iced::Size::new(900.0, 620.0),
+            Some(RESOURCE_PREVIEW_COMPACT) => iced::Size::new(900.0, 620.0),
             Some(
-                RESOURCE_PREVIEW_COMBINED
-                | SHOW_SHORTCUT_INVALID
-                | DOCK_FOCUS_WIDE
-                | KEEP_AWAKE_READY,
+                RESOURCE_PREVIEW_WIDE | SHOW_SHORTCUT_INVALID | DOCK_FOCUS_WIDE | KEEP_AWAKE_READY,
             ) => iced::Size::new(1120.0, 760.0),
             Some(6 | CONTRAST_DARK_APPEARANCE | HOME_HISTORY_WIDE | CPU_LIMITER_AFFINITY_WIDE) => {
                 iced::Size::new(1120.0, 760.0)
@@ -1890,7 +1878,6 @@ pub(super) fn captured(app: &mut WinderustApp, shot: iced::window::Screenshot) -
 pub(crate) fn render_all_pages() {
     use crate::config::{
         ByFocusRule, ByRunningAppRule, ExecutableSelector, ResourceThresholdsRule,
-        ResourceThresholdsScope,
     };
 
     std::fs::create_dir_all("target/iced-smoke").expect("create smoke output");
@@ -1933,10 +1920,7 @@ pub(crate) fn render_all_pages() {
     let [path_selector, name_selector] = selectors;
     settings.resource_thresholds.rules = vec![
         ResourceThresholdsRule::with_selector(path_selector),
-        ResourceThresholdsRule {
-            scope: ResourceThresholdsScope::PerInstance,
-            ..ResourceThresholdsRule::with_selector(name_selector)
-        },
+        ResourceThresholdsRule::with_selector(name_selector),
     ];
     let mut editor = SettingsEditor::with_settings(settings);
     let recovery = Arc::new(Mutex::new(crate::crash_recovery::RecoveryClient::start()));

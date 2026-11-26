@@ -6,9 +6,8 @@ use std::{
 
 use crate::{
     config::{
-        ResourceThresholdsAction, ResourceThresholdsComparison, ResourceThresholdsMetric,
-        ResourceThresholdsResource, ResourceThresholdsResponse, ResourceThresholdsScope,
-        ResourceThresholdsSelector, ResourceThresholdsSettings,
+        ResourceThresholdsAction, ResourceThresholdsMetric, ResourceThresholdsResource,
+        ResourceThresholdsResponse, ResourceThresholdsSelector, ResourceThresholdsSettings,
     },
     cpu::{process_cpu_usage_batch, ProcessCpuSample},
     foreground::{
@@ -42,11 +41,9 @@ pub(crate) struct ResourceThresholdsEvent {
     pub name: String,
     pub process_count: usize,
     pub process_id: Option<u32>,
-    pub scope: ResourceThresholdsScope,
     pub targets: Vec<ProcessActionTarget>,
     pub critical: bool,
     pub metric: ResourceThresholdsMetric,
-    pub comparison: ResourceThresholdsComparison,
     pub value: f64,
     pub response: ResourceThresholdsResponse,
     pub notify: bool,
@@ -59,30 +56,12 @@ struct ThresholdState {
 }
 
 impl ThresholdState {
-    fn observe(
-        &mut self,
-        value: f64,
-        threshold: u64,
-        comparison: ResourceThresholdsComparison,
-        metric: ResourceThresholdsMetric,
-        delay: Duration,
-        now: Instant,
-    ) -> bool {
+    fn observe(&mut self, value: f64, threshold: u64, delay: Duration, now: Instant) -> bool {
         let threshold = threshold as f64;
-        let qualifies = match comparison {
-            ResourceThresholdsComparison::AtOrAbove => value >= threshold,
-            ResourceThresholdsComparison::AtOrBelow => value <= threshold,
-        };
-        if !qualifies {
+        if value < threshold {
             self.since = None;
             // A small recovery margin prevents repeated alerts around the threshold.
-            let recovered = match comparison {
-                ResourceThresholdsComparison::AtOrAbove => value < threshold * 0.95,
-                ResourceThresholdsComparison::AtOrBelow => {
-                    value >= (threshold * 1.05).min(metric.maximum() as f64)
-                }
-            };
-            if recovered {
+            if value < threshold * 0.95 {
                 self.fired = false;
             }
             return false;
@@ -111,8 +90,7 @@ impl ResourceState {
 }
 
 type ProcessIdentity = (u32, u64);
-type GroupKey<'a> = (Option<ProcessIdentity>, &'a Path);
-type StateKey = (usize, Option<ProcessIdentity>, PathBuf);
+type StateKey = (usize, PathBuf);
 
 #[derive(Default)]
 struct AppState {
@@ -205,31 +183,22 @@ pub(crate) fn matching_path<'a>(
 
 pub(crate) fn group_matches<'a>(
     selector: &'a ResourceThresholdsSelector,
-    scope: ResourceThresholdsScope,
     processes: impl IntoIterator<Item = &'a ProcessInfo>,
-) -> BTreeMap<GroupKey<'a>, Vec<&'a ProcessInfo>> {
-    let mut groups = BTreeMap::<_, Vec<_>>::new();
+) -> BTreeMap<&'a Path, Vec<&'a ProcessInfo>> {
+    let mut groups = BTreeMap::<&Path, Vec<_>>::new();
     for process in processes {
         let Some(path) = matching_path(selector, process) else {
             continue;
         };
-        let identity = match scope {
-            ResourceThresholdsScope::Combined => None,
-            ResourceThresholdsScope::PerInstance => {
-                process.creation_time.map(|time| (process.id, time))
-            }
-        };
-        let key = (identity, path);
-        if let Some(group) = groups.get_mut(&key) {
+        if let Some(group) = groups.get_mut(path) {
             group.push(process);
         } else if let Some((_, group)) = groups
-            .range_mut((identity, Path::new(""))..)
-            .take_while(|((other_identity, _), _)| *other_identity == identity)
-            .find(|((_, observed_path), _)| same_executable_path(observed_path, path))
+            .iter_mut()
+            .find(|(observed_path, _)| same_executable_path(observed_path, path))
         {
             group.push(process);
         } else {
-            groups.insert(key, vec![process]);
+            groups.insert(path, vec![process]);
         }
     }
     groups
@@ -300,7 +269,8 @@ impl ResourceThresholdsManager {
             })
             .cloned()
             .collect();
-        let samples = sample_process_resources(&matched, sampling_mode(settings));
+        let sampling = sampling_mode(settings);
+        let samples = sample_process_resources(&matched, sampling);
         // Treat fallback evidence as current only when this pass also sampled
         // the exact process generation.
         for (&(pid, time), path) in &mut path_gaps {
@@ -312,12 +282,8 @@ impl ResourceThresholdsManager {
                 *path = None;
             }
         }
-        let total_memory_required = !samples.is_empty()
-            && settings.rules.iter().any(|rule| {
-                rule.enabled
-                    && rule.memory.enabled
-                    && rule.memory_unit.metric() == ResourceThresholdsMetric::MemoryPercent
-            });
+        let total_memory_required =
+            !samples.is_empty() && matches!(sampling, ProcessResourceSampling::CpuAndMemory);
         let total_memory = total_memory_required
             .then(|| crate::backend::dashboard_metrics::sample_memory_usage().total_physical_bytes)
             .flatten();
@@ -357,6 +323,7 @@ impl ResourceThresholdsManager {
         let mut activity = BTreeMap::<u32, BatchActivity>::new();
         let mut events = Vec::new();
         let mut cpu_usage = process_cpu_usage_batch();
+        let delay = Duration::from_secs(settings.sustained_seconds);
         let unresolved_on_path = |identity: &ProcessIdentity, path: &Path| {
             path_gaps.get(identity).is_some_and(|resolved| {
                 resolved.is_none_or(|resolved| same_executable_path(resolved, path))
@@ -368,11 +335,9 @@ impl ResourceThresholdsManager {
             .enumerate()
             .filter(|(_, rule)| rule.enabled)
             .flat_map(|(index, rule)| {
-                group_matches(&rule.selector, rule.scope, processes)
+                group_matches(&rule.selector, processes)
                     .into_iter()
-                    .map(move |((identity, path), group)| {
-                        ((index, identity, path.to_owned()), rule, group)
-                    })
+                    .map(move |(path, group)| ((index, path.to_owned()), rule, group))
             });
         for (key, rule, group) in groups {
             let mut matched = Vec::new();
@@ -403,11 +368,9 @@ impl ResourceThresholdsManager {
                 .or_else(|| {
                     let previous = self
                         .states
-                        .range((key.0, key.1, PathBuf::new())..)
-                        .take_while(|((index, identity, _), _)| {
-                            *index == key.0 && *identity == key.1
-                        })
-                        .find(|((_, _, path), _)| same_executable_path(path, &key.2))
+                        .range((key.0, PathBuf::new())..)
+                        .take_while(|((index, _), _)| *index == key.0)
+                        .find(|((_, path), _)| same_executable_path(path, &key.1))
                         .map(|(key, _)| key.clone())?;
                     self.states.remove(&previous)
                 })
@@ -417,7 +380,7 @@ impl ResourceThresholdsManager {
             for &identity in state
                 .members
                 .keys()
-                .filter(|identity| unresolved_on_path(identity, &key.2))
+                .filter(|identity| unresolved_on_path(identity, &key.1))
             {
                 if let std::collections::btree_map::Entry::Vacant(member) = members.entry(identity)
                 {
@@ -454,8 +417,11 @@ impl ResourceThresholdsManager {
                 states.insert(key, state);
                 continue;
             };
-            let delay =
-                Duration::from_secs(rule.sustained_seconds.unwrap_or(settings.sustained_seconds));
+            let allows_actions = rule.allows_actions();
+            let responds = |response: &ResourceThresholdsResponse| {
+                settings.notify
+                    || (allows_actions && response.action != ResourceThresholdsAction::None)
+            };
             let mut alerting = false;
             let mut skipped = false;
             for (resource, thresholds) in ResourceThresholdsResource::ALL
@@ -467,12 +433,6 @@ impl ResourceThresholdsManager {
                     continue;
                 }
                 let metric = rule.metric(resource);
-                let comparison = monitor.comparison;
-                let allows_actions = rule.allows_actions(resource);
-                let responds = |response: &ResourceThresholdsResponse| {
-                    settings.notify
-                        || (allows_actions && response.action != ResourceThresholdsAction::None)
-                };
                 // Every member needs a valid sample; never evaluate a partial app total.
                 let value = matched.iter().try_fold(0.0, |total, (process, sample)| {
                     metric_value(
@@ -499,21 +459,14 @@ impl ResourceThresholdsManager {
                         && thresholds.critical.observe(
                             value,
                             monitor.critical.threshold,
-                            comparison,
-                            metric,
                             delay,
                             now,
                         );
                     let warning_enabled = responds(&monitor.warning);
                     let warning = warning_enabled
-                        && thresholds.warning.observe(
-                            value,
-                            monitor.warning.threshold,
-                            comparison,
-                            metric,
-                            delay,
-                            now,
-                        );
+                        && thresholds
+                            .warning
+                            .observe(value, monitor.warning.threshold, delay, now);
                     if critical || warning {
                         if critical && warning_enabled {
                             thresholds.warning.fired = true;
@@ -524,7 +477,7 @@ impl ResourceThresholdsManager {
                                 .map(|(process, sample)| ProcessActionTarget {
                                     id: process.id,
                                     name: process.name.clone(),
-                                    executable_path: key.2.clone(),
+                                    executable_path: key.1.clone(),
                                     creation_time: sample.creation_time,
                                     session_id: process.session_id,
                                     is_service_account: process.is_service_account,
@@ -543,15 +496,13 @@ impl ResourceThresholdsManager {
                             name: if allows_actions {
                                 first.name.clone()
                             } else {
-                                key.2.display().to_string()
+                                key.1.display().to_string()
                             },
                             process_count: matched.len(),
                             process_id: (matched.len() == 1).then_some(first.id),
-                            scope: rule.scope,
                             targets,
                             critical,
                             metric,
-                            comparison,
                             value,
                             notify: settings.notify && rule.notify,
                             response: ResourceThresholdsResponse {
@@ -583,7 +534,7 @@ impl ResourceThresholdsManager {
         for (key, mut state) in std::mem::take(&mut self.states) {
             state
                 .members
-                .retain(|identity, _| unresolved_on_path(identity, &key.2));
+                .retain(|identity, _| unresolved_on_path(identity, &key.1));
             if !state.members.is_empty() {
                 state.interrupt_observation();
                 for &(pid, _) in state.members.keys() {
@@ -626,19 +577,13 @@ fn metric_value(
             .working_set_bytes
             .zip(total_memory.filter(|total| *total > 0))
             .map(|(bytes, total)| bytes as f64 / total as f64 * 100.0),
-        ResourceThresholdsMetric::MemoryMb => current
-            .working_set_bytes
-            .map(|bytes| bytes as f64 / 1_000_000.0),
-        ResourceThresholdsMetric::PrivateCommitMb => current
-            .private_commit_bytes
-            .map(|bytes| bytes as f64 / 1_000_000.0),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{ResourceThresholdsMemoryUnit, ResourceThresholdsRule};
+    use crate::config::ResourceThresholdsRule;
 
     impl ResourceThresholdsManager {
         fn evaluate(
@@ -923,67 +868,26 @@ mod tests {
     }
 
     #[test]
-    fn low_threshold_qualifies_at_equality_and_rearms_at_the_capped_margin() {
+    fn threshold_qualifies_at_equality_and_rearms_only_below_the_recovery_margin() {
         let mut threshold = ThresholdState::default();
         let start = Instant::now();
         let mut observe = |second, value| {
             threshold.observe(
                 value,
-                99,
-                ResourceThresholdsComparison::AtOrBelow,
-                ResourceThresholdsMetric::CpuPercent,
+                100,
                 Duration::from_secs(1),
                 start + Duration::from_secs(second),
             )
         };
 
-        assert!(!observe(0, 99.0));
-        assert!(observe(1, 99.0));
-        assert!(!observe(2, 99.99));
-        assert!(!observe(3, 99.0));
-        assert!(!observe(4, 99.0));
-        assert!(!observe(5, 100.0));
-        assert!(!observe(6, 99.0));
-        assert!(observe(7, 99.0));
-    }
-
-    #[test]
-    fn low_usage_requires_measured_zero_and_never_captures_action_targets() {
-        let mut manager = ResourceThresholdsManager::default();
-        let mut settings = settings();
-        let monitor = &mut settings.rules[0].memory;
-        monitor.comparison = ResourceThresholdsComparison::AtOrBelow;
-        monitor.warning.threshold = 1;
-        monitor.critical.threshold = 0;
-        // Guard the runtime even if invalid settings bypass config validation.
-        monitor.critical.action = ResourceThresholdsAction::Restart;
-        let process = process();
-        let start = Instant::now();
-        let mut observe =
-            |second, memory| tick(&mut manager, &settings, &process, start, second, memory);
-
-        for (second, memory) in [Some(0), None, Some(0), Some(0)].into_iter().enumerate() {
-            assert!(observe(second as u64, memory).is_empty());
-        }
-        let events = observe(4, Some(0));
-        assert_eq!(events.len(), 1);
-        let event = &events[0];
-        assert!(event.critical && event.notify);
-        assert_eq!(event.comparison, ResourceThresholdsComparison::AtOrBelow);
-        assert_eq!(event.response.threshold, 0);
-        assert_eq!(event.response.action, ResourceThresholdsAction::None);
-        assert!(event.targets.is_empty());
-
-        // Any positive reading rearms a zero threshold, even while warning qualifies.
-        assert!(observe(5, Some(1)).is_empty());
-        assert!(observe(6, Some(0)).is_empty());
-        assert!(observe(7, Some(0)).is_empty());
-        assert_eq!(observe(8, Some(0)).len(), 1);
-
-        settings.notify = false;
-        for second in 9..12 {
-            assert!(tick(&mut manager, &settings, &process, start, second, Some(0)).is_empty());
-        }
+        assert!(!observe(0, 100.0));
+        assert!(observe(1, 100.0));
+        assert!(!observe(2, 95.0));
+        assert!(!observe(3, 100.0));
+        assert!(!observe(4, 100.0));
+        assert!(!observe(5, 94.9));
+        assert!(!observe(6, 100.0));
+        assert!(observe(7, 100.0));
     }
 
     #[test]
@@ -1095,33 +999,11 @@ mod tests {
     }
 
     #[test]
-    fn units_use_decimal_memory_and_cpu_requires_an_interval() {
+    fn working_set_uses_physical_memory_and_cpu_requires_an_interval() {
         let now = Instant::now();
         let process = process();
         let mut sample = sample(&process, now, Some(512 * 1_000_000))[&process.id];
-        assert_eq!(
-            metric_value(ResourceThresholdsMetric::MemoryMb, || None, &sample, None),
-            Some(512.0)
-        );
-        assert_eq!(
-            metric_value(
-                ResourceThresholdsMetric::PrivateCommitMb,
-                || None,
-                &sample,
-                None
-            ),
-            None
-        );
         sample.private_commit_bytes = Some(384_500_000);
-        assert_eq!(
-            metric_value(
-                ResourceThresholdsMetric::PrivateCommitMb,
-                || None,
-                &sample,
-                None
-            ),
-            Some(384.5)
-        );
         assert_eq!(
             metric_value(
                 ResourceThresholdsMetric::MemoryPercent,
@@ -1197,7 +1079,7 @@ mod tests {
     }
 
     #[test]
-    fn rule_duration_overrides_the_default_and_settings_changes_restart_observation() {
+    fn shared_duration_changes_restart_observation_for_every_rule() {
         let mut settings = settings();
         settings.rules[0].memory.critical.action = ResourceThresholdsAction::Terminate;
         let mut other = process();
@@ -1230,17 +1112,12 @@ mod tests {
         settings.sustained_seconds = 3;
         assert!(observe(&settings, 3).is_empty());
         assert!(observe(&settings, 4).is_empty());
-        settings.rules[0].sustained_seconds = Some(1);
         assert!(observe(&settings, 5).is_empty());
         let events = observe(&settings, 6);
-        assert_eq!(events.len(), 1);
+        assert_eq!(events.len(), 2);
         assert_eq!(events[0].targets[0].id, processes[0].id);
-        assert!(observe(&settings, 7).is_empty());
-        let events = observe(&settings, 8);
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0].targets[0].id, processes[1].id);
+        assert_eq!(events[1].targets[0].id, processes[1].id);
         settings.notify = false;
-        settings.rules[0].sustained_seconds = None;
         assert!(observe(&settings, 9).is_empty());
         assert!(observe(&settings, 11).is_empty());
         let events = observe(&settings, 12);
@@ -1253,60 +1130,52 @@ mod tests {
 
     #[test]
     fn memory_thresholds_use_one_combined_app_total_and_capture_only_matching_members() {
-        for unit in crate::config::ResourceThresholdsMemoryUnit::ALL {
-            let mut settings = settings();
-            settings.rules[0].memory_unit = unit;
-            settings.rules[0].memory.critical.action = ResourceThresholdsAction::Terminate;
-            let mut second = process();
-            second.id += 1;
-            second.creation_time = Some(20);
-            let mut unrelated = process();
-            unrelated.id += 2;
-            unrelated.image_path = Some(r"C:\Other\test.exe".into());
-            let processes = [process(), second, unrelated];
-            let mut manager = ResourceThresholdsManager::default();
-            let start = Instant::now();
-            let mut observe = |second, memory: u64| {
-                let now = start + Duration::from_secs(second);
-                let mut samples: BTreeMap<_, _> = processes
-                    .iter()
-                    .flat_map(|p| sample(p, now, Some(memory * 1_000_000)))
-                    .collect();
-                if unit == crate::config::ResourceThresholdsMemoryUnit::PrivateCommitMb {
-                    for sample in samples.values_mut() {
-                        sample.private_commit_bytes = sample.working_set_bytes.take();
-                    }
-                }
-                manager.evaluate(&settings, &processes, &samples, Some(100 * 1_000_000), now)
-            };
-            assert!(observe(0, 40).1.is_empty());
-            assert!(observe(1, 40).1.is_empty());
-            let (status, events) = observe(2, 40);
-            assert_eq!(status.monitored_processes, 2);
-            assert_eq!(status.alerting_processes, 2);
-            assert_eq!(events.len(), 1);
-            assert!(!events[0].critical);
-            assert_eq!(events[0].value, 80.0);
-            assert_eq!(
-                events[0]
-                    .targets
-                    .iter()
-                    .map(|t| (t.id, t.creation_time))
-                    .collect::<Vec<_>>(),
-                vec![(processes[0].id, 10), (processes[1].id, 20)]
-            );
-            assert!(observe(3, 48).1.is_empty());
-            assert!(observe(4, 48).1.is_empty());
-            let (_, events) = observe(5, 48);
-            assert_eq!(events.len(), 1);
-            assert!(events[0].critical);
-            assert_eq!(events[0].value, 96.0);
-            assert_eq!(
-                events[0].response.action,
-                ResourceThresholdsAction::Terminate
-            );
-            assert!(observe(6, 48).1.is_empty());
-        }
+        let mut settings = settings();
+        settings.rules[0].memory.critical.action = ResourceThresholdsAction::Terminate;
+        let mut second = process();
+        second.id += 1;
+        second.creation_time = Some(20);
+        let mut unrelated = process();
+        unrelated.id += 2;
+        unrelated.image_path = Some(r"C:\Other\test.exe".into());
+        let processes = [process(), second, unrelated];
+        let mut manager = ResourceThresholdsManager::default();
+        let start = Instant::now();
+        let mut observe = |second, memory: u64| {
+            let now = start + Duration::from_secs(second);
+            let samples = processes
+                .iter()
+                .flat_map(|p| sample(p, now, Some(memory * 1_000_000)))
+                .collect();
+            manager.evaluate(&settings, &processes, &samples, Some(100 * 1_000_000), now)
+        };
+        assert!(observe(0, 40).1.is_empty());
+        assert!(observe(1, 40).1.is_empty());
+        let (status, events) = observe(2, 40);
+        assert_eq!(status.monitored_processes, 2);
+        assert_eq!(status.alerting_processes, 2);
+        assert_eq!(events.len(), 1);
+        assert!(!events[0].critical);
+        assert_eq!(events[0].value, 80.0);
+        assert_eq!(
+            events[0]
+                .targets
+                .iter()
+                .map(|t| (t.id, t.creation_time))
+                .collect::<Vec<_>>(),
+            vec![(processes[0].id, 10), (processes[1].id, 20)]
+        );
+        assert!(observe(3, 48).1.is_empty());
+        assert!(observe(4, 48).1.is_empty());
+        let (_, events) = observe(5, 48);
+        assert_eq!(events.len(), 1);
+        assert!(events[0].critical);
+        assert_eq!(events[0].value, 96.0);
+        assert_eq!(
+            events[0].response.action,
+            ResourceThresholdsAction::Terminate
+        );
+        assert!(observe(6, 48).1.is_empty());
     }
 
     #[test]
@@ -1315,9 +1184,9 @@ mod tests {
         settings.rules[0].selector = ResourceThresholdsSelector::ExactName {
             executable_name: "TEST.EXE".into(),
         };
-        settings.rules[0].memory_unit = ResourceThresholdsMemoryUnit::Megabytes;
         let mut second = process();
         second.id += 1;
+        second.image_path = Some(r"c:\apps\TEST.EXE".into());
         let mut other = process();
         other.id += 2;
         other.image_path = Some(r"C:\Other\test.exe".into());
@@ -1330,17 +1199,17 @@ mod tests {
         let processes = [process(), second, other, unverified, different_filename];
         let mut manager = ResourceThresholdsManager::default();
         let start = Instant::now();
-        let mut observe = |second, first_mb, other_mb| {
+        let mut observe = |second, first, other| {
             let now = start + Duration::from_secs(second);
             let mut samples: BTreeMap<_, _> = processes
                 .iter()
-                .zip([first_mb, first_mb, other_mb, 100, 100])
-                .flat_map(|(process, mb)| sample(process, now, Some(mb * 1_000_000)))
+                .zip([first, first, other, 100, 100])
+                .flat_map(|(process, bytes)| sample(process, now, Some(bytes)))
                 .collect();
             if second == 6 {
                 samples.get_mut(&processes[1].id).unwrap().creation_time += 1;
             }
-            manager.evaluate(&settings, &processes, &samples, None, now)
+            manager.evaluate(&settings, &processes, &samples, Some(100), now)
         };
 
         for second in 0..3 {
@@ -1372,108 +1241,26 @@ mod tests {
     }
 
     #[test]
-    fn per_instance_thresholds_survive_sibling_gaps_but_not_pid_reuse() {
+    fn notification_only_rules_cannot_dispatch_process_actions() {
         let mut settings = settings();
-        settings.rules[0].scope = ResourceThresholdsScope::PerInstance;
         settings.rules[0].selector = ResourceThresholdsSelector::ExactName {
             executable_name: "test.exe".into(),
         };
-        let mut processes = [process(), process()];
-        processes[1].id += 1;
-        let start = Instant::now();
+        settings.rules[0].memory.critical.action = ResourceThresholdsAction::Restart;
         let mut manager = ResourceThresholdsManager::default();
-        let mut observe = |processes: &[ProcessInfo], second, memory: [Option<u64>; 2]| {
-            let now = start + Duration::from_secs(second);
-            let mut samples = BTreeMap::new();
-            for (process, memory) in processes.iter().zip(memory) {
-                if let Some(memory) = memory {
-                    samples.extend(sample(process, now, Some(memory)));
-                }
-            }
-            manager.evaluate(&settings, processes, &samples, Some(1_000), now)
-        };
-        let assert_instance = |events: Vec<ResourceThresholdsEvent>, process: &ProcessInfo| {
-            assert_eq!(events.len(), 1);
-            let event = &events[0];
-            assert_eq!(event.scope, ResourceThresholdsScope::PerInstance);
-            assert_eq!(event.process_id, Some(process.id));
-            assert_eq!(event.process_count, 1);
-            assert_eq!(
-                event.name,
-                process.image_path.as_ref().unwrap().display().to_string()
-            );
-            assert_eq!(event.value, 95.0);
-            assert!(event.notify && event.critical);
-            assert_eq!(event.response.action, ResourceThresholdsAction::None);
-            assert!(event.targets.is_empty());
-        };
+        let process = process();
+        let start = Instant::now();
+        assert!(tick(&mut manager, &settings, &process, start, 0, Some(950)).is_empty());
+        assert!(tick(&mut manager, &settings, &process, start, 1, Some(950)).is_empty());
+        let events = tick(&mut manager, &settings, &process, start, 2, Some(950));
+        assert_eq!(events.len(), 1);
+        assert!(events[0].notify && events[0].critical);
+        assert_eq!(events[0].response.action, ResourceThresholdsAction::None);
+        assert!(events[0].targets.is_empty());
 
-        for second in 0..3 {
-            let (snapshot, events) = observe(&processes, second, [Some(400); 2]);
-            assert_eq!(snapshot.monitored_processes, 2);
-            assert!(events.is_empty());
-        }
-        assert!(observe(&processes, 3, [Some(950); 2]).1.is_empty());
-        processes[1].image_path = Some(r"c:\apps\TEST.EXE".into());
-        let (snapshot, events) = observe(&processes, 4, [None, Some(950)]);
-        assert_eq!(snapshot.monitored_processes, 1);
-        assert_eq!(snapshot.skipped_processes, 1);
-        assert!(events.is_empty());
-        assert_instance(observe(&processes, 5, [Some(950); 2]).1, &processes[1]);
-        assert!(observe(&processes, 6, [Some(950), Some(400)]).1.is_empty());
-        assert_instance(observe(&processes, 7, [Some(950); 2]).1, &processes[0]);
-
-        processes[0].creation_time = Some(20);
-        assert!(observe(&processes, 8, [Some(950); 2]).1.is_empty());
-        assert_instance(observe(&processes, 9, [Some(950); 2]).1, &processes[1]);
-        assert_instance(observe(&processes, 10, [Some(950); 2]).1, &processes[0]);
-
-        let (snapshot, events) = observe(&processes[1..], 11, [Some(950), None]);
-        assert_eq!(snapshot.monitored_processes, 1);
-        assert_eq!(snapshot.alerting_processes, 1);
-        assert!(events.is_empty());
-        assert!(observe(&processes, 12, [Some(950); 2]).1.is_empty());
-        assert!(observe(&processes, 13, [Some(950); 2]).1.is_empty());
-        assert_instance(observe(&processes, 14, [Some(950); 2]).1, &processes[0]);
-    }
-
-    #[test]
-    fn notification_only_rules_cannot_dispatch_process_actions() {
-        for (selector, scope) in [
-            (
-                ResourceThresholdsSelector::ExactName {
-                    executable_name: "test.exe".into(),
-                },
-                ResourceThresholdsScope::Combined,
-            ),
-            (
-                ResourceThresholdsSelector::ExactPath {
-                    executable_path: r"C:\Apps\test.exe".into(),
-                },
-                ResourceThresholdsScope::PerInstance,
-            ),
-        ] {
-            let mut settings = settings();
-            settings.rules[0].selector = selector;
-            settings.rules[0].scope = scope;
-            settings.rules[0].memory.critical.action = ResourceThresholdsAction::Restart;
-            let mut manager = ResourceThresholdsManager::default();
-            let process = process();
-            let start = Instant::now();
-            assert!(tick(&mut manager, &settings, &process, start, 0, Some(950)).is_empty());
-            assert!(tick(&mut manager, &settings, &process, start, 1, Some(950)).is_empty());
-            let events = tick(&mut manager, &settings, &process, start, 2, Some(950));
-            assert_eq!(events.len(), 1);
-            assert!(events[0].notify && events[0].critical);
-            assert_eq!(events[0].response.action, ResourceThresholdsAction::None);
-            assert!(events[0].targets.is_empty());
-
-            settings.notify = false;
-            for second in 3..=5 {
-                assert!(
-                    tick(&mut manager, &settings, &process, start, second, Some(950)).is_empty()
-                );
-            }
+        settings.notify = false;
+        for second in 3..=5 {
+            assert!(tick(&mut manager, &settings, &process, start, second, Some(950)).is_empty());
         }
     }
 
@@ -1584,12 +1371,8 @@ mod tests {
     }
 
     #[test]
-    fn unknown_criticality_breaks_the_combined_low_usage_interval() {
-        let mut settings = settings();
-        let monitor = &mut settings.rules[0].memory;
-        monitor.comparison = ResourceThresholdsComparison::AtOrBelow;
-        monitor.warning.threshold = 30;
-        monitor.critical.threshold = 20;
+    fn unknown_criticality_breaks_the_combined_sustained_interval() {
+        let settings = settings();
         let mut processes = [process(), process()];
         processes[1].id += 1;
         let mut manager = ResourceThresholdsManager::default();
@@ -1599,7 +1382,7 @@ mod tests {
             let now = start + Duration::from_secs(second);
             let samples = processes
                 .iter()
-                .flat_map(|process| sample(process, now, Some(100)))
+                .flat_map(|process| sample(process, now, Some(400)))
                 .collect();
             let (snapshot, events) =
                 manager.evaluate(&settings, &processes, &samples, Some(1000), now);
@@ -1612,38 +1395,29 @@ mod tests {
 
     #[test]
     fn missing_samples_preserve_fired_incidents_for_observed_exact_identities() {
-        for scope in [
-            ResourceThresholdsScope::Combined,
-            ResourceThresholdsScope::PerInstance,
-        ] {
-            let mut settings = settings();
-            let rule = &mut settings.rules[0];
-            rule.scope = scope;
-            if scope == ResourceThresholdsScope::Combined {
-                rule.memory.critical.action = ResourceThresholdsAction::Terminate;
+        let mut settings = settings();
+        settings.rules[0].memory.critical.action = ResourceThresholdsAction::Terminate;
+        let mut manager = ResourceThresholdsManager::default();
+        let mut process = process();
+        let start = Instant::now();
+        for second in 0..10 {
+            if second == 7 {
+                process.creation_time = Some(20);
             }
-            let mut manager = ResourceThresholdsManager::default();
-            let mut process = process();
-            let start = Instant::now();
-            for second in 0..10 {
-                if second == 7 {
-                    process.creation_time = Some(20);
-                }
-                let now = start + Duration::from_secs(second);
-                let samples = if second == 3 {
-                    BTreeMap::new()
-                } else {
-                    sample(&process, now, Some(950))
-                };
-                let (_, events) = manager.evaluate(
-                    &settings,
-                    std::slice::from_ref(&process),
-                    &samples,
-                    Some(1000),
-                    now,
-                );
-                assert_eq!(events.len(), usize::from(matches!(second, 2 | 9)));
-            }
+            let now = start + Duration::from_secs(second);
+            let samples = if second == 3 {
+                BTreeMap::new()
+            } else {
+                sample(&process, now, Some(950))
+            };
+            let (_, events) = manager.evaluate(
+                &settings,
+                std::slice::from_ref(&process),
+                &samples,
+                Some(1000),
+                now,
+            );
+            assert_eq!(events.len(), usize::from(matches!(second, 2 | 9)));
         }
     }
 
@@ -1654,17 +1428,14 @@ mod tests {
         rule.selector = ResourceThresholdsSelector::ExactName {
             executable_name: "test.exe".into(),
         };
-        rule.memory.comparison = ResourceThresholdsComparison::AtOrBelow;
-        rule.memory.warning.threshold = 30;
-        rule.memory.critical.threshold = 5;
         let mut processes = [process(), process()];
         processes[1].id += 1;
         let start = Instant::now();
         let mut manager = ResourceThresholdsManager::default();
 
-        for second in 0..5 {
+        for second in 0..7 {
             let now = start + Duration::from_secs(second);
-            let samples = sample(&processes[0], now, Some(0));
+            let samples = sample(&processes[0], now, Some(800));
             let (snapshot, events) = if (1..=3).contains(&second) {
                 let unresolved_paths = BTreeMap::from([((processes[1].id, 10), None)]);
                 manager.evaluate_catalog(
@@ -1677,7 +1448,7 @@ mod tests {
                 )
             } else {
                 let mut samples = samples;
-                samples.extend(sample(&processes[1], now, Some(800)));
+                samples.extend(sample(&processes[1], now, Some(0)));
                 manager.evaluate_catalog(
                     &settings,
                     &processes,
@@ -1690,7 +1461,7 @@ mod tests {
             if (1..=3).contains(&second) {
                 assert_eq!(snapshot.skipped_processes, 2);
             }
-            assert!(events.is_empty());
+            assert_eq!(events.len(), usize::from(second == 6));
         }
     }
 
@@ -1742,7 +1513,6 @@ mod tests {
         );
         rule.cpu.enabled = false;
         rule.memory.enabled = true;
-        rule.memory_unit = crate::config::ResourceThresholdsMemoryUnit::Megabytes;
         rule.memory.warning.threshold = 1;
         rule.memory.critical.threshold = 2;
         rule.memory.critical.action = ResourceThresholdsAction::Terminate;
@@ -1754,14 +1524,28 @@ mod tests {
         };
         let mut manager = ResourceThresholdsManager::default();
         let samples = sample_process_resources(&processes, ProcessResourceSampling::CpuAndMemory);
+        // Use a fixed test capacity derived from these children to exercise real
+        // working-set samples without depending on the host's installed RAM.
+        let total_memory = Some(
+            samples
+                .values()
+                .map(|sample| sample.working_set_bytes.unwrap())
+                .sum(),
+        );
         let now = Instant::now();
         assert!(manager
-            .evaluate(&settings, &processes, &samples, None, now)
+            .evaluate(&settings, &processes, &samples, total_memory, now)
             .1
             .is_empty());
         std::thread::sleep(Duration::from_millis(1100));
         let samples = sample_process_resources(&processes, ProcessResourceSampling::CpuAndMemory);
-        let (_, events) = manager.evaluate(&settings, &processes, &samples, None, Instant::now());
+        let (_, events) = manager.evaluate(
+            &settings,
+            &processes,
+            &samples,
+            total_memory,
+            Instant::now(),
+        );
         assert_eq!(events.len(), 1);
         let event = events.into_iter().next().unwrap();
         assert!(event.critical);
