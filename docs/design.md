@@ -279,11 +279,13 @@ hover/press; background shading supplies feedback.
   By Activity retains Idle plan and Active plan plus its profile-specific Idle
   timeout. These plan selections remain visible independently of the shared
   restoration switch.
-- The Switching settings card describes the rule priority and when switching pauses.
-  The Power Plan Control side panel shows the active Windows plan,
-  the current automation decision, and lower-priority modes that also selected
-  a plan in the same pass. The current-plan card stays compact. Ordinary rule Status rails
-  identify a confirmed pause due to Adaptive Processor Power, A/C, or missing observations.
+- Explain rule priority under the Automation heading above the five switching
+  modes, which appear in priority order. Show the current switching status in
+  the current-plan card, including the reason when switching is paused.
+  The Power Plan Control side panel shows the active Windows plan, the current
+  automation decision, and lower-priority modes that also selected a plan in
+  the same pass. Ordinary rule Status rails identify a confirmed pause due to
+  Adaptive Processor Power, A/C, or missing observations.
 - By Focus and By Running App default to matching an executable path. Executable
   name rules match the same filename across paths. By Focus evaluates the app with
   input focus. Process List edits individual path rules. The rule editors accept

@@ -4047,6 +4047,7 @@ impl WinderustApp {
                         &self.power_plans,
                         self.power_plans_loaded,
                         self.power_plans_loading,
+                        self.settings.persisted().general.enabled,
                         &self.power_plan_control,
                     )
                     .map(Message::PowerPlanControl),
@@ -4074,16 +4075,6 @@ impl WinderustApp {
                         self.power_plan_control
                             .fallback_polling_interval_field(general.check_interval_ms)
                             .map(Message::PowerPlanControl),
-                        column![
-                            text(t!("power_plan_control.rule_priority").to_string())
-                                .size(design::typography::SECONDARY)
-                                .style(text::secondary),
-                            text(t!("power_plan_control.rule_pause_conditions").to_string())
-                                .size(design::typography::SECONDARY)
-                                .style(text::secondary),
-                        ]
-                        .spacing(design::space::TIGHT)
-                        .into(),
                     ])),
                     self.child_pages(),
                 ]
@@ -4106,9 +4097,10 @@ impl WinderustApp {
     fn child_pages(&self) -> iced::widget::Column<'_, Message> {
         let mut pages = column![].spacing(widgets::CARD_GAP);
         if self.page == Page::PowerPlanControl {
-            pages = pages.push(widgets::heading(
-                t!("power_plan_control.automation").to_string(),
-                design::typography::BODY,
+            pages = pages.push(widgets::setting_title_with_help(
+                "power_plan_control.automation",
+                "",
+                "power_plan_control.rule_priority",
             ));
         }
         if let Some(children) = self.page.child_pages() {

@@ -90,6 +90,7 @@ pub(super) fn view<'a>(
         return Some(power_plan_control::status_view(
             &runtime.power_plan_status,
             plans,
+            settings.general.enabled,
         ));
     }
     if page == Page::AdaptiveProcessorPower {
