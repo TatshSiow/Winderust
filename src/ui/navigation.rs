@@ -549,7 +549,7 @@ fn dashboard_page_matches_query(page: Page, query: &str) -> bool {
 pub(super) fn dashboard_page_search_text(page: Page) -> String {
     let label = page.label();
     let section = page.section_label();
-    match page {
+    let mut search = match page {
         Page::Home => format!(
             "{label} {section} {} {} overview summary current automation decision power plan cpu enabled rules",
             t!("home.intro_1"),
@@ -743,7 +743,13 @@ pub(super) fn dashboard_page_search_text(page: Page) -> String {
             t!("about.intro_1"),
             t!("about.intro_2"),
         ),
+    };
+    if page != Page::PriorityControl && page.section_landing_page() == Page::PriorityControl {
+        search.push(' ');
+        search.push_str(&t!("priority_control.protect_child_processes"));
+        search.push_str(" child processes descendants");
     }
+    search
 }
 
 pub(super) fn nav_section_in_footer(page: Page) -> bool {

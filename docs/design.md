@@ -227,6 +227,9 @@ hover/press; background shading supplies feedback.
 - Keep Restore defaults in the live Preset card on the CPU Behaviour tab. It stages
   the selected source's factory tuning through the shared Save and Discard flow.
 - Priority Control uses Focus / Visible Window / Background dropdown columns and expandable detail cards. Turning a row off does not lock its configuration. Runtime precedence and protection rules live in [Runtime contracts](runtime-contracts.md).
+- Place a Protect child processes switch inside each Priority Control feature's
+  Foreground Detection and Visible Window Detection cards. Both switches
+  default on and use the selected power profile and the standard Save flow.
 - Adaptive Processor Power lives under Power Plan Control. Its Plugged In and On Battery editors each have an enable switch, off by default, with a Preset dropdown below it. Both editors share the preset library. The dropdown stages tuning for the selected source. The Presets tab opens a read-only preview of the base policy and demand values for that source. Use preset stages the preview, and closing it preserves existing edits. Add preset names a copy of the selected source's tuning. List edits and tuning use the shared Save and Discard flow. Configuration remains editable while the feature is off.
 - The Base Processor Policy tab shows the Idle settings and the baseline inherited by higher-demand profiles. The Demand Profiles tab explains automatic profile selection and shows one boost policy and one boost mode each for Background Pressure and Focus and Launch.
 - The Adaptive Processor Power Status rail reports live ownership, errors, and restoration. The source profile selected for editing can differ from the live power source.

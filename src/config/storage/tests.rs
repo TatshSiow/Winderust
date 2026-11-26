@@ -1259,10 +1259,10 @@ fn efficiency_mode_reads_only_its_current_section_on_both_profiles() {
     assert_eq!(toml::from_str::<Settings>(&raw).unwrap(), settings);
 
     let legacy = raw
-        .replace("efficiency_mode]", "background_efficiency]")
+        .replace("[efficiency_mode", "[background_efficiency")
         .replace(
-            "efficiency_mode.custom_rules]]",
-            "background_efficiency.custom_rules]]",
+            "[on_battery.efficiency_mode",
+            "[on_battery.background_efficiency",
         );
     let parsed: Settings = toml::from_str(&legacy).unwrap();
     let mut defaults = settings;
@@ -1496,6 +1496,7 @@ fn toml_round_trip_preserves_settings() {
         },
         efficiency_mode: EfficiencyModeSettings {
             enabled: true,
+            child_protection: Default::default(),
             foreground_detection_enabled: false,
             visible_window_detection_enabled: true,
             foreground_efficiency_mode: false,
@@ -1692,6 +1693,10 @@ fn toml_round_trip_preserves_settings() {
         },
         process_priority: ProcessPrioritySettings {
             enabled: true,
+            child_protection: crate::config::PriorityChildProtectionSettings {
+                focused_app_children: false,
+                visible_window_app_children: true,
+            },
             foreground_detection_enabled: true,
             foreground_priority: ProcessPrioritySetting::Default,
             visible_window_detection_enabled: true,
@@ -1709,6 +1714,7 @@ fn toml_round_trip_preserves_settings() {
         thread_priority: crate::config::ThreadPrioritySettings::default(),
         dynamic_priority_boost: DynamicPriorityBoostSettings {
             enabled: true,
+            child_protection: Default::default(),
             foreground_detection_enabled: true,
             foreground_boost: ProcessDynamicPriorityBoostSetting::Default,
             visible_window_detection_enabled: true,
@@ -1722,6 +1728,7 @@ fn toml_round_trip_preserves_settings() {
         },
         io_priority: IoPrioritySettings {
             enabled: true,
+            child_protection: Default::default(),
             foreground_detection_enabled: true,
             foreground_priority: ProcessIoPrioritySetting::Normal,
             visible_window_detection_enabled: true,
@@ -1738,6 +1745,7 @@ fn toml_round_trip_preserves_settings() {
         },
         gpu_priority: GpuPrioritySettings {
             enabled: true,
+            child_protection: Default::default(),
             foreground_detection_enabled: true,
             foreground_priority: ProcessGpuPrioritySetting::AboveNormal,
             visible_window_detection_enabled: true,
@@ -1754,6 +1762,7 @@ fn toml_round_trip_preserves_settings() {
         },
         memory_priority: MemoryPrioritySettings {
             enabled: true,
+            child_protection: Default::default(),
             foreground_detection_enabled: true,
             foreground_priority: ProcessMemoryPrioritySetting::Default,
             visible_window_detection_enabled: true,

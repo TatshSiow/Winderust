@@ -176,6 +176,12 @@ impl EfficiencyModeManager {
             None,
             visible_window_process_ids,
         );
+        let child_protection = observations.priority_child_protection(
+            settings.child_protection,
+            &processes,
+            foreground_process_id,
+            &visible_processes,
+        );
         let active_audio_process_ids = active_audio_process_ids().ok();
         let targets = processes
             .iter()
@@ -199,9 +205,12 @@ impl EfficiencyModeManager {
                     foreground_process_id,
                     foreground_executable_path.as_deref(),
                 );
-                if !efficiency_mode_enabled_for(settings, path, focus, || {
-                    visible_processes.contains(process.id, &executable_path)
-                }) {
+                let visible_window = !focus
+                    && needs_visible_windows
+                    && visible_processes.contains(process.id, &executable_path);
+                if (!focus && !visible_window && child_protection.contains(process.id))
+                    || !efficiency_mode_enabled_for(settings, path, focus, || visible_window)
+                {
                     return None;
                 }
                 Some(EfficiencyModeTarget {

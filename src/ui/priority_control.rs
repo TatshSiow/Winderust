@@ -45,6 +45,45 @@ impl Tier {
     pub(super) fn flags(self) -> (bool, bool) {
         (self == Self::Focus, self == Self::VisibleWindow)
     }
+
+    pub(super) fn child_protection(self) -> Option<ChildProtection> {
+        match self {
+            Self::Focus => Some(ChildProtection::Focus),
+            Self::VisibleWindow => Some(ChildProtection::VisibleWindow),
+            Self::Background => None,
+        }
+    }
+}
+#[derive(Debug, Clone, Copy)]
+pub(super) enum ChildProtection {
+    Focus,
+    VisibleWindow,
+}
+impl ChildProtection {
+    pub(super) fn enabled(self, settings: PriorityChildProtectionSettings) -> bool {
+        match self {
+            Self::Focus => settings.focused_app_children,
+            Self::VisibleWindow => settings.visible_window_app_children,
+        }
+    }
+
+    pub(super) fn set(self, settings: &mut PriorityChildProtectionSettings, enabled: bool) {
+        match self {
+            Self::Focus => settings.focused_app_children = enabled,
+            Self::VisibleWindow => settings.visible_window_app_children = enabled,
+        }
+    }
+
+    pub(super) fn row<'a, M: Clone + 'a>(
+        self,
+        settings: PriorityChildProtectionSettings,
+        on_toggle: impl Fn(bool) -> M + 'a,
+    ) -> iced::widget::Row<'a, M> {
+        super::widgets::setting_row(
+            "priority_control.protect_child_processes",
+            super::widgets::switch(self.enabled(settings), Some(on_toggle)),
+        )
+    }
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Value {
@@ -87,6 +126,7 @@ impl Value {
 pub(super) enum Message {
     Enabled(bool),
     Detection(Tier, bool),
+    ProtectChildren(ChildProtection, bool),
     Preserve(Tier, bool),
     Default(Tier, Value),
     Path(String),
@@ -162,6 +202,26 @@ impl Kind {
                 }
             },
             Tier::Background => true,
+        }
+    }
+    fn child_protection(self, settings: &Settings) -> PriorityChildProtectionSettings {
+        match self {
+            Self::Process => settings.process_priority.child_protection,
+            Self::Thread => settings.thread_priority.child_protection,
+            Self::Io => settings.io_priority.child_protection,
+            Self::Gpu => settings.gpu_priority.child_protection,
+            Self::Memory => settings.memory_priority.child_protection,
+            Self::DynamicBoost => settings.dynamic_priority_boost.child_protection,
+        }
+    }
+    fn child_protection_mut(self, settings: &mut Settings) -> &mut PriorityChildProtectionSettings {
+        match self {
+            Self::Process => &mut settings.process_priority.child_protection,
+            Self::Thread => &mut settings.thread_priority.child_protection,
+            Self::Io => &mut settings.io_priority.child_protection,
+            Self::Gpu => &mut settings.gpu_priority.child_protection,
+            Self::Memory => &mut settings.memory_priority.child_protection,
+            Self::DynamicBoost => &mut settings.dynamic_priority_boost.child_protection,
         }
     }
     pub(super) fn preserve(self, settings: &Settings, tier: Tier) -> Option<bool> {
@@ -316,6 +376,11 @@ impl Editor {
             Message::Enabled(value) if kind.enabled(settings) == value => {}
             Message::Detection(tier, value) if kind.detection(settings, tier) == value => {}
             Message::Preserve(tier, value) if kind.preserve(settings, tier) == Some(value) => {}
+            Message::ProtectChildren(protection, value) => {
+                if protection.enabled(kind.child_protection(settings)) != value {
+                    protection.set(kind.child_protection_mut(settings), value);
+                }
+            }
             Message::Path(path) => self.path = path,
             Message::Browse => {} // The application opens the native executable picker.
             Message::Add => {
@@ -576,6 +641,13 @@ impl Editor {
                     checkbox(preserve)
                         .label(label.to_string())
                         .on_toggle_maybe(Some(move |value| Message::Preserve(tier, value))),
+                );
+            }
+            if let Some(protection) = tier.child_protection() {
+                group = group.push(super::widgets::settings_divider()).push(
+                    protection.row(kind.child_protection(settings), move |value| {
+                        Message::ProtectChildren(protection, value)
+                    }),
                 );
             }
             body = body.push(super::widgets::setting_group(

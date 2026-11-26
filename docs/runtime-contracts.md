@@ -1017,6 +1017,18 @@ Read the relevant section before changing feature policy, ownership, restoration
   only its Efficiency Mode claims and rechecks the source while paused, or
   when a dormant profile could become active without power notifications.
 - Every Priority Control page uses three ordered default tiers: Focus App, then apps with visible windows, then background. Visible Window Detection defaults off and has its own selectable value; custom process rules independently override all three tiers. Retired Auto priority values are rejected rather than mapped to current defaults.
+- Process Priority, Efficiency Mode, Thread Priority, Dynamic Priority Boost,
+  I/O Priority, GPU Priority, and Memory Priority each configure child process
+  protection independently for each power source. Both switches default on and
+  follow the corresponding detection setting. A verified descendant in the
+  Background tier skips the Background default or custom rule and releases
+  the feature's existing automatic claim. Direct Focus and Visible Window
+  policies and manual Process List changes keep their existing ownership.
+- Resolve descendants from the focused PID and actual visible-window owners
+  using the shared process observation. Each edge requires creation times and
+  rejects a child older than its parent. Cache the resulting groups within the
+  reconciliation pass. A feature with Focus child protection enabled pauses
+  when a required Focus observation is unavailable.
 - Each Priority Control pauses when Windows cannot verify the power source and
   its effective enablement or saved enabled settings differ. It releases its
   automatic claims through its existing restoration path. A dormant profile

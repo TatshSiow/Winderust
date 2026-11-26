@@ -944,6 +944,8 @@ adaptive_engine_process:
   custom_rule_pattern_help: "Use * for any number of characters and ? for one character. Patterns match the file name only."
 
 priority_control:
+  protect_child_processes: "Protect child processes"
+  protect_child_processes_help: "Skip Background defaults and rules for descendants of apps detected here."
   custom_rules_help: "An enabled app rule overrides its tier. Choose Default to skip the app and restore its previous setting. Turning off this feature also restores previous settings."
 
 io_priority:

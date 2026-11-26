@@ -7,6 +7,7 @@ use std::{
 };
 
 use crate::{
+    config::PriorityChildProtectionSettings,
     cpu::{process_cpu_usage_percent, ProcessCpuSample},
     foreground::{
         active_window::{process_from_id, ForegroundProcess},
@@ -15,11 +16,25 @@ use crate::{
             enrich_process_paths, list_process_ancestry, list_process_entries,
             observe_process_metadata, process_cpu_times,
         },
-        top_level_window_process_ids, visible_window_process_ids, ProcessInfo,
+        top_level_window_process_ids, visible_window_process_ids, ProcessInfo, ProtectedProcesses,
     },
 };
 
 pub(crate) type AdaptiveWorkload = Arc<BTreeMap<u32, u64>>;
+
+pub(crate) struct PriorityChildProcesses {
+    focused: Option<Arc<BTreeSet<u32>>>,
+    visible: Option<Arc<BTreeSet<u32>>>,
+}
+
+impl PriorityChildProcesses {
+    pub(crate) fn contains(&self, process_id: u32) -> bool {
+        self.focused
+            .iter()
+            .chain(&self.visible)
+            .any(|ids| ids.contains(&process_id))
+    }
+}
 
 #[derive(Debug, Default, PartialEq, Eq)]
 pub(crate) struct ForegroundCpuHistory(Option<(AdaptiveWorkload, ProcessCpuSample)>);
@@ -134,6 +149,8 @@ pub(crate) struct CycleObservations {
     foreground_process: Observation<Option<ForegroundProcess>>,
     visible_window_process_ids: Observation<Arc<BTreeSet<u32>>>,
     top_level_window_process_ids: Observation<Arc<BTreeSet<u32>>>,
+    priority_focused_children: Option<Arc<BTreeSet<u32>>>,
+    priority_visible_children: Option<Arc<BTreeSet<u32>>>,
     cpu_topology: Observation<Arc<crate::cpu_topology::CpuTopology>>,
 }
 
@@ -181,8 +198,36 @@ impl CycleObservations {
             foreground_process: Observation::NotRequested,
             visible_window_process_ids: Observation::NotRequested,
             top_level_window_process_ids: Observation::NotRequested,
+            priority_focused_children: None,
+            priority_visible_children: None,
             cpu_topology: Observation::NotRequested,
         }
+    }
+
+    pub(crate) fn priority_child_protection(
+        &mut self,
+        settings: PriorityChildProtectionSettings,
+        processes: &[ProcessInfo],
+        foreground_process_id: Option<u32>,
+        visible_processes: &ProtectedProcesses,
+    ) -> PriorityChildProcesses {
+        let focused = foreground_process_id
+            .filter(|_| settings.focused_app_children)
+            .map(|id| {
+                Arc::clone(self.priority_focused_children.get_or_insert_with(|| {
+                    let mut group = foreground_process_group_ids(processes, Some(id));
+                    group.remove(&id);
+                    Arc::new(group)
+                }))
+            });
+        let window_owners = visible_processes.window_owner_ids();
+        let visible =
+            (settings.visible_window_app_children && !window_owners.is_empty()).then(|| {
+                Arc::clone(self.priority_visible_children.get_or_insert_with(|| {
+                    Arc::new(visible_window_descendants(processes, window_owners))
+                }))
+            });
+        PriorityChildProcesses { focused, visible }
     }
 
     #[cfg(test)]
@@ -488,12 +533,6 @@ pub(crate) fn foreground_process_group_ids(
         .iter()
         .map(|process| (process.id, process))
         .collect::<std::collections::BTreeMap<_, _>>();
-    let valid_generation = |child: &ProcessInfo, parent_created| {
-        child
-            .creation_time
-            .zip(parent_created)
-            .is_some_and(|(child, parent)| child >= parent)
-    };
     let mut group = BTreeSet::from([root]);
     let mut pending = vec![root];
     // Scanning small families costs less than building the complete ancestry index.
@@ -504,7 +543,7 @@ pub(crate) fn foreground_process_group_ids(
         let parent_created = by_id[&parent].creation_time;
         for child in processes {
             if child.parent_id == Some(parent)
-                && valid_generation(child, parent_created)
+                && valid_child_generation(child, parent_created)
                 && group.insert(child.id)
             {
                 pending.push(child.id);
@@ -514,6 +553,52 @@ pub(crate) fn foreground_process_group_ids(
     if pending.is_empty() {
         return group;
     }
+    extend_process_group_from_index(processes, &by_id, pending, &mut group);
+    group
+}
+
+fn visible_window_descendants(
+    processes: &[ProcessInfo],
+    window_owners: &BTreeSet<u32>,
+) -> BTreeSet<u32> {
+    if window_owners.len() == 1 {
+        let root = window_owners.first().copied();
+        let mut group = foreground_process_group_ids(processes, root);
+        group.retain(|id| !window_owners.contains(id));
+        return group;
+    }
+    let by_id = processes
+        .iter()
+        .map(|process| (process.id, process))
+        .collect::<BTreeMap<_, _>>();
+    let pending: Vec<_> = window_owners
+        .iter()
+        .copied()
+        .filter(|id| {
+            by_id
+                .get(id)
+                .is_some_and(|process| process.creation_time.is_some())
+        })
+        .collect();
+    let mut group = pending.iter().copied().collect();
+    extend_process_group_from_index(processes, &by_id, pending, &mut group);
+    group.retain(|id| !window_owners.contains(id));
+    group
+}
+
+fn valid_child_generation(child: &ProcessInfo, parent_created: Option<u64>) -> bool {
+    child
+        .creation_time
+        .zip(parent_created)
+        .is_some_and(|(child, parent)| child >= parent)
+}
+
+fn extend_process_group_from_index(
+    processes: &[ProcessInfo],
+    by_id: &BTreeMap<u32, &ProcessInfo>,
+    mut pending: Vec<u32>,
+    group: &mut BTreeSet<u32>,
+) {
     let mut children = processes
         .iter()
         .filter_map(|process| process.parent_id.map(|parent| (parent, process)))
@@ -526,12 +611,11 @@ pub(crate) fn foreground_process_group_ids(
             .iter()
             .take_while(|(parent_id, _)| *parent_id == parent)
         {
-            if valid_generation(child, parent_created) && group.insert(child.id) {
+            if valid_child_generation(child, parent_created) && group.insert(child.id) {
                 pending.push(child.id);
             }
         }
     }
-    group
 }
 
 #[cfg(test)]
@@ -1235,6 +1319,62 @@ mod tests {
         );
         assert_eq!(result.failed_processes, 0);
         assert_eq!(result.adjusted_processes, 0);
+    }
+
+    #[test]
+    fn priority_child_protection_uses_verified_descendants_of_each_enabled_group() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        let template = processes().unwrap().remove(0);
+        let entry = |id, parent_id, creation_time| ProcessInfo {
+            id,
+            parent_id,
+            creation_time,
+            ..template.clone()
+        };
+        let processes = [
+            entry(1, None, Some(100)),
+            entry(2, Some(1), Some(110)),
+            entry(3, Some(2), Some(120)),
+            entry(4, Some(1), Some(90)),
+            entry(5, Some(1), None),
+            entry(6, None, Some(100)),
+            entry(7, Some(6), Some(110)),
+            entry(8, Some(7), Some(120)),
+            entry(9, None, Some(120)),
+            entry(10, Some(9), Some(130)),
+            entry(11, None, None),
+            entry(12, Some(11), Some(130)),
+        ];
+        let windows =
+            ProtectedProcesses::capture(&processes, false, None, BTreeSet::from([6, 9, 11]));
+        let mut observations = CycleObservations::default();
+        for (focused, visible, expected) in [
+            (true, true, &[2, 3, 7, 8, 10][..]),
+            (false, false, &[][..]),
+            (true, false, &[2, 3][..]),
+            (false, true, &[7, 8, 10][..]),
+        ] {
+            let settings = PriorityChildProtectionSettings {
+                focused_app_children: focused,
+                visible_window_app_children: visible,
+            };
+            let protected =
+                observations.priority_child_protection(settings, &processes, Some(1), &windows);
+            let protected_again =
+                observations.priority_child_protection(settings, &processes, Some(1), &windows);
+            for process in &processes {
+                assert_eq!(
+                    protected.contains(process.id),
+                    expected.contains(&process.id)
+                );
+            }
+            if let (Some(first), Some(second)) = (protected.focused, protected_again.focused) {
+                assert!(Arc::ptr_eq(&first, &second));
+            }
+            if let (Some(first), Some(second)) = (protected.visible, protected_again.visible) {
+                assert!(Arc::ptr_eq(&first, &second));
+            }
+        }
     }
 
     #[test]

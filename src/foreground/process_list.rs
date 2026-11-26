@@ -879,6 +879,10 @@ impl ProtectedProcesses {
                 .any(|protected_path| same_executable_path(protected_path, executable_path))
     }
 
+    pub(crate) fn window_owner_ids(&self) -> &BTreeSet<u32> {
+        &self.process_ids
+    }
+
     /// A name match only permits a path lookup; it never establishes membership.
     pub(crate) fn may_contain(&self, process: &ProcessInfo) -> bool {
         self.process_ids.contains(&process.id)

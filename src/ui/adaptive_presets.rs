@@ -327,6 +327,7 @@ pub(super) fn io_priority_preset_values(
     values: AdaptiveEngineProcessPresetValues,
 ) -> IoPrioritySettings {
     IoPrioritySettings {
+        child_protection: Default::default(),
         enabled: values.io_priority_enabled,
         foreground_detection_enabled: true,
         foreground_priority: values.focus_process_io_priority,
@@ -344,6 +345,7 @@ pub(super) fn thread_priority_preset_values(
     preset: BuiltInAdaptiveEnginePreset,
 ) -> ThreadPrioritySettings {
     ThreadPrioritySettings {
+        child_protection: Default::default(),
         enabled: matches!(
             preset,
             BuiltInAdaptiveEnginePreset::Performance | BuiltInAdaptiveEnginePreset::Speed
@@ -376,6 +378,7 @@ pub(super) fn dynamic_priority_boost_preset_values(
     preset: BuiltInAdaptiveEnginePreset,
 ) -> DynamicPriorityBoostSettings {
     DynamicPriorityBoostSettings {
+        child_protection: Default::default(),
         enabled: matches!(
             preset,
             BuiltInAdaptiveEnginePreset::Performance | BuiltInAdaptiveEnginePreset::Speed
@@ -393,6 +396,7 @@ pub(super) fn gpu_priority_preset_values(
     preset: BuiltInAdaptiveEnginePreset,
 ) -> GpuPrioritySettings {
     GpuPrioritySettings {
+        child_protection: Default::default(),
         enabled: matches!(
             preset,
             BuiltInAdaptiveEnginePreset::Performance | BuiltInAdaptiveEnginePreset::Speed

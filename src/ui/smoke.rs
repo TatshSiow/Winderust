@@ -61,7 +61,7 @@ impl Run {
     pub(super) fn requested() -> Option<Self> {
         REQUESTED.load(Ordering::Relaxed).then(|| {
             let pages = Self::pages();
-            let mut remaining = Self::scenarios(pages.len());
+            let mut remaining = Self::scenarios(&pages);
             let index = remaining.pop_front().expect("smoke run has scenarios");
             Self {
                 pages,
@@ -72,9 +72,18 @@ impl Run {
         })
     }
 
-    fn scenarios(page_count: usize) -> VecDeque<usize> {
-        let extra_start = page_count * 2;
-        if std::env::args().any(|arg| arg == "--adaptive-restraint-only") {
+    fn scenarios(pages: &[Page]) -> VecDeque<usize> {
+        let extra_start = pages.len() * 2;
+        if std::env::args().any(|arg| arg == "--priority-control-only") {
+            // Start on Home so the initial frame is captured before navigating.
+            std::iter::once(0)
+                .chain((0..extra_start).filter(|index| {
+                    let page = pages[index % pages.len()];
+                    page == Page::EfficiencyMode || priority_kind(page).is_some()
+                }))
+                .chain([extra_start, extra_start + 18])
+                .collect()
+        } else if std::env::args().any(|arg| arg == "--adaptive-restraint-only") {
             [6, 7, 9, ADAPTIVE_NAME_PATTERN]
                 .into_iter()
                 .map(|extra| extra_start + extra)
@@ -750,10 +759,28 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             assert!(!app.navigation_search_open);
             assert!(app.navigation_search.is_empty());
         }
-        if extra == Some(0) {
-            let _ = app.update(Message::EfficiencyMode(efficiency_mode::Message::Collapse(
+        if page == Page::EfficiencyMode && (extra.is_none() || matches!(extra, Some(0 | 18))) {
+            app.efficiency_mode = Default::default();
+            for tier in [
                 priority_control::Tier::Focus,
-            )));
+                priority_control::Tier::VisibleWindow,
+            ] {
+                let _ = app.update(Message::EfficiencyMode(efficiency_mode::Message::Collapse(
+                    tier,
+                )));
+            }
+        }
+        if let Some(kind) = priority_kind(page).filter(|_| extra.is_none()) {
+            app.priority = Default::default();
+            for tier in [
+                priority_control::Tier::Focus,
+                priority_control::Tier::VisibleWindow,
+            ] {
+                let _ = app.update(Message::Priority(
+                    kind,
+                    priority_control::Message::Collapse(tier),
+                ));
+            }
         }
         if let Some(index @ 4..=11) = extra {
             if index <= 10 {
@@ -846,17 +873,19 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                     let _ = app.update(open());
                 }
             } else {
-                app.settings
-                    .memory_trim
-                    .exclusions
-                    .push(crate::config::ProcessExclusionRule {
-                        executable_path: r"C:\Apps\Example\example.exe".into(),
-                        enabled: false,
-                        ..Default::default()
-                    });
-                let before = app.settings.memory_trim.clone();
+                let before = app.settings.edit_global(|settings| {
+                    settings
+                        .memory_trim
+                        .exclusions
+                        .push(crate::config::ProcessExclusionRule {
+                            executable_path: r"C:\Apps\Example\example.exe".into(),
+                            enabled: false,
+                            ..Default::default()
+                        });
+                    settings.memory_trim.clone()
+                });
                 let _ = app.update(Message::Trim(memory_trim::Message::ToggleSettings));
-                assert_eq!(app.settings.memory_trim, before);
+                assert_eq!(app.settings.global().memory_trim, before);
             }
         }
         if matches!(extra, Some(7 | ADAPTIVE_NAME_PATTERN)) {
@@ -895,6 +924,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             }
         }
         if extra == Some(18) {
+            check_child_protection_drafts(app);
             app.settings.efficiency_mode.enabled = true;
         }
         if extra == Some(19) {
@@ -1718,6 +1748,42 @@ impl Operation<Message> for ProcessorPickerVisibility {
     }
 }
 
+fn check_child_protection_drafts(app: &mut WinderustApp) {
+    use priority_control::ChildProtection;
+
+    let previous = std::mem::replace(
+        &mut app.settings,
+        SettingsEditor::with_settings(crate::config::Settings::default()),
+    );
+    let saved = app.settings.persisted().clone();
+    let mut expected = saved.clone();
+    let battery = expected.battery_profile_mut();
+    battery
+        .process_priority
+        .child_protection
+        .focused_app_children = false;
+    battery
+        .efficiency_mode
+        .child_protection
+        .visible_window_app_children = false;
+
+    app.settings
+        .select_power_source(PowerSourceProfile::OnBattery);
+    let _ = app.update(Message::Priority(
+        priority_control::Kind::Process,
+        priority_control::Message::ProtectChildren(ChildProtection::Focus, false),
+    ));
+    let _ = app.update(Message::EfficiencyMode(
+        efficiency_mode::Message::ProtectChildren(ChildProtection::VisibleWindow, false),
+    ));
+    assert_eq!(app.settings.global(), &expected);
+    assert_eq!(app.settings.persisted(), &saved);
+    assert!(app.settings.has_unsaved_changes());
+    app.settings.cancel();
+    assert_eq!(app.settings.global(), &saved);
+    app.settings = previous;
+}
+
 fn exercise_cpu_preset_dialog(app: &mut WinderustApp, index: usize) {
     use crate::{config::CpuAllocationPreset, cpu_topology::CpuSelection};
     use cpu_allocation::{Kind, Message as PresetMessage, SelectionCatalog};
@@ -1979,6 +2045,6 @@ pub(crate) fn render_all_pages() {
             .filter_map(Result::ok)
             .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "png"))
             .count(),
-        Run::scenarios(Run::pages().len()).len()
+        Run::scenarios(&Run::pages()).len()
     );
 }

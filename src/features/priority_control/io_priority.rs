@@ -83,9 +83,10 @@ impl IoPriorityManager {
             };
         }
 
-        let focus_changes_default = settings.foreground_detection_enabled
-            && settings.foreground_priority != settings.background_priority;
-        if focus_changes_default && foreground_process_id.is_none() {
+        let requires_focus = settings.foreground_detection_enabled
+            && (settings.child_protection.focused_app_children
+                || settings.foreground_priority != settings.background_priority);
+        if requires_focus && foreground_process_id.is_none() {
             return self.paused_snapshot(controller, action_log, "foreground app is unknown");
         }
 
@@ -127,11 +128,17 @@ impl IoPriorityManager {
             foreground_process_id.filter(|_| foreground_executable_path.is_some());
         let focus_unknown =
             settings.foreground_detection_enabled && foreground_process_id.is_none();
-        if focus_changes_default && focus_unknown {
+        if focus_unknown && requires_focus {
             return self.paused_snapshot(controller, action_log, "foreground app is unknown");
         }
         let scanned_processes = processes.len();
 
+        let child_protection = observations.priority_child_protection(
+            settings.child_protection,
+            &processes,
+            foreground_process_id,
+            &visible_processes,
+        );
         let mut target_processes = BTreeMap::new();
         for process in processes.iter() {
             if process.id == 0
@@ -164,6 +171,9 @@ impl IoPriorityManager {
                 && settings.visible_window_detection_enabled
                 && visible_processes.contains(process.id, path);
             let tier = PriorityProcessTier::from_flags(foreground, visible_window);
+            if tier == PriorityProcessTier::Background && child_protection.contains(process.id) {
+                continue;
+            }
             let policy = priority_policy(settings, &executable_path, tier);
             if focus_unknown
                 && policy
@@ -583,6 +593,7 @@ mod tests {
 
         settings.foreground_detection_enabled = true;
         settings.foreground_priority = ProcessIoPrioritySetting::Default;
+        settings.child_protection.focused_app_children = false;
         let uniform = update(&settings);
         assert!(!uniform.observation_paused);
         assert_eq!(uniform.scanned_processes, 1);

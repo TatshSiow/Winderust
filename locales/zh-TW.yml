@@ -947,6 +947,8 @@ adaptive_engine_process:
 
 
 priority_control:
+  protect_child_processes: "保護子處理程序"
+  protect_child_processes_help: "對此處偵測到的應用程式之子處理程序及其後代，略過背景預設值與規則。"
   custom_rules_help: "啟用的規則會覆寫相符層級的設定。選擇「預設」可略過此應用程式並還原先前的設定。停用此功能也會還原設定。"
 
 process_priority:

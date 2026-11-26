@@ -1,5 +1,5 @@
 use super::design;
-use super::priority_control::Tier;
+use super::priority_control::{ChildProtection, Tier};
 use super::widgets::{checkbox, pick_list};
 use crate::application::SettingsEditor;
 use crate::config::{EfficiencyModeRule, EfficiencyModeSettings, ProcessRuleMode, Settings};
@@ -21,6 +21,7 @@ pub(super) struct Editor {
 pub(super) enum Message {
     Enabled(bool),
     Detection(Tier, bool),
+    ProtectChildren(ChildProtection, bool),
     Default(Tier, bool),
     Path(String),
     Browse,
@@ -47,6 +48,11 @@ impl Editor {
                 if current.visible_window_detection_enabled != value =>
             {
                 settings.efficiency_mode.visible_window_detection_enabled = value;
+            }
+            Message::ProtectChildren(protection, value) => {
+                if protection.enabled(current.child_protection) != value {
+                    protection.set(&mut settings.efficiency_mode.child_protection, value);
+                }
             }
             Message::Default(Tier::Focus, value) if current.foreground_efficiency_mode != value => {
                 settings.efficiency_mode.foreground_efficiency_mode = value;
@@ -161,13 +167,21 @@ impl Editor {
                 super::widgets::Choice(true, t!("common.enabled").to_string()),
             ];
             let selected = choices[usize::from(value)].clone();
-            let group = column![super::widgets::setting_row(
+            let mut group = column![super::widgets::setting_row(
                 "common.default",
                 pick_list(choices, Some(selected), move |v| {
                     Message::Default(tier, v.0)
                 })
                 .width(design::SELECT_WIDTH),
-            )];
+            )]
+            .spacing(design::space::MEDIUM);
+            if let Some(protection) = tier.child_protection() {
+                group = group.push(super::widgets::settings_divider()).push(
+                    protection.row(settings.child_protection, move |value| {
+                        Message::ProtectChildren(protection, value)
+                    }),
+                );
+            }
             body = body.push(super::widgets::setting_group(
                 label,
                 self.expanded[tier as usize],

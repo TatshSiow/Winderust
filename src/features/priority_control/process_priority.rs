@@ -84,9 +84,10 @@ impl ProcessPriorityManager {
             );
         }
 
-        let focus_changes_default = settings.foreground_detection_enabled
-            && settings.foreground_priority != settings.background_priority;
-        if focus_changes_default && foreground_process_id.is_none() {
+        let requires_focus = settings.foreground_detection_enabled
+            && (settings.child_protection.focused_app_children
+                || settings.foreground_priority != settings.background_priority);
+        if requires_focus && foreground_process_id.is_none() {
             return self.pause_for_unknown_focus(controller, action_log);
         }
 
@@ -119,7 +120,7 @@ impl ProcessPriorityManager {
             foreground_process_id.filter(|_| foreground_executable_path.is_some());
         let focus_unknown =
             settings.foreground_detection_enabled && foreground_process_id.is_none();
-        if focus_unknown && focus_changes_default {
+        if focus_unknown && requires_focus {
             return self.pause_for_unknown_focus(controller, action_log);
         }
 
@@ -137,6 +138,12 @@ impl ProcessPriorityManager {
         } else {
             ProtectedProcesses::default()
         };
+        let child_protection = observations.priority_child_protection(
+            settings.child_protection,
+            &processes,
+            foreground_process_id,
+            &visible_processes,
+        );
         let mut targets = Vec::new();
         for process in processes.iter() {
             if process.id == 0
@@ -164,6 +171,9 @@ impl ProcessPriorityManager {
                 && settings.visible_window_detection_enabled
                 && visible_processes.contains(process.id, &executable_path);
             let tier = PriorityProcessTier::from_flags(foreground, visible_window);
+            if tier == PriorityProcessTier::Background && child_protection.contains(process.id) {
+                continue;
+            }
             let Some(executable_path) = executable_path.to_str() else {
                 continue;
             };
@@ -567,7 +577,7 @@ pub fn is_builtin_excluded(process_name: &str) -> bool {
 mod tests {
     use super::*;
     use crate::{
-        config::{ProcessExclusionRule, ProcessPrioritySetting},
+        config::{PriorityChildProtectionSettings, ProcessExclusionRule, ProcessPrioritySetting},
         foreground::ProcessInfo,
     };
 
@@ -576,24 +586,30 @@ mod tests {
         let mut manager = ProcessPriorityManager::default();
         let mut controller = PriorityEfficiencyController::default();
         let mut log = ActionLog::new(8);
-        let mut update = |settings: &ProcessPrioritySettings, processes: Vec<ProcessInfo>| {
+        let mut update = |settings: &ProcessPrioritySettings, processes| {
+            let mut observations = CycleObservations::with_processes(processes);
             manager.update(
                 &mut controller,
                 settings,
                 true,
                 true,
                 Some(std::process::id()),
-                &mut CycleObservations::with_processes(processes),
+                &mut observations,
                 &mut log,
             )
         };
         let mut settings = ProcessPrioritySettings {
             enabled: true,
+            child_protection: PriorityChildProtectionSettings {
+                focused_app_children: false,
+                visible_window_app_children: false,
+            },
             ..Default::default()
         };
         assert!(update(&settings, vec![]).observation_paused);
 
         settings.foreground_detection_enabled = false;
+        settings.child_protection.focused_app_children = true;
         assert!(!update(&settings, vec![]).observation_paused);
 
         settings.foreground_detection_enabled = true;
@@ -611,6 +627,8 @@ mod tests {
             name: "helper.exe".to_owned(),
             image_path: Some(path.into()),
         };
+        assert!(update(&settings, vec![helper.clone()]).observation_paused);
+        settings.child_protection.focused_app_children = false;
         assert!(!update(&settings, vec![helper.clone()]).observation_paused);
 
         settings.exclusions.push(ProcessExclusionRule {
@@ -620,6 +638,83 @@ mod tests {
         });
         assert!(update(&settings, vec![helper]).observation_paused);
         assert!(log.entries().is_empty());
+    }
+
+    #[test]
+    fn child_protection_omits_background_rules_and_keeps_direct_window_policy() {
+        let app_id = std::process::id();
+        // A nonexistent PID can demonstrate reaching the controller without changing OS state.
+        let child_id = u32::MAX;
+        let app = ProcessInfo {
+            id: app_id,
+            creation_time: Some(1),
+            parent_id: None,
+            session_id: None,
+            user_name: None,
+            is_service_account: None,
+            is_critical: Some(false),
+            can_set_information: false,
+            name: "app.exe".to_owned(),
+            image_path: Some(r"C:\Apps\app.exe".into()),
+        };
+        let child_path = r"C:\Apps\helper.exe";
+        let child = ProcessInfo {
+            id: child_id,
+            creation_time: Some(2),
+            parent_id: Some(app_id),
+            can_set_information: true,
+            name: "helper.exe".to_owned(),
+            image_path: Some(child_path.into()),
+            ..app.clone()
+        };
+        for (
+            focus,
+            window_owner,
+            focused_app_children,
+            visible_window_app_children,
+            expected_attempts,
+        ) in [
+            (true, None, false, true, 1),
+            (true, None, true, false, 0),
+            (false, Some(app_id), true, false, 1),
+            (false, Some(app_id), false, true, 0),
+            (true, Some(child_id), true, true, 1),
+        ] {
+            let mut observations =
+                CycleObservations::with_processes(vec![app.clone(), child.clone()])
+                    .with_visible_windows(window_owner.into_iter().collect());
+            let settings = ProcessPrioritySettings {
+                enabled: true,
+                foreground_detection_enabled: focus,
+                visible_window_detection_enabled: window_owner.is_some(),
+                child_protection: PriorityChildProtectionSettings {
+                    focused_app_children,
+                    visible_window_app_children,
+                },
+                background_priority: ProcessPrioritySetting::Default,
+                exclusions: vec![ProcessExclusionRule {
+                    executable_path: child_path.to_owned(),
+                    process_visible_window_priority: Some(ProcessPrioritySetting::Idle),
+                    process_background_priority: Some(ProcessPrioritySetting::Idle),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            };
+            let status = ProcessPriorityManager::default().update(
+                &mut PriorityEfficiencyController::default(),
+                &settings,
+                true,
+                true,
+                focus.then_some(app_id),
+                &mut observations,
+                &mut ActionLog::new(8),
+            );
+            assert!(!status.observation_paused);
+            assert_eq!(
+                status.skipped_processes + status.failed_processes,
+                expected_attempts
+            );
+        }
     }
 
     #[test]

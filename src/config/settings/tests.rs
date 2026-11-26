@@ -1,6 +1,56 @@
 use super::*;
 
 #[test]
+fn priority_child_protection_defaults_on_and_is_independent_by_feature_and_power_source() {
+    let default: PriorityChildProtectionSettings = toml::from_str("").unwrap();
+    assert!(default.focused_app_children && default.visible_window_app_children);
+
+    let mut settings = Settings::default();
+    for protection in [
+        settings.process_priority.child_protection,
+        settings.thread_priority.child_protection,
+        settings.dynamic_priority_boost.child_protection,
+        settings.io_priority.child_protection,
+        settings.gpu_priority.child_protection,
+        settings.memory_priority.child_protection,
+        settings.efficiency_mode.child_protection,
+    ] {
+        assert_eq!(protection, default);
+    }
+    let defaults = toml::to_string(&settings).unwrap();
+    assert!(!defaults.contains(".child_protection]"));
+
+    settings
+        .battery_profile_mut()
+        .io_priority
+        .child_protection
+        .visible_window_app_children = false;
+    settings
+        .process_priority
+        .child_protection
+        .focused_app_children = false;
+    settings.sync_shared_settings_to_battery();
+
+    let battery = settings.battery_profile();
+    assert_eq!(battery.process_priority.child_protection, default);
+    assert!(
+        !battery
+            .io_priority
+            .child_protection
+            .visible_window_app_children
+    );
+    assert_eq!(settings.io_priority.child_protection, default);
+    assert!(
+        !settings
+            .process_priority
+            .child_protection
+            .focused_app_children
+    );
+    let encoded = toml::to_string(&settings).unwrap();
+    assert_eq!(toml::from_str::<Settings>(&encoded).unwrap(), settings);
+}
+
+#[test]
 fn sleep_prevention_is_opt_in_and_round_trips_shared_policy() {
     let mut settings = Settings::default();
     assert!(!settings.sleep_prevention.enabled);

@@ -161,6 +161,29 @@ impl Settings {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PriorityChildProtectionSettings {
+    #[serde(default = "default_true")]
+    pub focused_app_children: bool,
+    #[serde(default = "default_true")]
+    pub visible_window_app_children: bool,
+}
+
+impl PriorityChildProtectionSettings {
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
+impl Default for PriorityChildProtectionSettings {
+    fn default() -> Self {
+        Self {
+            focused_app_children: true,
+            visible_window_app_children: true,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AdvancedSettings {
     #[serde(default)]
@@ -455,6 +478,11 @@ pub struct ByCpuLoadSettings {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EfficiencyModeSettings {
     pub enabled: bool,
+    #[serde(
+        default,
+        skip_serializing_if = "PriorityChildProtectionSettings::is_default"
+    )]
+    pub child_protection: PriorityChildProtectionSettings,
     #[serde(default = "default_true")]
     pub foreground_detection_enabled: bool,
     #[serde(default)]
@@ -1464,6 +1492,11 @@ impl DynamicResourceZoneSettings {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IoPrioritySettings {
     pub enabled: bool,
+    #[serde(
+        default,
+        skip_serializing_if = "PriorityChildProtectionSettings::is_default"
+    )]
+    pub child_protection: PriorityChildProtectionSettings,
     #[serde(default = "default_true")]
     pub foreground_detection_enabled: bool,
     #[serde(default = "default_io_priority_foreground")]
@@ -1487,6 +1520,11 @@ pub struct IoPrioritySettings {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProcessPrioritySettings {
     pub enabled: bool,
+    #[serde(
+        default,
+        skip_serializing_if = "PriorityChildProtectionSettings::is_default"
+    )]
+    pub child_protection: PriorityChildProtectionSettings,
     #[serde(default = "default_true")]
     pub foreground_detection_enabled: bool,
     #[serde(default = "default_process_priority_foreground")]
@@ -1510,6 +1548,11 @@ pub struct ProcessPrioritySettings {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ThreadPrioritySettings {
     pub enabled: bool,
+    #[serde(
+        default,
+        skip_serializing_if = "PriorityChildProtectionSettings::is_default"
+    )]
+    pub child_protection: PriorityChildProtectionSettings,
     #[serde(default = "default_true")]
     pub foreground_detection_enabled: bool,
     #[serde(default = "default_thread_priority_foreground")]
@@ -1533,6 +1576,11 @@ pub struct ThreadPrioritySettings {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DynamicPriorityBoostSettings {
     pub enabled: bool,
+    #[serde(
+        default,
+        skip_serializing_if = "PriorityChildProtectionSettings::is_default"
+    )]
+    pub child_protection: PriorityChildProtectionSettings,
     #[serde(default = "default_true")]
     pub foreground_detection_enabled: bool,
     #[serde(default = "default_dynamic_priority_boost_foreground")]
@@ -1550,6 +1598,11 @@ pub struct DynamicPriorityBoostSettings {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GpuPrioritySettings {
     pub enabled: bool,
+    #[serde(
+        default,
+        skip_serializing_if = "PriorityChildProtectionSettings::is_default"
+    )]
+    pub child_protection: PriorityChildProtectionSettings,
     #[serde(default = "default_true")]
     pub foreground_detection_enabled: bool,
     #[serde(default = "default_gpu_priority_foreground")]
@@ -1573,6 +1626,11 @@ pub struct GpuPrioritySettings {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MemoryPrioritySettings {
     pub enabled: bool,
+    #[serde(
+        default,
+        skip_serializing_if = "PriorityChildProtectionSettings::is_default"
+    )]
+    pub child_protection: PriorityChildProtectionSettings,
     #[serde(default = "default_true")]
     pub foreground_detection_enabled: bool,
     #[serde(default = "default_memory_priority_foreground")]
@@ -2276,6 +2334,7 @@ impl Default for EfficiencyModeSettings {
     fn default() -> Self {
         Self {
             enabled: false,
+            child_protection: PriorityChildProtectionSettings::default(),
             foreground_detection_enabled: default_true(),
             visible_window_detection_enabled: false,
             foreground_efficiency_mode: false,
@@ -2336,6 +2395,7 @@ const fn default_memory_priority_background() -> ProcessMemoryPrioritySetting {
 
 fn default_io_priority_settings() -> IoPrioritySettings {
     IoPrioritySettings {
+        child_protection: PriorityChildProtectionSettings::default(),
         enabled: false,
         foreground_detection_enabled: true,
         foreground_priority: ProcessIoPrioritySetting::Normal,
@@ -2351,6 +2411,7 @@ fn default_io_priority_settings() -> IoPrioritySettings {
 
 fn default_thread_priority_settings() -> ThreadPrioritySettings {
     ThreadPrioritySettings {
+        child_protection: PriorityChildProtectionSettings::default(),
         enabled: true,
         foreground_detection_enabled: true,
         foreground_priority: ProcessThreadPrioritySetting::Default,
@@ -2366,6 +2427,7 @@ fn default_thread_priority_settings() -> ThreadPrioritySettings {
 
 fn default_dynamic_priority_boost_settings() -> DynamicPriorityBoostSettings {
     DynamicPriorityBoostSettings {
+        child_protection: PriorityChildProtectionSettings::default(),
         enabled: true,
         foreground_detection_enabled: true,
         foreground_boost: ProcessDynamicPriorityBoostSetting::Enabled,
@@ -2378,6 +2440,7 @@ fn default_dynamic_priority_boost_settings() -> DynamicPriorityBoostSettings {
 
 fn default_gpu_priority_settings() -> GpuPrioritySettings {
     GpuPrioritySettings {
+        child_protection: PriorityChildProtectionSettings::default(),
         enabled: true,
         foreground_detection_enabled: true,
         foreground_priority: ProcessGpuPrioritySetting::Default,
@@ -2648,6 +2711,7 @@ impl Default for IoPrioritySettings {
     fn default() -> Self {
         Self {
             enabled: false,
+            child_protection: PriorityChildProtectionSettings::default(),
             foreground_detection_enabled: default_true(),
             foreground_priority: default_io_priority_foreground(),
             visible_window_detection_enabled: false,
@@ -2665,6 +2729,7 @@ impl Default for ProcessPrioritySettings {
     fn default() -> Self {
         Self {
             enabled: false,
+            child_protection: PriorityChildProtectionSettings::default(),
             foreground_detection_enabled: default_true(),
             foreground_priority: default_process_priority_foreground(),
             visible_window_detection_enabled: false,
@@ -2682,6 +2747,7 @@ impl Default for ThreadPrioritySettings {
     fn default() -> Self {
         Self {
             enabled: false,
+            child_protection: PriorityChildProtectionSettings::default(),
             foreground_detection_enabled: default_true(),
             foreground_priority: default_thread_priority_foreground(),
             visible_window_detection_enabled: false,
@@ -2699,6 +2765,7 @@ impl Default for DynamicPriorityBoostSettings {
     fn default() -> Self {
         Self {
             enabled: false,
+            child_protection: PriorityChildProtectionSettings::default(),
             foreground_detection_enabled: default_true(),
             foreground_boost: default_dynamic_priority_boost_foreground(),
             visible_window_detection_enabled: false,
@@ -2713,6 +2780,7 @@ impl Default for GpuPrioritySettings {
     fn default() -> Self {
         Self {
             enabled: false,
+            child_protection: PriorityChildProtectionSettings::default(),
             foreground_detection_enabled: default_true(),
             foreground_priority: default_gpu_priority_foreground(),
             visible_window_detection_enabled: false,
@@ -2730,6 +2798,7 @@ impl Default for MemoryPrioritySettings {
     fn default() -> Self {
         Self {
             enabled: false,
+            child_protection: PriorityChildProtectionSettings::default(),
             foreground_detection_enabled: default_true(),
             foreground_priority: default_memory_priority_foreground(),
             visible_window_detection_enabled: false,
