@@ -9,8 +9,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 static REQUESTED: AtomicBool = AtomicBool::new(false);
 const PROCESS_LIST_COMMIT_WIDE: usize = 94;
 const PROCESS_LIST_COMMIT_COMPACT: usize = 95;
-const HOME_POWER_COMPACT: usize = 96;
-const HOME_WITHOUT_BATTERY: usize = 97;
+const HOME_ENABLED_FEATURES_COMPACT: usize = 96;
+const HOME_POWER_SOURCE_UNAVAILABLE: usize = 97;
 const CONTRAST_DARK_APPEARANCE: usize = 98;
 const CONTRAST_LIGHT_PROCESS_LIST: usize = 99;
 const HOME_HISTORY_WIDE: usize = 100;
@@ -132,7 +132,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                     | 91
                     | 93
                     | PROCESS_LIST_COMMIT_COMPACT
-                    | HOME_POWER_COMPACT
+                    | HOME_ENABLED_FEATURES_COMPACT
                     | CONTRAST_LIGHT_PROCESS_LIST
                     | HOME_HISTORY_COMPACT
                     | RESOURCE_PREVIEW_INSTANCE
@@ -177,7 +177,9 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             Some(26..=37) => Page::Home,
             Some(38 | 42 | 43) => Page::Home,
             Some(
-                HOME_POWER_COMPACT | HOME_WITHOUT_BATTERY | HOME_HISTORY_WIDE
+                HOME_ENABLED_FEATURES_COMPACT
+                | HOME_POWER_SOURCE_UNAVAILABLE
+                | HOME_HISTORY_WIDE
                 | HOME_HISTORY_COMPACT,
             ) => Page::Home,
             Some(39) => Page::ProcessList,
@@ -925,8 +927,8 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                         | 38
                         | 42
                         | 43
-                        | HOME_POWER_COMPACT
-                        | HOME_WITHOUT_BATTERY
+                        | HOME_ENABLED_FEATURES_COMPACT
+                        | HOME_POWER_SOURCE_UNAVAILABLE
                         | HOME_HISTORY_WIDE
                         | HOME_HISTORY_COMPACT
             )
@@ -956,15 +958,9 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
         if matches!(extra, Some(GPU_MEMORY_WIDE | GPU_MEMORY_COMPACT)) {
             app.side_panel_open = extra == Some(GPU_MEMORY_COMPACT);
         }
-        if extra == Some(HOME_WITHOUT_BATTERY) {
-            use crate::backend::power_source::{BatteryStatus, PowerStatus};
-
+        if extra == Some(HOME_POWER_SOURCE_UNAVAILABLE) {
             app.home
-                .set_power_source(home::PowerSourceReading::Available(PowerStatus {
-                    plugged_in: Some(true),
-                    battery: BatteryStatus::Absent,
-                    energy_saver_active: true,
-                }));
+                .set_power_source(home::PowerSourceReading::Unavailable);
         }
         if matches!(extra, Some(13 | 16 | 29..=34 | 38 | 42 | 43 | 49 | 86)) {
             use crate::action_log::{ActionLogEntry, ActionLogFeature, ActionLogResult};
@@ -1472,7 +1468,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
         let size = match extra {
             Some(
                 PROCESS_LIST_COMMIT_COMPACT
-                | HOME_POWER_COMPACT
+                | HOME_ENABLED_FEATURES_COMPACT
                 | CONTRAST_LIGHT_PROCESS_LIST
                 | HOME_HISTORY_COMPACT
                 | SHOW_SHORTCUT_READY
@@ -1584,7 +1580,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             _ => {}
         }
     }
-    if extra == Some(HOME_POWER_COMPACT) && run.ticks == 3 {
+    if extra == Some(HOME_ENABLED_FEATURES_COMPACT) && run.ticks == 3 {
         return Some(iced::widget::operation::snap_to(
             "home-content",
             iced::widget::scrollable::RelativeOffset::END,

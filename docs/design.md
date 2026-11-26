@@ -575,8 +575,9 @@ hover/press; background shading supplies feedback.
 - After a sampling gap exceeds 1.5 seconds, CPU Usage, Disk I/O, and Network I/O
   start a fresh rate baseline. The first reading shows Collecting until a
   fresh interval supplies a rate.
-- Enabled Features follows the sampled Windows power source. The feature editors retain their selected profile. Show the feature count only when the power source is known.
-- Show the sampled power source, battery level, charging, and active Energy saver as text in the Enabled Features header. Omit battery details when Windows reports no battery, and label an unknown battery level as unavailable.
+- Enabled Features uses the sampled Windows power source to select the displayed
+  profile. Show the feature count when the power source is known. The feature
+  editors retain their selected profile.
 
 
 ## Verification

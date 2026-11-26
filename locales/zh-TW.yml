@@ -274,10 +274,6 @@ admin_rights:
   relaunch: "重新啟動"
 
 home:
-  battery_level: "電池電量 %{percent}%"
-  battery_level_unavailable: "無法取得電池電量"
-  battery_charging: "充電中"
-  energy_saver_on: "節能模式已開啟"
   search: "搜尋"
   intro_1: "儀表板會摘要目前的自動化決策、偵測狀態與作用中的電源計畫。"
   intro_2: "變更各頁設定前，可先在此確認 Winderust 正在執行的動作。"

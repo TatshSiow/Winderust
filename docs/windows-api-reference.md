@@ -1243,11 +1243,6 @@ shows a dash while the rate is warming up or when no valid reading is available.
   CoInitializeEx calls are balanced with CoUninitialize; failure returns an error.
   No undocumented contract is used.
 
-## Home system power status
-
-`src/backend/power_source.rs` reads [GetSystemPowerStatus](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-getsystempowerstatus) for the Home sampler in `src/ui/home.rs` and for existing power-source consumers. Home uses the same read for the source, battery level, charging, and positive saver status.
-[SYSTEM_POWER_STATUS](https://learn.microsoft.com/en-us/windows/win32/api/winbase/ns-winbase-system_power_status) defines battery flags `255` as unknown, not a bitmask. Honor the no-battery flag before charge details, accept percentages `0` through `100`, and only report Energy saver active when `SystemStatusFlag` is `1`. A missing battery, an unavailable level, and a missing power-source observation are distinct. Home samples only while visible.
-
 ## Home Disk I/O
 
 - `src/backend/dashboard_metrics.rs::DiskUsageMonitor` uses PDH English counters `\PhysicalDisk(_Total)\Disk Read Bytes/sec` and `\PhysicalDisk(_Total)\Disk Write Bytes/sec`. Home reports total physical-disk throughput across all disks. Adaptive Processor Power samples process I/O separately through `IoUsageMonitor`. The Home worker owns and closes the PDH query, primes rate counters, and rejects invalid samples.
@@ -1359,7 +1354,10 @@ so duplicate launches also work before the first window opens or after one is de
 
 src/backend/tray.rs wakes the Iced daemon on tray actions, visibility changes, TaskbarCreated, and WM_POWERBROADCAST/PBT_APMPOWERSTATUSCHANGE. The power-status event refreshes the tray's AC/battery feature profile through GetSystemPowerStatus; idle windowless operation needs no UI polling. Reference: https://learn.microsoft.com/en-us/windows/win32/power/pbt-apmpowerstatuschange . No undocumented contract.
 
-The visible Home sampler in `src/ui/home.rs` uses `src/backend/power_source.rs` to read the current power source at its existing sample interval. Enabled Features shows an unavailable state if Windows cannot determine the source. [GetSystemPowerStatus](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-getsystempowerstatus).
+While Home is visible, `src/ui/home.rs` uses `src/backend/power_source.rs` to read
+`ACLineStatus` for the Enabled Features profile. Enabled Features shows an
+unavailable state if Windows cannot determine the source.
+[GetSystemPowerStatus](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-getsystempowerstatus).
 
 
 ## Accent color picker
