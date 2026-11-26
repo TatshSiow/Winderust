@@ -699,9 +699,11 @@ pub(super) fn dashboard_page_search_text(page: Page) -> String {
             t!("keep_running.enable_help"),
         ),
         Page::MemoryTrim => format!(
-            "{label} {section} {} {} memory ram trim working set idle background exclusion",
+            "{label} {section} {} {} {} {} memory ram trim working set idle background exclusion",
             t!("memory_trim.enable_help"),
             t!("memory_trim.rules_help"),
+            t!("memory_trim.exclude_foreground"),
+            t!("memory_trim.exclude_visible_windows"),
         ),
         Page::ProcessorAffinityHard => format!(
             "{label} {section} {} {} processor affinity hard allowed processors per app foreground",

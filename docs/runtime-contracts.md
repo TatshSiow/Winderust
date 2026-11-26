@@ -582,10 +582,14 @@ Read the relevant section before changing feature policy, ownership, restoration
 
 ## Memory Trim
 
-- Automatic and manual trimming require an observed foreground executable path
-  for the catalog process generation. They skip the foreground PID and other
-  instances of that executable. An unavailable foreground image pauses trimming
-  and breaks idle qualification without rearming already-trimmed processes.
+- Automatic trimming and Trim now honor Exclude focused apps and Exclude apps
+  with visible windows in the active power profile. Focus exclusion is on by
+  default and requires an observed foreground executable path for the catalog
+  process generation. Visible-window exclusion is opt-in and uses the same
+  top-level window detection as Process Priority. Both exclusions skip window
+  owners and other instances of their executables. An unavailable required
+  observation pauses trimming and breaks idle qualification without rearming
+  already-trimmed processes.
 - Automatic trimming requires current pressure, working-set size, and sustained
   observed CPU idleness. Missing/invalid samples, low pressure, and a working set
   below the size threshold break idle qualification without rearming a process
@@ -616,8 +620,9 @@ Read the relevant section before changing feature policy, ownership, restoration
   be represented in settings keep runtime suppression and an Action Log entry.
   Saved exclusions and auto-exclusions require a representable path. A successful
   trim clears prior failures after the pass if no attempt for the same path
-  failed, was deferred, or was eligible but cooling down. Waiting for pressure
-  or observing idleness keeps the failure count.
+  failed, was deferred, or was eligible but cooling down. Waiting for pressure,
+  observing idleness, or temporarily excluding a focused or visible-window app
+  keeps its failure count.
 - Before/after working-set reduction is not measured system RAM reclaimed.
   Unavailable readback remains unknown; trimming cannot restore discarded pages.
 

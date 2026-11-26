@@ -660,6 +660,19 @@ fn manual_memory_trim_requires_a_known_source_only_when_manual_policies_differ()
         MemoryTrimStatus::ForegroundUnknown
     );
 
+    for (exclude_foreground, exclude_visible_windows) in [(false, false), (true, true)] {
+        let mut split = settings.clone();
+        let battery = &mut split.battery_profile_mut().memory_trim;
+        battery.exclude_foreground = exclude_foreground;
+        battery.exclude_visible_windows = exclude_visible_windows;
+        assert_eq!(
+            reply(split, None),
+            MemoryTrimStatus::WaitingForPowerSource {
+                manual_trim_blocked: true
+            }
+        );
+    }
+
     settings
         .battery_profile_mut()
         .memory_trim

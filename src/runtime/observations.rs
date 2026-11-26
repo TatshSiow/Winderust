@@ -219,6 +219,15 @@ impl CycleObservations {
         self
     }
 
+    #[cfg(test)]
+    pub(crate) fn with_visible_window_source(
+        mut self,
+        source: fn() -> Option<BTreeSet<u32>>,
+    ) -> Self {
+        self.sources.visible_window_process_ids = source;
+        self
+    }
+
     pub(crate) fn cpu_topology(&mut self) -> Result<Arc<crate::cpu_topology::CpuTopology>, String> {
         if matches!(self.cpu_topology, Observation::NotRequested) {
             self.cpu_topology = match (self.sources.cpu_topology)() {

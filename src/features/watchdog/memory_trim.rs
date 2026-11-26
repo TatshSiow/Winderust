@@ -21,9 +21,10 @@ use crate::{
     },
     cpu::{process_cpu_usage_percent, ProcessCpuSample},
     foreground::{
-        contains_process_name, executable_grouping_key, process_executable_path,
+        contains_process_name, executable_grouping_key, is_foreground_process,
+        process_executable_path,
         process_list::{catalog_process_executable_path, power_profile_executable_path_key},
-        same_executable_path, EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS,
+        same_executable_path, ProtectedProcesses, EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS,
     },
     rules::{execution_failure_suppression_threshold, ExecutionFailureTracker},
     runtime::observations::CycleObservations,
@@ -65,6 +66,7 @@ pub enum MemoryTrimStatus {
     #[default]
     Disabled,
     ForegroundUnknown,
+    VisibleWindowsUnknown,
     WaitingForPowerSource {
         manual_trim_blocked: bool,
     },
@@ -99,6 +101,8 @@ pub(crate) fn memory_trim_policy_difference(settings: &Settings) -> MemoryTrimPo
         return Common;
     }
     if ac.enabled != battery.enabled
+        || ac.exclude_foreground != battery.exclude_foreground
+        || ac.exclude_visible_windows != battery.exclude_visible_windows
         || working_set_threshold_bytes(ac) != working_set_threshold_bytes(battery)
         || (ac.exclusions != battery.exclusions
             && enabled_exclusions(ac) != enabled_exclusions(battery))
@@ -208,17 +212,12 @@ impl TrackedProcess {
 }
 
 impl MemoryTrimManager {
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "the policy pass keeps its typed controller and pass-local observations explicit"
-    )]
     pub fn update(
         &mut self,
         controller: &mut MemoryTrimController,
         settings: &MemoryTrimSettings,
         automation_enabled: bool,
         allow_cross_session_process_control: bool,
-        foreground_process_id: Option<u32>,
         observations: &mut CycleObservations,
         action_log: &mut ActionLog,
     ) -> MemoryTrimSnapshot {
@@ -227,7 +226,6 @@ impl MemoryTrimManager {
             settings,
             automation_enabled,
             allow_cross_session_process_control,
-            foreground_process_id,
             MemoryTrimMode::Automatic,
             observations,
             action_log,
@@ -235,17 +233,12 @@ impl MemoryTrimManager {
         )
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "the policy pass keeps its typed controller and pass-local observations explicit"
-    )]
     pub fn trim_now(
         &mut self,
         controller: &mut MemoryTrimController,
         settings: &MemoryTrimSettings,
         automation_enabled: bool,
         allow_cross_session_process_control: bool,
-        foreground_process_id: Option<u32>,
         observations: &mut CycleObservations,
         action_log: &mut ActionLog,
     ) -> MemoryTrimSnapshot {
@@ -254,7 +247,6 @@ impl MemoryTrimManager {
             settings,
             automation_enabled,
             allow_cross_session_process_control,
-            foreground_process_id,
             MemoryTrimMode::Manual,
             observations,
             action_log,
@@ -272,7 +264,6 @@ impl MemoryTrimManager {
         settings: &MemoryTrimSettings,
         automation_enabled: bool,
         allow_cross_session_process_control: bool,
-        foreground_process_id: Option<u32>,
         mode: MemoryTrimMode,
         observations: &mut CycleObservations,
         action_log: &mut ActionLog,
@@ -297,14 +288,19 @@ impl MemoryTrimManager {
             };
         }
 
-        let Some(foreground_process_id) = foreground_process_id else {
+        let foreground_process_id = if settings.exclude_foreground {
+            observations.foreground_process_id()
+        } else {
+            None
+        };
+        if settings.exclude_foreground && foreground_process_id.is_none() {
             self.break_idle_intervals();
             return MemoryTrimSnapshot {
                 enabled: true,
                 status: MemoryTrimStatus::ForegroundUnknown,
                 ..Default::default()
             };
-        };
+        }
 
         let memory_load_percent = match read_memory_load() {
             Ok(percent) => percent,
@@ -353,9 +349,9 @@ impl MemoryTrimManager {
         };
 
         let scanned_processes = processes.len();
-        let Some(foreground_executable_path) =
-            catalog_process_executable_path(&processes, foreground_process_id)
-        else {
+        let foreground_executable_path =
+            foreground_process_id.and_then(|id| catalog_process_executable_path(&processes, id));
+        if settings.exclude_foreground && foreground_executable_path.is_none() {
             self.break_idle_intervals();
             return MemoryTrimSnapshot {
                 enabled: true,
@@ -363,9 +359,29 @@ impl MemoryTrimManager {
                 status: MemoryTrimStatus::ForegroundUnknown,
                 ..Default::default()
             };
+        }
+        let visible_processes = if settings.exclude_visible_windows {
+            let Ok(process_ids) = observations.visible_window_process_ids() else {
+                self.break_idle_intervals();
+                return MemoryTrimSnapshot {
+                    enabled: true,
+                    memory_load_percent: Some(memory_load_percent),
+                    status: MemoryTrimStatus::VisibleWindowsUnknown,
+                    ..Default::default()
+                };
+            };
+            Some(ProtectedProcesses::capture(
+                &processes,
+                false,
+                None,
+                process_ids,
+            ))
+        } else {
+            None
         };
 
         let mut target_processes = BTreeMap::new();
+        let mut active_target_paths = BTreeSet::new();
         let mut observed_tracked_processes = BTreeSet::new();
         for process in processes.iter() {
             if self.tracked.get(&process.id).is_some_and(|tracked| {
@@ -378,7 +394,6 @@ impl MemoryTrimManager {
             if process.id == 0
                 || process.is_critical != Some(false)
                 || process.id == current_process_id
-                || process.id == foreground_process_id
                 || is_builtin_excluded(&process.name)
             {
                 continue;
@@ -390,10 +405,22 @@ impl MemoryTrimManager {
             let Some(executable_path) = process_executable_path(process) else {
                 continue;
             };
-            if same_executable_path(&foreground_executable_path, &executable_path)
-                || executable_path
-                    .to_str()
-                    .is_some_and(|path| settings.exclusion_enabled_for(path))
+            if executable_path
+                .to_str()
+                .is_some_and(|path| settings.exclusion_enabled_for(path))
+            {
+                continue;
+            }
+            // Window state can change between passes. Preserve failures for running apps.
+            active_target_paths.insert(executable_grouping_key(&executable_path));
+            if is_foreground_process(
+                process.id,
+                &executable_path,
+                foreground_process_id,
+                foreground_executable_path.as_deref(),
+            ) || visible_processes
+                .as_ref()
+                .is_some_and(|visible| visible.contains(process.id, &executable_path))
             {
                 continue;
             }
@@ -419,10 +446,6 @@ impl MemoryTrimManager {
             }
             true
         });
-        let active_target_paths = target_processes
-            .values()
-            .map(|target| executable_grouping_key(&target.executable_path))
-            .collect::<BTreeSet<_>>();
         self.failure_suppression.retain_keys(&active_target_paths);
 
         let mut candidate_processes = 0;

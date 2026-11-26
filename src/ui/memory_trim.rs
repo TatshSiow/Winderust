@@ -97,6 +97,8 @@ pub(super) enum Message {
     Path(String),
     Add,
     Threshold(Threshold, String),
+    ExcludeForeground(bool),
+    ExcludeVisibleWindows(bool),
     RuleEnabled(usize, bool),
     Remove(usize),
 
@@ -112,6 +114,7 @@ impl Editor {
                 "memory_trim.manual_power_source_unknown"
             }
             MemoryTrimStatus::ForegroundUnknown => "memory_trim.manual_foreground_unknown",
+            MemoryTrimStatus::VisibleWindowsUnknown => "memory_trim.manual_visible_windows_unknown",
             MemoryTrimStatus::ManualCompleted => {
                 self.last_result = Some(ManualTrimResult {
                     trimmed: result.trimmed_processes,
@@ -207,6 +210,16 @@ impl Editor {
                 }
                 self.thresholds[field as usize] = Some(raw);
             }
+            Message::ExcludeForeground(value)
+                if settings.memory_trim.exclude_foreground != value =>
+            {
+                settings.memory_trim.exclude_foreground = value;
+            }
+            Message::ExcludeVisibleWindows(value)
+                if settings.memory_trim.exclude_visible_windows != value =>
+            {
+                settings.memory_trim.exclude_visible_windows = value;
+            }
             Message::RuleEnabled(i, v)
                 if settings
                     .memory_trim
@@ -220,6 +233,8 @@ impl Editor {
                 settings.memory_trim.exclusions.remove(i);
             }
             Message::Enabled(_)
+            | Message::ExcludeForeground(_)
+            | Message::ExcludeVisibleWindows(_)
             | Message::RuleEnabled(..)
             | Message::Remove(_)
             | Message::TrimNow
@@ -264,6 +279,22 @@ impl Editor {
                 Message::ToggleSettings,
                 super::widgets::switch(settings.enabled, Some(Message::Enabled)),
                 super::widgets::settings_rows([
+                    super::widgets::setting_row(
+                        "memory_trim.exclude_foreground",
+                        super::widgets::switch(
+                            settings.exclude_foreground,
+                            Some(Message::ExcludeForeground),
+                        ),
+                    )
+                    .into(),
+                    super::widgets::setting_row(
+                        "memory_trim.exclude_visible_windows",
+                        super::widgets::switch(
+                            settings.exclude_visible_windows,
+                            Some(Message::ExcludeVisibleWindows),
+                        ),
+                    )
+                    .into(),
                     field(Threshold::Load, "%"),
                     field(Threshold::WorkingSet, "MB"),
                     field(Threshold::Idle, "s"),
@@ -384,6 +415,30 @@ mod tests {
         assert_eq!(rules.len(), 2);
         assert_eq!(rules[0].executable_path, ordinary);
         assert_eq!(rules[1].executable_path, literal);
+    }
+
+    #[test]
+    fn window_exclusion_switches_update_only_the_selected_power_profile() {
+        let mut editor = Editor::default();
+        let mut settings = SettingsEditor::with_settings(Settings::default());
+        settings.select_power_source(PowerSourceProfile::OnBattery);
+
+        editor.update(&mut settings, Message::ExcludeForeground(false));
+        editor.update(&mut settings, Message::ExcludeVisibleWindows(true));
+        assert!(settings.has_unsaved_changes());
+
+        let saved = toml::to_string(settings.global()).unwrap();
+        let reloaded: Settings = toml::from_str(&saved).unwrap();
+        let battery = &reloaded.battery_profile().memory_trim;
+        assert!(!battery.exclude_foreground);
+        assert!(battery.exclude_visible_windows);
+        assert!(reloaded.memory_trim.exclude_foreground);
+        assert!(!reloaded.memory_trim.exclude_visible_windows);
+
+        settings.cancel();
+        assert!(settings.memory_trim.exclude_foreground);
+        assert!(!settings.memory_trim.exclude_visible_windows);
+        assert!(!settings.has_unsaved_changes());
     }
 
     #[test]

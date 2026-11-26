@@ -201,6 +201,8 @@ Append `--adaptive-restraint-only` to run the Adaptive Engine child-affinity
 and executable-name pattern scenarios in English and Traditional Chinese.
 Append `--resource-thresholds-only` to check Resource Thresholds settings,
 action selectors, and Preview matches at wide and compact sizes.
+Append `--memory-trim-only` to check Memory Trim settings in both languages and
+at wide and compact sizes.
 
 Captures are written under `target/iced-smoke/`. Review relevant pages and states in
 both locales/themes and at minimum window size. Captures establish rendering coverage;

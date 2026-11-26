@@ -111,7 +111,7 @@ fn batch_observations(processes: &[ProcessInfo], foreground_path: &str) -> Cycle
         image_path: Some(foreground_path.into()),
         name: "foreground.exe".to_owned(),
     });
-    CycleObservations::with_processes(processes)
+    CycleObservations::with_processes(processes).with_foreground_source(|| Some(u32::MAX))
 }
 
 fn run_batch_pass(
@@ -148,7 +148,6 @@ fn run_observed_batch_pass(
         },
         true,
         true,
-        Some(u32::MAX),
         mode,
         &mut observations,
         &mut ActionLog::new(16),
@@ -247,7 +246,10 @@ fn unavailable_foreground_image_pauses_trim_and_breaks_idle_qualification() {
     let start = Instant::now();
     let mut run = |focus: Option<&str>, mode, seconds| {
         let observations = focus.map_or_else(
-            || CycleObservations::with_processes(processes.clone()),
+            || {
+                CycleObservations::with_processes(processes.clone())
+                    .with_foreground_source(|| Some(u32::MAX))
+            },
             |path| batch_observations(&processes, path),
         );
         run_observed_batch_pass(
@@ -276,6 +278,133 @@ fn unavailable_foreground_image_pauses_trim_and_breaks_idle_qualification() {
     assert_eq!(same_image.status, MemoryTrimStatus::ManualCompleted);
     assert_eq!(same_image.scanned_processes, 2);
     assert_eq!(same_image.candidate_processes, 0);
+}
+
+#[test]
+fn focus_and_visible_window_exclusions_apply_to_both_bulk_trim_modes() {
+    let mut processes = batch_processes(5);
+    let focus_path = r"C:\Foreground\foreground.exe";
+    processes[0].image_path = Some(focus_path.into());
+    processes[1].image_path = Some(r"C:\Visible\app.exe".into());
+    processes[2].image_path = Some(r"c:\visible\APP.EXE".into());
+    processes[3].image_path = Some(r"C:\Background\app.exe".into());
+    let mut settings = MemoryTrimSettings {
+        enabled: true,
+        system_memory_load_threshold_percent: 80,
+        process_working_set_threshold_mb: 1,
+        process_idle_seconds: 0,
+        ..Default::default()
+    };
+    for mode in [MemoryTrimMode::Automatic, MemoryTrimMode::Manual] {
+        for (exclude_foreground, exclude_visible_windows, expected) in [
+            (true, true, 2),
+            (true, false, 4),
+            (false, true, 4),
+            (false, false, 6),
+        ] {
+            settings.exclude_foreground = exclude_foreground;
+            settings.exclude_visible_windows = exclude_visible_windows;
+            let mut manager = MemoryTrimManager::default();
+            let start = Instant::now();
+            let mut run = |seconds| {
+                let mut observations = batch_observations(&processes, focus_path)
+                    .with_visible_windows(BTreeSet::from([processes[1].id]));
+                manager.update_with_mode(
+                    &mut MemoryTrimController::with_platform(BatchTestPlatform::new(
+                        start + Duration::from_secs(seconds),
+                        0,
+                    )),
+                    &settings,
+                    true,
+                    true,
+                    mode,
+                    &mut observations,
+                    &mut ActionLog::new(16),
+                    || Ok(90),
+                )
+            };
+            let actual = if mode == MemoryTrimMode::Automatic {
+                assert_eq!(run(0).trimmed_processes, 0);
+                run(1).trimmed_processes + run(2).trimmed_processes
+            } else {
+                run(0).trimmed_processes
+            };
+            assert_eq!(actual, expected, "{mode:?}, {settings:?}");
+        }
+    }
+}
+
+#[test]
+fn missing_visible_windows_pause_trim_only_when_exclusion_is_enabled() {
+    let processes = batch_processes(1);
+    let mut manager = MemoryTrimManager::default();
+    let settings = MemoryTrimSettings {
+        enabled: true,
+        exclude_foreground: false,
+        process_working_set_threshold_mb: 1,
+        ..Default::default()
+    };
+    let mut run = |settings: &MemoryTrimSettings, window_source| {
+        manager.update_with_mode(
+            &mut MemoryTrimController::with_platform(BatchTestPlatform::new(Instant::now(), 0)),
+            settings,
+            true,
+            true,
+            MemoryTrimMode::Manual,
+            &mut CycleObservations::with_processes(processes.clone())
+                .with_foreground_source(|| panic!("focus exclusion is disabled"))
+                .with_visible_window_source(window_source),
+            &mut ActionLog::new(16),
+            || Ok(90),
+        )
+    };
+    let paused = run(
+        &MemoryTrimSettings {
+            exclude_visible_windows: true,
+            ..settings.clone()
+        },
+        || None,
+    );
+    assert_eq!(paused.status, MemoryTrimStatus::VisibleWindowsUnknown);
+    assert_eq!(paused.trimmed_processes, 0);
+    assert_eq!(
+        run(&settings, || panic!("visible-window exclusion is disabled")).trimmed_processes,
+        1
+    );
+}
+
+#[test]
+fn temporary_visible_window_exclusion_preserves_trim_failures() {
+    let processes = batch_processes(1);
+    let process = &processes[0];
+    let key = executable_grouping_key(process.image_path.as_deref().unwrap());
+    let mut manager = MemoryTrimManager::default();
+    manager
+        .failure_suppression
+        .suppress_key_failure(key.as_os_str());
+    let settings = MemoryTrimSettings {
+        enabled: true,
+        exclude_visible_windows: true,
+        process_working_set_threshold_mb: 1,
+        ..Default::default()
+    };
+    let mut run = |windows| {
+        manager.update_with_mode(
+            &mut MemoryTrimController::with_platform(BatchTestPlatform::new(Instant::now(), 0)),
+            &settings,
+            true,
+            true,
+            MemoryTrimMode::Manual,
+            &mut batch_observations(&processes, r"C:\Foreground\foreground.exe")
+                .with_visible_windows(windows),
+            &mut ActionLog::new(16),
+            || Ok(90),
+        )
+    };
+    assert_eq!(run(BTreeSet::from([process.id])).trimmed_processes, 0);
+    let hidden = run(BTreeSet::new());
+    assert_eq!(hidden.skipped_processes, 1);
+    assert_eq!(hidden.trimmed_processes, 0);
 }
 
 #[test]
@@ -567,7 +696,6 @@ fn trim_failure_suppression_preserves_native_executable_paths() {
             settings,
             true,
             false,
-            Some(u32::MAX),
             MemoryTrimMode::Manual,
             &mut batch_observations(processes, r"C:\Foreground\foreground.exe"),
             &mut log,

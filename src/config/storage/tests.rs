@@ -1825,6 +1825,8 @@ fn toml_round_trip_preserves_settings() {
         },
         memory_trim: MemoryTrimSettings {
             enabled: true,
+            exclude_foreground: false,
+            exclude_visible_windows: true,
             system_memory_load_threshold_percent: 80,
             process_working_set_threshold_mb: 512,
             process_idle_seconds: 300,

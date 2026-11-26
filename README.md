@@ -42,7 +42,7 @@
 - Priority Control - Process Priority, Thread Priority, Dynamic Priority Boost, I/O Priority, GPU Priority, and Memory Priority. Efficiency Mode sets power-efficiency preferences by app and window state.
 - Watchdog groups app automation features.
   - Resource Thresholds - CPU and memory alerts for combined usage by path or for individual process instances. Terminate and Restart require Combined by path, an exact executable path, and an At or above threshold.
-  - Memory Trim - trim background process working sets.
+  - Memory Trim - trim idle process working sets with optional focus and visible-window exclusions.
   - Keep Running - relaunch selected desktop apps after their last instance exits. Start the app yourself once to arm its rule.
   - Sleep Prevention - ask Windows to stay awake while selected apps run, with an option to keep the display on.
   - Instance Limits - get notified when an app exceeds your chosen instance count in your Windows session. Launches still proceed.

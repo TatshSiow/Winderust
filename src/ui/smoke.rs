@@ -90,6 +90,11 @@ impl Run {
             .into_iter()
             .map(|extra| extra_start + extra)
             .collect()
+        } else if std::env::args().any(|arg| arg == "--memory-trim-only") {
+            [11, MEMORY_TRIM_PARTIAL, MEMORY_TRIM_UNKNOWN]
+                .into_iter()
+                .map(|extra| extra_start + extra)
+                .collect()
         } else {
             (0..extra_start + EXTRA_STATES).collect()
         }
@@ -1469,6 +1474,16 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
         if matches!(extra, Some(MEMORY_TRIM_PARTIAL | MEMORY_TRIM_UNKNOWN)) {
             use crate::memory_trim::{MemoryTrimReadback, MemoryTrimSnapshot, MemoryTrimStatus};
 
+            app.trim = memory_trim::Editor::default();
+            let _ = app.update(Message::Trim(memory_trim::Message::ToggleSettings));
+            if extra == Some(MEMORY_TRIM_UNKNOWN) {
+                let _ = app.update(Message::Trim(memory_trim::Message::ExcludeForeground(
+                    false,
+                )));
+                let _ = app.update(Message::Trim(memory_trim::Message::ExcludeVisibleWindows(
+                    true,
+                )));
+            }
             let _ = app.update(Message::TrimFinished(Ok(MemoryTrimSnapshot {
                 status: MemoryTrimStatus::ManualCompleted,
                 trimmed_processes: 3,
@@ -1501,9 +1516,9 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             Some(
                 RESOURCE_PREVIEW_WIDE | SHOW_SHORTCUT_INVALID | DOCK_FOCUS_WIDE | KEEP_AWAKE_READY,
             ) => iced::Size::new(1120.0, 760.0),
-            Some(6 | CONTRAST_DARK_APPEARANCE | HOME_HISTORY_WIDE | CPU_LIMITER_AFFINITY_WIDE) => {
-                iced::Size::new(1120.0, 760.0)
-            }
+            Some(
+                6 | 11 | CONTRAST_DARK_APPEARANCE | HOME_HISTORY_WIDE | CPU_LIMITER_AFFINITY_WIDE,
+            ) => iced::Size::new(1120.0, 760.0),
             Some(35..=37 | 40 | 42 | 44..=50 | 52..=69 | 71..=93) => iced::Size::new(900.0, 620.0),
             Some(30) => iced::Size::new(1280.0, 720.0),
             Some(31) => iced::Size::new(1440.0, 900.0),

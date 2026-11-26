@@ -401,6 +401,9 @@ hover/press; background shading supplies feedback.
   The button uses saved settings and displays the running state while a request
   is pending. Show the last completed trim in the same card, with the observed
   working-set reduction and measurement coverage.
+- Put Exclude focused apps and Exclude apps with visible windows in the
+  expandable Memory Trim toggle card. Both apply to automatic trimming and
+  Trim now for the selected power profile.
 - Place Notify beside Enable in the Resource Thresholds, Instance Limits, and
   Keep Running rule tables. Enable controls whether the rule runs. Notify
   controls Windows alert delivery. Resource Thresholds and Instance Limits

@@ -2604,7 +2604,6 @@ impl RuntimeCore {
             &settings.memory_trim,
             settings.general.enabled,
             settings.general.allow_cross_session_process_control,
-            observations.foreground_process_id(),
             observations,
             &mut self.action_log,
         )
@@ -2627,7 +2626,6 @@ impl RuntimeCore {
             &settings.memory_trim,
             settings.general.enabled,
             settings.general.allow_cross_session_process_control,
-            observations.foreground_process_id(),
             observations,
             &mut self.action_log,
         )

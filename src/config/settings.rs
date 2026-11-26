@@ -1617,6 +1617,10 @@ pub struct SleepPreventionRule {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MemoryTrimSettings {
     pub enabled: bool,
+    #[serde(default = "default_true")]
+    pub exclude_foreground: bool,
+    #[serde(default)]
+    pub exclude_visible_windows: bool,
     #[serde(default = "default_memory_trim_system_memory_load_threshold_percent")]
     pub system_memory_load_threshold_percent: u8,
     #[serde(default = "default_memory_trim_process_working_set_threshold_mb")]
@@ -2747,6 +2751,8 @@ impl Default for MemoryTrimSettings {
     fn default() -> Self {
         Self {
             enabled: false,
+            exclude_foreground: true,
+            exclude_visible_windows: false,
             system_memory_load_threshold_percent:
                 default_memory_trim_system_memory_load_threshold_percent(),
             process_working_set_threshold_mb: default_memory_trim_process_working_set_threshold_mb(
