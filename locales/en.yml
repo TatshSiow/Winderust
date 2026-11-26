@@ -1081,7 +1081,6 @@ memory_trim:
   idle_time_help: "How long a background process must stay idle before it can be trimmed."
   invalid_threshold: "%{setting} must be a whole number from 1 to %{maximum}."
   manual_trim: "Manual trim"
-  manual_trim_help: "Trim eligible apps using the active power profile's saved settings, regardless of the system memory threshold."
   manual_trim_running: "Trimming memory…"
   trim_now: "Trim now"
   manual_automation_disabled: "Memory Trim could not run because the Winderust master switch is off."

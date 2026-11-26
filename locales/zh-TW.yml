@@ -1084,7 +1084,6 @@ memory_trim:
   idle_time_help: "背景處理程序可被修剪前必須維持閒置的時間。"
   invalid_threshold: "%{setting}必須是 1 到 %{maximum} 之間的整數。"
   manual_trim: "手動修剪"
-  manual_trim_help: "使用目前電源設定檔已儲存的設定修剪符合條件的應用程式，不受系統記憶體門檻限制。"
   manual_trim_running: "正在修剪記憶體…"
   trim_now: "立即修剪"
   manual_automation_disabled: "Winderust 總開關已關閉，無法執行記憶體修剪。"

@@ -391,11 +391,10 @@ hover/press; background shading supplies feedback.
   and the App Suspension background delay in their feature's expandable toggle
   card. Let users configure these while the feature is off. Keep rule tables
   and independent App Suspension controls accessible outside that card.
-- Memory Trim places Trim now in the page's manual trim card. The action uses
-  saved settings and shows why it is unavailable while a request is pending,
-  automation or the feature is off, or Windows cannot identify the power source
-  when the saved manual trim settings differ. Show the last completed trim in
-  the same card, with the observed working-set reduction and measurement coverage.
+- Memory Trim uses a single row for the Manual trim title and Trim now button.
+  The button uses saved settings and displays the running state while a request
+  is pending. Show the last completed trim in the same card, with the observed
+  working-set reduction and measurement coverage.
 - Place Notify beside Enable in the Resource Thresholds, Instance Limits, and
   Keep Running rule tables. Enable controls whether the rule runs. Notify
   controls Windows alert delivery. Resource Thresholds and Instance Limits

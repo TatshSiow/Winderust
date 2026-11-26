@@ -230,7 +230,8 @@ impl Editor {
         &'a self,
         settings: &'a MemoryTrimSettings,
         candidates: &'a [super::app_picker::Candidate],
-        trim_unavailable: Option<&str>,
+        trim_available: bool,
+        trim_pending: bool,
     ) -> Element<'a, Message> {
         let field = |field: Threshold, unit: &'static str| {
             let (label, maximum) = field.label_and_maximum();
@@ -244,17 +245,16 @@ impl Editor {
                 )
             })
         };
+        let trim_label = if trim_pending {
+            t!("memory_trim.manual_trim_running")
+        } else {
+            t!("memory_trim.trim_now")
+        };
         let manual_trim = column![super::widgets::setting_row(
             "memory_trim.manual_trim",
-            super::widgets::action_button(t!("memory_trim.trim_now").into_owned())
-                .on_press_maybe(trim_unavailable.is_none().then_some(Message::TrimNow)),
+            super::widgets::action_button(trim_label.into_owned())
+                .on_press_maybe((trim_available && !trim_pending).then_some(Message::TrimNow)),
         )]
-        .extend(trim_unavailable.map(|key| {
-            text(t!(key).into_owned())
-                .size(design::typography::SECONDARY)
-                .style(text::secondary)
-                .into()
-        }))
         .extend(self.last_result_view())
         .spacing(design::space::MEDIUM);
         let mut body = column![

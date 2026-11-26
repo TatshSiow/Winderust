@@ -3860,27 +3860,20 @@ impl WinderustApp {
                 .map(Message::KeepRunning),
             Page::MemoryTrim => {
                 let live = status_rail::saved_runtime_settings(&self.settings, read_power_source());
-                let trim_unavailable = if self.manual_trim_pending {
-                    Some("memory_trim.manual_trim_running")
-                } else if !live.general.enabled {
-                    Some("memory_trim.manual_automation_disabled")
-                } else if matches!(
-                    self.status.feature_status.memory_trim.status,
-                    crate::memory_trim::MemoryTrimStatus::WaitingForPowerSource {
-                        manual_trim_blocked: true
-                    }
-                ) {
-                    Some("memory_trim.manual_power_source_unknown")
-                } else if !live.memory_trim.enabled {
-                    Some("memory_trim.manual_disabled")
-                } else {
-                    None
-                };
+                let trim_available = live.general.enabled
+                    && live.memory_trim.enabled
+                    && !matches!(
+                        self.status.feature_status.memory_trim.status,
+                        crate::memory_trim::MemoryTrimStatus::WaitingForPowerSource {
+                            manual_trim_blocked: true
+                        }
+                    );
                 self.trim
                     .view(
                         &self.settings.memory_trim,
                         &self.candidates,
-                        trim_unavailable,
+                        trim_available,
+                        self.manual_trim_pending,
                     )
                     .map(Message::Trim)
             }
