@@ -165,6 +165,10 @@ hover/press; background shading supplies feedback.
 ## Process List
 
 - The process list is a dense table, not a card grid. Refresh automatically about once per second only while its page is shown and the window is not hidden to tray. Its command row contains search and process count; omit manual refresh and population pause controls.
+- Show Process List action results in a bottom-center toast over the editor,
+  above any floating Save or update card. Dismiss successes after five seconds
+  and leave errors visible until dismissed or replaced. Keep feedback from
+  actions in process details inside the dialog.
 - Page visits and periodic ticks share the same refresh deadline; quick returns reuse the current rows. Load the power-plan catalog when the selected process's Rulesets panel opens, including when returning to that open panel.
 - Rulesets shows the power profile that receives its edits.
 - Copy executable path is available in the context menu and details header when

@@ -123,6 +123,7 @@ fn page_canvas<'a>(
     heading: Element<'a, Message>,
     content: Element<'a, Message>,
     floating_card: Option<Element<'a, Message>>,
+    toast: Option<Element<'a, Message>>,
 ) -> Element<'a, Message> {
     let mut layers = iced::widget::Stack::new().push(
         column![heading, content]
@@ -134,17 +135,32 @@ fn page_canvas<'a>(
             })
             .height(Fill),
     );
-    if let Some(card) = floating_card {
+    if toast.is_some() || floating_card.is_some() {
+        let overlays = column![]
+            .extend(toast.map(|toast| {
+                container(iced::widget::opaque(repaint_popup(toast)))
+                    .center_x(Fill)
+                    .into()
+            }))
+            .extend(floating_card.map(|card| {
+                container(iced::widget::opaque(repaint_popup(card)))
+                    .padding(iced::Padding {
+                        right: SCROLLBAR_GUTTER,
+                        ..iced::Padding::ZERO
+                    })
+                    .width(Fill)
+                    .align_x(iced::Right)
+                    .into()
+            }))
+            .spacing(design::space::CONTROL);
         layers = layers.push(
-            container(iced::widget::opaque(repaint_popup(card)))
+            container(overlays)
                 .padding(iced::Padding {
                     bottom: FLOATING_CARD_BOTTOM_INSET as f32,
-                    right: SCROLLBAR_GUTTER,
                     ..iced::Padding::ZERO
                 })
                 .width(Fill)
                 .height(Fill)
-                .align_x(iced::Right)
                 .align_y(iced::Bottom),
         );
     }
@@ -3578,7 +3594,14 @@ impl WinderustApp {
         ))
         .width(Fill)
         .height(Fill);
-        let body = page_canvas(shield(heading), content.into(), floating_card);
+        let toast = if self.page == Page::ProcessList && !process_actions_open {
+            self.processes
+                .action_toast()
+                .map(|toast| toast.map(Message::Processes))
+        } else {
+            None
+        };
+        let body = page_canvas(shield(heading), content.into(), floating_card, toast);
         let layout = row![
             navigation,
             container(body)
@@ -4489,9 +4512,14 @@ mod tests {
         for width in [780.0, 1440.0, 1800.0] {
             let size = iced::Size::new(width, 600.0);
             let mut expected = None;
-            for (profiles, has_save_card) in
-                [(false, false), (true, false), (false, true), (true, true)]
-            {
+            for (profiles, has_save_card, has_toast) in [
+                (false, false, false),
+                (true, false, false),
+                (false, true, false),
+                (true, true, false),
+                (false, false, true),
+                (false, true, true),
+            ] {
                 for available in [false, true] {
                     for open in [false, true] {
                         let heading = page_header(
@@ -4506,6 +4534,12 @@ mod tests {
                                 .height(Fill)
                                 .into(),
                             has_save_card.then(|| floating_save_card(false)),
+                            has_toast.then(|| {
+                                container(text("Action completed"))
+                                    .width(420)
+                                    .height(48)
+                                    .into()
+                            }),
                         );
                         let panel = (available && open)
                             .then(|| iced::widget::Space::new().height(Fill).into());
@@ -4535,14 +4569,34 @@ mod tests {
                                 - design::space::WIDE as f32
                         );
                         assert_eq!(column.children()[1].children()[0].size().height, 930.0);
-                        if has_save_card {
-                            let card = layers.children()[1].children()[0].bounds();
-                            assert_eq!(
-                                card.y + card.height,
-                                size.height - FLOATING_CARD_BOTTOM_INSET as f32
-                            );
-                            assert_eq!(card.x + card.width, bounds.width - SCROLLBAR_GUTTER);
-                            assert_eq!(card.size(), iced::Size::new(320.0, 96.0));
+                        if has_save_card || has_toast {
+                            let anchor = iced::advanced::Layout::new(&layers.children()[1]);
+                            let mut overlays = anchor.children().next().unwrap().children();
+                            let toast = has_toast.then(|| {
+                                let layout = overlays.next().unwrap().children().next().unwrap();
+                                let toast = layout.bounds();
+                                assert_eq!(toast.x + toast.width / 2.0, bounds.width / 2.0);
+                                toast
+                            });
+                            let card = overlays
+                                .next()
+                                .map(|layout| layout.children().next().unwrap().bounds());
+                            assert_eq!(card.is_some(), has_save_card);
+                            if let Some(toast) = toast {
+                                let bottom = card.map_or(
+                                    size.height - FLOATING_CARD_BOTTOM_INSET as f32,
+                                    |card| card.y - design::space::CONTROL as f32,
+                                );
+                                assert_eq!(toast.y + toast.height, bottom);
+                            }
+                            if let Some(card) = card {
+                                assert_eq!(
+                                    card.y + card.height,
+                                    size.height - FLOATING_CARD_BOTTOM_INSET as f32
+                                );
+                                assert_eq!(card.x + card.width, bounds.width - SCROLLBAR_GUTTER);
+                                assert_eq!(card.size(), iced::Size::new(320.0, 96.0));
+                            }
                         }
                         assert_eq!(column.children()[0].bounds().x, bounds.x);
                         bounds.x += canvas.bounds().x;
@@ -4588,7 +4642,7 @@ mod tests {
                 .height(Fill)
                 .on_press(Message::Cancel)
                 .into();
-            let workspace = page_canvas(text("Editor").into(), workspace, Some(card));
+            let workspace = page_canvas(text("Editor").into(), workspace, Some(card), None);
             let mut view = side_panel_dock(workspace, Some(panel), 320.0);
             let mut tree = Tree::new(&view);
             let size = iced::Size::new(900.0, 620.0);
@@ -4598,7 +4652,7 @@ mod tests {
                 &layout::Limits::new(iced::Size::ZERO, size),
             );
             let mut card = Layout::new(&node);
-            for index in [0, 0, 0, 0, 1, 0] {
+            for index in [0, 0, 0, 0, 1, 0, 0, 0] {
                 card = card.children().nth(index).unwrap();
             }
             let mut rows = card.children().next().unwrap().children();

@@ -37,6 +37,7 @@ const HEADER_HEIGHT: f32 = 32.0;
 const ROW_HEIGHT: f32 = 36.0;
 const PROCESS_TABLE: &str = "process-list";
 const REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
+const ACTION_TOAST_DURATION: std::time::Duration = std::time::Duration::from_secs(5);
 type Icons = HashMap<PathBuf, Option<Arc<image::Handle>>>;
 type PopulationReply = iced::futures::channel::oneshot::Sender<Result<Population, String>>;
 type GpuPopulationWorker = std::sync::mpsc::Sender<(bool, PopulationReply)>;
@@ -293,6 +294,11 @@ pub(super) enum Message {
     Details(details::Message),
 }
 
+struct ActionFeedback {
+    result: Result<String, String>,
+    expires_at: Option<std::time::Instant>,
+}
+
 pub(super) struct ProcessList {
     processes: Vec<ProcessInfo>,
     population_loaded: bool,
@@ -312,7 +318,7 @@ pub(super) struct ProcessList {
     refreshing: bool,
     refresh_started_at: Option<std::time::Instant>,
     error: Option<String>,
-    action_feedback: Option<Result<String, String>>,
+    action_feedback: Option<ActionFeedback>,
     hide_inaccessible: bool,
     grouped: bool,
     memory_percentage: bool,
@@ -396,6 +402,11 @@ impl ProcessList {
     }
 
     fn refresh_if_due(&mut self, now: std::time::Instant) -> Task<Message> {
+        self.action_feedback.take_if(|feedback| {
+            feedback
+                .expires_at
+                .is_some_and(|expires_at| now >= expires_at)
+        });
         if self.refreshing
             || self
                 .refresh_started_at
@@ -1019,7 +1030,12 @@ impl ProcessList {
         {
             self.detail_feedback = Some(result);
         } else {
-            self.action_feedback = Some(result);
+            self.action_feedback = Some(ActionFeedback {
+                expires_at: result
+                    .is_ok()
+                    .then(|| std::time::Instant::now() + ACTION_TOAST_DURATION),
+                result,
+            });
         }
     }
     fn result_message(
@@ -1710,29 +1726,6 @@ impl ProcessList {
             .height(Fill);
         if let Some(e) = &self.error {
             body = body.push(text(e));
-        }
-        if let Some(result) = &self.action_feedback {
-            let message = match result {
-                Ok(message) | Err(message) => message,
-            };
-            body = body.push(
-                row![
-                    text(message)
-                        .width(Fill)
-                        .size(design::typography::SECONDARY)
-                        .wrapping(text::Wrapping::WordOrGlyph)
-                        .style(if result.is_err() {
-                            text::danger
-                        } else {
-                            text::success
-                        }),
-                    button(text(t!("common.close").to_string()))
-                        .style(super::widgets::quiet)
-                        .on_press(Message::DismissActionFeedback),
-                ]
-                .spacing(design::space::SMALL)
-                .align_y(iced::Center),
-            );
         }
         body = body.push(super::widgets::table_frame(responsive(move |size| {
             let widths = self.layout_widths(size.width);
@@ -2498,6 +2491,35 @@ impl ProcessList {
         }
         // Keep the list subtree stable when opening or closing either overlay.
         iced::widget::stack![body].into()
+    }
+
+    pub(super) fn action_toast(&self) -> Option<Element<'_, Message>> {
+        let result = &self.action_feedback.as_ref()?.result;
+        let (message, style): (_, fn(&iced::Theme) -> text::Style) = match result {
+            Ok(message) => (message, text::success),
+            Err(message) => (message, text::danger),
+        };
+        Some(
+            container(
+                row![
+                    text(message)
+                        .width(Fill)
+                        .size(design::typography::SECONDARY)
+                        .wrapping(text::Wrapping::WordOrGlyph)
+                        .style(style),
+                    action_button(t!("common.close").into_owned())
+                        .style(super::widgets::quiet)
+                        .on_press(Message::DismissActionFeedback),
+                ]
+                .spacing(design::space::SMALL)
+                .align_y(iced::Center),
+            )
+            .padding([design::space::TIGHT as u16, design::space::MEDIUM as u16])
+            .width(Fill)
+            .max_width(420)
+            .style(super::widgets::surface)
+            .into(),
+        )
     }
 }
 fn popup_position(position: iced::Point, bounds: iced::Size, popup: iced::Size) -> iced::Point {
@@ -3422,8 +3444,10 @@ mod tests {
         );
         assert!(!list.refreshing);
         assert_eq!(
-            list.action_feedback,
-            Some(Ok("Process action completed".into()))
+            list.action_feedback
+                .as_ref()
+                .map(|feedback| &feedback.result),
+            Some(&Ok("Process action completed".into()))
         );
         let _ = list.update(
             Message::IconsLoaded(Err("worker unavailable".into())),
@@ -4085,12 +4109,45 @@ mod tests {
         list.record_action_result(Ok("Latest success".into()), Some(latest));
         list.record_action_result(Err("Delayed failure".into()), Some(first));
         assert_eq!(list.detail_feedback, Some(Ok("Latest success".into())));
-        assert_eq!(list.action_feedback, Some(Err("Delayed failure".into())));
+        assert_eq!(
+            list.action_feedback
+                .as_ref()
+                .map(|feedback| &feedback.result),
+            Some(&Err("Delayed failure".into()))
+        );
 
         list.context = Some(ContextAnchor::Pointer(Point::ORIGIN));
         assert_eq!(list.begin_detail_action(), None);
         list.record_action_result(Err("Context failure".into()), None);
-        assert_eq!(list.action_feedback, Some(Err("Context failure".into())));
+        assert_eq!(
+            list.action_feedback
+                .as_ref()
+                .map(|feedback| &feedback.result),
+            Some(&Err("Context failure".into()))
+        );
+    }
+
+    #[test]
+    fn action_toast_expires_a_success_and_retains_an_error() {
+        let mut list = ProcessList {
+            refreshing: true,
+            ..Default::default()
+        };
+        list.record_action_result(Ok("Action completed".into()), None);
+        let expires_at = list.action_feedback.as_ref().unwrap().expires_at.unwrap();
+        let before_expiry = expires_at - std::time::Duration::from_millis(1);
+        assert_eq!(list.refresh_if_due(before_expiry).units(), 0);
+        assert!(list.action_toast().is_some());
+        assert_eq!(list.refresh_if_due(expires_at).units(), 0);
+        assert!(list.action_toast().is_none());
+
+        list.record_action_result(Err("Access denied".into()), None);
+        assert_eq!(
+            list.refresh_if_due(expires_at + ACTION_TOAST_DURATION)
+                .units(),
+            0
+        );
+        assert!(list.action_toast().is_some());
     }
 
     #[test]
