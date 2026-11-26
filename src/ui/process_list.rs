@@ -1588,20 +1588,6 @@ impl ProcessList {
                     .on_toggle(move |value| Message::Column(col, value)),
             );
         }
-        if self.columns[Sort::CpuTime as usize] {
-            filters = filters.push(
-                text(t!("process_list.cpu_time_help").to_string())
-                    .size(design::typography::SECONDARY)
-                    .style(text::secondary),
-            );
-        }
-        if self.grouped && (self.gpu_memory_visible() || self.columns[Sort::GpuUsage as usize]) {
-            filters = filters.push(
-                text(t!("process_list.gpu_metrics_grouped_help").to_string())
-                    .size(design::typography::SECONDARY)
-                    .style(text::secondary),
-            );
-        }
         let value_label = t!("process_list.metric_value").to_string();
         let percentage_label = t!("process_list.metric_percentage").to_string();
         let selected = if self.memory_percentage {
@@ -1626,11 +1612,6 @@ impl ProcessList {
                 ]
                 .spacing(design::space::SMALL)
                 .align_y(iced::Center),
-            )
-            .push(
-                text(t!("process_list.memory_counter_help").to_string())
-                    .size(design::typography::SECONDARY)
-                    .style(text::secondary),
             );
         column![
             super::widgets::panel_heading(t!("nav.settings").to_string()),
