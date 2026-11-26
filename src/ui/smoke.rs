@@ -671,11 +671,13 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                 ));
             }
         }
-        assert_eq!(app.side_panel_tab, SidePanelTab::for_page(page)[0]);
+        assert_eq!(app.side_panel_tab, SidePanelTab::initial_for_page(page));
         assert_eq!(app.side_panel_open, was_open);
         let _ = app.update(Message::CloseSidePanel);
-        if !navigation::page_feature_info(page).is_empty() {
+        if !SidePanelTab::for_page(page).is_empty() {
             assert!(app.side_panel(is_plugged_in).is_some());
+        } else if page == Page::Watchdog || navigation::children(Page::Watchdog).contains(&page) {
+            assert!(app.side_panel(is_plugged_in).is_none());
         }
         if extra.is_none()
             && matches!(
@@ -688,7 +690,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             )
         {
             let _ = app.update(Message::ToggleSidePanel);
-            assert_eq!(app.side_panel_tab, SidePanelTab::Info);
+            assert_eq!(app.side_panel_tab, SidePanelTab::Status);
         }
         if matches!(extra, Some(5 | 70 | 71)) {
             assert!(SidePanelTab::for_page(page).contains(&SidePanelTab::Presets));
@@ -1090,9 +1092,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                 assert!(app.side_panel(is_plugged_in).is_some());
             }
             let _ = app.update(Message::Page(page));
-            assert_eq!(app.side_panel_tab, SidePanelTab::for_page(page)[0]);
-            let _ = app.update(Message::SidePanelTab(SidePanelTab::Info));
-            assert_eq!(app.side_panel_tab, SidePanelTab::Info);
+            assert_eq!(app.side_panel_tab, SidePanelTab::Status);
             let _ = app.update(Message::ToggleSidePanel);
             assert!(app.side_panel_open);
             let _ = app.update(Message::SearchKeyboard {
@@ -1114,11 +1114,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             app.settings = SettingsEditor::with_settings((*app.settings).clone());
         }
         if matches!(extra, Some(44..=46)) {
-            let tab = if extra == Some(46) {
-                SidePanelTab::Info
-            } else {
-                SidePanelTab::Presets
-            };
+            let tab = SidePanelTab::Presets;
             let _ = app.update(Message::SidePanelTab(tab));
             assert_eq!(app.side_panel_tab, tab);
             assert!(app.side_panel(is_plugged_in).is_some());
@@ -1453,8 +1449,6 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
         if matches!(extra, Some(MEMORY_TRIM_PARTIAL | MEMORY_TRIM_UNKNOWN)) {
             use crate::memory_trim::{MemoryTrimReadback, MemoryTrimSnapshot, MemoryTrimStatus};
 
-            app.side_panel_open = true;
-            let _ = app.update(Message::SidePanelTab(SidePanelTab::Status));
             let _ = app.update(Message::TrimFinished(Ok(MemoryTrimSnapshot {
                 status: MemoryTrimStatus::ManualCompleted,
                 trimmed_processes: 3,

@@ -229,7 +229,13 @@ impl Editor {
         .into()]);
         body = body
             .push(super::widgets::settings_card(
-                super::widgets::settings_rows(policy),
+                column![
+                    text(t!("settings.win32_priority_separation_warning").to_string())
+                        .size(design::typography::SECONDARY)
+                        .style(text::secondary),
+                    super::widgets::settings_rows(policy),
+                ]
+                .spacing(design::space::MEDIUM),
             ))
             .push(
                 row![

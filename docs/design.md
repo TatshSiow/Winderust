@@ -26,10 +26,10 @@ Winderust is an operational Windows power and process-control utility. The UI sh
 Prefer visible state, compact controls, and predictable rows. Use restrained accent-derived chrome, light/dark finely outlined panels, and more panel spacing; preserve dense operational tables.
 
 - Keep the workflow predictable. Home shows current conditions, feature pages edit
-  rules, the side panel explains status and options, and Action Log records outcomes.
+  rules, the side panel shows live status and secondary controls, and Action Log
+  records outcomes.
 - Make settings easy to discover through navigation and search. Put common actions
-  first and reveal advanced options where users need them. Keep essential consequences
-  beside the control and longer explanations in Info.
+  first and reveal advanced options where users need them.
 - Distinguish a switch's configured state, an unsaved edit, and the last verified
   result from Windows. Direct commands apply when invoked. Configuration edits
   use the Save / Discard card floating at the bottom right of the work area.
@@ -124,7 +124,7 @@ Prefer visible state, compact controls, and predictable rows. Use restrained acc
 ## Visual Language
 
 - Reuse `design.rs` tokens and `widgets.rs` styles. Buttons share 6px corners, 14px labels, and stable 1px outlines. Standard text actions and utility icons are 32px high; text actions use 12px horizontal padding through the shared action helper. Primary actions use a solid accent fill; secondary actions use a neutral outline with accent text; tertiary actions use a neutral outline and text. Quiet utilities show hover feedback; destructive actions use danger colors; persistent choices use accent outlines and tint. Preserve explicit dense-row and navigation geometry, native input, disabled states, and theme/accent support. Keep action feedback distinct from persistent selection.
-- Navigation selection uses a rounded vertical pill. All page, panel, and dialog tabs use the same compact segmented design: 32px height, widths that fit their centered 14px semibold labels, one neutral outline, no outer inset or gap, and an accent-tinted, outlined selected segment. Tab labels retain normal theme text colors, including the side panel's Info / Status / Presets tabs; selection changes the tint and outline rather than the text color. Weekday selectors share this design and retain multiple selection. Plugged In / On Battery retains its live-source dot independently of the selected editing profile. Respect the current theme and accent without shadows or underlines.
+- Navigation selection uses a rounded vertical pill. All page, panel, and dialog tabs use the same compact segmented design: 32px height, widths that fit their centered 14px semibold labels, one neutral outline, no outer inset or gap, and an accent-tinted, outlined selected segment. Tab labels retain normal theme text colors, including the side panel's Status / Presets tabs. Selection changes the tint and outline. Weekday selectors share this design and retain multiple selection. Plugged In / On Battery retains its live-source dot independently of the selected editing profile. Respect the current theme and accent without shadows or underlines.
 - Choose toggle knobs and checkmarks for contrast against the accent color.
 
 - The navigation rail and docked right panel use edge-aligned chrome with square outer corners, workspace-facing thin dividers, and no gaps between shell surfaces. Floating navigation uses the shared outlined surface. Cards, rules tables, dense table frames, settings groups, and settings dialogs share the surface outline (1px neutral at 75% opacity) and 10px radius. Keep dense table frames outside horizontal scrolling and preserve their borderless tiled interior for partial repaint efficiency.
@@ -217,7 +217,7 @@ hover/press; background shading supplies feedback.
 - In short Adaptive Engine workspaces, the feature toggle, preset picker, and
   editor tabs scroll with the selected tab. Keep the power-source toolbar and
   page header outside this scroll area.
-- Adaptive Engine uses the right-rail Info / Status / Presets tabs. Built-in presets are read-only. Custom presets can be added, renamed, refreshed from the current CPU Behaviour tuning, and deleted. The live page also exposes Custom Rules. The preset editor spans the available modal width and keeps its own draft.
+- Adaptive Engine uses the right-rail Status / Presets tabs. Built-in presets are read-only. Custom presets can be added, renamed, refreshed from the current CPU Behaviour tuning, and deleted. The live page also exposes Custom Rules. The preset editor spans the available modal width and keeps its own draft.
 - Keep Restore defaults in the live Preset card on the CPU Behaviour tab. It stages
   the selected source's factory tuning through the shared Save and Discard flow.
 - Priority Control uses Focus / Visible Window / Background dropdown columns and expandable detail cards. Turning a row off does not lock its configuration. Runtime precedence and protection rules live in [Runtime contracts](runtime-contracts.md).
@@ -231,7 +231,7 @@ hover/press; background shading supplies feedback.
 - Prefer one setting per row when possible.
 - Use collapsible setting groups for advanced or multi-row settings.
 - Multi-setting cards use subtle 1px neutral, theme-aware dividers between complete settings, with even inset spacing. Keep labels, descriptions, and associated controls together. Expanded groups separate their header and body with the same divider; single-setting cards have no extra leading/trailing rules. Use shared widgets helpers and preserve dense table styling.
-- Show concise setting descriptions directly beneath their labels in readable 13px secondary text, with controls aligned on the right. Let rows and group headers grow when labels or descriptions wrap; never clip help with a fixed height. Use the shared setting-title layout for live pages and preset dialogs. Keep essential consequences inline and longer page-level reference in the right sidebar's Feature info section. Preserve icon-action and truncated-data tooltips, localization, units, and dense process/log table geometry.
+- Put concise feature explanations and essential consequences in the relevant card. Show setting descriptions directly beneath their labels in readable 13px secondary text, with controls aligned on the right. Let rows and group headers grow when labels or descriptions wrap; never clip help with a fixed height. Use the shared setting-title layout for live pages and preset dialogs. Preserve icon-action and truncated-data tooltips, localization, units, and dense process/log table geometry.
 - Settings that affect Windows behavior should show conservative defaults and explicit enable controls.
 - Advanced Power Plan Tuning shows Energy performance preference separately
   for each power source. Plan readback controls availability, and applying
@@ -273,7 +273,8 @@ hover/press; background shading supplies feedback.
   By Activity retains Idle plan and Active plan plus its profile-specific Idle
   timeout. These plan selections remain visible independently of the shared
   restoration switch.
-- The Power Plan Control side panel's Status tab shows the active Windows plan,
+- The Switching settings card describes the rule priority and when switching pauses.
+  The Power Plan Control side panel shows the active Windows plan,
   the current automation decision, and lower-priority modes that also selected
   a plan in the same pass. The current-plan card stays compact. Ordinary rule Status rails
   identify a confirmed pause due to Adaptive Processor Power, A/C, or missing observations.
@@ -289,14 +290,13 @@ hover/press; background shading supplies feedback.
   The winner shows its selected plan using the same rule number and name as
   its card. Lower-priority matching cards show their selected plans. Power Plan
   Control decides the active Windows plan.
-- CPU Sets (Soft) and Processor Affinity (Hard) share that rail with compact Status and Presets
-  tabs, alongside Info in the shared docked panel.
+- CPU Sets (Soft) and Processor Affinity (Hard) use Status and Presets tabs in the
+  shared docked panel.
 - Instance Balancing lives under CPU Control and shares one configuration across
   power sources. Use executable-path rules with activation, edit and delete actions;
   keep configuration editable while disabled. The rule table shows each rule's latest
-  live result for an exact match to a saved rule, with details on hover. Its Info /
-  Status panel shows the overall assignment or waiting reason without presenting
-  preferences as reserved cores.
+  live result for an exact match to a saved rule, with details on hover. Its Status
+  panel shows the overall scheduling preference assignment or waiting reason.
   When several cohorts are waiting, the rail prioritizes insufficient core capacity,
   then cohort stability, then missing instances. The Action Log records each rule's result.
 - CPU Sets (Soft) and Processor Affinity (Hard) label their built-in section Core Presets. A preview
@@ -384,12 +384,17 @@ hover/press; background shading supplies feedback.
 - Place Watchdog after Process List in the primary navigation. Show Resource
   Thresholds, Memory Trim, Keep Running, Sleep Prevention, Instance Limits,
   and App Suspension in that order. Reuse the existing landing-page cards and
-  link each one to its own editor. Keep enable controls, rules, and status per
-  feature.
+  link each one to its own editor. Use the full canvas for the Watchdog landing
+  page and each Watchdog editor. Keep feature actions and help on their pages.
 - Keep shared options for Resource Thresholds, Memory Trim, Instance Limits,
   and the App Suspension background delay in their feature's expandable toggle
   card. Let users configure these while the feature is off. Keep rule tables
   and independent App Suspension controls accessible outside that card.
+- Memory Trim places Trim now in the page's manual trim card. The action uses
+  saved settings and shows why it is unavailable while a request is pending,
+  automation or the feature is off, or Windows cannot identify the power source
+  when the saved manual trim settings differ. Show the last completed trim in
+  the same card, with the observed working-set reduction and measurement coverage.
 - Place Notify beside Enable in the Resource Thresholds, Instance Limits, and
   Keep Running rule tables. Enable controls whether the rule runs. Notify
   controls Windows alert delivery. Resource Thresholds and Instance Limits
@@ -401,7 +406,7 @@ hover/press; background shading supplies feedback.
 ### Resource Thresholds
 
 - Keep Resource Thresholds global across power sources, with the shared app
-  picker, rule table, and Info / Status tabs. CPU and Memory columns show warning
+  picker and rule table. CPU and Memory columns show warning
   and critical thresholds, and the Memory column identifies the selected metric.
   Pencil dialogs show app identity and an optional sustained duration shared by
   the CPU / Memory tabs. A blank duration inherits the page default. Drafts apply
@@ -508,7 +513,10 @@ hover/press; background shading supplies feedback.
   Save commits and Discard restores; do not add a second removal confirmation.
 - Side panels follow tabs (when present), main title, subtitle, then content. Subtitles stay outside cards. Put primary panel actions in the bottom footer.
 - Presets tabs share a scrollable list and pinned Add preset footer. Names wrap in neutral rows with hover feedback. Selecting a name opens a read-only preview; custom rows have separate edit and delete icons and the custom section has an empty state. Use the shared dialog frame, with each editor grouping its own fields. Page and group preset dropdowns stage settings for the current editor. Save or the feature's Apply review confirms the change.
-- Feature info belongs in a full-height scrollable Info tab in the right sidebar. Order shared tabs left to right as Info / Status / Presets, omitting unavailable tabs. Adaptive Engine, Adaptive Processor Power, CPU Sets (Soft), and Processor Affinity (Hard) use all three. Advanced Power Plan Tuning uses Info / Presets. Reset to Info on navigation. Pages with only feature information show it directly without a lone tab. Remove the header info action and inline page disclosure; retain essential setting consequences and live warnings beside their controls.
+- Put concise explanations in the relevant feature cards and keep extended
+  reference in the documentation. When both Status and Presets are available,
+  show them in that order and open Status on navigation. Show a single panel
+  directly.
 - Keep rule creation above the rule table under Custom Rules. By Time and By CPU
   Load put Add rule on the main page. Other editors put it beside the target input.
 - Use the shared rule table surface, row spacing, empty state, and action column.
@@ -520,9 +528,8 @@ hover/press; background shading supplies feedback.
 - Executable rule tables show App name and Executable path. Long paths wrap
   within their column so the full target stays readable. Name-based rules
   show their exact filename and Any path with an Executable name label.
-- Keep breadcrumbs anchored at the top left. Power-source selectors stay beneath the breadcrumb; page-level reference stays in the right sidebar.
+- Keep breadcrumbs anchored at the top left. Power-source selectors stay beneath the breadcrumb.
 - Quit confirmation is centered over a dimmed window. With unsaved changes show Cancel, Save and quit, and Quit without saving; otherwise show Cancel and Quit. Shutdown errors stay visible.
-- Avoid duplicated help text between inline descriptions, info popovers, and sidebar Feature info.
 
 - Adaptive Engine CPU Behaviour presents Pressure source and its threshold together in Shared Detection and Timing. Time above threshold, restrained priority, Maximum restraint time, and idle settings belong inside the expandable CPU Pressure Restraint card. Limit Background Processors and Dynamic Resource Zones keep their controls under independent toggle headers with visible descriptions. Keep disclosure state separate for the live and preset editors. Zoning keeps its 1-99 foreground share and visible throughput warning. The limiter percentage always refers to background capacity, and its allocation method remains editable when zones are enabled. Show verified zoning status and counts.
 - Exclude service hosts belongs in Shared Detection and Timing because it covers all three policies.
@@ -584,7 +591,7 @@ hover/press; background shading supplies feedback.
 
 Use the [render harness](development.md#rendering-and-performance) for both locales,
 light/dark themes, AMOLED, minimum-size and desktop windows, empty/populated rules,
-collapsed/expanded groups, live/editable/read-only presets, Info tabs, flyouts, and
+collapsed/expanded groups, live/editable/read-only presets, side panels, flyouts, and
 search. Check header controls independently from expansion; each must retain its own
 hit target. Preserve live/preset navigation and collapse-state isolation.
 

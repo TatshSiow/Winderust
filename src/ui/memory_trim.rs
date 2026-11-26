@@ -145,7 +145,7 @@ impl Editor {
         };
     }
 
-    pub(super) fn last_result_view(&self) -> Option<Element<'_, Message>> {
+    fn last_result_view(&self) -> Option<Element<'_, Message>> {
         let result = self.last_result?;
         let caption = |label: String| -> Element<'_, Message> {
             text(label)
@@ -230,6 +230,7 @@ impl Editor {
         &'a self,
         settings: &'a MemoryTrimSettings,
         candidates: &'a [super::app_picker::Candidate],
+        trim_unavailable: Option<&str>,
     ) -> Element<'a, Message> {
         let field = |field: Threshold, unit: &'static str| {
             let (label, maximum) = field.label_and_maximum();
@@ -243,17 +244,33 @@ impl Editor {
                 )
             })
         };
-        let mut body = column![super::widgets::setting_group(
-            "memory_trim.enable".to_string(),
-            self.settings_expanded,
-            Message::ToggleSettings,
-            super::widgets::switch(settings.enabled, Some(Message::Enabled)),
-            super::widgets::settings_rows([
-                field(Threshold::Load, "%"),
-                field(Threshold::WorkingSet, "MB"),
-                field(Threshold::Idle, "s"),
-            ]),
+        let manual_trim = column![super::widgets::setting_row(
+            "memory_trim.manual_trim",
+            super::widgets::action_button(t!("memory_trim.trim_now").into_owned())
+                .on_press_maybe(trim_unavailable.is_none().then_some(Message::TrimNow)),
         )]
+        .extend(trim_unavailable.map(|key| {
+            text(t!(key).into_owned())
+                .size(design::typography::SECONDARY)
+                .style(text::secondary)
+                .into()
+        }))
+        .extend(self.last_result_view())
+        .spacing(design::space::MEDIUM);
+        let mut body = column![
+            super::widgets::setting_group(
+                "memory_trim.enable".to_string(),
+                self.settings_expanded,
+                Message::ToggleSettings,
+                super::widgets::switch(settings.enabled, Some(Message::Enabled)),
+                super::widgets::settings_rows([
+                    field(Threshold::Load, "%"),
+                    field(Threshold::WorkingSet, "MB"),
+                    field(Threshold::Idle, "s"),
+                ]),
+            ),
+            super::widgets::settings_card(manual_trim),
+        ]
         .spacing(super::widgets::CARD_GAP);
         let picker = super::app_picker::view_with_path_selection(
             &self.path,
@@ -285,12 +302,17 @@ impl Editor {
             })
             .collect();
         body = body
-            .push(super::widgets::setting_title_with_help(
-                "common.rules",
-                "",
-                "memory_trim.rules_help",
+            .push(super::widgets::settings_card(
+                column![
+                    super::widgets::setting_title_with_help(
+                        "common.rules",
+                        "",
+                        "memory_trim.rules_help",
+                    ),
+                    picker,
+                ]
+                .spacing(design::space::SMALL),
             ))
-            .push(super::widgets::settings_card(picker))
             .push(super::widgets::process_rules_table([], cards, false));
         scrollable(body).height(Fill).into()
     }

@@ -147,15 +147,18 @@ impl Editor {
         let error = is_path
             .then(|| path_error(settings, &self.path, None))
             .flatten();
-        let mut picker = column![app_picker::view(
-            &self.path,
-            candidates,
-            true,
-            Message::Path,
-            Message::Browse,
-            (is_path && error.is_none()).then_some(Message::Add),
-            |path| path_error(settings, path, None).is_none().then_some(true),
-        )]
+        let mut picker = column![
+            widgets::setting_title_with_help("common.rules", "", "instance_balancing.rules_help"),
+            app_picker::view(
+                &self.path,
+                candidates,
+                true,
+                Message::Path,
+                Message::Browse,
+                (is_path && error.is_none()).then_some(Message::Add),
+                |path| path_error(settings, path, None).is_none().then_some(true),
+            ),
+        ]
         .spacing(design::space::SMALL);
         if let Some(error) = error {
             picker = picker.push(text(error).style(text::danger));
@@ -167,7 +170,6 @@ impl Editor {
                     settings.enabled,
                     Some(Message::Enabled),
                 ),
-                widgets::setting_title("common.rules"),
                 widgets::settings_card(picker),
                 widgets::process_rules_table([], rules, true),
             ]

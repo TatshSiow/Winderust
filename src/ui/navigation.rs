@@ -341,88 +341,6 @@ pub(super) fn rail_item<'a, Message: Clone + 'a>(
         .into()
 }
 
-pub(super) fn page_feature_info_intro(page: Page) -> Option<(&'static str, u8)> {
-    Some(match page {
-        Page::AdaptiveEngine => ("adaptive_engine", 3),
-        Page::AdaptiveProcessorPower => ("adaptive_processor_power", 2),
-        Page::EfficiencyMode => ("efficiency_mode", 3),
-        Page::MemoryTrim => ("memory_trim", 3),
-        Page::ResourceThresholds => ("resource_thresholds", 3),
-        Page::AppSuspension => ("app_suspension", 3),
-        Page::SleepPrevention => ("sleep_prevention", 4),
-        Page::KeepRunning => ("keep_running", 3),
-        Page::InstanceLimits => ("instance_limits", 3),
-        Page::InstanceBalancing => ("instance_balancing", 3),
-        Page::CpuLimiter => ("cpu_limiter", 5),
-        Page::ByActivity => ("by_activity", 2),
-        Page::ByCpuLoad => ("by_cpu_load", 2),
-        Page::ByFocus => ("by_focus", 2),
-        Page::ByRunningApp => ("by_running_app", 3),
-        Page::ByTime => ("by_time", 2),
-        Page::ProcessPriority => ("process_priority", 2),
-        Page::ThreadPriority => ("thread_priority", 2),
-        Page::DynamicPriorityBoost => ("dynamic_priority_boost", 2),
-        Page::IoPriority => ("io_priority", 2),
-        Page::GpuPriority => ("gpu_priority", 3),
-        Page::MemoryPriority => ("memory_priority", 2),
-        Page::CpuSetsSoft => ("cpu_sets_soft", 2),
-        Page::ProcessorAffinityHard => ("processor_affinity_hard", 2),
-        Page::TimerResolution => ("timer_resolution", 3),
-        Page::PowerPlanControl | Page::AdvancedPowerPlanTuning | Page::Win32PrioritySeparation => {
-            ("", 0)
-        }
-        _ => return None,
-    })
-}
-
-pub(super) fn page_feature_info(page: Page) -> String {
-    let Some((prefix, paragraphs)) = page_feature_info_intro(page) else {
-        return String::new();
-    };
-    let mut help = (1..=paragraphs)
-        .map(|index| {
-            let key = format!("{prefix}.intro_{index}");
-            t!(&key).to_string()
-        })
-        .collect::<Vec<_>>()
-        .join("\n\n");
-    if matches!(
-        page,
-        Page::PowerPlanControl
-            | Page::ByActivity
-            | Page::ByCpuLoad
-            | Page::ByFocus
-            | Page::ByRunningApp
-            | Page::ByTime
-    ) {
-        for key in [
-            "common.power_plan_priority",
-            "common.power_plan_pause_priority",
-        ] {
-            if !help.is_empty() {
-                help.push_str("\n\n");
-            }
-            help.push_str(&t!(key));
-        }
-    }
-    let extra: &[&str] = match page {
-        Page::CpuSetsSoft => &["cpu_sets_soft.warning"],
-        Page::ProcessorAffinityHard => &["processor_affinity_hard.warning"],
-        Page::AppSuspension => &["app_suspension.suspendable_help"],
-        Page::TimerResolution => &["timer_resolution.warning"],
-        Page::Win32PrioritySeparation => &["settings.win32_priority_separation_warning"],
-        Page::AdvancedPowerPlanTuning => &["processor_power.help"],
-        _ => &[],
-    };
-    for key in extra {
-        if !help.is_empty() {
-            help.push_str("\n\n");
-        }
-        help.push_str(&t!(*key));
-    }
-    help
-}
-
 pub(super) fn icon<'a, Message: 'a>(page: Page, selected: bool) -> Element<'a, Message> {
     assets::icon(icon_path(page), design::ICON_SIZE, move |theme| {
         if selected {
@@ -663,72 +581,57 @@ pub(super) fn dashboard_page_search_text(page: Page) -> String {
             "{label} {section} advanced windows scheduler win32 priority separation quantum foreground boost registry",
         ),
         Page::ByActivity => format!(
-            "{label} {section} {} {} {} idle active input keyboard mouse controller gamepad activity power plan battery plugged",
-            t!("by_activity.intro_1"),
-            t!("by_activity.intro_2"),
-            t!("by_activity.enable"),
+            "{label} {section} {} idle active input keyboard mouse controller gamepad activity power plan battery plugged",
+            t!("by_activity.enable_help"),
         ),
         Page::ByFocus => format!(
-            "{label} {section} {} {} {} focus focused app process window power plan priority rule",
-            t!("by_focus.intro_1"),
-            t!("by_focus.intro_2"),
-            t!("by_focus.enable"),
+            "{label} {section} {} focus focused app process window power plan priority rule",
+            t!("by_focus.enable_help"),
         ),
         Page::ByTime => format!(
-            "{label} {section} {} {} {} time schedule clock date weekday overnight power plan",
-            t!("by_time.intro_1"),
-            t!("by_time.intro_2"),
-            t!("by_time.enable"),
+            "{label} {section} {} time schedule clock date weekday overnight power plan",
+            t!("by_time.enable_help"),
         ),
         Page::ByCpuLoad => format!(
-            "{label} {section} {} {} {} cpu load usage threshold sustained power plan percent samples",
-            t!("by_cpu_load.intro_1"),
-            t!("by_cpu_load.intro_2"),
-            t!("by_cpu_load.enable"),
+            "{label} {section} {} cpu load usage threshold sustained power plan percent samples",
+            t!("by_cpu_load.enable_help"),
         ),
         Page::AdaptiveProcessorPower => format!(
-            "{label} {section} {} {} adaptive processor power core parking boost processor min max ac dc battery temporary power plan background pressure focus launch",
-            t!("adaptive_processor_power.intro_1"),
-            t!("adaptive_processor_power.intro_2"),
+            "{label} {section} {} adaptive processor power core parking boost processor min max ac dc battery temporary power plan background pressure focus launch",
+            t!("adaptive_processor_power.enable_help"),
         ),
         Page::AdvancedPowerPlanTuning => format!(
             "{label} {section} {} {} {} {} core parking processor power boost min max ac dc battery plugged performance saver balanced scheduling hybrid long short thread policy schedpolicy shortschedpolicy",
-            t!("processor_power.help"),
+            t!("processor_power.target_plan_help"),
             t!("processor_power.performance_help"),
             t!("processor_power.balanced_help"),
             t!("processor_power.saver_help"),
         ),
         Page::CpuLimiter => format!(
-            "{label} {section} {} {} {} {} {} {} cpu limiter allowed time duty cycle freeze resume background process audio video network stutter child job group",
-            t!("cpu_limiter.intro_1"),
-            t!("cpu_limiter.intro_2"),
-            t!("cpu_limiter.intro_3"),
-            t!("cpu_limiter.intro_4"),
-            t!("cpu_limiter.intro_5"),
+            "{label} {section} {} {} {} {} cpu limiter allowed time duty cycle freeze resume background process audio video network stutter child job group",
+            t!("cpu_limiter.limit_method_help"),
+            t!("cpu_limiter.cpu_time_defaults_help"),
+            t!("cpu_limiter.cpu_time_scope_help"),
             t!("cpu_limiter.rules_help"),
         ),
         Page::ProcessPriority => format!(
-            "{label} {section} {} {} {} process priority base priority normal below normal idle above normal high background foreground exclusion",
-            t!("process_priority.intro_1"),
-            t!("process_priority.intro_2"),
+            "{label} {section} {} {} process priority base priority normal below normal idle above normal high background foreground exclusion",
+            t!("process_priority.enable_help"),
             t!("priority_control.custom_rules_help"),
         ),
         Page::ThreadPriority => format!(
-            "{label} {section} {} {} {} thread priority time critical highest above normal normal below normal lowest idle background foreground exclusion",
-            t!("thread_priority.intro_1"),
-            t!("thread_priority.intro_2"),
+            "{label} {section} {} {} thread priority time critical highest above normal normal below normal lowest idle background foreground exclusion",
+            t!("thread_priority.enable_help"),
             t!("priority_control.custom_rules_help"),
         ),
         Page::DynamicPriorityBoost => format!(
-            "{label} {section} {} {} {} dynamic priority boost process scheduler enabled disabled background foreground exclusion",
-            t!("dynamic_priority_boost.intro_1"),
-            t!("dynamic_priority_boost.intro_2"),
+            "{label} {section} {} {} dynamic priority boost process scheduler enabled disabled background foreground exclusion",
+            t!("dynamic_priority_boost.enable_help"),
             t!("priority_control.custom_rules_help"),
         ),
         Page::CpuSetsSoft => format!(
-            "{label} {section} {} {} {} cpu sets soft preferred processors per app foreground",
-            t!("cpu_sets_soft.intro_1"),
-            t!("cpu_sets_soft.intro_2"),
+            "{label} {section} {} {} cpu sets soft preferred processors per app foreground",
+            t!("cpu_sets_soft.enable_help"),
             t!("cpu_allocation.rules_help"),
         ),
         Page::ProcessList => format!(
@@ -736,91 +639,73 @@ pub(super) fn dashboard_page_search_text(page: Page) -> String {
             t!("process_list.title"),
         ),
         Page::AdaptiveEngine => format!(
-            "{label} {section} {} {} {} adaptive engine cpu scheduling foreground background priority cpu spike stutter restraint processor placement",
-            t!("adaptive_engine.intro_1"),
-            t!("adaptive_engine.intro_2"),
-            t!("adaptive_engine.intro_3"),
+            "{label} {section} {} adaptive engine cpu scheduling foreground background priority cpu spike stutter restraint processor placement",
+            t!("adaptive_engine.enable_help"),
         ),
         Page::EfficiencyMode => format!(
-            "{label} {section} {} {} {} {} {} {} efficiency mode efficiency_mode qos throttle background priority exclusion custom_rules",
-            t!("efficiency_mode.intro_1"),
-            t!("efficiency_mode.intro_2"),
-            t!("efficiency_mode.intro_3"),
+            "{label} {section} {} {} {} {} efficiency mode efficiency_mode qos throttle background priority exclusion custom_rules",
+            t!("efficiency_mode.enable_help"),
             t!("common.foreground_detection_help"),
             t!("common.visible_window_detection_help"),
             t!("efficiency_mode.custom_rules_help"),
         ),
         Page::AppSuspension => format!(
-            "{label} {section} {} {} {} {} suspend freeze thaw resume background app process job object delay network audio",
-            t!("app_suspension.intro_1"),
-            t!("app_suspension.intro_2"),
-            t!("app_suspension.intro_3"),
+            "{label} {section} {} {} suspend freeze thaw resume background app process job object delay network audio",
+            t!("app_suspension.enable_help"),
             t!("app_suspension.suspendable_help"),
         ),
         Page::SleepPrevention => format!(
             "{label} {section} {} {} sleep prevention awake system idle display monitor running app power request",
-            t!("sleep_prevention.intro_1"),
-            t!("sleep_prevention.intro_2"),
+            t!("sleep_prevention.enable_help"),
+            t!("sleep_prevention.keep_display_on"),
         ),
         Page::ByRunningApp => format!(
-            "{label} {section} {} {} {} {} running app performance mode power plan process game gaming active restore",
-            t!("by_running_app.intro_1"),
-            t!("by_running_app.intro_2"),
-            t!("by_running_app.intro_3"),
+            "{label} {section} {} {} running app performance mode power plan process game gaming active restore",
+            t!("by_running_app.enable_help"),
             t!("by_running_app.rules_help"),
         ),
         Page::IoPriority => format!(
-            "{label} {section} {} {} {} {} {} io i/o disk storage priority low very low background foreground detection default exclusion",
-            t!("io_priority.intro_1"),
-            t!("io_priority.intro_2"),
-            t!("io_priority.enable"),
+            "{label} {section} {} {} {} io i/o disk storage priority low very low background foreground detection default exclusion",
+            t!("io_priority.enable_help"),
             t!("common.foreground_detection"),
             t!("priority_control.custom_rules_help"),
         ),
         Page::GpuPriority => format!(
-            "{label} {section} {} {} {} {} {} gpu graphics scheduling priority d3dkmt idle below normal above normal foreground detection background default exclusion",
-            t!("gpu_priority.intro_1"),
-            t!("gpu_priority.intro_2"),
-            t!("gpu_priority.enable"),
+            "{label} {section} {} {} {} gpu graphics scheduling priority d3dkmt idle below normal above normal foreground detection background default exclusion",
+            t!("gpu_priority.enable_help"),
             t!("common.foreground_detection"),
             t!("priority_control.custom_rules_help"),
         ),
         Page::MemoryPriority => format!(
-            "{label} {section} {} {} {} {} {} memory priority page priority ram paging working set very low low medium background foreground detection default exclusion",
-            t!("memory_priority.intro_1"),
-            t!("memory_priority.intro_2"),
-            t!("memory_priority.enable"),
+            "{label} {section} {} {} {} memory priority page priority ram paging working set very low low medium background foreground detection default exclusion",
+            t!("memory_priority.enable_help"),
             t!("common.foreground_detection"),
             t!("priority_control.custom_rules_help"),
         ),
         Page::ResourceThresholds => format!(
             "{label} {section} {} monitor cpu memory ram threshold warning critical toast notification terminate kill process",
-            t!("resource_thresholds.intro_1"),
+            t!("resource_thresholds.enable_help"),
         ),
         Page::InstanceLimits => format!(
             "{label} {section} {} instance limits count maximum processes monitor notifications full path",
-            t!("instance_limits.intro_1"),
+            t!("instance_limits.enable_help"),
         ),
         Page::InstanceBalancing => format!(
-            "{label} {section} {} {} instance balancing instances processes executable full path whole cores scheduling preferences CPU Sets",
-            t!("instance_balancing.intro_1"),
-            t!("instance_balancing.intro_2"),
+            "{label} {section} {} instance balancing instances processes executable full path whole cores scheduling preferences CPU Sets",
+            t!("instance_balancing.enable_help"),
         ),
         Page::KeepRunning => format!(
             "{label} {section} {} keep running relaunch restart app process exit arguments working directory retry resume",
-            t!("keep_running.intro_1"),
+            t!("keep_running.enable_help"),
         ),
         Page::MemoryTrim => format!(
-            "{label} {section} {} {} {} memory ram trim working set idle background exclusion",
-            t!("memory_trim.intro_1"),
-            t!("memory_trim.intro_2"),
-            t!("memory_trim.intro_3"),
+            "{label} {section} {} {} memory ram trim working set idle background exclusion",
+            t!("memory_trim.enable_help"),
+            t!("memory_trim.rules_help"),
         ),
         Page::ProcessorAffinityHard => format!(
-            "{label} {section} {} {} {} {} processor affinity hard allowed processors per app foreground",
-            t!("processor_affinity_hard.intro_1"),
-            t!("processor_affinity_hard.intro_2"),
-            t!("processor_affinity_hard.warning"),
+            "{label} {section} {} {} processor affinity hard allowed processors per app foreground",
+            t!("processor_affinity_hard.enable_help"),
             t!("cpu_allocation.rules_help"),
         ),
         Page::WinderustBehaviour => format!(
@@ -838,10 +723,9 @@ pub(super) fn dashboard_page_search_text(page: Page) -> String {
             t!("settings.expose_all_priority_values_help"),
         ),
         Page::TimerResolution => format!(
-            "{label} {section} {} {} {} timer resolution ntsettimerresolution scheduler latency wakeups battery high resolution timer foreground process rule",
-            t!("timer_resolution.intro_1"),
-            t!("timer_resolution.intro_2"),
-            t!("timer_resolution.warning"),
+            "{label} {section} {} {} timer resolution ntsettimerresolution scheduler latency wakeups battery high resolution timer foreground process rule",
+            t!("timer_resolution.enable_help"),
+            t!("timer_resolution.rules_help"),
         ),
         Page::Win32PrioritySeparation => format!(
             "{label} {section} {} {} {} win32 priority separation windows scheduler quantum foreground boost games gaming registry",
@@ -931,22 +815,6 @@ mod tests {
         assert_eq!(
             breadcrumb_path(Page::EfficiencyMode),
             vec![Page::Home, Page::PriorityControl, Page::EfficiencyMode]
-        );
-    }
-
-    #[test]
-    fn feature_info_includes_warnings_and_timer_release_behavior() {
-        let help = super::page_feature_info(crate::ui::Page::CpuLimiter);
-        assert!(help.contains(&rust_i18n::t!("cpu_limiter.intro_1").to_string()));
-        assert!(help.contains(&rust_i18n::t!("cpu_limiter.intro_4").to_string()));
-        assert!(help.contains(&rust_i18n::t!("cpu_limiter.intro_5").to_string()));
-        let help = super::page_feature_info(crate::ui::Page::TimerResolution);
-        assert!(help.contains(&rust_i18n::t!("timer_resolution.intro_3").to_string()));
-        assert!(help.contains(&rust_i18n::t!("timer_resolution.warning").to_string()));
-        let help = super::page_feature_info(Page::InstanceBalancing);
-        assert!(help.contains(&t!("instance_balancing.intro_3").to_string()));
-        assert!(
-            dashboard_search_pages("instance balancing", false).contains(&Page::InstanceBalancing)
         );
     }
 

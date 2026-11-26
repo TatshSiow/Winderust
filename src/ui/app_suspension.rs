@@ -336,7 +336,6 @@ impl Editor {
                 controls,
             ));
         }
-        body = body.push(super::widgets::setting_title("common.rules"));
         let picker = super::app_picker::view_with_path_selection(
             &self.path,
             candidates,
@@ -348,6 +347,11 @@ impl Editor {
         );
         body = body.push(super::widgets::settings_card(
             column![
+                super::widgets::setting_title_with_help(
+                    "common.rules",
+                    "",
+                    "app_suspension.suspendable_help",
+                ),
                 picker,
                 text(t!("app_suspension.tcp_thresholds_help").to_string())
                     .size(design::typography::SECONDARY)

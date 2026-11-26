@@ -137,11 +137,14 @@ impl Editor {
         candidates: &'a [app_picker::Candidate],
         keep_awake: KeepAwakeView,
     ) -> Element<'a, Message> {
+        let mut requests_paused = false;
         let rules = settings
             .rules
             .iter()
             .enumerate()
             .map(|(index, rule)| {
+                let status_key = indicator_key(status, rule);
+                requests_paused |= status_key == "sleep_prevention.requests_paused";
                 let header = widgets::process_rule_header(
                     &rule.executable_path,
                     candidates,
@@ -149,7 +152,7 @@ impl Editor {
                         .on_toggle(move |value| Message::RuleEnabled(index, value))
                         .into(),
                     Some(
-                        text(indicator(status, rule))
+                        text(t!(status_key).into_owned())
                             .size(design::typography::SECONDARY)
                             .into(),
                     ),
@@ -170,7 +173,20 @@ impl Editor {
             .collect();
         let path = exact_path_input(&self.path);
         let can_add = Self::can_add(settings, path);
-        let mut picker = column![app_picker::view_with_path_selection(
+        let mut picker = column![widgets::setting_title_with_help(
+            "common.rules",
+            "",
+            "sleep_prevention.rules_help"
+        )]
+        .spacing(design::space::SMALL);
+        if requests_paused {
+            picker = picker.push(
+                text(t!("sleep_prevention.paused_help").into_owned())
+                    .size(design::typography::SECONDARY)
+                    .style(text::secondary),
+            );
+        }
+        picker = picker.push(app_picker::view_with_path_selection(
             &self.path,
             candidates,
             true,
@@ -178,8 +194,7 @@ impl Editor {
             Message::Browse,
             can_add.then_some(Message::Add),
             |path| Self::can_add(settings, path).then_some(true),
-        )]
-        .spacing(design::space::SMALL);
+        ));
         if !can_add && app_picker::is_path_query(&self.path) && validate_path(path).is_err() {
             picker = picker.push(app_picker::path_format_hint());
         }
@@ -191,7 +206,6 @@ impl Editor {
                     Some(Message::Enabled)
                 ),
                 self.keep_awake_card(keep_awake),
-                widgets::setting_title("common.rules"),
                 widgets::settings_card(picker),
                 widgets::process_rules_table(
                     [t!("sleep_prevention.keep_display_on").to_string()],
@@ -259,12 +273,15 @@ impl Editor {
     }
 }
 
-fn indicator(status: Option<&SleepPreventionSnapshot>, rule: &SleepPreventionRule) -> String {
+fn indicator_key(
+    status: Option<&SleepPreventionSnapshot>,
+    rule: &SleepPreventionRule,
+) -> &'static str {
     if !rule.enabled {
-        return t!("common.off").to_string();
+        return "common.off";
     }
     let Some(status) = status else {
-        return t!("common.unknown").to_string();
+        return "common.unknown";
     };
     let matches = |path: &str| same_rule_executable_path(&rule.executable_path, path);
     let contains = |paths: &[String]| paths.iter().any(|path| matches(path));
@@ -277,7 +294,7 @@ fn indicator(status: Option<&SleepPreventionSnapshot>, rule: &SleepPreventionRul
             .iter()
             .find(|request| matches(&request.path))
     };
-    let key = if !status.enabled {
+    if !status.enabled {
         "common.off"
     } else if !status.observation_known {
         "common.unknown"
@@ -299,8 +316,7 @@ fn indicator(status: Option<&SleepPreventionSnapshot>, rule: &SleepPreventionRul
         "sleep_prevention.not_running"
     } else {
         "common.unknown"
-    };
-    t!(key).to_string()
+    }
 }
 
 #[cfg(test)]
@@ -365,52 +381,52 @@ mod tests {
             }],
             ..Default::default()
         };
-        assert_eq!(indicator(None, &rule), t!("common.unknown"));
-        assert_eq!(indicator(Some(&status), &rule), t!("common.waiting"));
+        assert_eq!(indicator_key(None, &rule), "common.unknown");
+        assert_eq!(indicator_key(Some(&status), &rule), "common.waiting");
         status.system_requested = true;
         assert_eq!(
-            indicator(Some(&status), &rule),
-            t!("sleep_prevention.request_accepted")
+            indicator_key(Some(&status), &rule),
+            "sleep_prevention.request_accepted"
         );
         rule.keep_display_on = true;
         assert_eq!(
-            indicator(Some(&status), &rule),
-            t!("sleep_prevention.system_request_accepted")
+            indicator_key(Some(&status), &rule),
+            "sleep_prevention.system_request_accepted"
         );
         status.display_requested = true;
         assert_eq!(
-            indicator(Some(&status), &rule),
-            t!("sleep_prevention.system_request_accepted")
+            indicator_key(Some(&status), &rule),
+            "sleep_prevention.system_request_accepted"
         );
         status.requesting_apps[0].keep_display_on = true;
         status.display_requested = false;
         rule.keep_display_on = false;
         assert_eq!(
-            indicator(Some(&status), &rule),
-            t!("sleep_prevention.system_request_accepted")
+            indicator_key(Some(&status), &rule),
+            "sleep_prevention.system_request_accepted"
         );
         status.display_requested = true;
         status.observation_known = false;
-        assert_eq!(indicator(Some(&status), &rule), t!("common.unknown"));
+        assert_eq!(indicator_key(Some(&status), &rule), "common.unknown");
         status.observation_known = true;
         status.suppressed_apps.push(rule.executable_path.clone());
         assert_eq!(
-            indicator(Some(&status), &rule),
-            t!("sleep_prevention.request_accepted")
+            indicator_key(Some(&status), &rule),
+            "sleep_prevention.request_accepted"
         );
         status.requesting_apps.clear();
         assert_eq!(
-            indicator(Some(&status), &rule),
-            t!("sleep_prevention.requests_paused")
+            indicator_key(Some(&status), &rule),
+            "sleep_prevention.requests_paused"
         );
         status.suspended_apps.push(rule.executable_path.clone());
         status.suppressed_apps.clear();
         assert_eq!(
-            indicator(Some(&status), &rule),
-            t!("app_suspension.indicator.suspended")
+            indicator_key(Some(&status), &rule),
+            "app_suspension.indicator.suspended"
         );
         rule.enabled = false;
-        assert_eq!(indicator(None, &rule), t!("common.off"));
+        assert_eq!(indicator_key(None, &rule), "common.off");
     }
 
     #[test]
@@ -426,11 +442,11 @@ mod tests {
             observed_rule_paths: Some([r"C:\Other\test.exe".into()].into()),
             ..Default::default()
         };
-        assert_eq!(indicator(Some(&status), &rule), t!("common.unknown"));
+        assert_eq!(indicator_key(Some(&status), &rule), "common.unknown");
         status.observed_rule_paths = Some([r"c:/apps/TEST.exe".into()].into());
         assert_eq!(
-            indicator(Some(&status), &rule),
-            t!("sleep_prevention.not_running")
+            indicator_key(Some(&status), &rule),
+            "sleep_prevention.not_running"
         );
     }
 }

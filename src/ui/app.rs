@@ -46,7 +46,6 @@ fn shell_widths(width: f32) -> (f32, f32, u16) {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SidePanelTab {
-    Info,
     Status,
     Presets,
 }
@@ -56,17 +55,39 @@ impl SidePanelTab {
             Page::AdaptiveEngine
             | Page::AdaptiveProcessorPower
             | Page::CpuSetsSoft
-            | Page::ProcessorAffinityHard => &[Self::Info, Self::Status, Self::Presets],
-            Page::AdvancedPowerPlanTuning => &[Self::Info, Self::Presets],
-            Page::Win32PrioritySeparation => &[Self::Info],
-            _ => &[Self::Info, Self::Status],
+            | Page::ProcessorAffinityHard => &[Self::Status, Self::Presets],
+            Page::AdvancedPowerPlanTuning => &[Self::Presets],
+            Page::PowerPlanControl
+            | Page::ByActivity
+            | Page::ByFocus
+            | Page::ByRunningApp
+            | Page::ByCpuLoad
+            | Page::ByTime
+            | Page::EfficiencyMode
+            | Page::InstanceBalancing
+            | Page::ProcessPriority
+            | Page::ThreadPriority
+            | Page::DynamicPriorityBoost
+            | Page::IoPriority
+            | Page::GpuPriority
+            | Page::MemoryPriority
+            | Page::CpuLimiter
+            | Page::TimerResolution => &[Self::Status],
+            _ => &[],
         }
     }
+
+    fn initial_for_page(page: Page) -> Self {
+        Self::for_page(page)
+            .first()
+            .copied()
+            .unwrap_or(Self::Status)
+    }
+
     fn label(self) -> String {
         t!(match self {
             Self::Status => "common.status",
             Self::Presets => "common.presets",
-            Self::Info => "common.info",
         })
         .to_string()
     }
@@ -282,56 +303,25 @@ fn side_panel_dock<'a>(
         .into()
 }
 
-fn feature_info_sidebar<'a>(
+fn page_side_panel<'a>(
     feature_page: Page,
     selected: SidePanelTab,
-    build_panel: impl FnOnce() -> Option<Element<'a, Message>>,
-) -> Option<Element<'a, Message>> {
-    if navigation::page_feature_info_intro(feature_page).is_none() {
-        return build_panel();
-    }
-    let info = || -> Element<'a, Message> {
-        scrollable(
-            container(
-                text(navigation::page_feature_info(feature_page))
-                    .size(design::typography::SECONDARY)
-                    .width(Fill),
-            )
-            .width(Fill)
-            .padding([0, design::space::MEDIUM as u16]),
-        )
-        .width(Fill)
-        .height(Fill)
-        .into()
-    };
+    body: Element<'a, Message>,
+) -> Element<'a, Message> {
     let tabs = SidePanelTab::for_page(feature_page);
-    let body = if tabs.len() == 1 {
-        None
-    } else if selected == SidePanelTab::Info {
-        Some(info())
-    } else {
-        build_panel()
-    };
-    Some(if let Some(body) = body {
-        let tabs = row(tabs.iter().map(|&tab| {
-            widgets::panel_tab(tab.label(), tab == selected, Message::SidePanelTab(tab)).into()
-        }));
-        column![
-            container(tabs).style(widgets::tab_bar),
-            super::motion::wrap(body, true, super::motion::Effect::Content(selected as u64)),
-        ]
-        .spacing(design::space::MEDIUM)
-        .height(Fill)
-        .into()
-    } else {
-        column![
-            widgets::panel_heading(t!("common.feature_info").to_string()),
-            info(),
-        ]
-        .spacing(design::space::MEDIUM)
-        .height(Fill)
-        .into()
-    })
+    if tabs.len() < 2 {
+        return body;
+    }
+    let tabs = row(tabs.iter().map(|&tab| {
+        widgets::panel_tab(tab.label(), tab == selected, Message::SidePanelTab(tab)).into()
+    }));
+    column![
+        container(tabs).style(widgets::tab_bar),
+        super::motion::wrap(body, true, super::motion::Effect::Content(selected as u64)),
+    ]
+    .spacing(design::space::MEDIUM)
+    .height(Fill)
+    .into()
 }
 
 #[cfg(feature = "render-smoke")]
@@ -382,7 +372,7 @@ pub(crate) fn run(
                 navigation_search_selected: 0,
                 navigation: navigation::Flyout::default(),
                 side_panel_open: false,
-                side_panel_tab: SidePanelTab::Info,
+                side_panel_tab: SidePanelTab::initial_for_page(Page::Home),
                 preferences: settings_pages::Editor::default(),
                 home: home::Model::default(),
                 action_log: action_log::Editor::default(),
@@ -1348,7 +1338,11 @@ impl WinderustApp {
                 self.navigation_search.clear();
             }
             Message::Navigation(event) => return self.update_navigation(event),
-            Message::SidePanelTab(tab) => self.side_panel_tab = tab,
+            Message::SidePanelTab(tab) => {
+                if SidePanelTab::for_page(self.page).contains(&tab) {
+                    self.side_panel_tab = tab;
+                }
+            }
             Message::ToggleSidePanel => {
                 self.side_panel_open = !self.side_panel_open;
                 self.navigation.dismiss();
@@ -2123,7 +2117,7 @@ impl WinderustApp {
                 self.preferences.cancel_shortcut_capture();
                 self.preferences.replace_settings_open = false;
                 self.navigation_history.visit(page);
-                self.side_panel_tab = SidePanelTab::for_page(page)[0];
+                self.side_panel_tab = SidePanelTab::initial_for_page(page);
                 let path = navigation::breadcrumb_path(page);
                 self.breadcrumb = path;
                 if entering_page && page == Page::Home {
@@ -3290,9 +3284,8 @@ impl WinderustApp {
         &self,
         read_power_source: impl FnOnce() -> Option<bool>,
     ) -> Option<Element<'_, Message>> {
-        feature_info_sidebar(self.page, self.side_panel_tab, || {
-            self.side_panel_body(read_power_source)
-        })
+        let body = self.side_panel_body(read_power_source)?;
+        Some(page_side_panel(self.page, self.side_panel_tab, body))
     }
 
     fn side_panel_body(
@@ -3354,53 +3347,14 @@ impl WinderustApp {
                 &self.status,
                 observed_plugged_in,
             );
-            let panel = status_rail::view(
+            status_rail::view(
                 page,
                 settings,
                 &self.status,
                 &self.power_plans,
                 observed_plugged_in,
-            );
-            panel.map(|panel| {
-                let panel = panel.map(Message::Status);
-                if page == Page::MemoryTrim {
-                    let can_trim = settings.general.enabled
-                        && settings.memory_trim.enabled
-                        && !self.manual_trim_pending
-                        && !matches!(
-                            self.status.feature_status.memory_trim.status,
-                            crate::memory_trim::MemoryTrimStatus::WaitingForPowerSource {
-                                manual_trim_blocked: true
-                            }
-                        );
-                    column![panel, iced::widget::rule::horizontal(1)]
-                        .extend(
-                            self.trim
-                                .last_result_view()
-                                .map(|view| view.map(Message::Trim)),
-                        )
-                        .push(
-                            container(
-                                button(
-                                    container(text(t!("memory_trim.trim_now").to_string()))
-                                        .center_x(Fill),
-                                )
-                                .width(Fill)
-                                .height(32)
-                                .style(widgets::primary_button)
-                                .on_press_maybe(
-                                    can_trim
-                                        .then_some(Message::Trim(memory_trim::Message::TrimNow)),
-                                ),
-                            )
-                            .padding([design::space::MEDIUM as u16, 0]),
-                        )
-                        .height(Fill)
-                        .into()
-                } else {
-                    panel
-                }
-            })
+            )
+            .map(|panel| panel.map(Message::Status))
         }
     }
 
@@ -3481,7 +3435,7 @@ impl WinderustApp {
             .style(widgets::navigation_surface);
         let navigation = shield(navigation.into());
         let side_panel_available = matches!(self.page, Page::ProcessList | Page::ActionLog)
-            || navigation::page_feature_info_intro(self.page).is_some();
+            || !SidePanelTab::for_page(self.page).is_empty();
         let side_panel = (self.side_panel_open && side_panel_available)
             .then(|| self.side_panel(read_power_source))
             .flatten()
@@ -3861,10 +3815,32 @@ impl WinderustApp {
                     settings_are_pending,
                 )
                 .map(Message::KeepRunning),
-            Page::MemoryTrim => self
-                .trim
-                .view(&self.settings.memory_trim, &self.candidates)
-                .map(Message::Trim),
+            Page::MemoryTrim => {
+                let live = status_rail::saved_runtime_settings(&self.settings, read_power_source());
+                let trim_unavailable = if self.manual_trim_pending {
+                    Some("memory_trim.manual_trim_running")
+                } else if !live.general.enabled {
+                    Some("memory_trim.manual_automation_disabled")
+                } else if matches!(
+                    self.status.feature_status.memory_trim.status,
+                    crate::memory_trim::MemoryTrimStatus::WaitingForPowerSource {
+                        manual_trim_blocked: true
+                    }
+                ) {
+                    Some("memory_trim.manual_power_source_unknown")
+                } else if !live.memory_trim.enabled {
+                    Some("memory_trim.manual_disabled")
+                } else {
+                    None
+                };
+                self.trim
+                    .view(
+                        &self.settings.memory_trim,
+                        &self.candidates,
+                        trim_unavailable,
+                    )
+                    .map(Message::Trim)
+            }
             Page::TimerResolution => self
                 .timer
                 .view(
@@ -4081,6 +4057,16 @@ impl WinderustApp {
                         self.power_plan_control
                             .fallback_polling_interval_field(general.check_interval_ms)
                             .map(Message::PowerPlanControl),
+                        column![
+                            text(t!("power_plan_control.rule_priority").to_string())
+                                .size(design::typography::SECONDARY)
+                                .style(text::secondary),
+                            text(t!("power_plan_control.rule_pause_conditions").to_string())
+                                .size(design::typography::SECONDARY)
+                                .style(text::secondary),
+                        ]
+                        .spacing(design::space::TIGHT)
+                        .into(),
                     ])),
                     self.child_pages(),
                 ]
@@ -4724,35 +4710,30 @@ mod tests {
     }
 
     #[test]
-    fn feature_info_fits_the_sidebar_without_changing_its_bounds() {
+    fn side_panel_tabs_fit_the_dock_without_changing_its_bounds() {
         use super::*;
         use iced::advanced::{layout, widget::Tree};
 
         let renderer = iced::Renderer::new(iced::Font::DEFAULT, iced::Pixels(14.0));
-        assert!(feature_info_sidebar(Page::Home, SidePanelTab::Info, || None).is_none());
-        for page in
-            std::iter::once(Page::SettingsHome).chain(navigation::children(Page::SettingsHome))
-        {
-            assert!(feature_info_sidebar(page, SidePanelTab::Info, || None).is_none());
+        assert!(SidePanelTab::for_page(Page::Home).is_empty());
+        assert!(SidePanelTab::for_page(Page::Win32PrioritySeparation).is_empty());
+        for landing in [Page::SettingsHome, Page::Watchdog] {
+            for page in std::iter::once(landing).chain(navigation::children(landing)) {
+                assert!(SidePanelTab::for_page(page).is_empty());
+            }
         }
         for width in [216.0, 296.0] {
             for height in [500.0, 1000.0] {
                 let size = iced::Size::new(width, height);
                 for feature_page in [
-                    Page::CpuLimiter,
                     Page::AdaptiveEngine,
                     Page::AdaptiveProcessorPower,
-                    Page::AdvancedPowerPlanTuning,
+                    Page::CpuSetsSoft,
+                    Page::ProcessorAffinityHard,
                 ] {
                     for &selected in SidePanelTab::for_page(feature_page) {
                         let panel = iced::widget::Space::new().width(Fill).height(Fill).into();
-                        let mut built_panel = false;
-                        let mut view = feature_info_sidebar(feature_page, selected, || {
-                            built_panel = true;
-                            Some(panel)
-                        })
-                        .expect("feature page has information");
-                        assert_eq!(built_panel, selected != SidePanelTab::Info);
+                        let mut view = page_side_panel(feature_page, selected, panel);
                         let mut tree = Tree::new(&view);
                         let node = view.as_widget_mut().layout(
                             &mut tree,
@@ -4766,16 +4747,21 @@ mod tests {
                         assert!(body.size().height >= height - 60.0);
                     }
                 }
-                let mut view =
-                    feature_info_sidebar(Page::TimerResolution, SidePanelTab::Status, || None)
-                        .expect("feature information is available without a runtime panel");
-                let mut tree = Tree::new(&view);
-                let node = view.as_widget_mut().layout(
-                    &mut tree,
-                    &renderer,
-                    &layout::Limits::new(iced::Size::ZERO, size),
-                );
-                assert_eq!(node.size(), size);
+                for (page, tab) in [
+                    (Page::TimerResolution, SidePanelTab::Status),
+                    (Page::AdvancedPowerPlanTuning, SidePanelTab::Presets),
+                ] {
+                    let panel = iced::widget::Space::new().width(Fill).height(Fill).into();
+                    let mut view = page_side_panel(page, tab, panel);
+                    let mut tree = Tree::new(&view);
+                    let node = view.as_widget_mut().layout(
+                        &mut tree,
+                        &renderer,
+                        &layout::Limits::new(iced::Size::ZERO, size),
+                    );
+                    assert_eq!(node.size(), size);
+                    assert!(node.children().is_empty());
+                }
             }
         }
     }

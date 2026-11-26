@@ -7,16 +7,7 @@ use crate::{
     adaptive_engine_process::{AdaptiveEngineProcessSnapshot, RestraintIdlePause},
     automation::RuntimeStatusSnapshot,
     config::{PowerSourceProfile, Settings},
-    control::{
-        instance_limits::CountObservation, power_plan::PowerPlanOwner,
-        priority_efficiency::AdaptiveRestraintState,
-    },
-    features::watchdog::{
-        app_suspension::AppSuspensionStatus,
-        instance_limits::{InstanceLimitsSnapshot, NotificationStatus},
-        memory_trim::MemoryTrimStatus,
-        sleep_prevention::SleepPreventionSnapshot,
-    },
+    control::{power_plan::PowerPlanOwner, priority_efficiency::AdaptiveRestraintState},
     power::PowerPlan,
     rules::DecisionState,
     ui::Page,
@@ -112,8 +103,6 @@ pub(super) fn view<'a>(
         Page::ByTime => Some(ActionLogFeature::ByTime),
         _ => None,
     };
-    let instance_limits = (page == Page::InstanceLimits)
-        .then(|| instance_limits_status(settings, &runtime.feature_status.instance_limits));
     let current_source = plugged_in.map(|plugged_in| {
         if plugged_in {
             PowerSourceProfile::PluggedIn
@@ -121,9 +110,6 @@ pub(super) fn view<'a>(
             PowerSourceProfile::OnBattery
         }
     });
-    let sleep = (page == Page::SleepPrevention)
-        .then_some(&runtime.feature_status.sleep_prevention)
-        .filter(|snapshot| current_source.is_none_or(|source| snapshot.source == Some(source)));
     let adaptive = (page == Page::AdaptiveEngine)
         .then_some(&runtime.feature_status.adaptive_engine_process)
         .filter(|snapshot| {
@@ -134,25 +120,7 @@ pub(super) fn view<'a>(
                     && current_source.is_none_or(|source| snapshot.source == Some(source))
             }
         });
-    let summary = if let Some(limits) = &instance_limits {
-        FeatureStatusSummary {
-            scanned: None,
-            adjusted: None,
-            protected_or_denied: None,
-            skipped: None,
-            last_error: limits.last_error,
-            action_log_feature: ActionLogFeature::InstanceLimits,
-        }
-    } else if page == Page::SleepPrevention {
-        FeatureStatusSummary {
-            scanned: None,
-            adjusted: None,
-            protected_or_denied: None,
-            skipped: None,
-            last_error: sleep.and_then(|snapshot| snapshot.last_error.as_deref()),
-            action_log_feature: ActionLogFeature::SleepPrevention,
-        }
-    } else if page == Page::AdaptiveEngine {
+    let summary = if page == Page::AdaptiveEngine {
         let observed = adaptive.filter(|status| status.enabled && !status.observation_paused);
         FeatureStatusSummary {
             scanned: observed.map(|status| status.scanned_processes),
@@ -176,7 +144,6 @@ pub(super) fn view<'a>(
     };
     let available = runtime.generation != 0;
     let observed_state = match page {
-        Page::SleepPrevention => Some(sleep_prevention_state(sleep)),
         Page::AdaptiveEngine if settings.adaptive_engine_process.has_enabled_policies() => {
             match adaptive {
                 Some(status) if status.observation_paused => Some(FeatureRunState::Paused),
@@ -184,7 +151,7 @@ pub(super) fn view<'a>(
                 _ => Some(FeatureRunState::Unknown),
             }
         }
-        _ => instance_limits.as_ref().map(|limits| limits.state),
+        _ => None,
     };
     let state = sidebar_state(page, settings, runtime, &summary, observed_state);
     let (state_label, detail, color) = match (page, state) {
@@ -220,49 +187,6 @@ pub(super) fn view<'a>(
                 "common.waiting",
             )
         }
-        (Page::AppSuspension, FeatureRunState::Paused)
-            if runtime.feature_status.app_suspension.status
-                == AppSuspensionStatus::PowerSourceUnknown =>
-        {
-            (
-                "sidebar_status.paused",
-                "app_suspension.status.power_source_unknown",
-                "common.waiting",
-            )
-        }
-        (Page::SleepPrevention, FeatureRunState::Running)
-            if sleep.is_some_and(|status| status.waiting_for_power_source) =>
-        {
-            (
-                "sleep_prevention.system_request_accepted",
-                "sleep_prevention.power_source_unavailable",
-                "common.applied",
-            )
-        }
-        (Page::SleepPrevention, FeatureRunState::Waiting)
-            if sleep.is_some_and(|status| status.waiting_for_power_source) =>
-        {
-            (
-                "common.waiting",
-                "sleep_prevention.power_source_unavailable",
-                "common.waiting",
-            )
-        }
-        (Page::SleepPrevention, FeatureRunState::Running) => (
-            "sleep_prevention.request_accepted",
-            "sleep_prevention.request_status_help",
-            "common.applied",
-        ),
-        (Page::SleepPrevention, FeatureRunState::Paused) => (
-            "sleep_prevention.requests_paused",
-            "sleep_prevention.paused_help",
-            "common.waiting",
-        ),
-        (Page::InstanceLimits, FeatureRunState::Running) => (
-            "instance_limits.monitoring",
-            "instance_limits.intro_1",
-            "common.applied",
-        ),
         _ => state.status_keys(),
     };
     let detail = if page == Page::InstanceBalancing
@@ -271,36 +195,6 @@ pub(super) fn view<'a>(
         && runtime.worker_error.is_none()
     {
         runtime.feature_status.instance_balancing.message()
-    } else if page == Page::MemoryTrim {
-        let trim = &runtime.feature_status.memory_trim;
-        match (&trim.status, trim.memory_load_percent) {
-            (
-                MemoryTrimStatus::WaitingForPowerSource {
-                    manual_trim_blocked,
-                },
-                _,
-            ) if state == FeatureRunState::Paused => Some(
-                t!(if *manual_trim_blocked {
-                    "memory_trim.waiting_for_power_source"
-                } else {
-                    "memory_trim.automatic_waiting_for_power_source"
-                })
-                .into_owned(),
-            ),
-            (MemoryTrimStatus::WaitingForMemoryLoad { threshold_percent }, Some(load_percent))
-                if state == FeatureRunState::Waiting =>
-            {
-                Some(
-                    t!(
-                        "memory_trim.waiting_for_memory_load",
-                        load = load_percent,
-                        threshold = threshold_percent
-                    )
-                    .into_owned(),
-                )
-            }
-            _ => None,
-        }
     } else {
         None
     }
@@ -310,10 +204,9 @@ pub(super) fn view<'a>(
         .action_log_summaries
         .get(&summary.action_log_feature);
     let last_failed = actions.and_then(|summary| summary.last_failed.as_ref());
-    let current_error = summary.last_error.filter(|reason| {
-        (page != Page::InstanceLimits || settings.instance_limits.notify)
-            && last_failed.is_none_or(|entry| entry.reason.as_str() != *reason)
-    });
+    let current_error = summary
+        .last_error
+        .filter(|reason| last_failed.is_none_or(|entry| entry.reason.as_str() != *reason));
     if let Some(error) = current_error {
         body = body.push(detail_row("sidebar_status.current_error", error.to_owned()));
     }
@@ -328,55 +221,6 @@ pub(super) fn view<'a>(
             })
             .unwrap_or_else(|| t!("common.unknown").to_string());
         body = body.push(section("common.current_power_plan", column![text(plan)]));
-    } else if let Some(limits) = &instance_limits {
-        body = body.push(section(
-            "instance_limits.monitoring",
-            column![
-                metric(
-                    "common.rules",
-                    count(available.then_some(limits.enabled_rules))
-                ),
-                metric(
-                    "instance_limits.incidents",
-                    count(available.then_some(limits.incidents))
-                ),
-                text(t!("instance_limits.intro_2").to_string()).size(design::typography::CAPTION),
-            ]
-            .spacing(design::space::CONTROL),
-        ));
-    } else if page == Page::SleepPrevention {
-        let sleep = sleep.filter(|_| available);
-        let observed = sleep.filter(|snapshot| snapshot.observation_known);
-        let accepted = |requested| {
-            t!(match requested {
-                Some(true) => "sleep_prevention.request_accepted",
-                Some(false) => "sleep_prevention.not_requested",
-                None => "common.unknown",
-            })
-            .into_owned()
-        };
-        body = body.push(section(
-            "sleep_prevention.requests",
-            column![
-                metric(
-                    "sleep_prevention.matching_rules",
-                    count(observed.map(|snapshot| snapshot.matched_rules))
-                ),
-                metric(
-                    "sleep_prevention.matching_processes",
-                    count(observed.map(|snapshot| snapshot.matched_processes))
-                ),
-                metric(
-                    "sleep_prevention.system_request",
-                    accepted(sleep.map(|snapshot| snapshot.system_requested))
-                ),
-                metric(
-                    "sleep_prevention.display_request",
-                    accepted(sleep.map(|snapshot| snapshot.display_requested))
-                ),
-            ]
-            .spacing(design::space::CONTROL),
-        ));
     } else if page == Page::TimerResolution {
         let request = runtime
             .feature_status
@@ -389,47 +233,32 @@ pub(super) fn view<'a>(
             column![text(request)],
         ));
     } else {
-        let activity_available =
-            available && (page != Page::MemoryTrim || state != FeatureRunState::Unknown);
-        let shadowed =
-            (page == Page::ProcessPriority && activity_available && summary.scanned.is_some())
-                .then_some(
-                    runtime
-                        .feature_status
-                        .process_priority
-                        .efficiency_mode_shadowed_processes,
-                )
-                .filter(|&count| count != 0);
+        let shadowed = (page == Page::ProcessPriority && available && summary.scanned.is_some())
+            .then_some(
+                runtime
+                    .feature_status
+                    .process_priority
+                    .efficiency_mode_shadowed_processes,
+            )
+            .filter(|&count| count != 0);
         body = body.push(section(
             "common.process_activity",
             column![
                 metric(
-                    if page == Page::ResourceThresholds {
-                        "resource_thresholds.monitored"
-                    } else {
-                        "common.scanned_processes"
-                    },
-                    count(activity_available.then_some(summary.scanned).flatten())
+                    "common.scanned_processes",
+                    count(available.then_some(summary.scanned).flatten())
                 ),
                 metric(
-                    if page == Page::ResourceThresholds {
-                        "resource_thresholds.alerting"
-                    } else {
-                        "common.adjusted_processes"
-                    },
-                    count(activity_available.then_some(summary.adjusted).flatten())
+                    "common.adjusted_processes",
+                    count(available.then_some(summary.adjusted).flatten())
                 ),
                 metric(
                     "common.protected_or_denied_processes",
-                    count(
-                        activity_available
-                            .then_some(summary.protected_or_denied)
-                            .flatten()
-                    )
+                    count(available.then_some(summary.protected_or_denied).flatten())
                 ),
                 metric(
                     "common.skipped_processes",
-                    count(activity_available.then_some(summary.skipped).flatten())
+                    count(available.then_some(summary.skipped).flatten())
                 )
             ]
             .extend(shadowed.map(|count| {
@@ -789,13 +618,14 @@ pub(super) fn saved_rail_settings<'a>(
     plugged_in: Option<bool>,
 ) -> &'a Settings {
     let plugged_in = plugged_in.or_else(|| {
-        let features = &runtime.feature_status;
-        let source = match page {
-            Page::AdaptiveEngine => features.adaptive_engine_process.source,
-            Page::SleepPrevention => features.sleep_prevention.source,
-            _ => None,
-        };
-        source.map(|source| source == PowerSourceProfile::PluggedIn)
+        if page != Page::AdaptiveEngine {
+            return None;
+        }
+        runtime
+            .feature_status
+            .adaptive_engine_process
+            .source
+            .map(|source| source == PowerSourceProfile::PluggedIn)
     });
     saved_runtime_settings(editor, plugged_in)
 }
@@ -809,74 +639,6 @@ pub(super) fn saved_runtime_settings(
         saved.battery_profile()
     } else {
         saved
-    }
-}
-
-struct InstanceLimitsStatus<'a> {
-    state: FeatureRunState,
-    enabled_rules: usize,
-    incidents: usize,
-    last_error: Option<&'a str>,
-}
-
-fn instance_limits_status<'a>(
-    settings: &Settings,
-    snapshot: &'a InstanceLimitsSnapshot,
-) -> InstanceLimitsStatus<'a> {
-    let mut enabled_rules = 0;
-    let mut incidents = 0;
-    let mut last_error = None;
-    let mut observed = true;
-    let active = settings.general.enabled && settings.instance_limits.enabled && snapshot.enabled;
-    for rule in settings
-        .instance_limits
-        .rules
-        .iter()
-        .filter(|rule| rule.enabled)
-    {
-        enabled_rules += 1;
-        let Some(report) = active
-            .then(|| super::instance_limits::rule_status(snapshot, rule))
-            .flatten()
-        else {
-            observed = false;
-            continue;
-        };
-        observed &= super::instance_limits::sample_fresh(report.sampled_at)
-            && matches!(report.count, CountObservation::Complete(_));
-        incidents += usize::from(report.incident);
-        let NotificationStatus::Failed(error) = &report.notification else {
-            continue;
-        };
-        if settings.instance_limits.notify && rule.notify {
-            last_error.get_or_insert(error.as_str());
-        }
-    }
-    let state = if enabled_rules == 0 {
-        FeatureRunState::Waiting
-    } else if observed {
-        FeatureRunState::Running
-    } else {
-        FeatureRunState::Unknown
-    };
-    InstanceLimitsStatus {
-        state,
-        enabled_rules,
-        incidents,
-        last_error,
-    }
-}
-
-fn sleep_prevention_state(sleep: Option<&SleepPreventionSnapshot>) -> FeatureRunState {
-    let Some(sleep) = sleep.filter(|snapshot| snapshot.observation_known) else {
-        return FeatureRunState::Unknown;
-    };
-    if sleep.system_requested {
-        FeatureRunState::Running
-    } else if !sleep.suppressed_apps.is_empty() && sleep.requesting_apps.is_empty() {
-        FeatureRunState::Paused
-    } else {
-        FeatureRunState::Waiting
     }
 }
 
@@ -966,25 +728,6 @@ fn sidebar_state(
         if !priority.enabled && priority.last_error.is_some() {
             return FeatureRunState::Error;
         }
-    } else if page == Page::AppSuspension {
-        let suspension = &runtime.feature_status.app_suspension;
-        if settings.general.enabled && suspension.status == AppSuspensionStatus::PowerSourceUnknown
-        {
-            return if runtime.worker_error.is_some() || summary.last_error.is_some() {
-                FeatureRunState::Error
-            } else {
-                FeatureRunState::Paused
-            };
-        }
-        if !suspension.status_unknown
-            && matches!(
-                suspension.status,
-                AppSuspensionStatus::AutomationDisabled | AppSuspensionStatus::Disabled
-            )
-            && suspension.last_error.is_some()
-        {
-            return FeatureRunState::Error;
-        }
     }
     if page == Page::CpuLimiter {
         let limiter = &runtime.feature_status.cpu_limiter;
@@ -999,18 +742,6 @@ fn sidebar_state(
             };
         }
     }
-    if page == Page::MemoryTrim
-        && matches!(
-            runtime.feature_status.memory_trim.status,
-            MemoryTrimStatus::WaitingForPowerSource { .. }
-        )
-    {
-        return if runtime.worker_error.is_some() {
-            FeatureRunState::Error
-        } else {
-            FeatureRunState::Paused
-        };
-    }
     if !settings.general.enabled
         || super::navigation::feature_page_enabled(settings, page) == Some(false)
     {
@@ -1022,9 +753,7 @@ fn sidebar_state(
     if runtime.generation == 0 {
         return FeatureRunState::Unknown;
     }
-    if summary.last_error.is_some()
-        && (page != Page::InstanceLimits || settings.instance_limits.notify)
-    {
+    if summary.last_error.is_some() {
         return FeatureRunState::Error;
     }
     if let Some(state) = observed_state {
@@ -1073,53 +802,12 @@ fn sidebar_state(
         };
     }
     let features = &runtime.feature_status;
-    if page == Page::ResourceThresholds
-        && !features.resource_thresholds.observation_known
-        && settings
-            .resource_thresholds
-            .rules
-            .iter()
-            .any(|rule| rule.enabled)
-    {
-        return FeatureRunState::Unknown;
-    }
     if page == Page::InstanceBalancing
         && (!features.instance_balancing.enabled || features.instance_balancing.detail.is_none())
     {
         return FeatureRunState::Unknown;
     }
-    if page == Page::KeepRunning {
-        use crate::features::watchdog::keep_running::KeepRunningState;
-        let keep_running = &features.keep_running;
-        if !keep_running.observation_known {
-            return FeatureRunState::Unknown;
-        }
-        let mut running = false;
-        let mut awaiting_observation = false;
-        for rule in settings
-            .keep_running
-            .rules
-            .iter()
-            .filter(|rule| rule.enabled)
-        {
-            match keep_running.rule_status(rule).map(|report| report.state) {
-                Some(KeepRunningState::Paused(_)) => return FeatureRunState::Paused,
-                Some(KeepRunningState::Armed | KeepRunningState::Starting) => running = true,
-                None | Some(KeepRunningState::Disabled) => awaiting_observation = true,
-                Some(KeepRunningState::WaitingForApp | KeepRunningState::Retrying { .. }) => {}
-            }
-        }
-        return if running {
-            FeatureRunState::Running
-        } else if awaiting_observation {
-            FeatureRunState::Unknown
-        } else {
-            FeatureRunState::Waiting
-        };
-    }
-    if (page == Page::EfficiencyMode && features.efficiency_mode.unsupported)
-        || (page == Page::AppSuspension && features.app_suspension.unsupported)
-    {
+    if page == Page::EfficiencyMode && features.efficiency_mode.unsupported {
         return FeatureRunState::Blocked;
     }
     let process_observation = match page {
@@ -1165,9 +853,6 @@ fn sidebar_state(
             return FeatureRunState::Unknown;
         }
     }
-    if page == Page::AppSuspension && features.app_suspension.status_unknown {
-        return FeatureRunState::Unknown;
-    }
     if (page == Page::CpuLimiter && super::cpu_limiter::observations_paused(&features.cpu_limiter))
         || (page == Page::TimerResolution && features.timer_resolution.observation_paused)
         || (page == Page::CpuSetsSoft && features.cpu_sets_soft.observation_paused)
@@ -1176,18 +861,7 @@ fn sidebar_state(
     {
         return FeatureRunState::Paused;
     }
-    if page == Page::MemoryTrim {
-        match features.memory_trim.status {
-            MemoryTrimStatus::Disabled | MemoryTrimStatus::AutomationDisabled => {
-                return FeatureRunState::Unknown;
-            }
-            MemoryTrimStatus::ForegroundUnknown => return FeatureRunState::Paused,
-            _ => {}
-        }
-    }
-    let active = (page == Page::ResourceThresholds
-        && summary.scanned.is_some_and(|count| count > 0))
-        || summary.adjusted.is_some_and(|count| count > 0)
+    let active = summary.adjusted.is_some_and(|count| count > 0)
         || (page == Page::TimerResolution && features.timer_resolution.requested_100ns.is_some());
     if active {
         FeatureRunState::Running
@@ -1269,44 +943,6 @@ fn feature_status_summary(
                 skipped: observed.then_some(status.skipped_processes),
                 last_error: status.last_error.as_deref(),
                 action_log_feature: ActionLogFeature::EfficiencyMode,
-            }
-        }
-        Page::ResourceThresholds => {
-            let status = &runtime.feature_status.resource_thresholds;
-            let observed = status.observation_known;
-            FeatureStatusSummary {
-                scanned: observed.then_some(status.monitored_processes),
-                adjusted: observed.then_some(status.alerting_processes),
-                protected_or_denied: None,
-                skipped: observed.then_some(status.skipped_processes),
-                last_error: status.last_error.as_deref(),
-                action_log_feature: ActionLogFeature::ResourceThresholds,
-            }
-        }
-        Page::KeepRunning => FeatureStatusSummary {
-            scanned: None,
-            adjusted: None,
-            protected_or_denied: None,
-            skipped: None,
-            last_error: runtime.feature_status.keep_running.last_error.as_deref(),
-            action_log_feature: ActionLogFeature::KeepRunning,
-        },
-        Page::MemoryTrim => {
-            let status = &runtime.feature_status.memory_trim;
-            let activity_known = !matches!(
-                status.status,
-                MemoryTrimStatus::ForegroundUnknown
-                    | MemoryTrimStatus::WaitingForPowerSource { .. }
-                    | MemoryTrimStatus::WaitingForMemoryLoad { .. }
-                    | MemoryTrimStatus::Error(_)
-            );
-            FeatureStatusSummary {
-                scanned: activity_known.then_some(status.scanned_processes),
-                adjusted: activity_known.then_some(status.trimmed_processes),
-                protected_or_denied: None,
-                skipped: activity_known.then_some(status.skipped_processes),
-                last_error: status.last_error.as_deref(),
-                action_log_feature: ActionLogFeature::MemoryTrim,
             }
         }
         Page::ProcessPriority => {
@@ -1427,20 +1063,6 @@ fn feature_status_summary(
                 action_log_feature: ActionLogFeature::InstanceBalancing,
             }
         }
-        Page::AppSuspension => {
-            let status = &runtime.feature_status.app_suspension;
-            let observed = !status.status_unknown;
-            // A paused scan still reports freeze ownership from the locked controller.
-            let ownership_known = observed || status.enabled;
-            FeatureStatusSummary {
-                scanned: None,
-                adjusted: ownership_known.then_some(status.suspended_processes),
-                protected_or_denied: None,
-                skipped: observed.then_some(status.skipped_processes),
-                last_error: status.last_error.as_deref(),
-                action_log_feature: ActionLogFeature::AppSuspension,
-            }
-        }
         Page::TimerResolution => {
             let status = &runtime.feature_status.timer_resolution;
             FeatureStatusSummary {
@@ -1549,111 +1171,6 @@ mod tests {
         assert_eq!(labels[1], t!("adaptive_processor_power.releasing_plan"));
     }
 
-    #[test]
-    fn instance_limits_status_ignores_reports_for_superseded_rules() {
-        use crate::config::InstanceLimitsRule;
-        use crate::features::watchdog::instance_limits::InstanceLimitsRuleSnapshot;
-
-        let mut settings = Settings::default();
-        settings.general.enabled = true;
-        settings.instance_limits.enabled = true;
-        let rule = InstanceLimitsRule::new(r"C:\Apps\app.exe".into());
-        let snapshot = InstanceLimitsSnapshot {
-            enabled: true,
-            rules: vec![InstanceLimitsRuleSnapshot {
-                executable_path: rule.executable_path.clone(),
-                max_instances: rule.max_instances,
-                enabled: true,
-                count: CountObservation::Complete(2),
-                sampled_at: Some(std::time::Instant::now()),
-                incident: true,
-                notification: NotificationStatus::Failed("notification failed".into()),
-            }],
-        };
-        settings.instance_limits.rules.push(rule);
-        let status = instance_limits_status(&settings, &snapshot);
-        assert_eq!(status.state, FeatureRunState::Running);
-        assert_eq!(status.incidents, 1);
-        assert_eq!(status.last_error, Some("notification failed"));
-
-        settings.instance_limits.rules[0].notify = false;
-        let status = instance_limits_status(&settings, &snapshot);
-        assert_eq!(status.state, FeatureRunState::Running);
-        assert_eq!(status.incidents, 1);
-        assert_eq!(status.last_error, None);
-
-        settings.instance_limits.rules[0].max_instances = 2;
-        let status = instance_limits_status(&settings, &snapshot);
-        assert_eq!(status.state, FeatureRunState::Unknown);
-        assert_eq!(status.enabled_rules, 1);
-        assert_eq!(status.incidents, 0);
-        assert_eq!(status.last_error, None);
-    }
-
-    #[test]
-    fn resource_thresholds_counts_require_a_completed_observation() {
-        use crate::{
-            config::ResourceThresholdsRule,
-            features::watchdog::resource_thresholds::ResourceThresholdsManager,
-        };
-
-        let mut settings = Settings::default();
-        settings.general.enabled = true;
-        settings.resource_thresholds.enabled = true;
-        settings.resource_thresholds.rules =
-            vec![ResourceThresholdsRule::new(r"C:\Apps\worker.exe".into())];
-        let mut runtime = RuntimeStatusSnapshot {
-            generation: 1,
-            ..Default::default()
-        };
-        let status = |runtime: &RuntimeStatusSnapshot| {
-            let summary = feature_status_summary(Page::ResourceThresholds, runtime).unwrap();
-            (
-                sidebar_state(Page::ResourceThresholds, &settings, runtime, &summary, None),
-                [summary.scanned, summary.adjusted, summary.skipped],
-            )
-        };
-        assert_eq!(status(&runtime), (FeatureRunState::Unknown, [None; 3]));
-
-        let (sample, events) = ResourceThresholdsManager::default().update(
-            &settings.resource_thresholds,
-            true,
-            &mut crate::runtime::observations::CycleObservations::with_processes(Vec::new()),
-        );
-        assert!(events.is_empty());
-        assert_ne!(sample, Default::default());
-        std::sync::Arc::make_mut(&mut runtime.feature_status).resource_thresholds = sample;
-        assert_eq!(status(&runtime), (FeatureRunState::Waiting, [Some(0); 3]));
-    }
-
-    #[test]
-    fn app_suspension_sidebar_reports_pending_restore_when_disabled() {
-        let mut settings = Settings::default();
-        settings.general.enabled = true;
-        settings.app_suspension.enabled = false;
-        let mut runtime = RuntimeStatusSnapshot {
-            generation: 1,
-            ..Default::default()
-        };
-
-        for (frozen, error, unknown, expected) in [
-            (1, Some("thaw failed"), false, FeatureRunState::Error),
-            (0, None, false, FeatureRunState::Inactive),
-            (0, Some("lock error"), true, FeatureRunState::Inactive),
-        ] {
-            let features = std::sync::Arc::make_mut(&mut runtime.feature_status);
-            features.app_suspension.suspended_processes = frozen;
-            features.app_suspension.last_error = error.map(str::to_owned);
-            features.app_suspension.status_unknown = unknown;
-
-            let summary = feature_status_summary(Page::AppSuspension, &runtime).unwrap();
-            assert_eq!(
-                sidebar_state(Page::AppSuspension, &settings, &runtime, &summary, None),
-                expected
-            );
-        }
-    }
-
     fn rail_text(mut rail: Element<'_, Message>) -> Vec<String> {
         use iced::advanced::{
             layout,
@@ -1684,36 +1201,6 @@ mod tests {
         rail.as_widget_mut()
             .operate(&mut tree, Layout::new(&node), &renderer, &mut details);
         details.0
-    }
-
-    #[test]
-    fn app_suspension_rail_explains_source_wait_and_preserves_release_error() {
-        let settings = Settings::default();
-        assert!(!settings.app_suspension.enabled);
-        let mut runtime = RuntimeStatusSnapshot {
-            generation: 1,
-            ..Default::default()
-        };
-        let status = &mut std::sync::Arc::make_mut(&mut runtime.feature_status).app_suspension;
-        status.enabled = true;
-        status.status_unknown = true;
-        status.status = AppSuspensionStatus::PowerSourceUnknown;
-        let text = |runtime: &RuntimeStatusSnapshot| {
-            rail_text(view(Page::AppSuspension, &settings, runtime, &[], None).unwrap())
-        };
-        let rail = text(&runtime);
-        assert!(rail
-            .iter()
-            .any(|line| line == t!("sidebar_status.paused").as_ref()));
-        assert!(rail
-            .iter()
-            .any(|line| line == t!("app_suspension.status.power_source_unknown").as_ref()));
-
-        std::sync::Arc::make_mut(&mut runtime.feature_status)
-            .app_suspension
-            .last_error = Some("Exact job thaw failed.".to_owned());
-        let rail = text(&runtime);
-        assert!(rail.iter().any(|line| line == "Exact job thaw failed."));
     }
 
     #[test]
@@ -2061,97 +1548,6 @@ mod tests {
         assert!(details
             .iter()
             .any(|text| text.ends_with(" - older apply failure")));
-    }
-
-    #[test]
-    fn sleep_prevention_rail_waits_for_the_current_power_source_and_keeps_history() {
-        use crate::action_log::{ActionLog, ActionLogResult};
-
-        fn value<'a>(rail: &'a [String], key: &str) -> &'a str {
-            let label = t!(key);
-            rail.windows(2)
-                .find(|pair| pair[0] == label)
-                .map(|pair| pair[1].as_str())
-                .expect("status metric")
-        }
-
-        let mut settings = Settings::default();
-        settings.general.enabled = true;
-        settings.sleep_prevention.enabled = true;
-        let mut log = ActionLog::new(4);
-        for (result, reason) in [
-            (ActionLogResult::Applied, "previous request accepted"),
-            (ActionLogResult::Failed, "older clear failure"),
-        ] {
-            log.record(
-                ActionLogFeature::SleepPrevention,
-                None,
-                "System",
-                result,
-                reason,
-            );
-        }
-        let mut runtime = RuntimeStatusSnapshot {
-            generation: 1,
-            action_log_summaries: log.summaries().into(),
-            ..Default::default()
-        };
-        for (source, plugged_in) in [
-            (PowerSourceProfile::PluggedIn, true),
-            (PowerSourceProfile::OnBattery, false),
-        ] {
-            std::sync::Arc::make_mut(&mut runtime.feature_status).sleep_prevention =
-                SleepPreventionSnapshot {
-                    source: Some(source),
-                    enabled: true,
-                    observation_known: true,
-                    matched_rules: 2,
-                    matched_processes: 3,
-                    system_requested: true,
-                    display_requested: true,
-                    last_error: Some("current source error".into()),
-                    ..Default::default()
-                };
-            let capture = |observed| {
-                rail_text(view(Page::SleepPrevention, &settings, &runtime, &[], observed).unwrap())
-            };
-
-            for observed in [Some(plugged_in), None] {
-                let current = capture(observed);
-                assert_eq!(value(&current, "sleep_prevention.matching_rules"), "2");
-                assert_eq!(value(&current, "sleep_prevention.matching_processes"), "3");
-                for request in [
-                    "sleep_prevention.system_request",
-                    "sleep_prevention.display_request",
-                ] {
-                    assert_eq!(
-                        value(&current, request),
-                        t!("sleep_prevention.request_accepted")
-                    );
-                }
-                assert!(current.iter().any(|text| text == "current source error"));
-            }
-
-            let stale = capture(Some(!plugged_in));
-            assert_eq!(stale[0], t!("common.unknown"));
-            assert_eq!(
-                value(&stale, "sleep_prevention.matching_rules"),
-                count(None)
-            );
-            assert_eq!(
-                value(&stale, "sleep_prevention.matching_processes"),
-                count(None)
-            );
-            for request in [
-                "sleep_prevention.system_request",
-                "sleep_prevention.display_request",
-            ] {
-                assert_eq!(value(&stale, request), t!("common.unknown"));
-            }
-            assert!(!stale.iter().any(|text| text == "current source error"));
-            assert_eq!(value(&stale, "common.success_count"), "1");
-            assert_eq!(value(&stale, "common.failed_count"), "1");
-        }
     }
 
     #[test]
@@ -2626,54 +2022,11 @@ mod tests {
     fn unavailable_metrics_are_not_reported_as_zero() {
         assert_eq!(count(None), "\u{2014}");
         assert_eq!(count(Some(0)), "0");
-        let mut runtime = RuntimeStatusSnapshot::default();
+        let runtime = RuntimeStatusSnapshot::default();
         let summary = feature_status_summary(Page::MemoryPriority, &runtime).unwrap();
         assert_eq!(summary.scanned, None);
         assert_eq!(summary.adjusted, None);
         assert_eq!(summary.protected_or_denied, None);
         assert_eq!(summary.skipped, None);
-
-        for (status, expected) in [
-            (MemoryTrimStatus::ForegroundUnknown, None),
-            (
-                MemoryTrimStatus::WaitingForPowerSource {
-                    manual_trim_blocked: true,
-                },
-                None,
-            ),
-            (MemoryTrimStatus::Error("query failed".into()), None),
-            (
-                MemoryTrimStatus::WaitingForMemoryLoad {
-                    threshold_percent: 80,
-                },
-                None,
-            ),
-            (MemoryTrimStatus::Active, Some(0)),
-        ] {
-            std::sync::Arc::make_mut(&mut runtime.feature_status)
-                .memory_trim
-                .status = status;
-            let summary = feature_status_summary(Page::MemoryTrim, &runtime).unwrap();
-            assert_eq!(summary.scanned, expected);
-            assert_eq!(summary.adjusted, expected);
-            assert_eq!(summary.skipped, expected);
-        }
-
-        for (enabled, unknown, [frozen, skipped], expected) in [
-            (true, true, [2, 0], [Some(2), None]),
-            (true, true, [0, 0], [Some(0), None]),
-            (false, true, [0, 0], [None, None]),
-            (true, false, [0, 0], [Some(0); 2]),
-            (true, false, [1, 3], [Some(1), Some(3)]),
-        ] {
-            let suspension =
-                &mut std::sync::Arc::make_mut(&mut runtime.feature_status).app_suspension;
-            suspension.enabled = enabled;
-            suspension.status_unknown = unknown;
-            suspension.suspended_processes = frozen;
-            suspension.skipped_processes = skipped;
-            let summary = feature_status_summary(Page::AppSuspension, &runtime).unwrap();
-            assert_eq!([summary.adjusted, summary.skipped], expected);
-        }
     }
 }

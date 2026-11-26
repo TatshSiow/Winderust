@@ -206,18 +206,23 @@ impl Editor {
                 settings.enabled,
                 Some(Message::Enabled)
             ),
-            widgets::setting_title("common.rules"),
-            widgets::settings_card(app_picker::view_with_path_selection(
-                &self.path,
-                candidates,
-                true,
-                (Message::Path, |path| Message::Path(picked_path_input(path))),
-                Message::Browse,
-                Self::addable_rule(settings, exact_path_input(&self.path))
-                    .is_some()
-                    .then_some(Message::Add),
-                |path| Self::addable_rule(settings, path).is_some().then_some(true)
-            )),
+            widgets::settings_card(
+                column![
+                    widgets::setting_title_with_help("common.rules", "", "keep_running.rules_help"),
+                    app_picker::view_with_path_selection(
+                        &self.path,
+                        candidates,
+                        true,
+                        (Message::Path, |path| Message::Path(picked_path_input(path))),
+                        Message::Browse,
+                        Self::addable_rule(settings, exact_path_input(&self.path))
+                            .is_some()
+                            .then_some(Message::Add),
+                        |path| Self::addable_rule(settings, path).is_some().then_some(true),
+                    ),
+                ]
+                .spacing(design::space::SMALL),
+            ),
             widgets::process_rules_table_with_notify([], rules, true),
         ]
         .spacing(widgets::CARD_GAP);

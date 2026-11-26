@@ -118,7 +118,11 @@ impl Editor {
                 s.enabled,
                 Some(Message::Enabled)
             ),
-            super::widgets::setting_title_with_help("common.rules", "", "timer_resolution.intro_2"),
+            super::widgets::setting_title_with_help(
+                "common.rules",
+                "",
+                "timer_resolution.rules_help"
+            ),
             super::widgets::settings_card(super::app_picker::view_with_path_selection(
                 &self.path,
                 candidates,

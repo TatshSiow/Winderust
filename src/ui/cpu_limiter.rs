@@ -508,7 +508,13 @@ impl CpuLimiter {
             self.defaults_expanded,
             Message::ToggleDefaults,
             widgets::switch(settings.enabled, Some(Message::Enabled)),
-            widgets::settings_rows(defaults),
+            column![
+                text(t!("cpu_limiter.cpu_time_defaults_help").into_owned())
+                    .size(design::typography::SECONDARY)
+                    .style(text::secondary),
+                widgets::settings_rows(defaults),
+            ]
+            .spacing(design::space::MEDIUM),
         )]
         .spacing(widgets::CARD_GAP);
         if self.has_invalid_inputs() {
@@ -706,7 +712,10 @@ impl CpuLimiter {
         rule: &'a CpuLimiterRule,
         index: usize,
     ) -> Vec<Element<'a, Message>> {
-        let mut limits = Vec::new();
+        let mut limits = vec![text(t!("cpu_limiter.cpu_time_scope_help").into_owned())
+            .size(design::typography::SECONDARY)
+            .style(text::secondary)
+            .into()];
         for tier in Tier::ALL {
             let (mode, value) = tier.rule_values(rule);
             let mut controls = column![super::widgets::setting_row_with_unit(

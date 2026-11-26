@@ -241,15 +241,18 @@ impl Editor {
             })
             .collect();
         let can_add = Self::can_add(settings, &self.path);
-        let mut picker = column![app_picker::view(
-            &self.path,
-            candidates,
-            true,
-            Message::Path,
-            Message::Browse,
-            can_add.then_some(Message::Add),
-            |path| Self::can_add(settings, path).then_some(true)
-        )]
+        let mut picker = column![
+            widgets::setting_title_with_help("common.rules", "", "instance_limits.rules_help"),
+            app_picker::view(
+                &self.path,
+                candidates,
+                true,
+                Message::Path,
+                Message::Browse,
+                can_add.then_some(Message::Add),
+                |path| Self::can_add(settings, path).then_some(true)
+            ),
+        ]
         .spacing(design::space::SMALL);
         if !can_add && app_picker::is_path_query(&self.path) {
             if validate_path(&self.path).is_err() {
@@ -274,7 +277,6 @@ impl Editor {
                         widgets::switch(settings.notify, Some(Message::Notify)),
                     )],
                 ),
-                widgets::setting_title("common.rules"),
                 widgets::settings_card(picker),
                 widgets::process_rules_table_with_notify([], rules, true),
             ]
@@ -290,11 +292,12 @@ impl Editor {
     ) -> Option<Element<'a, Message>> {
         let (index, rule, maximum) = self.draft.as_ref()?;
         let valid = self.validated_draft().is_some();
-        let mut fields = column![widgets::numeric_setting_with_help(
+        let mut fields = column![widgets::numeric_setting(
             "instance_limits.maximum",
             "",
-            "instance_limits.intro_2",
-            move || widgets::stepper(maximum, 1..=u64::from(u32::MAX), 1, Some(Message::Maximum)),
+            move || {
+                widgets::stepper(maximum, 1..=u64::from(u32::MAX), 1, Some(Message::Maximum))
+            }
         )]
         .spacing(design::space::SMALL);
         if !valid {

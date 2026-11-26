@@ -316,7 +316,7 @@ Read the relevant section before changing feature policy, ownership, restoration
   captured identities and records partial failures. Accepted requests are
   deduplicated by PID and creation time across simultaneous CPU and memory
   events. Action Log and notifications count the requests accepted for that
-  action. Failures remain visible in Action Log and status. Termination has no
+  action. Failures are recorded in Action Log and runtime status. Termination has no
   baseline, recovery entry, or restore path.
 - Restart validates every captured exact instance, requires a non-service app
   in Winderust's Windows session, rejects mixed Windows logons, and prepares one
@@ -589,21 +589,21 @@ Read the relevant section before changing feature policy, ownership, restoration
   process identity may rearm it; explicitly disabling automation clears tracking.
 - If Windows cannot confirm the power source, differing pressure or idle thresholds pause
   automatic trimming. Differing enablement, working-set thresholds or exclusions also block
-  Trim Now. Waiting breaks the idle interval and preserves the prior trim and cooldown.
+  Trim now. Waiting breaks the idle interval and preserves the prior trim and cooldown.
 - The controller checks the working-set threshold on the verified process handle
   immediately before either automatic or manual trimming. A working set below
   the minimum returns to waiting and clears idle qualification.
 - Automatic trim attempts for the same process are spaced at least 60 seconds
   apart based on CPU sample time, including after an error or drop in memory
-  pressure. Trim Now remains available during the cooldown.
+  pressure. Trim now remains available during the cooldown.
 - An automatic pass attempts up to four trims, counting failures toward the
   limit. If eligible processes remain, the worker schedules another pass in
   three seconds. Each pass checks current pressure and eligibility, and starts
-  after the last attempted PID before wrapping to lower PIDs. Trim Now can
+  after the last attempted PID before wrapping to lower PIDs. Trim now can
   attempt all eligible processes in one pass.
 - The manual reply keeps the trim outcome. The UI reports skipped commands and
-  failed attempts. Status keeps the last completed Trim Now result in memory
-  and shows the observed working-set reduction and how many trims could be measured.
+  failed attempts. The last completed result stays in memory and includes the
+  observed working-set reduction and how many trims could be measured.
 - Failure suppression is tracked by executable path. Native paths that cannot
   be represented in settings keep runtime suppression and an Action Log entry.
   Saved exclusions and auto-exclusions require a representable path. A successful
