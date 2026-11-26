@@ -1501,7 +1501,11 @@ fn run_background_automation(
             runner.clear_controller_activity();
             scheduler.schedule_now(RefreshDomain::ControllerActivity, event_now);
         }
-        if wake_events.app_switch || wake_events.app_switch_mouse_click {
+        let app_suspension_auto_resume =
+            configured_settings.app_suspension.auto_resume_when_focused;
+        if app_suspension_auto_resume
+            && (wake_events.app_switch || wake_events.app_switch_mouse_click)
+        {
             scheduler.invalidate(
                 if wake_events.app_switch {
                     SchedulerEvent::AppSwitch
@@ -1705,7 +1709,8 @@ fn run_background_automation(
             );
         }
 
-        if runner.app_suspension_active()
+        if app_suspension_auto_resume
+            && runner.app_suspension_active()
             && scheduler.is_due(RefreshDomain::AppSuspensionForegroundRelease, now)
         {
             if let Some(app_suspension_status) =
@@ -1916,7 +1921,7 @@ fn run_background_automation(
                 now,
                 app_suspension_refresh_interval,
             );
-            if runner.app_suspension_active() {
+            if app_suspension_auto_resume && runner.app_suspension_active() {
                 scheduler.schedule_now(RefreshDomain::AppSuspensionForegroundRelease, now);
             }
         }
@@ -2437,7 +2442,7 @@ fn run_background_automation(
                     CONTROLLER_ACTIVITY_POLL_INTERVAL,
                 ),
                 (
-                    runner.app_suspension_active(),
+                    app_suspension_auto_resume && runner.app_suspension_active(),
                     RefreshDomain::AppSuspensionForegroundRelease,
                     app_suspension_foreground_release_interval,
                 ),

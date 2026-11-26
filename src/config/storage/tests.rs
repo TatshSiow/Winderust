@@ -1521,6 +1521,7 @@ fn toml_round_trip_preserves_settings() {
         app_suspension: AppSuspensionSettings {
             enabled: true,
             background_delay_seconds: 120,
+            auto_resume_when_focused: false,
             temporary_thaw_enabled: true,
             temporary_thaw_interval_seconds: 600,
             temporary_thaw_duration_seconds: 15,

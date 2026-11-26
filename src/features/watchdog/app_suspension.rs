@@ -577,6 +577,14 @@ impl AppSuspensionManager {
                 action_log,
             );
         };
+        let is_focused = |process_id, executable_path: &str| {
+            should_skip_foreground_process(
+                process_id,
+                Path::new(executable_path),
+                foreground_process_id,
+                &foreground_executable_path,
+            )
+        };
         let delay = Duration::from_secs(settings.background_delay_seconds);
         let mut target_processes = BTreeMap::new();
         let mut running_apps = BTreeSet::new();
@@ -634,13 +642,15 @@ impl AppSuspensionManager {
                 continue;
             }
 
-            running_apps.insert(normalize_path_slashes(executable_path).into_owned());
-            if should_skip_foreground_process(
-                process.id,
-                Path::new(executable_path),
-                foreground_process_id,
-                &foreground_executable_path,
-            ) {
+            let app_key = normalize_path_slashes(executable_path);
+            let focused = is_focused(process.id, executable_path);
+            if focused {
+                self.tracked.remove(app_key.as_ref());
+            }
+            running_apps.insert(app_key.into_owned());
+            if focused
+                && (settings.auto_resume_when_focused || !self.suspended.contains_key(&process.id))
+            {
                 continue;
             }
 
@@ -855,6 +865,11 @@ impl AppSuspensionManager {
         let mut wake_detection_unavailable_apps = BTreeSet::new();
         let mut suspended_app_names = BTreeSet::new();
         for (process_id, process) in target_processes {
+            if !settings.auto_resume_when_focused
+                && is_focused(process_id, &process.executable_path)
+            {
+                continue;
+            }
             let process_name = process.process_name.clone();
             let manual_freeze_path =
                 matching_process_path(manual_freeze_processes, &process.executable_path);
@@ -2615,6 +2630,80 @@ mod tests {
             42,
             Path::new(r"C:\Apps\app.exe"),
         ));
+    }
+
+    #[test]
+    fn focus_thaws_only_when_enabled_and_always_blocks_new_suspension() {
+        let process_id = u32::MAX - 1;
+        let name = "chat.exe";
+        let path = r"C:\Apps\chat.exe";
+        let target = inert_target(process_id, name, path);
+        let mut controller = SuspensionController::default();
+        controller.insert_inert(target, true);
+        let mut manager = AppSuspensionManager::default();
+        let now = Instant::now();
+        manager.suspended.insert(
+            process_id,
+            SuspendedProcess {
+                process_name: name.into(),
+                executable_path: path.into(),
+                creation_time: u64::from(process_id) + 1,
+                suspended_since: now,
+                manual: false,
+            },
+        );
+        manager.tracked.insert(
+            path.into(),
+            TrackedApp {
+                background_since: now,
+            },
+        );
+
+        let mut settings = AppSuspensionSettings {
+            enabled: true,
+            auto_resume_when_focused: false,
+            suspendable_apps: vec![suspension_rule(path)],
+            ..Default::default()
+        };
+        let mut log = ActionLog::default();
+        let mut observations =
+            CycleObservations::with_processes(vec![crate::foreground::ProcessInfo {
+                id: process_id,
+                name: name.into(),
+                image_path: Some(path.into()),
+                creation_time: Some(u64::from(process_id) + 1),
+                parent_id: None,
+                session_id: Some(1),
+                user_name: None,
+                is_service_account: Some(false),
+                is_critical: Some(false),
+                can_set_information: true,
+            }]);
+
+        let requests = [path.to_owned()];
+        for (auto_resume, manual_request, expected_frozen) in [
+            (false, false, true),
+            (true, false, false),
+            (false, true, false),
+        ] {
+            settings.auto_resume_when_focused = auto_resume;
+            let status = manager.update(
+                &mut controller,
+                &settings,
+                true,
+                true,
+                Some(process_id),
+                if manual_request { &requests } else { &[] },
+                &mut observations,
+                &mut log,
+            );
+            assert_eq!(controller.is_frozen_process(process_id), expected_frozen);
+            assert_eq!(status.suspended_processes, usize::from(expected_frozen));
+            assert!(manager.tracked.is_empty());
+            if manual_request {
+                assert!(manager.manual_freeze_result(path).is_err());
+            }
+        }
     }
 
     #[test]

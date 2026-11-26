@@ -621,8 +621,8 @@ Read the relevant section before changing feature policy, ownership, restoration
 
 - App Suspension delay and temporary-thaw interval settings accept 1–86,400
   seconds; thaw, network-wake, and audio-wake durations accept 1–3,600 seconds.
-  Load, import, Save, and export validate both power profiles before normalization
-  or file replacement, using the same limits as the UI.
+  Load, import, Save, and export validate the shared policy using the same limits
+  as the UI.
 
 - App Suspension rejects Session 0, LocalSystem, LocalService, and NetworkService processes plus
   curated Windows shell/shared-host processes. Process List and the App Suspension picker keep
@@ -650,6 +650,10 @@ Read the relevant section before changing feature policy, ownership, restoration
   IPv4 or IPv6 TCP connection.
 - App Suspension shares one policy across power sources. Power-source changes
   preserve background grace, rule-owned freezes, and active thaw holds.
+- Auto resume when focused defaults on. Turning it off stops foreground and
+  app-switch resume, including taskbar and tray restore pre-wakes. A focused app
+  remains exempt from new rule freezes. Manual resume, configured temporary
+  resumes, and cleanup continue to work.
 - App Suspension releases a rule-owned freeze when its stored executable path
   no longer matches an enabled rule, even if focus, session, or process
   observations are unavailable. Process List freezes have separate ownership.

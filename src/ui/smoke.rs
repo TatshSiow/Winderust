@@ -34,7 +34,8 @@ const CPU_LIMITER_AFFINITY_COMPACT: usize = 117;
 const CPU_LIMITER_PROCESSORS_COMPACT: usize = 118;
 const ADAPTIVE_NAME_PATTERN: usize = 119;
 const RESOURCE_NAME_INPUT: usize = 120;
-const EXTRA_STATES: usize = 121;
+const APP_SUSPENSION_FOCUS_OFF: usize = 121;
+const EXTRA_STATES: usize = 122;
 pub(super) struct Run {
     pages: Vec<Page>,
     remaining: VecDeque<usize>,
@@ -108,6 +109,7 @@ impl Run {
                     KEEP_AWAKE_READY,
                     KEEP_AWAKE_ACTIVE,
                     RESOURCE_NAME_INPUT,
+                    APP_SUSPENSION_FOCUS_OFF,
                 ])
                 .map(|extra| extra_start + extra)
                 .collect()
@@ -174,6 +176,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                     | DOCK_FOCUS_COMPACT
                     | MEMORY_TRIM_UNKNOWN
                     | KEEP_AWAKE_ACTIVE
+                    | APP_SUSPENSION_FOCUS_OFF
                     | GPU_MEMORY_COMPACT
                     | CPU_LIMITER_AFFINITY_COMPACT
                     | CPU_LIMITER_PROCESSORS_COMPACT
@@ -204,7 +207,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             Some(18) => Page::EfficiencyMode,
             Some(19) => Page::ByActivity,
             Some(20) => Page::AdvancedPowerPlanTuning,
-            Some(21 | 72) => Page::AppSuspension,
+            Some(21 | 72 | APP_SUSPENSION_FOCUS_OFF) => Page::AppSuspension,
             Some(22) => Page::LanguageAndAppearance,
             Some(23) => Page::About,
             Some(25 | 87..=88) => Page::ProcessPriority,
@@ -910,22 +913,34 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             assert!(input.controller && !input.keyboard && !input.mouse);
             app.settings = SettingsEditor::with_settings((*app.settings).clone());
         }
-        if extra == Some(21) {
+        if matches!(extra, Some(21 | APP_SUSPENSION_FOCUS_OFF)) {
+            app.suspension = Default::default();
             app.settings.app_suspension.enabled = true;
             let before = app.settings.app_suspension.clone();
             let _ = app.update(Message::Suspension(app_suspension::Message::ToggleSettings));
-            for group in [1, 2] {
-                let _ = app.update(Message::Suspension(app_suspension::Message::Group(group)));
+            if extra == Some(21) {
+                for group in [1, 2] {
+                    let _ = app.update(Message::Suspension(app_suspension::Message::Group(group)));
+                }
             }
             assert_eq!(app.settings.app_suspension, before);
         }
-        if matches!(extra, Some(21 | 72)) {
+        if matches!(extra, Some(21 | 72 | APP_SUSPENSION_FOCUS_OFF)) {
             assert_eq!(app.page, Page::AppSuspension);
             app.settings.app_suspension.suspendable_apps =
                 vec![super::super::process_rules::new_app_suspension_rule(
                     r"C:\Apps\Example\example.exe",
                 )];
             app.settings = SettingsEditor::with_settings((*app.settings).clone());
+        }
+        if extra == Some(APP_SUSPENSION_FOCUS_OFF) {
+            let _ = app.update(Message::Suspension(
+                app_suspension::Message::AutoResumeWhenFocused(false),
+            ));
+            let draft = &app.settings.global().app_suspension;
+            let saved = &app.settings.persisted().app_suspension;
+            assert!(!draft.auto_resume_when_focused);
+            assert!(saved.auto_resume_when_focused);
         }
         if extra == Some(24) {
             let _ = app.update(Message::Adaptive(adaptive_engine::Message::TuningTab(
@@ -1493,6 +1508,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                 | MEMORY_TRIM_PARTIAL
                 | MEMORY_TRIM_UNKNOWN
                 | KEEP_AWAKE_ACTIVE
+                | APP_SUSPENSION_FOCUS_OFF
                 | GPU_MEMORY_COMPACT
                 | CPU_LIMITER_AFFINITY_COMPACT
                 | CPU_LIMITER_PROCESSORS_COMPACT

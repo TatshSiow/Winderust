@@ -33,7 +33,7 @@ pub(super) fn process_appearance_refresh_interval(
 }
 
 pub(super) fn input_hook_config(settings: &Settings) -> InputHookConfig {
-    if feature_refresh_required(settings, settings.app_suspension.enabled) {
+    if app_suspension_focus_hooks_required(settings) {
         return InputHookConfig {
             keyboard: true,
             mouse: true,
@@ -222,6 +222,11 @@ pub(super) fn app_suspension_required(settings: &Settings) -> bool {
     settings.general.enabled
         && settings.app_suspension.enabled
         && app_suspension::has_enabled_rules(&settings.app_suspension)
+}
+
+pub(super) fn app_suspension_focus_hooks_required(settings: &Settings) -> bool {
+    feature_refresh_required(settings, settings.app_suspension.enabled)
+        && settings.app_suspension.auto_resume_when_focused
 }
 
 #[derive(Clone, Copy)]

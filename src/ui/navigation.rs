@@ -650,9 +650,11 @@ pub(super) fn dashboard_page_search_text(page: Page) -> String {
             t!("efficiency_mode.custom_rules_help"),
         ),
         Page::AppSuspension => format!(
-            "{label} {section} {} {} suspend freeze thaw resume background app process job object delay network audio",
+            "{label} {section} {} {} {} {} suspend freeze thaw resume background app process job object delay network audio",
             t!("app_suspension.enable_help"),
             t!("app_suspension.suspendable_help"),
+            t!("app_suspension.additional_resume_options"),
+            t!("app_suspension.auto_resume_when_focused"),
         ),
         Page::SleepPrevention => format!(
             "{label} {section} {} {} {} sleep prevention awake system idle display monitor running app power request",

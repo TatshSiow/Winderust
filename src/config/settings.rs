@@ -656,6 +656,8 @@ impl BackgroundProcessorSelection {
 pub struct AppSuspensionSettings {
     pub enabled: bool,
     pub background_delay_seconds: u64,
+    #[serde(default = "default_true")]
+    pub auto_resume_when_focused: bool,
     #[serde(default)]
     pub temporary_thaw_enabled: bool,
     #[serde(default = "default_temporary_thaw_interval_seconds")]
@@ -2536,6 +2538,7 @@ impl Default for AppSuspensionSettings {
         Self {
             enabled: false,
             background_delay_seconds: 300,
+            auto_resume_when_focused: true,
             temporary_thaw_enabled: false,
             temporary_thaw_interval_seconds: default_temporary_thaw_interval_seconds(),
             temporary_thaw_duration_seconds: default_temporary_thaw_duration_seconds(),

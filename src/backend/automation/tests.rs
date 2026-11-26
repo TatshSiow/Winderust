@@ -2319,6 +2319,10 @@ fn input_hook_is_needed_for_activity_input_or_app_suspension() {
     settings.app_suspension.enabled = true;
     assert_ne!(input_hook_config(&settings), inactive);
 
+    settings.app_suspension.auto_resume_when_focused = false;
+    assert_eq!(input_hook_config(&settings), inactive);
+
+    settings.app_suspension.auto_resume_when_focused = true;
     settings.general.enabled = false;
     assert_eq!(input_hook_config(&settings), inactive);
 }
@@ -2529,6 +2533,16 @@ fn adaptive_engine_skips_appearance_only_windows_events() {
     assert!(input_hook_should_check_app_switch_mouse_click(
         &settings,
         input_events
+    ));
+    settings.app_suspension.auto_resume_when_focused = false;
+    assert!(!input_hook_should_check_app_switch(&settings, input_events));
+    assert!(!input_hook_should_check_app_switch_mouse_click(
+        &settings,
+        input_events
+    ));
+    assert!(windows_event_wake_required(
+        &settings,
+        WindowsAutomationEvent::ForegroundChanged
     ));
 }
 

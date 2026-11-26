@@ -45,14 +45,14 @@ pub(super) fn input_hook_should_check_app_switch(
     settings: &Settings,
     events: InputHookEvents,
 ) -> bool {
-    settings.general.enabled && settings.app_suspension.enabled && events.app_switch
+    app_suspension_focus_hooks_required(settings) && events.app_switch
 }
 
 pub(super) fn input_hook_should_check_app_switch_mouse_click(
     settings: &Settings,
     events: InputHookEvents,
 ) -> bool {
-    settings.general.enabled && settings.app_suspension.enabled && events.mouse_click
+    app_suspension_focus_hooks_required(settings) && events.mouse_click
 }
 
 pub(super) fn process_ids_have_new_entries(

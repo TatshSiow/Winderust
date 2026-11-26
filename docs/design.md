@@ -395,10 +395,14 @@ hover/press; background shading supplies feedback.
   page and each Watchdog editor. Keep feature actions and help on their pages.
 - Each Watchdog feature uses shared settings across power sources and omits the
   Plugged In and On Battery selector.
-- Keep shared options for Resource Thresholds, Memory Trim, Instance Limits,
-  and the App Suspension background delay in their feature's expandable toggle
-  card. Let users configure these while the feature is off. Keep rule tables
-  and independent App Suspension controls accessible outside that card.
+- Keep shared options for Resource Thresholds, Memory Trim, and Instance Limits
+  in each feature's expandable toggle card. Let users configure these while the
+  feature is off. Keep rule tables separate.
+- Put Background Suspension Delay and Auto resume when focused in the expandable
+  Enable App Suspension card. Let users configure both while the feature is off.
+  Group TCP activity detection, Audio playback detection, and Temporary resume
+  fallback under Additional resume options. Keep each switch independent and
+  expand timing controls inline.
 - Memory Trim uses a single row for the Manual trim title and Trim now button.
   The button uses saved settings and displays the running state while a request
   is pending. Show the last completed trim in the same card, with the observed

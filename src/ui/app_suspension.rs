@@ -1,5 +1,5 @@
 use super::design;
-use super::widgets::{action_button, checkbox, pick_list, text_input};
+use super::widgets::{self, action_button, checkbox, pick_list, text_input};
 use crate::app_suspension::{self, AppSuspensionSnapshot};
 use crate::application::SettingsEditor;
 use crate::config::{AppSuspensionRule, AppSuspensionSettings, NetworkThresholdUnit};
@@ -80,6 +80,7 @@ impl Delay {
 #[derive(Debug, Clone)]
 pub(super) enum Message {
     Enabled(bool),
+    AutoResumeWhenFocused(bool),
     ToggleSettings,
     Group(usize),
     Path(String),
@@ -147,6 +148,7 @@ impl Editor {
     fn edit(&mut self, s: &mut AppSuspensionSettings, unavailable: &[String], message: Message) {
         match message {
             Message::Enabled(value) => s.enabled = value,
+            Message::AutoResumeWhenFocused(value) => s.auto_resume_when_focused = value,
             Message::Add => {
                 let path = exact_path_input(&self.path);
                 if Self::can_add(s, path, unavailable) {
@@ -268,21 +270,31 @@ impl Editor {
     ) -> Element<'a, Message> {
         let s = &settings.global().app_suspension;
         let live = live_suspension_settings(settings);
-        let mut body = column![super::widgets::setting_group(
+        let enable = widgets::setting_group(
             "app_suspension.enable".to_string(),
             self.settings_expanded,
             Message::ToggleSettings,
-            super::widgets::switch(s.enabled, Some(Message::Enabled)),
-            column![self.delay_row(Delay::Background, s)],
-        )]
-        .spacing(super::widgets::CARD_GAP);
+            widgets::switch(s.enabled, Some(Message::Enabled)),
+            widgets::settings_rows([
+                self.delay_row(Delay::Background, s),
+                widgets::setting_row(
+                    "app_suspension.auto_resume_when_focused",
+                    widgets::switch(
+                        s.auto_resume_when_focused,
+                        Some(Message::AutoResumeWhenFocused),
+                    ),
+                )
+                .into(),
+            ]),
+        );
+        let mut resume_rows = Vec::new();
         for (i, key, enabled, toggle, rows) in [
             (
-                0,
-                "app_suspension.temporary_resume",
-                s.temporary_thaw_enabled,
-                Message::Thaw as fn(bool) -> Message,
-                &[Delay::ThawInterval, Delay::ThawDuration][..],
+                2,
+                "app_suspension.network_detection",
+                s.network_wake_enabled,
+                Message::Network as fn(bool) -> Message,
+                &[Delay::Network][..],
             ),
             (
                 1,
@@ -292,23 +304,32 @@ impl Editor {
                 &[Delay::Audio],
             ),
             (
-                2,
-                "app_suspension.network_detection",
-                s.network_wake_enabled,
-                Message::Network,
-                &[Delay::Network],
+                0,
+                "app_suspension.temporary_resume",
+                s.temporary_thaw_enabled,
+                Message::Thaw,
+                &[Delay::ThawInterval, Delay::ThawDuration],
             ),
         ] {
             let controls =
-                super::widgets::settings_rows(rows.iter().map(|&field| self.delay_row(field, s)));
-            body = body.push(super::widgets::setting_group(
-                key.to_string(),
+                widgets::settings_rows(rows.iter().map(|&field| self.delay_row(field, s)));
+            resume_rows.push(widgets::setting_disclosure_row(
+                key,
                 self.expanded[i],
                 Message::Group(i),
-                super::widgets::switch(enabled, Some(toggle)),
+                widgets::switch(enabled, Some(toggle)),
                 controls,
             ));
         }
+        let resume = column![
+            widgets::heading(
+                t!("app_suspension.additional_resume_options").into_owned(),
+                design::typography::BODY,
+            ),
+            widgets::settings_card(widgets::settings_rows(resume_rows)),
+        ]
+        .spacing(design::space::SMALL);
+        let mut body = column![enable, resume].spacing(widgets::CARD_GAP);
         let picker = super::app_picker::view_with_path_selection(
             &self.path,
             candidates,

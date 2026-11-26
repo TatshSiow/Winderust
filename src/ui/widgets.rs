@@ -1030,32 +1030,7 @@ pub(super) fn setting_group<'a, M: Clone + 'a>(
     super::scrolling::repaint_group(
         iced::widget::container(
             iced::widget::column![
-                iced::widget::Stack::new()
-                    .push(
-                        iced::widget::container(
-                            row![
-                                iced::widget::container(setting_title(&label)).width(Fill),
-                                action.into(),
-                                super::motion::wrap(
-                                    super::navigation::glyph("icons/chevron-down.svg"),
-                                    expanded,
-                                    super::motion::Effect::DisclosureChevron
-                                )
-                            ]
-                            .spacing(design::space::SMALL)
-                            .align_y(iced::Center)
-                        )
-                        .padding(CARD_PADDING as u16)
-                        .width(Fill)
-                    )
-                    .push_under(
-                        button(iced::widget::Space::new())
-                            .padding(0)
-                            .width(Fill)
-                            .height(Fill)
-                            .style(quiet)
-                            .on_press(message)
-                    ),
+                setting_disclosure_header(&label, expanded, message, action, CARD_PADDING as u16),
                 super::motion::wrap(
                     iced::widget::column![
                         iced::widget::container(settings_divider())
@@ -1071,6 +1046,63 @@ pub(super) fn setting_group<'a, M: Clone + 'a>(
         .width(Fill)
         .style(surface),
     )
+}
+
+pub(super) fn setting_disclosure_row<'a, M: Clone + 'a>(
+    key: &str,
+    expanded: bool,
+    message: M,
+    action: impl Into<Element<'a, M>>,
+    content: iced::widget::Column<'a, M>,
+) -> Element<'a, M> {
+    iced::widget::column![
+        setting_disclosure_header(key, expanded, message, action, 0),
+        super::motion::wrap(
+            container(content).padding(
+                iced::Padding::ZERO
+                    .top(design::space::MEDIUM)
+                    .left(design::space::MEDIUM)
+            ),
+            expanded,
+            super::motion::Effect::Visible
+        )
+    ]
+    .into()
+}
+
+fn setting_disclosure_header<'a, M: Clone + 'a>(
+    key: &str,
+    expanded: bool,
+    message: M,
+    action: impl Into<Element<'a, M>>,
+    inset: u16,
+) -> iced::widget::Stack<'a, M> {
+    iced::widget::Stack::new()
+        .push(
+            container(
+                row![
+                    container(setting_title(key)).width(Fill),
+                    action.into(),
+                    super::motion::wrap(
+                        super::navigation::glyph("icons/chevron-down.svg"),
+                        expanded,
+                        super::motion::Effect::DisclosureChevron
+                    )
+                ]
+                .spacing(design::space::SMALL)
+                .align_y(iced::Center),
+            )
+            .padding(inset)
+            .width(Fill),
+        )
+        .push_under(
+            button(iced::widget::Space::new())
+                .padding(0)
+                .width(Fill)
+                .height(Fill)
+                .style(quiet)
+                .on_press(message),
+        )
 }
 
 pub(super) fn setting_row<'a, M: 'a>(

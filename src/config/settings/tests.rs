@@ -560,6 +560,7 @@ fn disabled_suspendable_apps_remain_configured_but_do_not_match() {
     let settings = AppSuspensionSettings {
         enabled: true,
         background_delay_seconds: 60,
+        auto_resume_when_focused: true,
         temporary_thaw_enabled: false,
         temporary_thaw_interval_seconds: default_temporary_thaw_interval_seconds(),
         temporary_thaw_duration_seconds: default_temporary_thaw_duration_seconds(),
@@ -584,6 +585,14 @@ fn disabled_suspendable_apps_remain_configured_but_do_not_match() {
     assert!(!settings.network_wake_enabled_for("chat.exe"));
     assert!(!settings.audio_wake_enabled_for("chat.exe"));
     assert_eq!(settings.network_wake_thresholds_for("chat.exe"), None);
+}
+
+#[test]
+fn app_suspension_enables_focus_resume_by_default() {
+    let settings: AppSuspensionSettings =
+        toml::from_str("enabled = false\nbackground_delay_seconds = 300").unwrap();
+    assert!(settings.auto_resume_when_focused);
+    assert!(AppSuspensionSettings::default().auto_resume_when_focused);
 }
 
 #[test]
