@@ -147,4 +147,36 @@ mod tests {
             [1, 2, 7]
         );
     }
+
+    #[test]
+    fn name_pattern_preview_uses_wildcards_with_verified_whole_filenames() {
+        let selector = ResourceThresholdsSelector::NamePattern {
+            executable_name_pattern: crate::config::ExecutableNamePattern::try_from(
+                "abc*de?.exe".to_owned(),
+            )
+            .unwrap(),
+        };
+        let processes = [
+            process(1, "ABCDEF.EXE", Some(r"C:\Apps\abcdef.exe")),
+            process(
+                2,
+                "abc-worker-de9.exe",
+                Some(r"D:\Tools\ABC-WORKER-DE9.EXE"),
+            ),
+            process(3, "abc-worker-def.exe", Some(r"C:\Apps\abc-other-def.exe")),
+            process(4, "xyz-abcdef.exe", Some(r"C:\Apps\xyz-abcdef.exe")),
+            process(5, "abcde99.exe", Some(r"C:\Apps\abcde99.exe")),
+            process(6, "abcdef.exe", Some("abcdef.exe")),
+            process(7, "abcdef.exe", None),
+        ]
+        .into_iter()
+        .filter(|process| selector_basename_matches(&selector, &process.name))
+        .collect::<Vec<_>>();
+
+        let matches = observed_matches(&selector, &processes, 0);
+        assert_eq!(
+            matches.iter().map(|entry| entry.pid).collect::<Vec<_>>(),
+            [1, 2]
+        );
+    }
 }

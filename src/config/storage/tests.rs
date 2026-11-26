@@ -396,6 +396,48 @@ fn resource_thresholds_settings_keep_supported_rules_and_reject_removed_options(
 }
 
 #[test]
+fn resource_thresholds_name_patterns_round_trip_as_alert_only_selectors() {
+    use crate::config::{
+        ExecutableNamePattern, ResourceThresholdsAction, ResourceThresholdsRule,
+        ResourceThresholdsSelector,
+    };
+
+    let path = Path::new("test.toml");
+    let pattern = "abc*def.exe";
+    let mut settings = Settings::default();
+    settings
+        .resource_thresholds
+        .rules
+        .push(ResourceThresholdsRule::with_selector(
+            ResourceThresholdsSelector::NamePattern {
+                executable_name_pattern: ExecutableNamePattern::try_from(pattern.to_owned())
+                    .unwrap(),
+            },
+        ));
+    let raw = toml::to_string(&settings).unwrap();
+    let field = "executable_name_pattern = \"abc*def.exe\"";
+    assert!(raw.contains(field));
+    assert_eq!(parse_toml_settings(path, &raw).unwrap(), settings);
+
+    for invalid in [
+        "executable_name = 'abc*def.exe'",
+        "executable_name_pattern = 'Apps/abc*def.exe'",
+        "executable_name_pattern = 'abc*def.exe'\nexecutable_name = 'abcdef.exe'",
+    ] {
+        assert!(parse_toml_settings(path, &raw.replace(field, invalid)).is_err());
+    }
+
+    for action in [
+        ResourceThresholdsAction::Restart,
+        ResourceThresholdsAction::Terminate,
+    ] {
+        settings.resource_thresholds.rules[0].cpu.critical.action = action;
+        let raw = toml::to_string(&settings).unwrap();
+        assert!(parse_toml_settings(path, &raw).is_err());
+    }
+}
+
+#[test]
 fn process_power_plan_rules_keep_flat_selectors_on_both_power_profiles() {
     let path = Path::new("power-plan-rules.toml");
     let path_rule = "executable_path = 'C:/Apps/game.exe'\npower_plan_guid = 'gaming-guid'";
@@ -484,7 +526,7 @@ fn adaptive_custom_rules_keep_flat_selectors_for_profiles_and_presets() {
 
     let saved: toml::Value = toml::from_str(&raw).unwrap();
     let invalid_name = rust_i18n::t!("adaptive_engine_process.custom_rule_name_invalid");
-    let invalid_pattern = rust_i18n::t!("adaptive_engine_process.custom_rule_pattern_invalid");
+    let invalid_pattern = rust_i18n::t!("common.executable_name_pattern_invalid");
     for (invalid, error) in [
         (
             "executable_path = 'C:/Apps/game.exe'\nexecutable_name = 'Game Tool.exe'",

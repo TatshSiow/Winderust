@@ -110,7 +110,7 @@ impl ExclusionMatchBy {
         match self {
             Self::Path => "common.executable_path",
             Self::Name => "common.executable_name",
-            Self::NamePattern => "adaptive_engine_process.executable_name_pattern",
+            Self::NamePattern => "common.executable_name_pattern",
         }
     }
 }
@@ -1453,9 +1453,13 @@ impl Editor {
                 .map(|(i, rule)| {
                     let (app, target, match_by, value) = match &rule.selector {
                         AdaptiveEngineExclusionSelector::Exact(selector) => {
-                            let (app, target) =
-                                super::widgets::process_rule_target(selector, candidates);
-                            if selector.exact_path().is_some() {
+                            let is_path = selector.exact_path().is_some();
+                            let (app, target) = super::widgets::process_rule_target(
+                                selector.value(),
+                                (!is_path).then_some("common.executable_name"),
+                                candidates,
+                            );
+                            if is_path {
                                 let target = column![
                                     target,
                                     text(t!("common.executable_path").to_string())

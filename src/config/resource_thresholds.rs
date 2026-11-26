@@ -2,8 +2,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use super::is_valid_executable_name;
-pub use super::ExecutableSelector as ResourceThresholdsSelector;
+use super::{is_valid_executable_name, ExecutableNamePattern};
 
 pub(crate) const RESOURCE_THRESHOLDS_DURATION_RANGE: std::ops::RangeInclusive<u64> = 1..=3600;
 
@@ -136,7 +135,37 @@ impl ResourceThresholdsMonitor {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ResourceThresholdsSelector {
+    ExactPath {
+        executable_path: String,
+    },
+    ExactName {
+        executable_name: String,
+    },
+    NamePattern {
+        executable_name_pattern: ExecutableNamePattern,
+    },
+}
+
 impl ResourceThresholdsSelector {
+    pub fn value(&self) -> &str {
+        match self {
+            Self::ExactPath { executable_path } => executable_path,
+            Self::ExactName { executable_name } => executable_name,
+            Self::NamePattern {
+                executable_name_pattern,
+            } => executable_name_pattern.as_str(),
+        }
+    }
+
+    pub fn exact_path(&self) -> Option<&str> {
+        match self {
+            Self::ExactPath { executable_path } => Some(executable_path),
+            Self::ExactName { .. } | Self::NamePattern { .. } => None,
+        }
+    }
+
     pub fn validate(&self) -> Result<(), String> {
         match self {
             Self::ExactPath { executable_path } if Path::new(executable_path).is_absolute() => {
@@ -151,12 +180,15 @@ impl ResourceThresholdsSelector {
             Self::ExactName { .. } => {
                 Err("Resource Thresholds requires an exact executable filename.".into())
             }
+            Self::NamePattern { .. } => Ok(()),
         }
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(try_from = "SavedResourceThresholdsRule<String, ResourceThresholdsMonitor>")]
+#[serde(
+    try_from = "SavedResourceThresholdsRule<String, ExecutableNamePattern, ResourceThresholdsMonitor>"
+)]
 pub struct ResourceThresholdsRule {
     pub enabled: bool,
     pub notify: bool,
@@ -169,7 +201,7 @@ pub struct ResourceThresholdsRule {
 // Explicit selector fields let the settings parser reject removed options.
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct SavedResourceThresholdsRule<S, M> {
+struct SavedResourceThresholdsRule<S, P, M> {
     enabled: bool,
     #[serde(default = "default_notify")]
     notify: bool,
@@ -177,36 +209,48 @@ struct SavedResourceThresholdsRule<S, M> {
     executable_path: Option<S>,
     #[serde(skip_serializing_if = "Option::is_none")]
     executable_name: Option<S>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    executable_name_pattern: Option<P>,
     memory_unit: ResourceThresholdsMemoryUnit,
     cpu: M,
     memory: M,
 }
 
-impl TryFrom<SavedResourceThresholdsRule<String, ResourceThresholdsMonitor>>
+impl TryFrom<SavedResourceThresholdsRule<String, ExecutableNamePattern, ResourceThresholdsMonitor>>
     for ResourceThresholdsRule
 {
     type Error = &'static str;
 
     fn try_from(
-        saved: SavedResourceThresholdsRule<String, ResourceThresholdsMonitor>,
+        saved: SavedResourceThresholdsRule<
+            String,
+            ExecutableNamePattern,
+            ResourceThresholdsMonitor,
+        >,
     ) -> Result<Self, Self::Error> {
         let SavedResourceThresholdsRule {
             enabled,
             notify,
             executable_path,
             executable_name,
+            executable_name_pattern,
             memory_unit,
             cpu,
             memory,
         } = saved;
-        let selector = match (executable_path, executable_name) {
-            (Some(executable_path), None) => {
+        let selector = match (executable_path, executable_name, executable_name_pattern) {
+            (Some(executable_path), None, None) => {
                 ResourceThresholdsSelector::ExactPath { executable_path }
             }
-            (None, Some(executable_name)) => {
+            (None, Some(executable_name), None) => {
                 ResourceThresholdsSelector::ExactName { executable_name }
             }
-            _ => return Err("Specify exactly one executable path or executable name."),
+            (None, None, Some(executable_name_pattern)) => {
+                ResourceThresholdsSelector::NamePattern {
+                    executable_name_pattern,
+                }
+            }
+            _ => return Err("Specify exactly one executable path, name, or name pattern."),
         };
         Ok(Self {
             enabled,
@@ -221,19 +265,23 @@ impl TryFrom<SavedResourceThresholdsRule<String, ResourceThresholdsMonitor>>
 
 impl Serialize for ResourceThresholdsRule {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let (executable_path, executable_name) = match &self.selector {
+        let (executable_path, executable_name, executable_name_pattern) = match &self.selector {
             ResourceThresholdsSelector::ExactPath { executable_path } => {
-                (Some(executable_path), None)
+                (Some(executable_path), None, None)
             }
             ResourceThresholdsSelector::ExactName { executable_name } => {
-                (None, Some(executable_name))
+                (None, Some(executable_name), None)
             }
+            ResourceThresholdsSelector::NamePattern {
+                executable_name_pattern,
+            } => (None, None, Some(executable_name_pattern)),
         };
         SavedResourceThresholdsRule {
             enabled: self.enabled,
             notify: self.notify,
             executable_path,
             executable_name,
+            executable_name_pattern,
             memory_unit: self.memory_unit,
             cpu: &self.cpu,
             memory: &self.memory,

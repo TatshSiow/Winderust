@@ -6,9 +6,9 @@ use super::{
     widgets,
 };
 use crate::config::{
-    ResourceThresholdsAction, ResourceThresholdsMemoryUnit, ResourceThresholdsMetric,
-    ResourceThresholdsResource, ResourceThresholdsRule, ResourceThresholdsSelector,
-    ResourceThresholdsSettings, RESOURCE_THRESHOLDS_DURATION_RANGE,
+    ExecutableNamePattern, ResourceThresholdsAction, ResourceThresholdsMemoryUnit,
+    ResourceThresholdsMetric, ResourceThresholdsResource, ResourceThresholdsRule,
+    ResourceThresholdsSelector, ResourceThresholdsSettings, RESOURCE_THRESHOLDS_DURATION_RANGE,
 };
 use crate::foreground::{
     process_list::{normalize_path_slashes, same_executable_name},
@@ -209,17 +209,20 @@ impl Editor {
         let name = self.name.trim();
         if name.eq_ignore_ascii_case("winderust.exe")
             || settings.rules.iter().any(|rule| {
-                matches!(
-                    &rule.selector,
-                    ResourceThresholdsSelector::ExactName { executable_name }
-                        if same_executable_name(executable_name, name)
-                )
+                rule.selector.exact_path().is_none()
+                    && same_executable_name(rule.selector.value(), name)
             })
         {
             return None;
         }
-        let selector = ResourceThresholdsSelector::ExactName {
-            executable_name: name.into(),
+        let selector = if name.contains(['*', '?']) {
+            ResourceThresholdsSelector::NamePattern {
+                executable_name_pattern: ExecutableNamePattern::try_from(name.to_owned()).ok()?,
+            }
+        } else {
+            ResourceThresholdsSelector::ExactName {
+                executable_name: name.into(),
+            }
         };
         selector.validate().ok()?;
         Some(selector)
@@ -368,9 +371,10 @@ impl Editor {
                                 *target = rule;
                             }
                         } else {
-                            match &rule.selector {
-                                ResourceThresholdsSelector::ExactPath { .. } => self.path.clear(),
-                                ResourceThresholdsSelector::ExactName { .. } => self.name.clear(),
+                            if rule.selector.exact_path().is_some() {
+                                self.path.clear();
+                            } else {
+                                self.name.clear();
                             }
                             settings.rules.push(rule);
                         }
@@ -452,7 +456,14 @@ impl Editor {
             .enumerate()
             .map(|(index, rule)| {
                 let value = rule.selector.value();
-                let (app, target) = widgets::process_rule_target(&rule.selector, candidates);
+                let name_match_key = match rule.selector {
+                    ResourceThresholdsSelector::ExactPath { .. } => None,
+                    ResourceThresholdsSelector::ExactName { .. } => Some("common.executable_name"),
+                    ResourceThresholdsSelector::NamePattern { .. } => {
+                        Some("common.executable_name_pattern")
+                    }
+                };
+                let (app, target) = widgets::process_rule_target(value, name_match_key, candidates);
                 let label = t!("common.rule", number = index + 1);
                 (
                     widgets::stable_key(&format!("{index}:{value}")),
@@ -572,6 +583,7 @@ impl Editor {
                 |path| Self::can_add_path(settings, path).then_some(true),
             ),
             MatchBy::ExecutableName => app_picker::executable_name_input(
+                &t!("resource_thresholds.name_placeholder"),
                 &self.name,
                 Message::Name,
                 self.new_name_selector(settings).map(|_| Message::Add),
@@ -731,6 +743,9 @@ impl Editor {
             ResourceThresholdsSelector::ExactName { .. } => {
                 t!("resource_thresholds.name_rule_mode").to_string()
             }
+            ResourceThresholdsSelector::NamePattern { .. } => {
+                t!("resource_thresholds.pattern_rule_mode").to_string()
+            }
         };
         let valid = draft.validated_rule().is_some();
         let validation = (!valid).then(|| {
@@ -828,7 +843,7 @@ mod tests {
         let mut editor = Editor::default();
         let mut settings = ResourceThresholdsSettings::default();
         editor.update(&mut settings, Message::MatchBy(MatchBy::ExecutableName));
-        for invalid in ["*.exe", r"C:\Apps\worker.exe"] {
+        for invalid in [r"C:\Apps\*.exe", r"C:\Apps\worker.exe"] {
             editor.update(&mut settings, Message::Name(invalid.into()));
             editor.update(&mut settings, Message::Add);
             assert!(!editor.has_pending_editor());
@@ -883,6 +898,38 @@ mod tests {
                 Some(&ResourceThresholdsRule::new(expected))
             );
         }
+    }
+
+    #[test]
+    fn executable_name_input_stages_a_pattern_and_rejects_case_duplicate() {
+        let mut editor = Editor::default();
+        let mut settings = ResourceThresholdsSettings::default();
+        editor.update(&mut settings, Message::MatchBy(MatchBy::ExecutableName));
+        editor.update(&mut settings, Message::Name("abc*def.exe".into()));
+        editor.update(&mut settings, Message::Add);
+        editor.update(
+            &mut settings,
+            Message::Action(
+                ResourceThresholdsResource::Cpu,
+                true,
+                ResourceThresholdsAction::Restart,
+            ),
+        );
+        editor.update(&mut settings, Message::SaveRule);
+        let [rule] = settings.rules.as_slice() else {
+            panic!("expected one Resource Thresholds rule");
+        };
+        assert!(matches!(
+            &rule.selector,
+            ResourceThresholdsSelector::NamePattern { .. }
+        ));
+        assert_eq!(rule.selector.value(), "abc*def.exe");
+        assert_eq!(rule.cpu.critical.action, ResourceThresholdsAction::Alert);
+        assert!(editor.name.is_empty());
+
+        editor.update(&mut settings, Message::Name("ABC*DEF.EXE".into()));
+        editor.update(&mut settings, Message::Add);
+        assert!(!editor.has_pending_editor());
     }
 
     #[test]

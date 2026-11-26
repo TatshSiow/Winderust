@@ -124,6 +124,9 @@ pub(crate) fn selector_basename_matches(
         ResourceThresholdsSelector::ExactName { executable_name } => {
             same_executable_name(process_name, executable_name)
         }
+        ResourceThresholdsSelector::NamePattern {
+            executable_name_pattern,
+        } => executable_name_pattern.matches(process_name),
     }
 }
 
@@ -177,6 +180,12 @@ pub(crate) fn matching_path<'a>(
         {
             process.image_path.as_deref()
         }
+        ResourceThresholdsSelector::NamePattern {
+            executable_name_pattern,
+        } => process.image_path.as_deref().filter(|path| {
+            executable_name_pattern.matches(&process.name)
+                && path_has_executable_name(path, &process.name)
+        }),
         _ => None,
     }
 }
@@ -586,7 +595,8 @@ fn combined_metric_value(
 mod tests {
     use super::*;
     use crate::config::{
-        ResourceThresholdsAction, ResourceThresholdsMemoryUnit, ResourceThresholdsRule,
+        ExecutableNamePattern, ResourceThresholdsAction, ResourceThresholdsMemoryUnit,
+        ResourceThresholdsRule,
     };
 
     impl ResourceThresholdsManager {
@@ -1311,6 +1321,57 @@ mod tests {
         for second in 3..=5 {
             assert!(tick(&mut manager, &settings, &process, start, second, Some(950)).is_empty());
         }
+    }
+
+    #[test]
+    fn name_pattern_alerts_track_each_verified_path_without_dispatching_actions() {
+        let mut settings = settings();
+        settings.rules[0].selector = ResourceThresholdsSelector::NamePattern {
+            executable_name_pattern: ExecutableNamePattern::try_from("test*.exe".to_owned())
+                .unwrap(),
+        };
+        settings.rules[0].memory.critical.action = ResourceThresholdsAction::Terminate;
+        let processes = [
+            (0, "TEST.EXE", r"C:\Apps\test.exe"),
+            (1, "test-extra.exe", r"C:\Other\test-extra.exe"),
+            (2, "test-stale.exe", r"C:\Other\test-extra.exe"),
+        ]
+        .map(|(offset, name, path)| {
+            let mut process = process();
+            process.id += offset;
+            process.name = name.into();
+            process.image_path = Some(path.into());
+            process
+        });
+        let mut manager = ResourceThresholdsManager::default();
+        let start = Instant::now();
+        let mut observe = |second| {
+            let now = start + Duration::from_secs(second);
+            let samples = processes
+                .iter()
+                .flat_map(|process| sample(process, now, Some(95)))
+                .collect();
+            manager.evaluate(&settings, &processes, &samples, Some(100), now)
+        };
+
+        assert!(observe(0).1.is_empty());
+        assert!(observe(1).1.is_empty());
+        let (snapshot, events) = observe(2);
+        assert_eq!(snapshot.monitored_processes, 2);
+        assert_eq!(snapshot.alerting_processes, 2);
+        assert_eq!(
+            events
+                .iter()
+                .map(|event| event.name.as_str())
+                .collect::<Vec<_>>(),
+            [r"C:\Apps\test.exe", r"C:\Other\test-extra.exe"]
+        );
+        assert!(events.iter().all(|event| {
+            event.response.action == ResourceThresholdsAction::Alert
+                && event.notify
+                && event.process_count == 1
+                && event.targets.is_empty()
+        }));
     }
 
     #[test]

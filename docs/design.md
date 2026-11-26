@@ -414,7 +414,9 @@ hover/press; background shading supplies feedback.
   when a numeric field has focus. If a picker is open, Escape closes it first.
 - Give Executable path and Executable name the same input width, clear control,
   and Add rule placement. The path input offers the running-app picker and
-  Browse. The name input accepts an exact filename such as `worker.exe`.
+  Browse. The name input accepts an exact filename or a wildcard pattern such
+  as `abc*def.exe`. Match the whole filename without regard to case. `*` matches
+  zero or more characters and `?` matches one.
   Combine usage by executable path. Name rules can send notifications.
   Terminate and Restart require an executable path.
 - Preview matches reads a fresh process snapshot on tab entry and every three

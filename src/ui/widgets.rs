@@ -1,5 +1,4 @@
 use super::design;
-use crate::config::ExecutableSelector;
 use crate::power::{PowerPlan, ProcessorBoostMode};
 use iced::widget::{column, container, responsive, row, text, Container, Row};
 use iced::{Element, Fill, Shrink};
@@ -117,24 +116,25 @@ pub(super) fn process_rule_header<'a, M: 'a>(
 }
 
 pub(super) fn process_rule_target<'a, M: 'a>(
-    selector: &ExecutableSelector,
+    value: &str,
+    name_match_key: Option<&str>,
     candidates: &[super::app_picker::Candidate],
 ) -> (Element<'a, M>, Element<'a, M>) {
-    match selector {
-        ExecutableSelector::ExactPath { executable_path } => (
-            super::app_picker::app_name(executable_path, candidates),
-            rule_path_text(executable_path.clone()).into(),
-        ),
-        ExecutableSelector::ExactName { executable_name } => (
-            super::app_picker::app_name(executable_name, &[]),
+    match name_match_key {
+        Some(key) => (
+            super::app_picker::app_name(value, &[]),
             iced::widget::column![
                 rule_path_text(rust_i18n::t!("common.any_path").to_string()),
-                text(rust_i18n::t!("common.executable_name").to_string())
+                text(rust_i18n::t!(key).to_string())
                     .size(design::typography::CAPTION)
                     .style(text::secondary),
             ]
             .spacing(design::space::TINY)
             .into(),
+        ),
+        None => (
+            super::app_picker::app_name(value, candidates),
+            rule_path_text(value.to_owned()).into(),
         ),
     }
 }

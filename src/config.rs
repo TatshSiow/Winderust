@@ -1,7 +1,5 @@
 mod adaptive_engine_exclusion;
-pub use adaptive_engine_exclusion::{
-    AdaptiveEngineExclusionRule, AdaptiveEngineExclusionSelector, ExecutableNamePattern,
-};
+pub use adaptive_engine_exclusion::{AdaptiveEngineExclusionRule, AdaptiveEngineExclusionSelector};
 mod search_hotkeys;
 pub(crate) use search_hotkeys::ShowWinderustShortcutKey;
 pub use search_hotkeys::{KeyboardShortcut, SearchHotkeys, ShowWinderustShortcut};
@@ -9,7 +7,7 @@ mod rule_time;
 pub use rule_time::RuleTime;
 mod executable_selector;
 pub(crate) use executable_selector::is_valid_executable_name;
-pub use executable_selector::ExecutableSelector;
+pub use executable_selector::{ExecutableNamePattern, ExecutableSelector};
 mod resource_thresholds;
 mod settings;
 pub use resource_thresholds::*;

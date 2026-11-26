@@ -219,6 +219,8 @@ common:
   executable_path_check_failed: "無法驗證執行檔路徑。%{error}"
   executable_name: "執行檔名稱"
   any_path: "不限路徑"
+  executable_name_pattern: "執行檔名稱模式"
+  executable_name_pattern_invalid: "請輸入含有 * 或 ? 的執行檔名稱，最多 255 個字元，且不含資料夾路徑。"
   search_running_apps: "搜尋執行中的應用程式..."
   no_custom_rules: "尚未設定自訂規則。"
   preserve_foreground_priority: "相同或較高時忽略前景處理程序"
@@ -951,10 +953,8 @@ adaptive_engine_process:
   restore_affinity_before_managed_restart_help: "資源門檻重新啟動應用程式時，先還原自適應引擎調整的親和性，讓新執行個體繼承應用程式原有的親和性。"
   custom_rules_help: "將符合規則的處理程序排除於 CPU 壓力限制與處理器配置之外。名稱規則適用於不同的安裝路徑。"
   custom_rule_name_invalid: "自適應引擎的自訂規則必須指定確切的執行檔名稱。"
-  executable_name_pattern: "執行檔名稱模式"
   rule_match_details: "比對詳細資料"
   custom_rule_pattern_help: "以 * 代表任意數量的字元，以 ? 代表一個字元。模式僅比對檔案名稱。"
-  custom_rule_pattern_invalid: "請輸入含有 * 或 ? 的執行檔名稱，最多 255 個字元，且不含資料夾路徑。"
 
 
 priority_control:
@@ -1317,6 +1317,8 @@ resource_thresholds:
   cpu_tab: "CPU"
   memory_tab: "記憶體"
   name_rule_mode: "執行檔名稱規則（僅監控）"
+  name_placeholder: "app.exe 或 abc*def.exe"
+  pattern_rule_mode: "執行檔名稱模式（僅監控）"
   preview_loading: "正在檢查執行中的處理程序…"
   preview_failed: "無法檢查執行中的處理程序。%{error}"
   preview_no_matches: "目前沒有相符的處理程序。"

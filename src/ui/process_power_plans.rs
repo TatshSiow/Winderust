@@ -194,6 +194,7 @@ impl Editor {
                 .spacing(super::widgets::CARD_GAP);
                 let input = if self.match_by == MatchBy::ExecutableName {
                     app_picker::executable_name_input(
+                        "app.exe",
                         &self.name,
                         Message::Name,
                         $can_add_name(feature, &self.name).then_some(Message::AddName),
@@ -251,7 +252,11 @@ impl Editor {
                     let chip = iced::widget::container(iced::widget::text(t!(key).to_string()))
                         .padding([4, 8])
                         .style(move |theme| widgets::rule_status_chip(theme, key));
-                    let (app, location) = widgets::process_rule_target(&rule.selector, candidates);
+                    let (app, location) = widgets::process_rule_target(
+                        target,
+                        (!is_path).then_some("common.executable_name"),
+                        candidates,
+                    );
                     let mut card = column![widgets::process_rule_header_with_target(
                         column![
                             text(t!("common.rule", number = index + 1).to_string())

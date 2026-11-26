@@ -263,8 +263,10 @@ Read the relevant section before changing feature policy, ownership, restoration
   The parser rejects rules with removed comparison, scope, duration override,
   or Private Commit options before a policy can run. Working Set units use
   `memory_unit = "percent"` or `memory_unit = "megabytes"`.
-- Each rule selects one absolute `executable_path` or one exact `executable_name`.
-  Executable name rules resolve known absolute image paths from current process
+- Each rule selects an absolute `executable_path`, an exact `executable_name`,
+  or an `executable_name_pattern`. Name and pattern matching use the full
+  executable basename, case-insensitively. Patterns share the Adaptive Engine
+  `*` and `?` matcher. Name rules use known absolute image paths from current
   observations. The scoped catalog includes enabled selector candidates and
   prior incident PIDs for exact identity verification. Each executable path
   has its own combined usage total and incident. A failed sample or replaced

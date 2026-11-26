@@ -129,12 +129,13 @@ pub(super) fn view_with_path_selection<'a, M: Clone + 'static>(
 }
 
 pub(super) fn executable_name_input<M: Clone + 'static>(
+    placeholder: &str,
     value: &str,
     edit: fn(String) -> M,
     add: Option<M>,
 ) -> Element<'static, M> {
     rule_input(
-        widgets::text_input("app.exe", value)
+        widgets::text_input(placeholder, value)
             .padding(widgets::SEARCH_INPUT_PADDING)
             .on_input(edit)
             .on_submit_maybe(add.clone())

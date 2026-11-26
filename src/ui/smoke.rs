@@ -692,7 +692,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                 ),
             ));
             let _ = app.update(Message::ResourceThresholds(
-                resource_thresholds::Message::Name("worker.exe".into()),
+                resource_thresholds::Message::Name("abc*def.exe".into()),
             ));
         }
         assert_eq!(app.side_panel_tab, SidePanelTab::initial_for_page(page));
@@ -1408,8 +1408,12 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             app.settings.edit_global(|settings| {
                 settings.resource_thresholds.rules =
                     vec![crate::config::ResourceThresholdsRule::with_selector(
-                        crate::config::ResourceThresholdsSelector::ExactName {
-                            executable_name: "worker.exe".into(),
+                        crate::config::ResourceThresholdsSelector::NamePattern {
+                            executable_name_pattern:
+                                crate::config::ExecutableNamePattern::try_from(
+                                    "work*.exe".to_owned(),
+                                )
+                                .expect("preview fixture has a valid executable name pattern"),
                         },
                     )];
             });
@@ -1903,6 +1907,7 @@ pub(super) fn captured(app: &mut WinderustApp, shot: iced::window::Screenshot) -
 pub(crate) fn render_all_pages() {
     use crate::config::{
         ByFocusRule, ByRunningAppRule, ExecutableSelector, ResourceThresholdsRule,
+        ResourceThresholdsSelector,
     };
 
     std::fs::create_dir_all("target/iced-smoke").expect("create smoke output");
@@ -1914,9 +1919,10 @@ pub(crate) fn render_all_pages() {
     settings.general.startup_with_windows = false;
     settings.advanced.show_advanced_controls = true;
     let name = "sample.exe";
+    let path = r"C:\Apps\Resource Monitor\sample.exe";
     let selectors = [
         ExecutableSelector::ExactPath {
-            executable_path: r"C:\Apps\Resource Monitor\sample.exe".into(),
+            executable_path: path.into(),
         },
         ExecutableSelector::ExactName {
             executable_name: name.into(),
@@ -1942,10 +1948,11 @@ pub(crate) fn render_all_pages() {
             power_plan_guid: None,
         })
         .collect();
-    let [path_selector, name_selector] = selectors;
     settings.resource_thresholds.rules = vec![
-        ResourceThresholdsRule::with_selector(path_selector),
-        ResourceThresholdsRule::with_selector(name_selector),
+        ResourceThresholdsRule::new(path.into()),
+        ResourceThresholdsRule::with_selector(ResourceThresholdsSelector::ExactName {
+            executable_name: name.into(),
+        }),
     ];
     let mut editor = SettingsEditor::with_settings(settings);
     let recovery = Arc::new(Mutex::new(crate::crash_recovery::RecoveryClient::start()));
