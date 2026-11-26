@@ -33,7 +33,8 @@ const CPU_LIMITER_AFFINITY_WIDE: usize = 116;
 const CPU_LIMITER_AFFINITY_COMPACT: usize = 117;
 const CPU_LIMITER_PROCESSORS_COMPACT: usize = 118;
 const ADAPTIVE_NAME_PATTERN: usize = 119;
-const EXTRA_STATES: usize = 120;
+const RESOURCE_NAME_INPUT: usize = 120;
+const EXTRA_STATES: usize = 121;
 pub(super) struct Run {
     pages: Vec<Page>,
     remaining: VecDeque<usize>,
@@ -77,6 +78,18 @@ impl Run {
                 .into_iter()
                 .map(|extra| extra_start + extra)
                 .collect()
+        } else if std::env::args().any(|arg| arg == "--resource-thresholds-only") {
+            [
+                51,
+                52,
+                53,
+                RESOURCE_NAME_INPUT,
+                RESOURCE_PREVIEW_WIDE,
+                RESOURCE_PREVIEW_COMPACT,
+            ]
+            .into_iter()
+            .map(|extra| extra_start + extra)
+            .collect()
         } else {
             (0..extra_start + EXTRA_STATES).collect()
         }
@@ -198,9 +211,9 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             Some(50 | 77..=78 | SHOW_SHORTCUT_INVALID | SHOW_SHORTCUT_READY) => {
                 Page::WinderustBehaviour
             }
-            Some(51..=53 | RESOURCE_PREVIEW_WIDE | RESOURCE_PREVIEW_COMPACT) => {
-                Page::ResourceThresholds
-            }
+            Some(
+                51..=53 | RESOURCE_NAME_INPUT | RESOURCE_PREVIEW_WIDE | RESOURCE_PREVIEW_COMPACT,
+            ) => Page::ResourceThresholds,
             Some(54..=57 | 81 | DOCK_FOCUS_WIDE | DOCK_FOCUS_COMPACT) => Page::ByCpuLoad,
             Some(58..=59) => Page::SleepPrevention,
             Some(60..=61) => Page::KeepRunning,
@@ -425,6 +438,11 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                 rule.memory.enabled = true;
                 rule.memory.warning.threshold = 50;
                 rule.memory.critical.threshold = 75;
+                if extra == Some(53) {
+                    rule.memory_unit = crate::config::ResourceThresholdsMemoryUnit::Megabytes;
+                    rule.memory.warning.threshold = 512;
+                    rule.memory.critical.threshold = 1024;
+                }
                 rule.memory.critical.action = crate::config::ResourceThresholdsAction::Terminate;
             });
             app.resource_thresholds = resource_thresholds::Editor::default();
@@ -644,13 +662,11 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                 let _ = app.update(Message::ResourceThresholds(
                     resource_thresholds::Message::ToggleSettings,
                 ));
+                let _ = app.update(Message::ResourceThresholds(
+                    resource_thresholds::Message::Path(r"C:\Apps\worker.exe".into()),
+                ));
                 assert_eq!(app.settings.global().resource_thresholds, before);
             } else if extra == Some(52) {
-                let _ = app.update(Message::ResourceThresholds(
-                    resource_thresholds::Message::ToggleMonitorSettings(
-                        crate::config::ResourceThresholdsResource::Cpu,
-                    ),
-                ));
                 let _ = app.update(Message::ResourceThresholds(
                     resource_thresholds::Message::MonitorEnabled(
                         crate::config::ResourceThresholdsResource::Cpu,
@@ -663,12 +679,21 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                         crate::config::ResourceThresholdsResource::Memory,
                     ),
                 ));
-                let _ = app.update(Message::ResourceThresholds(
-                    resource_thresholds::Message::ToggleMonitorSettings(
-                        crate::config::ResourceThresholdsResource::Memory,
-                    ),
-                ));
             }
+        }
+        if extra == Some(RESOURCE_NAME_INPUT) {
+            app.resource_thresholds = resource_thresholds::Editor::default();
+            let _ = app.update(Message::ResourceThresholds(
+                resource_thresholds::Message::ToggleSettings,
+            ));
+            let _ = app.update(Message::ResourceThresholds(
+                resource_thresholds::Message::MatchBy(
+                    super::super::process_rules::MatchBy::ExecutableName,
+                ),
+            ));
+            let _ = app.update(Message::ResourceThresholds(
+                resource_thresholds::Message::Name("worker.exe".into()),
+            ));
         }
         assert_eq!(app.side_panel_tab, SidePanelTab::initial_for_page(page));
         assert_eq!(app.side_panel_open, was_open);
@@ -1391,7 +1416,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             let _ = app.update(Message::ResourceThresholds(
                 resource_thresholds::Message::Edit(0),
             ));
-            app.resource_thresholds.set_smoke_match_preview();
+            app.resource_thresholds.set_smoke_preview_matches();
         }
         if matches!(extra, Some(SHOW_SHORTCUT_INVALID | SHOW_SHORTCUT_READY)) {
             use iced::keyboard::{key::Named, Key, Modifiers};

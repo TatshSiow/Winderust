@@ -5,7 +5,7 @@ Read the relevant section before changing feature policy, ownership, restoration
 ## Application boundaries
 
 - Automation worker lifetime uses the complete AC/Battery configuration; policy application still uses only the active profile. An idle profile waits for events when the other profile requires automation.
-- Scoped path matching for Resource Thresholds, its Match Preview, and Sleep
+- Scoped path matching for Resource Thresholds, its Preview matches tab, and Sleep
   Prevention selects candidates from one Toolhelp process snapshot using the
   rule selector or prior process ID before reading process metadata. Each row's
   first metadata attempt stays with that catalog. A later full catalog request
@@ -261,8 +261,8 @@ Read the relevant section before changing feature policy, ownership, restoration
   rule's Notify setting. Sampling runs once a second in visible and tray modes.
   Portable settings use the existing `watchdog` TOML key for these rules.
   The parser rejects rules with removed comparison, scope, duration override,
-  or memory unit options before a policy can run. Supported saved rules retain
-  `memory_unit = "percent"` as a fixed unit marker.
+  or Private Commit options before a policy can run. Working Set units use
+  `memory_unit = "percent"` or `memory_unit = "megabytes"`.
 - Each rule selects one absolute `executable_path` or one exact `executable_name`.
   Executable name rules resolve known absolute image paths from current process
   observations. The scoped catalog includes enabled selector candidates and
@@ -272,16 +272,17 @@ Read the relevant section before changing feature policy, ownership, restoration
   independently if their selectors overlap. Terminate and Restart require an
   Executable path rule.
 - CPU deltas are calculated per exact instance and summed against total processor
-  capacity (capped at 100%). Working Set is measured as a percentage of physical
-  RAM. Summed working sets may count shared pages more than once. Each response
+  capacity (capped at 100%). Working Set uses a percentage of physical RAM or
+  decimal MB. Summed working sets may count shared pages more than once. Each response
   uses the eligible processes at the matching executable path.
-- Each monitor qualifies at or above its threshold, requires
-  `0 < warning < critical <= 100`, and rearms below 95% of the threshold.
-- Warning and critical default to monitoring with optional notification. The
-  feature defaults off. A rule-level Notify edit preserves sustained samples,
-  incident state, and actions. Delivery checks the current rule's saved Notify
-  setting. Muted threshold events with no automatic action record a Skipped
-  outcome under the Action Log recording level. When both response levels are
+- Each monitor qualifies at or above its threshold, requires a positive warning
+  below critical, and rearms below 95% of the threshold. Percentage thresholds
+  accept up to 100 and MB thresholds accept up to 1,000,000.
+- Warning action and Critical action default to Alert in new rules. Alert
+  records the threshold event in Action Log and can send a Windows notification.
+  No action suppresses the response. The feature defaults off. Editing either
+  notification switch preserves sustained samples, incident state, and actions.
+  Windows delivery checks the saved notification settings. When both response levels are
   enabled, a critical response subsumes a simultaneous warning for the same
   resource. Each response fires once per incident. Missing samples break only
   the affected resource's sustained interval. Collection gaps, complete
@@ -408,14 +409,15 @@ Read the relevant section before changing feature policy, ownership, restoration
   session and protected-process checks.
 - By Focus Preview matches uses the same rule order and selector matching as
   automation. It shows the first eligible match followed by other eligible
-  matches in the same order. It evaluates the entered path against the draft,
-  even when By Focus is disabled. The check is read-only.
+  matches in the same order. It checks each valid path as it is entered against
+  the draft, even when By Focus is disabled. The check is read-only.
 - If an active-plan read fails, By Focus Status clears the earlier selection
   when an absolute image path already observed in the same pass rules it out.
   If the path is unavailable, the worker keeps the earlier selection while the
   saved profile still supports it.
 - By Running App Preview matches uses the same eligibility checks to report matches
-  and the winning rule for the current draft.
+  and the winning rule for the current draft. It reads immediately on open and
+  refreshes while the preview is visible.
 - If an active-plan read fails, a confirmed absence of matches or a verified
   earlier By Running App rule clears the previous selection. An unavailable
   observation or a later match can leave the earlier rule unresolved.

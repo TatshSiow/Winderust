@@ -358,11 +358,11 @@ impl RuntimeCore {
                 threshold = event.response.threshold
             )
             .into_owned();
-            let mut action_detail = t!("resource_thresholds.no_action").to_string();
-            if event.response.action != ResourceThresholdsAction::None {
-                if !resource_thresholds_action_is_current(shared, settings) {
-                    continue;
-                }
+            if !resource_thresholds_action_is_current(shared, settings) {
+                continue;
+            }
+            let mut action_detail = t!("resource_thresholds.alert").into_owned();
+            if event.response.action.mutates_process() {
                 let restarting = event.response.action == ResourceThresholdsAction::Restart;
                 let result = if restarting {
                     actions
@@ -516,12 +516,12 @@ impl RuntimeCore {
                     outcome,
                     reason,
                 );
-            } else if event.response.action == ResourceThresholdsAction::None {
+            } else if event.response.action == ResourceThresholdsAction::Alert {
                 self.action_log.record(
                     ActionLogFeature::ResourceThresholds,
                     process_id,
                     &event.name,
-                    ActionLogResult::Skipped,
+                    ActionLogResult::Applied,
                     detail,
                 );
             }

@@ -493,6 +493,13 @@ pub(crate) fn run(
             app.interrupt_timing
                 .subscription()
                 .map(|()| Message::PollInterruptTiming),
+            app.live_preview_page()
+                .map(|page| {
+                    iced::time::every(Duration::from_secs(3))
+                        .with(page)
+                        .map(|(page, _)| Message::PollPreviewMatches(page))
+                })
+                .unwrap_or_else(Subscription::none),
             app.navigation
                 .timer()
                 .filter(|_| !app.hidden)
@@ -785,6 +792,7 @@ enum Message {
     Trim(memory_trim::Message),
     TrimFinished(Result<crate::memory_trim::MemoryTrimSnapshot, String>),
     ResourceThresholds(resource_thresholds::Message),
+    PollPreviewMatches(Page),
     KeepRunning(keep_running::Message),
     InstanceLimits(instance_limits::Message),
     InstanceBalancing(instance_balancing::Message),
@@ -1687,19 +1695,37 @@ impl WinderustApp {
             )) => {
                 self.resource_thresholds.toggle_monitor_settings(resource);
             }
-            Message::ResourceThresholds(resource_thresholds::Message::PreviewMatches) => {
+            Message::ResourceThresholds(resource_thresholds::Message::OpenPreviewMatches) => {
                 return self
                     .resource_thresholds
-                    .preview_matches()
+                    .open_preview_matches()
                     .map(Message::ResourceThresholds);
             }
-            Message::ResourceThresholds(resource_thresholds::Message::MatchPreviewLoaded(
+            Message::ResourceThresholds(resource_thresholds::Message::PreviewMatchesLoaded(
                 request,
                 result,
             )) => {
                 self.resource_thresholds
-                    .complete_match_preview(request, result);
+                    .complete_preview_matches(request, result);
             }
+            Message::PollPreviewMatches(page) if self.live_preview_page() == Some(page) => {
+                return match page {
+                    Page::ResourceThresholds => self
+                        .resource_thresholds
+                        .poll_preview_matches()
+                        .map(Message::ResourceThresholds),
+                    Page::ByRunningApp => self.update(Message::ProcessPowerPlans(
+                        process_power_plans::Kind::RunningApp,
+                        process_power_plans::Message::Preview(
+                            process_power_plans::PreviewMessage::Poll,
+                        ),
+                    )),
+                    _ => unreachable!(
+                        "live match previews belong to Resource Thresholds or By Running App"
+                    ),
+                };
+            }
+            Message::PollPreviewMatches(_) => {}
             Message::ResourceThresholds(message) => {
                 self.settings.edit_global(|settings| {
                     self.resource_thresholds
@@ -2809,6 +2835,23 @@ impl WinderustApp {
             _ => return None,
         };
         editor.preview_open().then_some((kind, editor))
+    }
+
+    fn live_preview_page(&self) -> Option<Page> {
+        if self.exiting || self.hidden || self.window.is_none() {
+            return None;
+        }
+        #[cfg(feature = "render-smoke")]
+        if self.smoke.is_some() || self.lifecycle_smoke.is_some() {
+            return None;
+        }
+        match self.page {
+            Page::ResourceThresholds if self.resource_thresholds.preview_matches_open() => {
+                Some(self.page)
+            }
+            Page::ByRunningApp if self.running_app_plans.preview_open() => Some(self.page),
+            _ => None,
+        }
     }
 
     fn select_power_source(&mut self, source: PowerSourceProfile) -> bool {

@@ -3380,7 +3380,7 @@ fn resource_thresholds_actions_require_current_policy_and_no_shutdown_or_session
 }
 
 #[test]
-fn resource_thresholds_notification_rechecks_the_saved_rule_without_blocking_actions() {
+fn resource_thresholds_notification_rechecks_saved_flags_without_blocking_actions() {
     use crate::config::ResourceThresholdsRule;
 
     let mut settings = Settings::default();
@@ -3408,6 +3408,16 @@ fn resource_thresholds_notification_rechecks_the_saved_rule_without_blocking_act
         Some(0)
     ));
     assert!(resource_thresholds_policy_is_current(
+        &shared,
+        &settings,
+        Some(1)
+    ));
+    assert!(resource_thresholds_action_is_current(&shared, &settings));
+
+    Arc::make_mut(&mut lock_unpoisoned(&shared.state).settings)
+        .resource_thresholds
+        .notify = false;
+    assert!(!resource_thresholds_policy_is_current(
         &shared,
         &settings,
         Some(1)

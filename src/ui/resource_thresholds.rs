@@ -6,8 +6,9 @@ use super::{
     widgets,
 };
 use crate::config::{
-    ResourceThresholdsAction, ResourceThresholdsResource, ResourceThresholdsRule,
-    ResourceThresholdsSelector, ResourceThresholdsSettings, RESOURCE_THRESHOLDS_DURATION_RANGE,
+    ResourceThresholdsAction, ResourceThresholdsMemoryUnit, ResourceThresholdsMetric,
+    ResourceThresholdsResource, ResourceThresholdsRule, ResourceThresholdsSelector,
+    ResourceThresholdsSettings, RESOURCE_THRESHOLDS_DURATION_RANGE,
 };
 use crate::foreground::{
     process_list::{normalize_path_slashes, same_executable_name},
@@ -25,9 +26,16 @@ impl std::fmt::Display for ResourceThresholdsAction {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&t!(match self {
             Self::None => "resource_thresholds.no_action",
+            Self::Alert => "resource_thresholds.alert",
             Self::Terminate => "resource_thresholds.terminate",
             Self::Restart => "resource_thresholds.restart",
         }))
+    }
+}
+
+impl std::fmt::Display for ResourceThresholdsMemoryUnit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&t!(self.metric().label_key()))
     }
 }
 
@@ -46,31 +54,34 @@ struct Draft {
     rule: ResourceThresholdsRule,
     tab: DraftTab,
     monitors: [ThresholdInputs; 2],
+    memory_unit: ResourceThresholdsMemoryUnit,
+    alternate_memory: ThresholdInputs,
     monitor_settings_expanded: [bool; 2],
-    match_preview: MatchPreview,
+    preview: PreviewMatches,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum DraftTab {
     Monitor(ResourceThresholdsResource),
-    MatchPreview,
+    PreviewMatches,
 }
 
 impl DraftTab {
     fn content_key(self) -> u64 {
         match self {
             Self::Monitor(resource) => resource as u64,
-            Self::MatchPreview => 2,
+            Self::PreviewMatches => 2,
         }
     }
 }
 
-enum MatchPreview {
-    Unrequested,
-    Loading(Arc<()>),
-    Loaded(Result<Vec<preview::MatchRow>, String>),
+#[derive(Default)]
+struct PreviewMatches {
+    pending: Option<Arc<()>>,
+    result: Option<preview::MatchResult>,
 }
 
+#[derive(Default)]
 struct ThresholdInputs {
     warning: String,
     critical: String,
@@ -92,27 +103,53 @@ impl Draft {
                     critical: monitor.critical.threshold.to_string(),
                 }
             }),
+            memory_unit: rule.memory_unit,
+            alternate_memory: ThresholdInputs::default(),
+            monitor_settings_expanded: [rule.cpu.enabled, rule.memory.enabled],
             rule,
-            monitor_settings_expanded: [false; 2],
-            match_preview: MatchPreview::Unrequested,
+            preview: PreviewMatches::default(),
+        }
+    }
+
+    fn select_memory_unit(&mut self, unit: ResourceThresholdsMemoryUnit) {
+        if unit != self.memory_unit {
+            std::mem::swap(
+                &mut self.monitors[ResourceThresholdsResource::Memory as usize],
+                &mut self.alternate_memory,
+            );
+            self.memory_unit = unit;
+        }
+    }
+
+    fn metric(&self, resource: ResourceThresholdsResource) -> ResourceThresholdsMetric {
+        match resource {
+            ResourceThresholdsResource::Cpu => ResourceThresholdsMetric::CpuPercent,
+            ResourceThresholdsResource::Memory => self.memory_unit.metric(),
         }
     }
 
     fn validated_rule(&self) -> Option<ResourceThresholdsRule> {
         let mut rule = self.rule.clone();
+        let memory_unit_changed = self.memory_unit != rule.memory_unit;
+        rule.memory_unit = self.memory_unit;
         for (resource, raw) in ResourceThresholdsResource::ALL
             .into_iter()
             .zip(&self.monitors)
         {
+            let metric = rule.metric(resource);
             let monitor = rule.monitor_mut(resource);
+            let needs_thresholds = monitor.enabled
+                || (resource == ResourceThresholdsResource::Memory && memory_unit_changed);
             if let (Ok(warning), Ok(critical)) = (raw.warning.parse(), raw.critical.parse()) {
                 let mut edited = monitor.clone();
                 edited.warning.threshold = warning;
                 edited.critical.threshold = critical;
-                if monitor.enabled || edited.thresholds_valid() {
+                if edited.thresholds_valid(metric) {
                     *monitor = edited;
+                    continue;
                 }
-            } else if monitor.enabled {
+            }
+            if needs_thresholds {
                 return None;
             }
         }
@@ -137,10 +174,11 @@ pub(super) enum Message {
     RuleEnabled(usize, bool),
     RuleNotify(usize, bool),
     Tab(ResourceThresholdsResource),
-    PreviewMatches,
-    MatchPreviewLoaded(Arc<()>, Result<Vec<preview::MatchRow>, String>),
+    OpenPreviewMatches,
+    PreviewMatchesLoaded(Arc<()>, preview::MatchResult),
     MonitorEnabled(ResourceThresholdsResource, bool),
     ToggleMonitorSettings(ResourceThresholdsResource),
+    MemoryUnit(ResourceThresholdsMemoryUnit),
     Duration(String),
     Threshold(ResourceThresholdsResource, bool, String),
     Notify(bool),
@@ -223,44 +261,68 @@ impl Editor {
         }
     }
 
-    pub(super) fn preview_matches(&mut self) -> iced::Task<Message> {
-        let Some(draft) = &mut self.draft else {
-            return iced::Task::none();
-        };
-        draft.tab = DraftTab::MatchPreview;
-        if matches!(draft.match_preview, MatchPreview::Loading(_)) {
-            return iced::Task::none();
+    pub(super) fn open_preview_matches(&mut self) -> iced::Task<Message> {
+        if let Some(draft) = &mut self.draft {
+            draft.tab = DraftTab::PreviewMatches;
         }
-        let request = Arc::new(());
-        draft.match_preview = MatchPreview::Loading(request.clone());
-        let selector = draft.rule.selector.clone();
-        super::tasks::run(move || preview::load(&selector)).map(move |result| {
-            Message::MatchPreviewLoaded(request.clone(), result.and_then(|result| result))
-        })
+        self.poll_preview_matches()
     }
 
-    pub(super) fn complete_match_preview(
+    pub(super) fn preview_matches_open(&self) -> bool {
+        self.draft
+            .as_ref()
+            .is_some_and(|draft| draft.tab == DraftTab::PreviewMatches)
+    }
+
+    pub(super) fn poll_preview_matches(&mut self) -> iced::Task<Message> {
+        let Some(draft) = self.draft.as_mut().filter(|draft| {
+            draft.tab == DraftTab::PreviewMatches && draft.preview.pending.is_none()
+        }) else {
+            return iced::Task::none();
+        };
+        let request = Arc::new(());
+        draft.preview.pending = Some(request.clone());
+        let selector = draft.rule.selector.clone();
+        let previous = draft
+            .preview
+            .result
+            .as_ref()
+            .and_then(|result| result.as_ref().ok())
+            .cloned();
+        super::tasks::run(move || preview::load(&selector, previous.as_deref().unwrap_or(&[]))).map(
+            move |result| {
+                Message::PreviewMatchesLoaded(request.clone(), result.and_then(|result| result))
+            },
+        )
+    }
+
+    pub(super) fn complete_preview_matches(
         &mut self,
         request: Arc<()>,
-        result: Result<Vec<preview::MatchRow>, String>,
+        result: preview::MatchResult,
     ) {
         let Some(draft) = &mut self.draft else {
             return;
         };
-        if matches!(&draft.match_preview, MatchPreview::Loading(active) if Arc::ptr_eq(active, &request))
+        if draft
+            .preview
+            .pending
+            .as_ref()
+            .is_some_and(|active| Arc::ptr_eq(active, &request))
         {
-            draft.match_preview = MatchPreview::Loaded(result);
+            draft.preview.pending = None;
+            draft.preview.result = Some(result);
         }
     }
 
     #[cfg(feature = "render-smoke")]
-    pub(super) fn set_smoke_match_preview(&mut self) {
+    pub(super) fn set_smoke_preview_matches(&mut self) {
         let draft = self
             .draft
             .as_mut()
             .expect("preview fixture has an open rule");
-        draft.tab = DraftTab::MatchPreview;
-        draft.match_preview = MatchPreview::Loaded(Ok([
+        draft.tab = DraftTab::PreviewMatches;
+        draft.preview.result = Some(Ok([
             (41, r"C:\Apps\worker.exe"),
             (42, r"C:\Apps\worker.exe"),
             (81, r"D:\Tools\worker.exe"),
@@ -335,7 +397,16 @@ impl Editor {
             }
             Message::MonitorEnabled(resource, enabled) => {
                 if let Some(draft) = &mut self.draft {
-                    draft.rule.monitor_mut(resource).enabled = enabled;
+                    let monitor = draft.rule.monitor_mut(resource);
+                    if enabled && !monitor.enabled {
+                        draft.monitor_settings_expanded[resource as usize] = true;
+                    }
+                    monitor.enabled = enabled;
+                }
+            }
+            Message::MemoryUnit(unit) => {
+                if let Some(draft) = &mut self.draft {
+                    draft.select_memory_unit(unit);
                 }
             }
             Message::Duration(value) => {
@@ -358,15 +429,15 @@ impl Editor {
                 if let Some(draft) = self
                     .draft
                     .as_mut()
-                    .filter(|draft| draft.rule.allows_actions())
+                    .filter(|draft| draft.rule.allows_action(value))
                 {
                     response(draft.rule.monitor_mut(resource), critical).action = value;
                 }
             }
             Message::Remove(_)
             | Message::Browse
-            | Message::PreviewMatches
-            | Message::MatchPreviewLoaded(..) => {}
+            | Message::OpenPreviewMatches
+            | Message::PreviewMatchesLoaded(..) => {}
         }
     }
 
@@ -410,7 +481,9 @@ impl Editor {
                                     text(if monitor.enabled {
                                         let warning = monitor.warning.threshold;
                                         let critical = monitor.critical.threshold;
-                                        format!("{warning}% / {critical}%")
+                                        let unit = rule.metric(resource).unit();
+                                        let gap = if unit == "%" { "" } else { " " };
+                                        format!("{warning}{gap}{unit} / {critical}{gap}{unit}")
                                     } else {
                                         t!("common.off").into_owned()
                                     })
@@ -498,23 +571,11 @@ impl Editor {
                 Self::can_add_path(settings, exact_path_input(&self.path)).then_some(Message::Add),
                 |path| Self::can_add_path(settings, path).then_some(true),
             ),
-            MatchBy::ExecutableName => {
-                let add = self.new_name_selector(settings).map(|_| Message::Add);
-                column![
-                    widgets::setting_title("common.executable_name"),
-                    row![
-                        widgets::text_input("app.exe", &self.name)
-                            .on_input(Message::Name)
-                            .on_submit_maybe(add.clone())
-                            .width(Fill),
-                        widgets::rule_add_button(add),
-                    ]
-                    .spacing(design::space::SMALL)
-                    .align_y(iced::Center),
-                ]
-                .spacing(design::space::SMALL)
-                .into()
-            }
+            MatchBy::ExecutableName => app_picker::executable_name_input(
+                &self.name,
+                Message::Name,
+                self.new_name_selector(settings).map(|_| Message::Add),
+            ),
         };
         widgets::settings_card(widgets::settings_rows([
             widgets::setting_row(
@@ -536,6 +597,19 @@ impl Editor {
         let rule = &draft.rule;
         let monitor = rule.monitor(resource);
         let raw = &draft.monitors[resource as usize];
+        let unit = draft.metric(resource).unit();
+        let memory_unit = (resource == ResourceThresholdsResource::Memory).then(|| {
+            widgets::setting_row(
+                "resource_thresholds.memory_unit",
+                widgets::pick_list(
+                    ResourceThresholdsMemoryUnit::ALL,
+                    Some(draft.memory_unit),
+                    Message::MemoryUnit,
+                )
+                .width(180),
+            )
+            .into()
+        });
         let rows = [
             (false, &monitor.warning, &raw.warning),
             (true, &monitor.critical, &raw.critical),
@@ -547,33 +621,38 @@ impl Editor {
                 (ResourceThresholdsResource::Memory, false) => "resource_thresholds.memory_warning",
                 (ResourceThresholdsResource::Memory, true) => "resource_thresholds.memory_critical",
             };
-            let mut details = column![widgets::numeric_setting(label, "%", move || {
-                widgets::text_input("", threshold)
-                    .align_x(iced::alignment::Horizontal::Center)
-                    .on_input(move |value| Message::Threshold(resource, critical, value))
-                    .on_submit(Message::SaveRule)
-                    .width(design::STANDALONE_NUMERIC_WIDTH)
-                    .into()
-            })]
-            .spacing(design::space::MEDIUM);
-            if rule.allows_actions() {
-                details = details
-                    .push(widgets::settings_divider())
-                    .push(widgets::setting_row(
-                        "resource_thresholds.action",
-                        widgets::pick_list(
-                            [
-                                ResourceThresholdsAction::None,
-                                ResourceThresholdsAction::Terminate,
-                                ResourceThresholdsAction::Restart,
-                            ],
-                            Some(response.action),
-                            move |value| Message::Action(resource, critical, value),
-                        )
-                        .width(180),
-                    ));
-            }
-            details.into()
+            let actions = [
+                ResourceThresholdsAction::None,
+                ResourceThresholdsAction::Alert,
+                ResourceThresholdsAction::Restart,
+                ResourceThresholdsAction::Terminate,
+            ]
+            .into_iter()
+            .filter(|action| rule.allows_action(*action))
+            .collect::<Vec<_>>();
+            widgets::settings_rows([
+                widgets::numeric_setting(label, unit, move || {
+                    widgets::text_input("", threshold)
+                        .align_x(iced::alignment::Horizontal::Center)
+                        .on_input(move |value| Message::Threshold(resource, critical, value))
+                        .on_submit(Message::SaveRule)
+                        .width(design::STANDALONE_NUMERIC_WIDTH)
+                        .into()
+                }),
+                widgets::setting_row(
+                    if critical {
+                        "resource_thresholds.critical_action"
+                    } else {
+                        "resource_thresholds.warning_action"
+                    },
+                    widgets::pick_list(actions, Some(response.action), move |value| {
+                        Message::Action(resource, critical, value)
+                    })
+                    .width(180),
+                )
+                .into(),
+            ])
+            .into()
         });
         column![widgets::setting_group(
             match resource {
@@ -587,38 +666,28 @@ impl Editor {
                 monitor.enabled,
                 Some(move |enabled| Message::MonitorEnabled(resource, enabled)),
             ),
-            widgets::settings_rows(rows),
+            widgets::settings_rows(memory_unit.into_iter().chain(rows)),
         )]
     }
 
-    fn match_preview_details(draft: &Draft) -> Column<'_, Message> {
-        let details = column![widgets::action_button(t!("settings.refresh").to_string())
-            .style(widgets::secondary_button)
-            .on_press_maybe(
-                (!matches!(draft.match_preview, MatchPreview::Loading(_)))
-                    .then_some(Message::PreviewMatches),
-            )]
-        .spacing(widgets::CARD_GAP);
-        let matches = match &draft.match_preview {
-            MatchPreview::Unrequested => return details,
-            MatchPreview::Loading(_) => {
-                return details.push(text(t!("resource_thresholds.preview_loading").to_string()));
+    fn preview_matches_details(draft: &Draft) -> Column<'_, Message> {
+        let matches = match &draft.preview.result {
+            None => return column![text(t!("resource_thresholds.preview_loading").to_string())],
+            Some(Err(error)) => {
+                return column![text(
+                    t!("resource_thresholds.preview_failed", error = error).to_string()
+                )
+                .style(text::danger)
+                .wrapping(text::Wrapping::WordOrGlyph),];
             }
-            MatchPreview::Loaded(Err(error)) => {
-                return details.push(
-                    text(t!("resource_thresholds.preview_failed", error = error).to_string())
-                        .style(text::danger)
-                        .wrapping(text::Wrapping::WordOrGlyph),
-                );
-            }
-            MatchPreview::Loaded(Ok(matches)) => matches,
+            Some(Ok(matches)) => matches,
         };
 
         if matches.is_empty() {
-            return details.push(
+            return column![
                 text(t!("resource_thresholds.preview_no_matches").to_string())
                     .style(text::secondary),
-            );
+            ];
         }
 
         let rows = matches.iter().map(|entry| {
@@ -648,7 +717,7 @@ impl Editor {
             .align_y(iced::Center)
             .into()
         });
-        details.push(widgets::settings_card(widgets::settings_rows(rows)))
+        column![widgets::settings_card(widgets::settings_rows(rows))]
     }
 
     pub(super) fn modal<'a>(
@@ -674,9 +743,9 @@ impl Editor {
                 Self::monitor_details(draft, resource),
                 "resource-thresholds-rule-details",
             ),
-            DraftTab::MatchPreview => (
-                Self::match_preview_details(draft),
-                "resource-thresholds-match-preview",
+            DraftTab::PreviewMatches => (
+                Self::preview_matches_details(draft),
+                "resource-thresholds-preview-matches",
             ),
         };
         let frame = widgets::rule_dialog(
@@ -707,9 +776,9 @@ impl Editor {
                         Message::Tab(ResourceThresholdsResource::Memory)
                     ),
                     widgets::panel_tab(
-                        t!("resource_thresholds.match_preview").to_string(),
-                        draft.tab == DraftTab::MatchPreview,
-                        Message::PreviewMatches
+                        t!("common.preview_matches").to_string(),
+                        draft.tab == DraftTab::PreviewMatches,
+                        Message::OpenPreviewMatches
                     ),
                 ])
                 .style(widgets::tab_bar),
@@ -834,7 +903,7 @@ mod tests {
     }
 
     #[test]
-    fn monitor_disclosure_is_independent_of_tabs_and_enablement() {
+    fn enabled_monitors_open_expanded_and_tabs_preserve_disclosure() {
         use ResourceThresholdsResource::{Cpu, Memory};
 
         let mut rule = ResourceThresholdsRule::new(r"C:\Apps\test.exe".into());
@@ -848,7 +917,7 @@ mod tests {
         editor.update(&mut settings, Message::Edit(0));
         assert_eq!(
             editor.draft.as_ref().unwrap().monitor_settings_expanded,
-            [false, false]
+            [true, true]
         );
         editor.update(&mut settings, Message::ToggleMonitorSettings(Cpu));
         editor.update(&mut settings, Message::MonitorEnabled(Cpu, false));
@@ -856,7 +925,7 @@ mod tests {
         editor.update(&mut settings, Message::Tab(Cpu));
         assert_eq!(
             editor.draft.as_ref().unwrap().monitor_settings_expanded,
-            [true, false]
+            [false, true]
         );
         assert_eq!(settings.rules[0], rule);
 
@@ -866,37 +935,101 @@ mod tests {
         editor.update(&mut settings, Message::Edit(0));
         assert_eq!(
             editor.draft.as_ref().unwrap().monitor_settings_expanded,
-            [false, false]
+            [false, true]
+        );
+        editor.update(&mut settings, Message::MonitorEnabled(Cpu, true));
+        assert_eq!(
+            editor.draft.as_ref().unwrap().monitor_settings_expanded,
+            [true, true]
         );
     }
 
     #[test]
-    fn closing_and_reopening_a_rule_discards_its_pending_match_preview() {
+    fn changing_memory_unit_requires_explicit_thresholds_in_that_unit() {
+        use ResourceThresholdsMemoryUnit::{Megabytes, Percent};
+        use ResourceThresholdsResource::Memory;
+
+        let rule = ResourceThresholdsRule::new(r"C:\Apps\test.exe".into());
+        let mut settings = ResourceThresholdsSettings {
+            rules: vec![rule.clone()],
+            ..Default::default()
+        };
+        let mut editor = Editor::default();
+        editor.update(&mut settings, Message::Edit(0));
+        editor.update(&mut settings, Message::MemoryUnit(Megabytes));
+        editor.update(&mut settings, Message::SaveRule);
+        assert!(editor.has_pending_editor());
+        assert_eq!(settings.rules[0], rule);
+
+        for (critical, value) in [(false, "512"), (true, "1024")] {
+            editor.update(
+                &mut settings,
+                Message::Threshold(Memory, critical, value.into()),
+            );
+        }
+        editor.update(&mut settings, Message::MemoryUnit(Percent));
+        assert_eq!(editor.draft.as_ref().unwrap().validated_rule(), Some(rule));
+        editor.update(&mut settings, Message::MemoryUnit(Megabytes));
+        editor.update(&mut settings, Message::MonitorEnabled(Memory, true));
+        editor.update(&mut settings, Message::SaveRule);
+        assert!(!editor.has_pending_editor());
+        let rule = &settings.rules[0];
+        assert_eq!(rule.memory_unit, Megabytes);
+        assert_eq!(rule.memory.warning.threshold, 512);
+        assert_eq!(rule.memory.critical.threshold, 1024);
+        assert!(rule.memory.enabled);
+    }
+
+    #[test]
+    fn preview_matches_polls_only_the_active_tab_and_discards_stale_results() {
         let mut editor = Editor::default();
         let mut settings = ResourceThresholdsSettings {
             rules: vec![ResourceThresholdsRule::new(r"C:\Apps\test.exe".into())],
             ..Default::default()
         };
         let saved = settings.clone();
-        let previous = Arc::new(());
         editor.update(&mut settings, Message::Edit(0));
-        editor.draft.as_mut().unwrap().match_preview = MatchPreview::Loading(previous.clone());
+        drop(editor.poll_preview_matches());
+        assert!(editor.draft.as_ref().unwrap().preview.pending.is_none());
+
+        drop(editor.open_preview_matches());
+        assert!(editor.preview_matches_open());
+        let previous = editor
+            .draft
+            .as_ref()
+            .unwrap()
+            .preview
+            .pending
+            .clone()
+            .unwrap();
 
         editor.update(&mut settings, Message::CancelRule);
         editor.update(&mut settings, Message::Edit(0));
-        let current = Arc::new(());
-        editor.draft.as_mut().unwrap().match_preview = MatchPreview::Loading(current.clone());
-        editor.complete_match_preview(previous, Err("obsolete".into()));
-        assert!(matches!(
-            &editor.draft.as_ref().unwrap().match_preview,
-            MatchPreview::Loading(request) if Arc::ptr_eq(request, &current)
-        ));
+        drop(editor.open_preview_matches());
+        let request = |editor: &Editor| {
+            editor
+                .draft
+                .as_ref()
+                .unwrap()
+                .preview
+                .pending
+                .clone()
+                .unwrap()
+        };
+        let current = request(&editor);
+        editor.complete_preview_matches(previous, Err("obsolete".into()));
+        drop(editor.poll_preview_matches());
+        assert!(Arc::ptr_eq(&request(&editor), &current));
 
-        editor.complete_match_preview(current, Ok(Vec::new()));
+        editor.complete_preview_matches(current.clone(), Ok(Arc::from([])));
+        drop(editor.poll_preview_matches());
+        assert!(!Arc::ptr_eq(&request(&editor), &current));
         assert!(matches!(
-            &editor.draft.as_ref().unwrap().match_preview,
-            MatchPreview::Loaded(Ok(rows)) if rows.is_empty()
+            &editor.draft.as_ref().unwrap().preview.result,
+            Some(Ok(rows)) if rows.is_empty()
         ));
+        editor.select_tab(ResourceThresholdsResource::Cpu);
+        assert!(!editor.preview_matches_open());
         assert_eq!(settings, saved);
     }
 
@@ -939,9 +1072,6 @@ mod tests {
         };
         let mut editor = Editor::default();
         editor.update(&mut settings, Message::Edit(0));
-        for resource in ResourceThresholdsResource::ALL {
-            editor.update(&mut settings, Message::ToggleMonitorSettings(resource));
-        }
         let mut renderer = iced::Renderer::new(design::typography::FONT, iced::Pixels(14.0));
         let bounds = Rectangle::with_size(Size::new(1400.0, 900.0));
         let physical = Size::new(2100, 1350);
@@ -1115,7 +1245,7 @@ mod tests {
         assert_eq!(settings.rules[0].memory.critical.threshold, 95);
         assert_eq!(
             settings.rules[0].cpu.critical.action,
-            ResourceThresholdsAction::None
+            ResourceThresholdsAction::Alert
         );
         assert_eq!(
             settings.rules[0].memory.critical.action,

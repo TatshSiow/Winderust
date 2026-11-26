@@ -327,6 +327,18 @@ fn resource_thresholds_settings_keep_supported_rules_and_reject_removed_options(
         crate::config::ResourceThresholdsAction::Terminate;
     settings.resource_thresholds.rules[0].memory.warning.action =
         crate::config::ResourceThresholdsAction::Restart;
+    settings.resource_thresholds.rules[0].memory_unit =
+        crate::config::ResourceThresholdsMemoryUnit::Megabytes;
+    settings.resource_thresholds.rules[0]
+        .memory
+        .warning
+        .threshold = 1_000;
+    settings.resource_thresholds.rules[0]
+        .memory
+        .critical
+        .threshold = 2_000;
+    settings.resource_thresholds.rules[1].cpu.warning.action =
+        crate::config::ResourceThresholdsAction::None;
     for seconds in [1, 3600] {
         settings.resource_thresholds.sustained_seconds = seconds;
         settings.sync_shared_settings_to_battery();
@@ -335,6 +347,7 @@ fn resource_thresholds_settings_keep_supported_rules_and_reject_removed_options(
     }
     let saved = settings.clone();
     let raw = toml::to_string(&saved).unwrap();
+    assert!(raw.contains("memory_unit = \"megabytes\""));
     for (original, unsupported, field) in [
         (
             "[[watchdog.rules]]",
@@ -353,11 +366,6 @@ fn resource_thresholds_settings_keep_supported_rules_and_reject_removed_options(
         ),
         (
             "memory_unit = \"percent\"",
-            "memory_unit = \"megabytes\"",
-            "megabytes",
-        ),
-        (
-            "memory_unit = \"percent\"",
             "memory_unit = \"private_commit_mb\"",
             "private_commit_mb",
         ),
@@ -367,6 +375,8 @@ fn resource_thresholds_settings_keep_supported_rules_and_reject_removed_options(
         let error = parse_toml_settings(&path, &unsupported).unwrap_err();
         assert!(error.contains(field), "{error}");
     }
+    let mismatched_unit = raw.replace("memory_unit = \"megabytes\"", "memory_unit = \"percent\"");
+    assert!(parse_toml_settings(&path, &mismatched_unit).is_err());
     for seconds in [0, 3601] {
         settings.resource_thresholds.sustained_seconds = seconds;
         settings.sync_shared_settings_to_battery();

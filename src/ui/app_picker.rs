@@ -114,19 +114,45 @@ pub(super) fn view_with_path_selection<'a, M: Clone + 'static>(
         .on_input_maybe(enabled.then_some(edit))
         .width(Length::Fill)
         .into();
+    rule_input(
+        Element::new(Picker {
+            input,
+            choices,
+            select,
+            browse,
+            enabled,
+            menu: None,
+        }),
+        (enabled && !query.is_empty()).then(|| edit(String::new())),
+        add,
+    )
+}
+
+pub(super) fn executable_name_input<M: Clone + 'static>(
+    value: &str,
+    edit: fn(String) -> M,
+    add: Option<M>,
+) -> Element<'static, M> {
+    rule_input(
+        widgets::text_input("app.exe", value)
+            .padding(widgets::SEARCH_INPUT_PADDING)
+            .on_input(edit)
+            .on_submit_maybe(add.clone())
+            .width(Length::Fill)
+            .into(),
+        (!value.is_empty()).then(|| edit(String::new())),
+        add,
+    )
+}
+
+fn rule_input<'a, M: Clone + 'static>(
+    input: Element<'a, M>,
+    clear: Option<M>,
+    add: Option<M>,
+) -> Element<'a, M> {
     container(
         row![
-            widgets::search_field(
-                Element::new(Picker {
-                    input,
-                    choices,
-                    select,
-                    browse,
-                    enabled,
-                    menu: None,
-                }),
-                (enabled && !query.is_empty()).then(|| edit(String::new())),
-            ),
+            widgets::search_field(input, clear),
             widgets::rule_add_button(add),
         ]
         .spacing(design::space::SMALL)

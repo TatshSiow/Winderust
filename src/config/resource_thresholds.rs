@@ -30,13 +30,47 @@ impl Default for ResourceThresholdsSettings {
 pub enum ResourceThresholdsMetric {
     CpuPercent,
     MemoryPercent,
+    MemoryMb,
 }
 
 impl ResourceThresholdsMetric {
+    pub(crate) fn maximum(self) -> u64 {
+        match self {
+            Self::CpuPercent | Self::MemoryPercent => 100,
+            Self::MemoryMb => 1_000_000,
+        }
+    }
+
     pub(crate) fn label_key(self) -> &'static str {
         match self {
             Self::CpuPercent => "resource_thresholds.cpu",
             Self::MemoryPercent => "resource_thresholds.memory_percent",
+            Self::MemoryMb => "resource_thresholds.memory_mb",
+        }
+    }
+
+    pub(crate) fn unit(self) -> &'static str {
+        match self {
+            Self::CpuPercent | Self::MemoryPercent => "%",
+            Self::MemoryMb => "MB",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResourceThresholdsMemoryUnit {
+    Percent,
+    Megabytes,
+}
+
+impl ResourceThresholdsMemoryUnit {
+    pub const ALL: [Self; 2] = [Self::Percent, Self::Megabytes];
+
+    pub fn metric(self) -> ResourceThresholdsMetric {
+        match self {
+            Self::Percent => ResourceThresholdsMetric::MemoryPercent,
+            Self::Megabytes => ResourceThresholdsMetric::MemoryMb,
         }
     }
 }
@@ -45,8 +79,15 @@ impl ResourceThresholdsMetric {
 #[serde(rename_all = "snake_case")]
 pub enum ResourceThresholdsAction {
     None,
-    Terminate,
+    Alert,
     Restart,
+    Terminate,
+}
+
+impl ResourceThresholdsAction {
+    pub(crate) fn mutates_process(self) -> bool {
+        matches!(self, Self::Restart | Self::Terminate)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -79,19 +120,19 @@ impl ResourceThresholdsMonitor {
             enabled,
             warning: ResourceThresholdsResponse {
                 threshold: 70,
-                action: ResourceThresholdsAction::None,
+                action: ResourceThresholdsAction::Alert,
             },
             critical: ResourceThresholdsResponse {
                 threshold: 90,
-                action: ResourceThresholdsAction::None,
+                action: ResourceThresholdsAction::Alert,
             },
         }
     }
 
-    pub(crate) fn thresholds_valid(&self) -> bool {
+    pub(crate) fn thresholds_valid(&self, metric: ResourceThresholdsMetric) -> bool {
         let warning = self.warning.threshold;
         let critical = self.critical.threshold;
-        0 < warning && warning < critical && critical <= 100
+        0 < warning && warning < critical && critical <= metric.maximum()
     }
 }
 
@@ -122,12 +163,7 @@ pub struct ResourceThresholdsRule {
     pub selector: ResourceThresholdsSelector,
     pub cpu: ResourceThresholdsMonitor,
     pub memory: ResourceThresholdsMonitor,
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum SavedMemoryUnit {
-    Percent,
+    pub memory_unit: ResourceThresholdsMemoryUnit,
 }
 
 // Explicit selector fields let the settings parser reject removed options.
@@ -141,7 +177,7 @@ struct SavedResourceThresholdsRule<S, M> {
     executable_path: Option<S>,
     #[serde(skip_serializing_if = "Option::is_none")]
     executable_name: Option<S>,
-    memory_unit: SavedMemoryUnit,
+    memory_unit: ResourceThresholdsMemoryUnit,
     cpu: M,
     memory: M,
 }
@@ -159,7 +195,7 @@ impl TryFrom<SavedResourceThresholdsRule<String, ResourceThresholdsMonitor>>
             notify,
             executable_path,
             executable_name,
-            memory_unit: SavedMemoryUnit::Percent,
+            memory_unit,
             cpu,
             memory,
         } = saved;
@@ -178,6 +214,7 @@ impl TryFrom<SavedResourceThresholdsRule<String, ResourceThresholdsMonitor>>
             selector,
             cpu,
             memory,
+            memory_unit,
         })
     }
 }
@@ -197,7 +234,7 @@ impl Serialize for ResourceThresholdsRule {
             notify: self.notify,
             executable_path,
             executable_name,
-            memory_unit: SavedMemoryUnit::Percent,
+            memory_unit: self.memory_unit,
             cpu: &self.cpu,
             memory: &self.memory,
         }
@@ -221,6 +258,7 @@ impl ResourceThresholdsRule {
             selector,
             cpu: ResourceThresholdsMonitor::new(true),
             memory: ResourceThresholdsMonitor::new(false),
+            memory_unit: ResourceThresholdsMemoryUnit::Percent,
         }
     }
 
@@ -231,11 +269,13 @@ impl ResourceThresholdsRule {
             selector,
             cpu,
             memory,
+            memory_unit,
         } = self;
         *enabled == other.enabled
             && *selector == other.selector
             && *cpu == other.cpu
             && *memory == other.memory
+            && *memory_unit == other.memory_unit
     }
 
     pub fn monitor(&self, resource: ResourceThresholdsResource) -> &ResourceThresholdsMonitor {
@@ -258,33 +298,43 @@ impl ResourceThresholdsRule {
     pub fn metric(&self, resource: ResourceThresholdsResource) -> ResourceThresholdsMetric {
         match resource {
             ResourceThresholdsResource::Cpu => ResourceThresholdsMetric::CpuPercent,
-            ResourceThresholdsResource::Memory => ResourceThresholdsMetric::MemoryPercent,
+            ResourceThresholdsResource::Memory => self.memory_unit.metric(),
         }
     }
 
-    pub fn allows_actions(&self) -> bool {
-        self.selector.exact_path().is_some()
+    pub fn allows_action(&self, action: ResourceThresholdsAction) -> bool {
+        !action.mutates_process() || self.selector.exact_path().is_some()
+    }
+
+    pub(crate) fn responds_to(&self, action: ResourceThresholdsAction) -> bool {
+        action != ResourceThresholdsAction::None && self.allows_action(action)
     }
 
     pub fn validate(&self) -> Result<(), String> {
         self.selector.validate()?;
-        if !self.allows_actions()
-            && ResourceThresholdsResource::ALL.into_iter().any(|resource| {
-                let monitor = self.monitor(resource);
-                monitor.warning.action != ResourceThresholdsAction::None
-                    || monitor.critical.action != ResourceThresholdsAction::None
-            })
-        {
+        if ResourceThresholdsResource::ALL.into_iter().any(|resource| {
+            let monitor = self.monitor(resource);
+            !self.allows_action(monitor.warning.action)
+                || !self.allows_action(monitor.critical.action)
+        }) {
             return Err(
                 "Resource Thresholds requires an exact executable path for Terminate or Restart."
                     .into(),
             );
         }
-        if (!self.cpu.enabled && !self.memory.enabled)
-            || (self.cpu.enabled && !self.cpu.thresholds_valid())
-            || (self.memory.enabled && !self.memory.thresholds_valid())
-        {
-            return Err("Resource Thresholds requires an enabled monitor and 0 < warning < critical <= 100 for its thresholds.".into());
+        if !self.cpu.enabled && !self.memory.enabled {
+            return Err("Resource Thresholds requires an enabled monitor.".into());
+        }
+        for resource in ResourceThresholdsResource::ALL {
+            let monitor = self.monitor(resource);
+            let metric = self.metric(resource);
+            if monitor.enabled && !monitor.thresholds_valid(metric) {
+                return Err(format!(
+                    "Resource Thresholds requires 0 < warning < critical <= {} for {} thresholds.",
+                    metric.maximum(),
+                    metric.unit(),
+                ));
+            }
         }
         Ok(())
     }
@@ -294,7 +344,6 @@ impl ResourceThresholdsSettings {
     pub(crate) fn same_monitoring_policy(&self, other: &Self) -> bool {
         self.enabled == other.enabled
             && self.sustained_seconds == other.sustained_seconds
-            && self.notify == other.notify
             && self.rules.len() == other.rules.len()
             && self
                 .rules
@@ -324,6 +373,8 @@ impl ResourceThresholdsSettings {
                     && ResourceThresholdsResource::ALL.into_iter().any(|resource| {
                         let monitor = rule.monitor(resource);
                         monitor.enabled
+                            && (rule.responds_to(monitor.warning.action)
+                                || rule.responds_to(monitor.critical.action))
                     })
             })
     }
@@ -336,8 +387,8 @@ mod tests {
     #[test]
     fn both_resources_round_trip_with_independent_thresholds_and_actions() {
         let mut rule = ResourceThresholdsRule::new(r"C:\Apps\test.exe".into());
-        assert_eq!(rule.cpu.warning.action, ResourceThresholdsAction::None);
-        assert_eq!(rule.memory.critical.action, ResourceThresholdsAction::None);
+        assert_eq!(rule.cpu.warning.action, ResourceThresholdsAction::Alert);
+        assert_eq!(rule.memory.critical.action, ResourceThresholdsAction::Alert);
         rule.memory.enabled = true;
         rule.memory.warning.threshold = 40;
         rule.memory.critical.threshold = 60;
@@ -376,6 +427,10 @@ mod tests {
             toml::from_str::<ResourceThresholdsSettings>(&raw).unwrap(),
             settings
         );
+        settings.notify = true;
+        settings.rules[0].memory.warning.action = ResourceThresholdsAction::None;
+        settings.rules[0].memory.critical.action = ResourceThresholdsAction::None;
+        assert!(!settings.notifications_required());
         settings.sustained_seconds = 0;
         assert!(settings.validate().is_err());
     }
@@ -399,7 +454,7 @@ mod tests {
     }
 
     #[test]
-    fn name_rule_round_trip_requires_one_flat_selector_and_notification_only() {
+    fn name_rule_round_trip_requires_one_flat_selector_and_no_process_actions() {
         let mut rule =
             ResourceThresholdsRule::with_selector(ResourceThresholdsSelector::ExactName {
                 executable_name: "Worker Tool.EXE".to_owned(),
@@ -408,6 +463,7 @@ mod tests {
         let raw = toml::to_string(&rule).unwrap();
         let name_field = "executable_name = \"Worker Tool.EXE\"\n";
         assert!(raw.contains(name_field));
+        assert!(raw.contains("action = \"alert\""));
         assert!(!raw.contains("executable_path"));
         assert_eq!(
             toml::from_str::<ResourceThresholdsRule>(&raw).unwrap(),

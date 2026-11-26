@@ -14,7 +14,7 @@ use crate::{
     power::PowerPlan,
     ui::process_rules::*,
 };
-use iced::widget::{column, row, text};
+use iced::widget::{column, text};
 use iced::{Element, Fill};
 use rust_i18n::t;
 
@@ -164,24 +164,6 @@ impl Editor {
         }
     }
 
-    fn name_input(&self, can_add: bool) -> Element<'static, Message> {
-        let add = can_add.then_some(Message::AddName);
-        column![
-            widgets::setting_title("common.executable_name"),
-            row![
-                widgets::text_input("app.exe", &self.name)
-                    .on_input(Message::Name)
-                    .on_submit_maybe(add.clone())
-                    .width(Fill),
-                widgets::rule_add_button(add),
-            ]
-            .align_y(iced::Center)
-            .spacing(design::space::SMALL),
-        ]
-        .spacing(design::space::SMALL)
-        .into()
-    }
-
     pub(super) fn view<'a>(
         &'a self,
         kind: Kind,
@@ -211,7 +193,11 @@ impl Editor {
                 ),]
                 .spacing(super::widgets::CARD_GAP);
                 let input = if self.match_by == MatchBy::ExecutableName {
-                    self.name_input($can_add_name(feature, &self.name))
+                    app_picker::executable_name_input(
+                        &self.name,
+                        Message::Name,
+                        $can_add_name(feature, &self.name).then_some(Message::AddName),
+                    )
                 } else {
                     let can_add = $addable_path(feature, exact_path_input(&self.path)).is_some();
                     let mut picker = column![app_picker::view_with_path_selection(
@@ -300,11 +286,11 @@ impl Editor {
                 ));
                 let preview = match kind {
                     Kind::Focus => PreviewMessage::OpenFocus,
-                    Kind::RunningApp => PreviewMessage::Load,
+                    Kind::RunningApp => PreviewMessage::OpenRunningApp,
                 };
                 let heading = widgets::setting_row(
                     "common.rules",
-                    widgets::action_button(t!("power_plan_control.preview").to_string())
+                    widgets::action_button(t!("common.preview_matches").to_string())
                         .style(widgets::secondary_button)
                         .on_press_maybe(
                             (!feature.rules.is_empty()).then_some(Message::Preview(preview)),

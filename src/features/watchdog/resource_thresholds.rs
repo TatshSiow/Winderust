@@ -6,8 +6,8 @@ use std::{
 
 use crate::{
     config::{
-        ResourceThresholdsAction, ResourceThresholdsMetric, ResourceThresholdsResource,
-        ResourceThresholdsResponse, ResourceThresholdsSelector, ResourceThresholdsSettings,
+        ResourceThresholdsMetric, ResourceThresholdsResource, ResourceThresholdsResponse,
+        ResourceThresholdsSelector, ResourceThresholdsSettings,
     },
     cpu::{process_cpu_usage_batch, ProcessCpuSample},
     foreground::{
@@ -282,8 +282,13 @@ impl ResourceThresholdsManager {
                 *path = None;
             }
         }
-        let total_memory_required =
-            !samples.is_empty() && matches!(sampling, ProcessResourceSampling::CpuAndMemory);
+        let total_memory_required = !samples.is_empty()
+            && settings.rules.iter().any(|rule| {
+                rule.enabled
+                    && rule.memory.enabled
+                    && rule.metric(ResourceThresholdsResource::Memory)
+                        == ResourceThresholdsMetric::MemoryPercent
+            });
         let total_memory = total_memory_required
             .then(|| crate::backend::dashboard_metrics::sample_memory_usage().total_physical_bytes)
             .flatten();
@@ -417,11 +422,6 @@ impl ResourceThresholdsManager {
                 states.insert(key, state);
                 continue;
             };
-            let allows_actions = rule.allows_actions();
-            let responds = |response: &ResourceThresholdsResponse| {
-                settings.notify
-                    || (allows_actions && response.action != ResourceThresholdsAction::None)
-            };
             let mut alerting = false;
             let mut skipped = false;
             for (resource, thresholds) in ResourceThresholdsResource::ALL
@@ -434,35 +434,32 @@ impl ResourceThresholdsManager {
                 }
                 let metric = rule.metric(resource);
                 // Every member needs a valid sample; never evaluate a partial app total.
-                let value = matched.iter().try_fold(0.0, |total, (process, sample)| {
-                    metric_value(
-                        metric,
-                        || {
-                            let previous = previous_members
-                                .get(&(process.id, sample.creation_time))
-                                .copied()
-                                .flatten()?;
-                            cpu_usage(previous, sample.cpu)
-                        },
-                        sample,
-                        total_memory,
-                    )
-                    .map(|value| total + value)
-                });
+                let value = combined_metric_value(
+                    metric,
+                    &matched,
+                    |process, sample| {
+                        let previous = previous_members
+                            .get(&(process.id, sample.creation_time))
+                            .copied()
+                            .flatten()?;
+                        cpu_usage(previous, sample.cpu)
+                    },
+                    total_memory,
+                );
                 if let Some(value) = value.filter(|value| value.is_finite() && *value >= 0.0) {
                     let value = if metric == ResourceThresholdsMetric::CpuPercent {
                         value.min(100.0)
                     } else {
                         value
                     };
-                    let critical = responds(&monitor.critical)
+                    let critical = rule.responds_to(monitor.critical.action)
                         && thresholds.critical.observe(
                             value,
                             monitor.critical.threshold,
                             delay,
                             now,
                         );
-                    let warning_enabled = responds(&monitor.warning);
+                    let warning_enabled = rule.responds_to(monitor.warning.action);
                     let warning = warning_enabled
                         && thresholds
                             .warning
@@ -471,7 +468,12 @@ impl ResourceThresholdsManager {
                         if critical && warning_enabled {
                             thresholds.warning.fired = true;
                         }
-                        let targets = if allows_actions {
+                        let response = if critical {
+                            &monitor.critical
+                        } else {
+                            &monitor.warning
+                        };
+                        let targets = if response.action.mutates_process() {
                             matched
                                 .iter()
                                 .map(|(process, sample)| ProcessActionTarget {
@@ -486,14 +488,9 @@ impl ResourceThresholdsManager {
                         } else {
                             Vec::new()
                         };
-                        let response = if critical {
-                            &monitor.critical
-                        } else {
-                            &monitor.warning
-                        };
                         events.push(ResourceThresholdsEvent {
                             rule_index: key.0,
-                            name: if allows_actions {
+                            name: if rule.selector.exact_path().is_some() {
                                 first.name.clone()
                             } else {
                                 key.1.display().to_string()
@@ -505,14 +502,7 @@ impl ResourceThresholdsManager {
                             metric,
                             value,
                             notify: settings.notify && rule.notify,
-                            response: ResourceThresholdsResponse {
-                                threshold: response.threshold,
-                                action: if allows_actions {
-                                    response.action
-                                } else {
-                                    ResourceThresholdsAction::None
-                                },
-                            },
+                            response: response.clone(),
                         });
                     }
                     alerting |= thresholds.warning.fired || thresholds.critical.fired;
@@ -565,25 +555,39 @@ fn sampling_mode(settings: &ResourceThresholdsSettings) -> ProcessResourceSampli
     }
 }
 
-fn metric_value(
+fn combined_metric_value(
     metric: ResourceThresholdsMetric,
-    cpu_usage: impl FnOnce() -> Option<f32>,
-    current: &ProcessResourceSample,
+    members: &[(&ProcessInfo, &ProcessResourceSample)],
+    mut cpu_usage: impl FnMut(&ProcessInfo, &ProcessResourceSample) -> Option<f32>,
     total_memory: Option<u64>,
 ) -> Option<f64> {
     match metric {
-        ResourceThresholdsMetric::CpuPercent => cpu_usage().map(f64::from),
-        ResourceThresholdsMetric::MemoryPercent => current
-            .working_set_bytes
-            .zip(total_memory.filter(|total| *total > 0))
-            .map(|(bytes, total)| bytes as f64 / total as f64 * 100.0),
+        ResourceThresholdsMetric::CpuPercent => {
+            members.iter().try_fold(0.0, |total, (process, sample)| {
+                Some(total + f64::from(cpu_usage(process, sample)?))
+            })
+        }
+        ResourceThresholdsMetric::MemoryPercent | ResourceThresholdsMetric::MemoryMb => {
+            let bytes = members.iter().try_fold(0_u64, |total, (_, sample)| {
+                total.checked_add(sample.working_set_bytes?)
+            })? as f64;
+            if metric == ResourceThresholdsMetric::MemoryMb {
+                Some(bytes / 1_000_000.0)
+            } else {
+                total_memory
+                    .filter(|total| *total > 0)
+                    .map(|total| bytes / total as f64 * 100.0)
+            }
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::ResourceThresholdsRule;
+    use crate::config::{
+        ResourceThresholdsAction, ResourceThresholdsMemoryUnit, ResourceThresholdsRule,
+    };
 
     impl ResourceThresholdsManager {
         fn evaluate(
@@ -768,7 +772,7 @@ mod tests {
     }
 
     #[test]
-    fn rule_notification_edits_preserve_qualification_actions_and_incidents() {
+    fn notification_edits_preserve_qualification_actions_and_incidents() {
         let mut manager = ResourceThresholdsManager::default();
         let mut settings = settings();
         settings.rules[0].memory.critical.action = ResourceThresholdsAction::Restart;
@@ -778,9 +782,14 @@ mod tests {
         assert!(tick(&mut manager, &settings, &process, start, 0, Some(750)).is_empty());
         settings.rules[0].notify = false;
         let warning = tick(&mut manager, &settings, &process, start, 2, Some(750));
-        assert!(matches!(&warning[..], [event] if !event.critical && !event.notify));
+        assert!(matches!(&warning[..], [event] if !event.critical
+            && !event.notify
+            && event.response.action == ResourceThresholdsAction::Alert
+            && event.targets.is_empty()));
 
+        settings.rules[0].notify = true;
         assert!(tick(&mut manager, &settings, &process, start, 3, Some(950)).is_empty());
+        settings.notify = false;
         let critical = tick(&mut manager, &settings, &process, start, 5, Some(950));
         assert!(matches!(&critical[..], [event] if event.critical && !event.notify));
         assert_eq!(
@@ -788,7 +797,7 @@ mod tests {
             ResourceThresholdsAction::Restart
         );
 
-        settings.rules[0].notify = true;
+        settings.notify = true;
         assert!(tick(&mut manager, &settings, &process, start, 6, Some(950)).is_empty());
         assert!(tick(&mut manager, &settings, &process, start, 7, Some(500)).is_empty());
         assert!(tick(&mut manager, &settings, &process, start, 8, Some(950)).is_empty());
@@ -801,6 +810,7 @@ mod tests {
         let mut manager = ResourceThresholdsManager::default();
         let mut settings = settings();
         settings.notify = false;
+        settings.rules[0].memory.warning.action = ResourceThresholdsAction::None;
         settings.rules[0].memory.critical.action = ResourceThresholdsAction::Terminate;
         let process = process();
         let start = Instant::now();
@@ -841,7 +851,7 @@ mod tests {
         let warning = tick(&mut manager, &settings, &process, start, 2, Some(750));
         assert_eq!(warning.len(), 1);
         assert!(!warning[0].critical);
-        assert_eq!(warning[0].response.action, ResourceThresholdsAction::None);
+        assert_eq!(warning[0].response.action, ResourceThresholdsAction::Alert);
         assert!(warning[0].notify);
         assert!(tick(&mut manager, &settings, &process, start, 3, Some(950)).is_empty());
         assert!(tick(&mut manager, &settings, &process, start, 4, Some(950)).is_empty());
@@ -933,7 +943,7 @@ mod tests {
         for second in 20..=22 {
             assert!(tick(&mut manager, &settings, &process, start, second, Some(950)).is_empty());
         }
-        settings.notify = false;
+        settings.rules[0].memory.warning.action = ResourceThresholdsAction::None;
         assert!(tick(&mut manager, &settings, &process, start, 23, Some(950)).is_empty());
         let mut observations = CycleObservations::default();
         let (status, events) = manager.update(&settings, false, &mut observations);
@@ -982,7 +992,7 @@ mod tests {
         assert_eq!(events.len(), 2);
         assert_eq!(events[0].metric, ResourceThresholdsMetric::CpuPercent);
         assert!(!events[0].critical);
-        assert_eq!(events[0].response.action, ResourceThresholdsAction::None);
+        assert_eq!(events[0].response.action, ResourceThresholdsAction::Alert);
         assert_eq!(events[1].metric, ResourceThresholdsMetric::MemoryPercent);
         assert!(events[1].critical);
         assert_eq!(
@@ -995,7 +1005,7 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].metric, ResourceThresholdsMetric::CpuPercent);
         assert!(events[0].critical);
-        assert_eq!(events[0].response.action, ResourceThresholdsAction::None);
+        assert_eq!(events[0].response.action, ResourceThresholdsAction::Alert);
     }
 
     #[test]
@@ -1005,25 +1015,30 @@ mod tests {
         let mut sample = sample(&process, now, Some(512 * 1_000_000))[&process.id];
         sample.private_commit_bytes = Some(384_500_000);
         assert_eq!(
-            metric_value(
+            combined_metric_value(
                 ResourceThresholdsMetric::MemoryPercent,
-                || None,
-                &sample,
+                &[(&process, &sample)],
+                |_, _| None,
                 Some(1024 * 1_000_000)
             ),
             Some(50.0)
         );
         assert_eq!(
-            metric_value(
+            combined_metric_value(
                 ResourceThresholdsMetric::MemoryPercent,
-                || None,
-                &sample,
+                &[(&process, &sample)],
+                |_, _| None,
                 Some(0)
             ),
             None
         );
         assert_eq!(
-            metric_value(ResourceThresholdsMetric::CpuPercent, || None, &sample, None),
+            combined_metric_value(
+                ResourceThresholdsMetric::CpuPercent,
+                &[(&process, &sample)],
+                |_, _| None,
+                None
+            ),
             None
         );
         let previous = sample.cpu;
@@ -1033,20 +1048,20 @@ mod tests {
             .map(usize::from)
             .unwrap_or(1);
         let mut cpu_usage = process_cpu_usage_batch();
-        let actual = metric_value(
+        let actual = combined_metric_value(
             ResourceThresholdsMetric::CpuPercent,
-            || cpu_usage(previous, sample.cpu),
-            &sample,
+            &[(&process, &sample)],
+            |_, sample| cpu_usage(previous, sample.cpu),
             None,
         )
         .unwrap();
         assert!((actual - 50.0 / cpus as f64).abs() < 0.001);
         sample.cpu.cpu_time_100ns = 0;
         assert_eq!(
-            metric_value(
+            combined_metric_value(
                 ResourceThresholdsMetric::CpuPercent,
-                || cpu_usage(previous, sample.cpu),
-                &sample,
+                &[(&process, &sample)],
+                |_, sample| cpu_usage(previous, sample.cpu),
                 None,
             ),
             None
@@ -1054,11 +1069,52 @@ mod tests {
     }
 
     #[test]
+    fn switching_to_working_set_mb_restarts_the_timer_and_qualifies_at_exact_combined_bytes() {
+        let mut settings = settings();
+        let mut manager = ResourceThresholdsManager::default();
+        let processes: [_; 3] = std::array::from_fn(|offset| {
+            let mut member = process();
+            member.id += offset as u32;
+            member
+        });
+        let start = Instant::now();
+        let mut observe = |settings: &ResourceThresholdsSettings, second, total_memory| {
+            let now = start + Duration::from_secs(second);
+            // Divide the integer sum to avoid rounding an exact threshold down.
+            let samples = processes
+                .iter()
+                .zip([191_722, 66_664_431, 3_143_847])
+                .flat_map(|(process, bytes)| sample(process, now, Some(bytes)))
+                .collect();
+            manager
+                .evaluate(settings, &processes, &samples, total_memory, now)
+                .1
+        };
+
+        for second in 0..2 {
+            assert!(observe(&settings, second, Some(80_000_000)).is_empty());
+        }
+        settings.rules[0].memory_unit = ResourceThresholdsMemoryUnit::Megabytes;
+        assert!(settings.validate().is_ok());
+        for second in 2..4 {
+            assert!(observe(&settings, second, None).is_empty());
+        }
+        let events = observe(&settings, 4, None);
+        assert_eq!(events.len(), 1);
+        let event = &events[0];
+        assert_eq!(event.metric, ResourceThresholdsMetric::MemoryMb);
+        assert_eq!(event.value, 70.0);
+        assert_eq!(event.process_count, 3);
+        assert!(!event.critical);
+        assert!(observe(&settings, 5, None).is_empty());
+    }
+
+    #[test]
     fn disabled_critical_response_does_not_mask_an_enabled_warning() {
         let mut manager = ResourceThresholdsManager::default();
         let mut settings = settings();
-        settings.notify = false;
         settings.rules[0].memory.warning.action = ResourceThresholdsAction::Terminate;
+        settings.rules[0].memory.critical.action = ResourceThresholdsAction::None;
         let process = process();
         let start = Instant::now();
         for second in 0..2 {
@@ -1067,7 +1123,7 @@ mod tests {
         let events = tick(&mut manager, &settings, &process, start, 2, Some(950));
         assert_eq!(events.len(), 1);
         assert!(!events[0].critical);
-        assert!(!events[0].notify);
+        assert!(events[0].notify);
         assert_eq!(
             events[0].response.action,
             ResourceThresholdsAction::Terminate
@@ -1117,15 +1173,6 @@ mod tests {
         assert_eq!(events.len(), 2);
         assert_eq!(events[0].targets[0].id, processes[0].id);
         assert_eq!(events[1].targets[0].id, processes[1].id);
-        settings.notify = false;
-        assert!(observe(&settings, 9).is_empty());
-        assert!(observe(&settings, 11).is_empty());
-        let events = observe(&settings, 12);
-        assert_eq!(events.len(), 2);
-        assert!(events
-            .iter()
-            .all(|event| !event.notify
-                && event.response.action == ResourceThresholdsAction::Terminate));
     }
 
     #[test]
@@ -1157,6 +1204,14 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert!(!events[0].critical);
         assert_eq!(events[0].value, 80.0);
+        assert_eq!(events[0].response.action, ResourceThresholdsAction::Alert);
+        assert!(events[0].targets.is_empty());
+        assert!(observe(3, 48).1.is_empty());
+        assert!(observe(4, 48).1.is_empty());
+        let (_, events) = observe(5, 48);
+        assert_eq!(events.len(), 1);
+        assert!(events[0].critical);
+        assert_eq!(events[0].value, 96.0);
         assert_eq!(
             events[0]
                 .targets
@@ -1165,12 +1220,6 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![(processes[0].id, 10), (processes[1].id, 20)]
         );
-        assert!(observe(3, 48).1.is_empty());
-        assert!(observe(4, 48).1.is_empty());
-        let (_, events) = observe(5, 48);
-        assert_eq!(events.len(), 1);
-        assert!(events[0].critical);
-        assert_eq!(events[0].value, 96.0);
         assert_eq!(
             events[0].response.action,
             ResourceThresholdsAction::Terminate
@@ -1241,7 +1290,7 @@ mod tests {
     }
 
     #[test]
-    fn notification_only_rules_cannot_dispatch_process_actions() {
+    fn name_rules_can_alert_and_cannot_dispatch_process_actions() {
         let mut settings = settings();
         settings.rules[0].selector = ResourceThresholdsSelector::ExactName {
             executable_name: "test.exe".into(),
@@ -1254,8 +1303,8 @@ mod tests {
         assert!(tick(&mut manager, &settings, &process, start, 1, Some(950)).is_empty());
         let events = tick(&mut manager, &settings, &process, start, 2, Some(950));
         assert_eq!(events.len(), 1);
-        assert!(events[0].notify && events[0].critical);
-        assert_eq!(events[0].response.action, ResourceThresholdsAction::None);
+        assert!(events[0].notify && !events[0].critical);
+        assert_eq!(events[0].response.action, ResourceThresholdsAction::Alert);
         assert!(events[0].targets.is_empty());
 
         settings.notify = false;

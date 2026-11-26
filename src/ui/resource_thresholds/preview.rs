@@ -16,20 +16,31 @@ pub(crate) struct MatchRow {
     pub(super) icon: Option<Arc<image::Handle>>,
 }
 
-pub(super) fn load(selector: &ResourceThresholdsSelector) -> Result<Vec<MatchRow>, String> {
+pub(crate) type MatchResult = Result<Arc<[MatchRow]>, String>;
+
+pub(super) fn load(selector: &ResourceThresholdsSelector, previous: &[MatchRow]) -> MatchResult {
     let mut observations = CycleObservations::default();
     let processes = observations.processes_for_path_matching(|process| {
         selector_basename_matches(selector, &process.name)
     })?;
     let mut matches = observed_matches(selector, &processes, std::process::id());
-    let mut icons = HashMap::new();
+    let mut icons = previous
+        .iter()
+        .filter_map(|entry| {
+            entry
+                .icon
+                .clone()
+                .map(|icon| (entry.path.clone(), Some(icon)))
+        })
+        .collect::<HashMap<_, _>>();
+    // An unchanged executable can reuse its image handle across process polls.
     for entry in &mut matches {
         entry.icon = icons
             .entry(entry.path.clone())
             .or_insert_with(|| crate::process_icon::load_process_icon(&entry.path))
             .clone();
     }
-    Ok(matches)
+    Ok(matches.into())
 }
 
 fn observed_matches(

@@ -8,7 +8,7 @@ use iced::{Element, Fill, Task};
 use rust_i18n::t;
 
 use crate::{
-    config::{ByRunningAppRule, ByRunningAppSettings, Settings},
+    config::{ByFocusSettings, ByRunningAppRule, ByRunningAppSettings, Settings},
     features::power_plan_control::by_running_app::{
         preview_matches, rule_name, ByRunningAppPreview, ByRunningAppPreviewMatch,
         ByRunningAppPreviewRow,
@@ -23,14 +23,11 @@ use crate::{
 
 #[derive(Debug, Clone)]
 pub(crate) enum PreviewMessage {
-    Load,
-    Loaded(
-        Arc<ByRunningAppSettings>,
-        Result<Arc<ByRunningAppPreview>, String>,
-    ),
+    OpenRunningApp,
+    Poll,
+    Loaded(Arc<()>, Result<Arc<ByRunningAppPreview>, String>),
     OpenFocus,
     FocusPath(String),
-    CheckFocus,
     FocusChecked(Arc<PathBuf>, Result<Vec<FocusMatch>, String>),
     Close,
 }
@@ -43,6 +40,7 @@ pub(super) struct Preview {
 enum OpenPreview {
     RunningApp {
         settings: Arc<ByRunningAppSettings>,
+        request: Option<Arc<()>>,
         result: Option<Result<Arc<ByRunningAppPreview>, String>>,
     },
     Focus(FocusPreview),
@@ -81,34 +79,31 @@ impl Preview {
         message: PreviewMessage,
     ) -> Task<PreviewMessage> {
         match message {
-            PreviewMessage::Load => {
-                if matches!(
-                    self.open,
-                    Some(OpenPreview::RunningApp { result: None, .. })
-                ) {
+            PreviewMessage::OpenRunningApp => {
+                if self.is_open() {
                     return Task::none();
                 }
-                let request = Arc::new(settings.by_running_app.clone());
                 self.open = Some(OpenPreview::RunningApp {
-                    settings: Arc::clone(&request),
+                    settings: Arc::new(settings.by_running_app.clone()),
+                    request: None,
                     result: None,
                 });
-                let snapshot = Arc::clone(&request);
-                return tasks::run(move || preview_matches(&snapshot)).map(move |result| {
-                    PreviewMessage::Loaded(
-                        Arc::clone(&request),
-                        result.and_then(|result| result).map(Arc::new),
-                    )
-                });
+                return self.poll_running_app();
             }
+            PreviewMessage::Poll => return self.poll_running_app(),
             PreviewMessage::Loaded(request, result) => {
                 if let Some(OpenPreview::RunningApp {
-                    settings,
-                    result: pending,
+                    request: pending,
+                    result: completed,
+                    ..
                 }) = &mut self.open
                 {
-                    if pending.is_none() && Arc::ptr_eq(settings, &request) {
-                        *pending = Some(result);
+                    if pending
+                        .as_ref()
+                        .is_some_and(|active| Arc::ptr_eq(active, &request))
+                    {
+                        *pending = None;
+                        *completed = Some(result);
                     }
                 }
             }
@@ -119,34 +114,9 @@ impl Preview {
                 if let Some(OpenPreview::Focus(focus)) = &mut self.open {
                     if focus.path != path {
                         focus.path = path;
-                        focus.check = None;
+                        return focus.check_path(&settings.by_focus);
                     }
                 }
-            }
-            PreviewMessage::CheckFocus => {
-                let Some(OpenPreview::Focus(focus)) = &mut self.open else {
-                    return Task::none();
-                };
-                let Some(path) = focus.checkable_path() else {
-                    return Task::none();
-                };
-                let request = Arc::new(path.to_owned());
-                focus.check = Some(FocusCheck {
-                    path: Arc::clone(&request),
-                    result: None,
-                });
-                let path = Arc::clone(&request);
-                let settings = settings.by_focus.clone();
-                return tasks::run(move || {
-                    matching_by_focus_rules(&settings, &path)
-                        .map(|(rule_index, rule, plan_guid)| FocusMatch {
-                            rule_index,
-                            rule: rule.selector.value().to_owned(),
-                            plan_guid: plan_guid.to_owned(),
-                        })
-                        .collect()
-                })
-                .map(move |result| PreviewMessage::FocusChecked(Arc::clone(&request), result));
             }
             PreviewMessage::FocusChecked(request, result) => {
                 if let Some(OpenPreview::Focus(focus)) = &mut self.open {
@@ -154,6 +124,7 @@ impl Preview {
                         check.result.is_none() && Arc::ptr_eq(&check.path, &request)
                     }) {
                         check.result = Some(result);
+                        return focus.check_path(&settings.by_focus);
                     }
                 }
             }
@@ -162,9 +133,32 @@ impl Preview {
         Task::none()
     }
 
+    fn poll_running_app(&mut self) -> Task<PreviewMessage> {
+        let Some(OpenPreview::RunningApp {
+            settings, request, ..
+        }) = &mut self.open
+        else {
+            return Task::none();
+        };
+        if request.is_some() {
+            return Task::none();
+        }
+        let id = Arc::new(());
+        *request = Some(Arc::clone(&id));
+        let snapshot = Arc::clone(settings);
+        tasks::run(move || preview_matches(&snapshot)).map(move |result| {
+            PreviewMessage::Loaded(
+                Arc::clone(&id),
+                result.and_then(|result| result).map(Arc::new),
+            )
+        })
+    }
+
     pub(super) fn view(&self, plans: &[PowerPlan]) -> Option<Element<'_, PreviewMessage>> {
         let (settings, result) = match self.open.as_ref()? {
-            OpenPreview::RunningApp { settings, result } => (settings, result),
+            OpenPreview::RunningApp {
+                settings, result, ..
+            } => (settings, result),
             OpenPreview::Focus(focus) => return Some(focus.view(plans)),
         };
         let mut body = column![text(t!("by_running_app.preview_scope").to_string())
@@ -217,53 +211,82 @@ impl Preview {
 
         Some(widgets::modal_frame(
             widgets::heading(
-                t!("power_plan_control.preview").to_string(),
+                t!("common.preview_matches").to_string(),
                 design::typography::SECTION,
             ),
             scrollable(body).height(Fill),
-            row![
-                widgets::action_button(t!("settings.refresh").to_string())
-                    .style(widgets::secondary_button)
-                    .on_press_maybe(result.is_some().then_some(PreviewMessage::Load)),
-                widgets::action_button(t!("common.done").to_string())
-                    .style(widgets::primary_button)
-                    .on_press(PreviewMessage::Close),
-            ]
-            .spacing(design::space::SMALL),
+            widgets::action_button(t!("common.done").to_string())
+                .style(widgets::primary_button)
+                .on_press(PreviewMessage::Close),
             (760, 520),
         ))
     }
 }
 
 impl FocusPreview {
-    fn checkable_path(&self) -> Option<&Path> {
+    fn executable_path(&self) -> Option<&Path> {
+        power_rule_path(&self.path).map(Path::new)
+    }
+
+    fn check_path(&mut self, settings: &ByFocusSettings) -> Task<PreviewMessage> {
         if self
             .check
             .as_ref()
             .is_some_and(|check| check.result.is_none())
         {
-            return None;
+            return Task::none();
         }
-        power_rule_path(&self.path).map(Path::new)
+        let Some(path) = self.executable_path() else {
+            self.check = None;
+            return Task::none();
+        };
+        if self
+            .check
+            .as_ref()
+            .is_some_and(|check| check.path.as_path() == path)
+        {
+            return Task::none();
+        }
+        let request = Arc::new(path.to_owned());
+        self.check = Some(FocusCheck {
+            path: Arc::clone(&request),
+            result: None,
+        });
+        let path = Arc::clone(&request);
+        let settings = settings.clone();
+        tasks::run(move || {
+            matching_by_focus_rules(&settings, &path)
+                .map(|(rule_index, rule, plan_guid)| FocusMatch {
+                    rule_index,
+                    rule: rule.selector.value().to_owned(),
+                    plan_guid: plan_guid.to_owned(),
+                })
+                .collect()
+        })
+        .map(move |result| PreviewMessage::FocusChecked(Arc::clone(&request), result))
     }
 
     fn view(&self, plans: &[PowerPlan]) -> Element<'_, PreviewMessage> {
-        let check = self.checkable_path().map(|_| PreviewMessage::CheckFocus);
+        let path = self.executable_path();
         let mut body = column![
             text(t!("by_focus.preview_scope").to_string())
                 .style(text::secondary)
                 .wrapping(text::Wrapping::WordOrGlyph),
             widgets::text_input(&t!("common.executable_path"), &self.path)
                 .on_input(PreviewMessage::FocusPath)
-                .on_submit_maybe(check.clone())
         ]
         .spacing(widgets::CARD_GAP);
-        if check.is_none() && self.check.is_none() && !self.path.trim().is_empty() {
+        if path.is_none() && !self.path.trim().is_empty() {
             body = body.push(app_picker::path_format_hint());
         }
         let mut max_height = 280;
-        if let Some(pending) = &self.check {
-            body = match &pending.result {
+        if let Some(path) = path {
+            let result = self
+                .check
+                .as_ref()
+                .filter(|check| check.path.as_path() == path)
+                .and_then(|check| check.result.as_ref());
+            body = match result {
                 None => body.push(
                     text(t!("common.loading").to_string())
                         .style(text::secondary)
@@ -284,19 +307,13 @@ impl FocusPreview {
         }
         widgets::modal_frame(
             widgets::heading(
-                t!("power_plan_control.preview").to_string(),
+                t!("common.preview_matches").to_string(),
                 design::typography::SECTION,
             ),
             scrollable(body).height(Fill),
-            row![
-                widgets::action_button(t!("by_focus.preview_check").to_string())
-                    .style(widgets::secondary_button)
-                    .on_press_maybe(check),
-                widgets::action_button(t!("common.done").to_string())
-                    .style(widgets::primary_button)
-                    .on_press(PreviewMessage::Close),
-            ]
-            .spacing(design::space::SMALL),
+            widgets::action_button(t!("common.done").to_string())
+                .style(widgets::primary_button)
+                .on_press(PreviewMessage::Close),
             (640, max_height),
         )
     }
@@ -452,37 +469,54 @@ fn rule_matches<'a>(
 }
 
 #[test]
-fn stale_result_cannot_finish_a_reopened_preview() {
+fn running_app_preview_keeps_rows_during_polling_and_rejects_a_closed_requests_result() {
     let settings = Settings::default();
-    let first_request = Arc::new(settings.by_running_app.clone());
+    let snapshot = Arc::new(settings.by_running_app.clone());
+    let closed_request = Arc::new(());
+    let active_request = Arc::new(());
+    let last_result = Arc::new(ByRunningAppPreview {
+        rules: Vec::new(),
+        winner: None,
+    });
+
+    let mut closed = Preview::default();
+    let _ = closed.update(&settings, PreviewMessage::Poll);
+    assert!(!closed.is_open());
+
     let mut preview = Preview {
         open: Some(OpenPreview::RunningApp {
-            settings: Arc::clone(&first_request),
+            settings: Arc::clone(&snapshot),
+            request: Some(Arc::clone(&closed_request)),
             result: None,
         }),
     };
     preview.close();
-    let second_request = Arc::new(settings.by_running_app.clone());
     preview.open = Some(OpenPreview::RunningApp {
-        settings: Arc::clone(&second_request),
-        result: None,
+        settings: snapshot,
+        request: Some(Arc::clone(&active_request)),
+        result: Some(Ok(Arc::clone(&last_result))),
     });
+    let _ = preview.update(&settings, PreviewMessage::Poll);
+    let _ = preview.update(
+        &settings,
+        PreviewMessage::Loaded(closed_request, Err("stale".to_owned())),
+    );
+    assert!(matches!(
+        &preview.open,
+        Some(OpenPreview::RunningApp {
+            request: Some(request), result: Some(Ok(result)), ..
+        }) if Arc::ptr_eq(request, &active_request) && Arc::ptr_eq(result, &last_result)
+    ));
 
     let _ = preview.update(
         &settings,
-        PreviewMessage::Loaded(first_request, Err("stale".to_owned())),
+        PreviewMessage::Loaded(active_request, Err("current".to_owned())),
     );
     assert!(matches!(
         preview.open,
-        Some(OpenPreview::RunningApp { result: None, .. })
-    ));
-    let _ = preview.update(
-        &settings,
-        PreviewMessage::Loaded(second_request, Err("current".to_owned())),
-    );
-    assert!(matches!(
-        preview.open,
-        Some(OpenPreview::RunningApp { result: Some(Err(error)), .. }) if error == "current"
+        Some(OpenPreview::RunningApp {
+            request: None, result: Some(Err(error)), ..
+        }) if error == "current"
     ));
 }
 
@@ -502,14 +536,14 @@ fn focus_preview_checks_only_full_executable_paths() {
             path: path.into(),
             ..Default::default()
         };
-        assert!(focus.checkable_path().is_none());
+        assert!(focus.executable_path().is_none());
     }
     for path in [r" C:\Apps\app.exe ", r#""C:\Apps\app.exe""#] {
         let focus = FocusPreview {
             path: path.into(),
             ..Default::default()
         };
-        assert_eq!(focus.checkable_path(), Some(Path::new(r"C:\Apps\app.exe")));
+        assert_eq!(focus.executable_path(), Some(Path::new(r"C:\Apps\app.exe")));
     }
 }
 
@@ -546,57 +580,51 @@ fn preview_labels_keep_literal_executable_path_suffixes() {
 }
 
 #[test]
-fn a_focus_check_cannot_finish_after_editing_or_reopening() {
+fn focus_preview_checks_the_latest_path_and_rejects_results_from_a_closed_preview() {
     let settings = Settings::default();
-    let first = Arc::new(PathBuf::from(r"C:\Apps\app.exe"));
-    let mut preview = Preview {
-        open: Some(OpenPreview::Focus(FocusPreview {
-            path: first.display().to_string(),
-            check: Some(FocusCheck {
-                path: Arc::clone(&first),
-                result: None,
-            }),
-        })),
+    let mut preview = Preview::default();
+    let _ = preview.update(&settings, PreviewMessage::OpenFocus);
+    let _ = preview.update(
+        &settings,
+        PreviewMessage::FocusPath(r"C:\Apps\app.exe".into()),
+    );
+    let pending = |preview: &Preview| match &preview.open {
+        Some(OpenPreview::Focus(FocusPreview {
+            check: Some(FocusCheck { path, result: None }),
+            ..
+        })) => Arc::clone(path),
+        _ => panic!("Focus preview did not check the executable path"),
     };
+    let first = pending(&preview);
+    assert_eq!(first.as_path(), Path::new(r"C:\Apps\app.exe"));
+
     let _ = preview.update(
         &settings,
         PreviewMessage::FocusPath(r"C:\Apps\other.exe".into()),
     );
-    let _ = preview.update(
-        &settings,
-        PreviewMessage::FocusChecked(Arc::clone(&first), Ok(Vec::new())),
-    );
-    assert!(matches!(
-        preview.open,
-        Some(OpenPreview::Focus(FocusPreview { check: None, .. }))
-    ));
-
-    preview.close();
-    let _ = preview.update(&settings, PreviewMessage::OpenFocus);
-    let Some(OpenPreview::Focus(focus)) = &mut preview.open else {
-        panic!("Focus preview did not reopen")
-    };
-    assert!(focus.path.is_empty());
-    let second = Arc::new((*first).clone());
-    focus.path = second.display().to_string();
-    focus.check = Some(FocusCheck {
-        path: Arc::clone(&second),
-        result: None,
-    });
+    assert!(Arc::ptr_eq(&pending(&preview), &first));
     let _ = preview.update(
         &settings,
         PreviewMessage::FocusChecked(first, Ok(Vec::new())),
     );
-    assert!(matches!(
-        preview.open,
-        Some(OpenPreview::Focus(FocusPreview {
-            check: Some(FocusCheck { result: None, .. }),
-            ..
-        }))
-    ));
+    let second = pending(&preview);
+    assert_eq!(second.as_path(), Path::new(r"C:\Apps\other.exe"));
+
+    preview.close();
+    let _ = preview.update(&settings, PreviewMessage::OpenFocus);
     let _ = preview.update(
         &settings,
-        PreviewMessage::FocusChecked(second, Ok(Vec::new())),
+        PreviewMessage::FocusPath(r"C:\Apps\other.exe".into()),
+    );
+    let reopened = pending(&preview);
+    let _ = preview.update(
+        &settings,
+        PreviewMessage::FocusChecked(second, Err("stale".into())),
+    );
+    assert!(Arc::ptr_eq(&pending(&preview), &reopened));
+    let _ = preview.update(
+        &settings,
+        PreviewMessage::FocusChecked(reopened, Ok(Vec::new())),
     );
     assert!(matches!(
         preview.open,

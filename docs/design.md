@@ -283,13 +283,14 @@ hover/press; background shading supplies feedback.
   input focus. Process List edits individual path rules. The rule editors accept
   full drive or network paths and show guidance for unsupported path formats.
 - In By Focus, Preview matches checks a full executable path against the draft
-  rules. It shows the first eligible rule and its selected plan, followed by
-  any other eligible matches in rule order.
+  rules as the user enters it. It shows the first eligible rule and its selected
+  plan, followed by any other eligible matches in rule order.
 - In By Running App, Preview matches lists the processes each rule covers,
   same-name copies outside path rules, and processes with unavailable details.
-  The winner shows its selected plan using the same rule number and name as
-  its card. Lower-priority matching cards show their selected plans. Power Plan
-  Control decides the active Windows plan.
+  The list loads on open and refreshes every three seconds while visible. The
+  winner shows its selected plan using the same rule number and name as its card.
+  Lower-priority matching cards show their selected plans. Power Plan Control
+  decides the active Windows plan.
 - CPU Sets (Soft) and Processor Affinity (Hard) use Status and Presets tabs in the
   shared docked panel.
 - Instance Balancing lives under CPU Control and shares one configuration across
@@ -406,21 +407,26 @@ hover/press; background shading supplies feedback.
 ### Resource Thresholds
 
 - Keep Resource Thresholds global across power sources, with the shared app
-  picker and rule table. CPU and Memory columns show warning
-  and critical percentages. The main page owns Sustained time and Windows
-  notification. The rule dialog shows the app identity and CPU, Memory, and Match
-  Preview tabs. OK stages the draft. Cancel, Close, and Escape discard it, including
+  picker and rule table. CPU and Memory columns show warning and critical
+  thresholds in their configured units. The main page owns Sustained time and Windows
+  notification. The rule dialog shows the app identity and CPU, Memory, and
+  Preview matches tabs. OK stages the draft. Cancel, Close, and Escape discard it, including
   when a numeric field has focus. If a picker is open, Escape closes it first.
-- Choose Executable path to use the app picker or Executable name to enter an
-  exact filename such as `worker.exe`. Combine usage by executable path. Name
-  rules can send notifications. Terminate and Restart require an executable path.
-- Match Preview reads a fresh process snapshot when opened or refreshed. Show
-  each eligible match with its app icon, PID, name, and executable path.
-- Each resource tab starts with a collapsed Enable CPU monitoring or Enable memory
-  monitoring card. The switch controls monitoring. Expanding the card reveals the
-  percentage fields (CPU Warning, CPU Critical, Memory Warning, Memory Critical)
-  and eligible actions. Memory uses Working Set as a percentage of physical RAM.
-  Action help explains the restart rate limit and risk of losing unsaved work.
+- Give Executable path and Executable name the same input width, clear control,
+  and Add rule placement. The path input offers the running-app picker and
+  Browse. The name input accepts an exact filename such as `worker.exe`.
+  Combine usage by executable path. Name rules can send notifications.
+  Terminate and Restart require an executable path.
+- Preview matches reads a fresh process snapshot on tab entry and every three
+  seconds while visible. Show each eligible match with its app icon, PID, name,
+  and executable path. Keep the current rows visible while the next snapshot loads.
+- Open each enabled resource monitor expanded and each disabled monitor
+  collapsed. Enabling a monitor reveals its thresholds and actions.
+  CPU thresholds use percentages. Memory thresholds use Working Set in
+  percent of physical RAM or MB. Switching units requires an explicit pair of
+  thresholds for the new unit and preserves each unit's inputs while the rule
+  dialog is open. The action choices are No action, Alert, Restart, and Terminate.
+  Name rules offer No action and Alert.
 - Notifications lead with the action result, including cooldown skips, then trigger
   details. Keep the registered tray icon for enabled notifications independently of
   hide-on-close and respect Windows notification suppression. Runtime sequencing
