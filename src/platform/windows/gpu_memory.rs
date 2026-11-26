@@ -28,12 +28,20 @@ pub(crate) fn sample() -> Option<BTreeMap<u32, GpuMemorySample>> {
     let query = Query(handle);
     let dedicated = query.add(w!(r"\GPU Process Memory(*)\Dedicated Usage"));
     let shared = query.add(w!(r"\GPU Process Memory(*)\Shared Usage"));
+    let adapter = dedicated.and_then(|_| query.add(w!(r"\GPU Adapter Memory(*)\Dedicated Usage")));
     // SAFETY: The owned query remains open and all added counters belong to it.
     if unsafe { PdhCollectQueryData(query.0) } != 0 {
         return None;
     }
-    let dedicated = dedicated.and_then(counter_totals);
-    let shared = shared.and_then(counter_totals);
+    let adapter_usage = adapter
+        .and_then(|counter| counter_values(counter, AdapterInstance::parse))
+        .map_or_else(BTreeMap::new, adapter_totals);
+    let dedicated = dedicated
+        .and_then(|counter| counter_values(counter, ProcessInstance::parse))
+        .map(|samples| process_totals(samples, &adapter_usage));
+    let shared = shared
+        .and_then(|counter| counter_values(counter, ProcessInstance::parse))
+        .map(|samples| process_totals(samples, &BTreeMap::new()));
     if dedicated.is_none() && shared.is_none() {
         return None;
     }
@@ -66,7 +74,10 @@ impl Drop for Query {
     }
 }
 
-fn counter_totals(counter: PDH_HCOUNTER) -> Option<BTreeMap<u32, Option<u64>>> {
+fn counter_values<T>(
+    counter: PDH_HCOUNTER,
+    parse: fn(&str) -> Option<T>,
+) -> Option<Vec<(T, Option<u64>)>> {
     // Defined in the Windows SDK's pdh.h and omitted by windows-sys.
     const PDH_FMT_NOSCALE: u32 = 0x1000;
     const PDH_FMT_NOCAP100: u32 = 0x8000;
@@ -107,7 +118,7 @@ fn counter_totals(counter: PDH_HCOUNTER) -> Option<BTreeMap<u32, Option<u64>>> {
             item_count,
         )
     };
-    let instances = items.iter().filter_map(|item| {
+    let values = items.iter().filter_map(|item| {
         let offset = item.szName.addr().checked_sub(storage.as_ptr().addr())?;
         if offset < array_bytes || offset >= byte_count || !offset.is_multiple_of(size_of::<u16>())
         {
@@ -122,7 +133,7 @@ fn counter_totals(counter: PDH_HCOUNTER) -> Option<BTreeMap<u32, Option<u64>>> {
         };
         let name_end = name.iter().position(|unit| *unit == 0)?;
         let name = String::from_utf16(&name[..name_end]).ok()?;
-        let instance = Instance::parse(&name)?;
+        let instance = parse(&name)?;
         let value = if matches!(
             item.FmtValue.CStatus,
             PDH_CSTATUS_VALID_DATA | PDH_CSTATUS_NEW_DATA
@@ -134,29 +145,26 @@ fn counter_totals(counter: PDH_HCOUNTER) -> Option<BTreeMap<u32, Option<u64>>> {
         };
         Some((instance, value))
     });
-    Some(process_totals(instances))
+    Some(values.collect())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-struct Instance {
-    pid: u32,
-    adapter: (u32, u32),
+struct AdapterInstance {
+    luid: (u32, u32),
     physical_index: u32,
 }
 
-impl Instance {
+impl AdapterInstance {
     fn parse(name: &str) -> Option<Self> {
-        let (pid, adapter) = name.strip_prefix("pid_")?.split_once("_luid_")?;
-        let (adapter, physical_index) = adapter.split_once("_phys_")?;
-        let (high, low) = adapter.split_once('_')?;
+        let (luid, physical_index) = name.strip_prefix("luid_")?.split_once("_phys_")?;
+        let (high, low) = luid.split_once('_')?;
         let physical_index = match physical_index.split_once('#') {
             Some((index, suffix)) if suffix.parse::<u32>().is_ok() => index,
             Some(_) => return None,
             None => physical_index,
         };
         Some(Self {
-            pid: pid.parse().ok()?,
-            adapter: (
+            luid: (
                 u32::from_str_radix(high.strip_prefix("0x")?, 16).ok()?,
                 u32::from_str_radix(low.strip_prefix("0x")?, 16).ok()?,
             ),
@@ -165,8 +173,38 @@ impl Instance {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct ProcessInstance {
+    pid: u32,
+    adapter: AdapterInstance,
+}
+
+impl ProcessInstance {
+    fn parse(name: &str) -> Option<Self> {
+        let (pid, adapter) = name.strip_prefix("pid_")?.split_once('_')?;
+        Some(Self {
+            pid: pid.parse().ok()?,
+            adapter: AdapterInstance::parse(adapter)?,
+        })
+    }
+}
+
+fn adapter_totals(
+    instances: impl IntoIterator<Item = (AdapterInstance, Option<u64>)>,
+) -> BTreeMap<AdapterInstance, Option<u64>> {
+    let mut totals = BTreeMap::new();
+    for (adapter, bytes) in instances {
+        totals
+            .entry(adapter)
+            .and_modify(|total| *total = None)
+            .or_insert(bytes);
+    }
+    totals
+}
+
 fn process_totals(
-    instances: impl IntoIterator<Item = (Instance, Option<u64>)>,
+    instances: impl IntoIterator<Item = (ProcessInstance, Option<u64>)>,
+    adapter_usage: &BTreeMap<AdapterInstance, Option<u64>>,
 ) -> BTreeMap<u32, Option<u64>> {
     let mut totals = BTreeMap::new();
     let mut seen = BTreeSet::new();
@@ -174,6 +212,9 @@ fn process_totals(
         let total = totals.entry(instance.pid).or_insert(Some(0u64));
         // A duplicate cannot be attributed to a distinct GPU or reliably resolved by PID.
         *total = if seen.insert(instance) {
+            let adapter_bytes = adapter_usage.get(&instance.adapter).copied().flatten();
+            // A conflicting adapter sample makes the process's total unavailable.
+            let value = value.filter(|bytes| adapter_bytes.is_none_or(|usage| *bytes <= usage));
             total
                 .zip(value)
                 .and_then(|(total, value)| total.checked_add(value))
@@ -204,7 +245,8 @@ mod tests {
             process_totals(
                 instances
                     .into_iter()
-                    .map(|(name, bytes)| (Instance::parse(name).unwrap(), bytes))
+                    .map(|(name, bytes)| (ProcessInstance::parse(name).unwrap(), bytes)),
+                &BTreeMap::new(),
             ),
             BTreeMap::from([(10, Some(900)), (20, Some(0)), (30, None), (40, None)])
         );
@@ -212,10 +254,62 @@ mod tests {
 
     #[test]
     fn gpu_memory_parses_counter_instances_and_duplicate_indices() {
-        let name = "pid_10_luid_0x00000000_0x00013E85_phys_0";
-        assert!(Instance::parse(name).is_some());
-        assert_eq!(Instance::parse(name), Instance::parse(&format!("{name}#1")));
-        assert!(Instance::parse(&format!("{name}_eng_0")).is_none());
+        let adapter = "luid_0x00000000_0x00013E85_phys_0";
+        let process = format!("pid_10_{adapter}");
+        let instance = ProcessInstance::parse(&process).unwrap();
+        assert_eq!(AdapterInstance::parse(adapter), Some(instance.adapter));
+        assert_eq!(
+            ProcessInstance::parse(&format!("{process}#1")),
+            Some(instance)
+        );
+        assert!(ProcessInstance::parse(&format!("{process}_eng_0")).is_none());
+    }
+
+    #[test]
+    fn dedicated_gpu_memory_rejects_conflicting_samples_per_adapter_node() {
+        let adapter = |name| AdapterInstance::parse(name).unwrap();
+        let process = |pid, adapter| ProcessInstance { pid, adapter };
+        let discrete = adapter("luid_0x0_0x13e85_phys_0");
+        let linked = adapter("luid_0x0_0x13e85_phys_1");
+        let integrated = adapter("luid_0x0_0x13a22_phys_0");
+        let invalid = adapter("luid_0x1_0x13e85_phys_0");
+        let duplicate = adapter("luid_0x0_0x13e3e_phys_0");
+        let missing = adapter("luid_0x0_0x13e3e_phys_1");
+        let adapter_usage = adapter_totals([
+            (discrete, Some(1_350_000_000)),
+            (linked, Some(100)),
+            (integrated, Some(0)),
+            (invalid, None),
+            (duplicate, Some(1)),
+            (duplicate, Some(10)),
+        ]);
+        let instances = [
+            (process(10, discrete), Some(7_600_000_000)),
+            (process(11, discrete), Some(1_350_000_000)),
+            (process(12, discrete), Some(1_000_000_000)),
+            (process(12, linked), Some(100)),
+            (process(13, discrete), Some(1)),
+            (process(13, linked), Some(101)),
+            (process(14, integrated), Some(0)),
+            (process(15, integrated), Some(1)),
+            (process(16, invalid), Some(10)),
+            (process(17, duplicate), Some(10)),
+            (process(18, missing), Some(10)),
+        ];
+        assert_eq!(
+            process_totals(instances, &adapter_usage),
+            BTreeMap::from([
+                (10, None),
+                (11, Some(1_350_000_000)),
+                (12, Some(1_000_000_100)),
+                (13, None),
+                (14, Some(0)),
+                (15, None),
+                (16, Some(10)),
+                (17, Some(10)),
+                (18, Some(10)),
+            ])
+        );
     }
 
     #[test]
