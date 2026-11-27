@@ -31,8 +31,6 @@ tray:
   exit: "結束"
 
 window:
-  show_side_panel: "顯示側邊面板"
-  hide_side_panel: "隱藏側邊面板"
   minimize: "最小化"
   maximize: "最大化"
   restore: "還原"
@@ -92,6 +90,8 @@ nav:
   watchdog: Watchdog
   resource_thresholds: "資源門檻"
   side_panel: "側邊面板"
+  show_side_panel: "顯示側邊面板"
+  hide_side_panel: "隱藏側邊面板"
   dashboard: "儀表板"
   power_plan_control: "電源計畫控制"
   cpu_control: "CPU 控制"

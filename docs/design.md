@@ -42,9 +42,9 @@ Prefer visible state, compact controls, and predictable rows. Use restrained acc
 
 ## App Shell
 
-- Use a compact themed title bar with the app icon/name, a centered Search input, a Side panel toggle immediately left of Minimize, and the Maximize/Restore and Close controls. Follow the active Light, Dark, AMOLED, and accent palette. The workspace row and work area follow the custom title bar.
+- Use a compact themed title bar with the app icon/name, a centered Search input, and Minimize, Maximize/Restore, and Close controls. Follow the active Light, Dark, AMOLED, and accent palette. The workspace row and work area follow the custom title bar.
 - Iced owns native dragging, resizing, minimizing, and maximizing. The caption supports drag and double-click maximize/restore; restored windows expose edge/corner resize targets. Both custom and native close requests use the existing tray, unsaved-change, and shutdown handling. Keep window controls available above dialogs.
-- Put text-only workspace tabs in one row under the title bar. Selecting a workspace opens its landing page. Highlight the active workspace on its landing page and on each of its child pages.
+- Put text-only workspace tabs in one row under the title bar, with the labeled Side panel toggle at the far right. Selecting a workspace opens its landing page. Highlight the active workspace on its landing page and on each of its child pages.
 - Workspaces with child pages show a left page list beside the editor, starting with the landing page. Highlight the current page in the list. Standalone workspaces use the available width beside any open right Side panel.
 - When Show enabled feature counts is on in Language and Appearance, display nonzero counts on the Watchdog, Power Plan Control, Priority Control, and CPU Control buttons in the workspace row. Mark enabled features with a dot beside their names in the left page list.
 - Tab moves through the workspace row and page list. Enter or Space opens the focused destination. Use a visible focus outline distinct from the selection tint.
@@ -61,8 +61,8 @@ Prefer visible state, compact controls, and predictable rows. Use restrained acc
   selector on the right. Use a Select for feature tabs below 720px of editor
   width, and for the power-source selector when both groups share that space.
   Start editor content directly below the header on every page.
-- The right Side panel docks beside the editor, reserving its own width. Use a 320px dock on wide windows and on standalone pages. When the window is narrower than 1280 logical pixels and the page list is visible, reduce the dock to 280px to leave more room for the editor. Both areas remain interactive. Start closed and retain its open state throughout navigation, search, focus changes, and settings edits. Close through the title-bar toggle or the panel's Close button. Pages with no panel content use the available editor width and preserve the session's open preference for the next supported page. Dialogs cover the work area.
-- The title-bar toggle shows the side panel's current state and is inactive while a modal is open or the page has no panel. The in-panel Close button returns keyboard focus to the title-bar toggle.
+- The right Side panel docks beside the editor, reserving its own width. Use a 320px dock on wide windows and on standalone pages. When the window is narrower than 1280 logical pixels and the page list is visible, reduce the dock to 280px to leave more room for the editor. Both areas remain interactive. Start closed and retain its open state throughout navigation, search, focus changes, and settings edits. Close through the workspace-row toggle or the panel's Close button. Pages with no panel content use the available editor width and preserve the session's open preference for the next supported page. Dialogs cover the work area.
+- The Side panel toggle shows the panel's current state and is inactive while a modal is open or the page has no panel. The in-panel Close button returns keyboard focus to the toggle.
 - Navigation labels and page sections live in `src/ui.rs`; page rendering
   dispatch stays in `WinderustApp::page_view` in `src/ui/app.rs`.
 

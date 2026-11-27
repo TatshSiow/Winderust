@@ -277,7 +277,7 @@ Append `--percentage-popups-only` to check the accent color picker and custom
 Advanced Power Plan Tuning preset in both languages and at wide and compact sizes.
 Append `--priority-control-only` to check the Priority Control detection cards,
 preservation switches, and child-protection drafts in both languages.
-Append `--side-panel-only` to check the title bar toggle and dock in both languages
+Append `--side-panel-only` to check the workspace-row toggle and dock in both languages
 and window sizes, including navigation through a page without panel content.
 Append `--navigation-only` to check workspace navigation, the page list, and
 resizing at the minimum window width.

@@ -9,12 +9,10 @@ const BUTTON_WIDTH: u32 = 46;
 const EDGE: u32 = 5;
 const CORNER: u32 = 10;
 pub(super) const SEARCH_WIDTH: u32 = 420;
-pub(super) const SIDE_PANEL_TOGGLE: &str = "side-panel-toggle";
 
 #[derive(Debug, Clone, Copy)]
 pub(super) enum Event {
     Drag,
-    ToggleSidePanel,
     Minimize,
     ToggleMaximize,
     Resize(window::Direction),
@@ -25,7 +23,6 @@ pub(super) fn view<'a, M: Clone + 'a>(
     content: Element<'a, M>,
     search: Element<'a, M>,
     maximized: bool,
-    side_panel: Option<bool>,
     caption_focusable: bool,
     message: impl Fn(Event) -> M + Copy + 'a,
 ) -> Element<'a, M> {
@@ -53,24 +50,10 @@ pub(super) fn view<'a, M: Clone + 'a>(
         .align_y(iced::Center)
         .into(),
     );
-    let caption_button = |icon, label, event| {
-        control(icon, label, Some(event), caption_focusable, false).map(message)
-    };
-    let panel_button = control(
-        "icons/panel-right-open.svg",
-        match side_panel {
-            Some(true) => "window.hide_side_panel",
-            Some(false) => "window.show_side_panel",
-            None => "nav.side_panel",
-        },
-        side_panel.map(|_| Event::ToggleSidePanel),
-        caption_focusable,
-        side_panel == Some(true),
-    )
-    .map(message);
+    let caption_button =
+        |icon, label, event| control(icon, label, event, caption_focusable).map(message);
     let controls = row![
         drag(Space::new().width(Fill).height(HEIGHT).into()),
-        panel_button,
         caption_button("icons/minus.svg", "window.minimize", Event::Minimize),
         caption_button(
             if maximized {
@@ -143,24 +126,16 @@ pub(super) fn view<'a, M: Clone + 'a>(
 fn control(
     icon: &'static str,
     label: &str,
-    event: Option<Event>,
+    event: Event,
     focusable: bool,
-    selected: bool,
 ) -> Element<'static, Event> {
-    let icon = navigation::glyph_with_opacity(icon, if event.is_some() { 1.0 } else { 0.45 });
+    let icon = navigation::glyph(icon);
     let button = widgets::button(container(icon).center_x(Fill).center_y(Fill))
         .width(BUTTON_WIDTH)
         .height(HEIGHT)
         .padding(0)
-        .style(move |theme, status| {
-            control_style(theme, status, matches!(event, Some(Event::Close)), selected)
-        })
-        .on_press_maybe(event);
-    let button = if matches!(event, Some(Event::ToggleSidePanel)) {
-        button.focus_id(SIDE_PANEL_TOGGLE)
-    } else {
-        button
-    };
+        .style(move |theme, status| control_style(theme, status, matches!(event, Event::Close)))
+        .on_press(event);
     widgets::tooltip(
         if focusable {
             button
@@ -177,13 +152,8 @@ fn control_style(
     theme: &Theme,
     status: iced::widget::button::Status,
     close: bool,
-    selected: bool,
 ) -> iced::widget::button::Style {
-    let mut style = if selected {
-        widgets::selected(theme, status)
-    } else {
-        widgets::quiet(theme, status)
-    };
+    let mut style = widgets::quiet(theme, status);
     style.border.radius = 0.0.into();
     if close && !design::is_contrast(theme) {
         style.background = match status {
@@ -212,12 +182,7 @@ mod tests {
         Body,
     }
 
-    fn click(
-        maximized: bool,
-        side_panel: Option<bool>,
-        point: Point,
-        count: usize,
-    ) -> (Vec<String>, mouse::Interaction) {
+    fn click(maximized: bool, point: Point, count: usize) -> (Vec<String>, mouse::Interaction) {
         let renderer = iced::Renderer::new(design::typography::FONT, iced::Pixels(14.0));
         let mut view = view(
             widgets::button(Space::new())
@@ -231,7 +196,6 @@ mod tests {
                 .on_press(Message::Search)
                 .into(),
             maximized,
-            side_panel,
             true,
             Message::Chrome,
         );
@@ -291,32 +255,22 @@ mod tests {
                 (450.0, 34.0, "Drag"),
                 (659.0, 18.0, "Search"),
                 (661.0, 18.0, "Drag"),
-                (739.0, 18.0, "ToggleSidePanel"),
+                (739.0, 18.0, "Drag"),
                 (785.0, 18.0, "Minimize"),
                 (831.0, 18.0, "ToggleMaximize"),
                 (877.0, 18.0, "Close"),
                 (400.0, 100.0, "Body"),
             ] {
-                assert_eq!(
-                    click(maximized, Some(false), Point::new(x, y), 1).0,
-                    [action]
-                );
+                assert_eq!(click(maximized, Point::new(x, y), 1).0, [action]);
             }
             assert_eq!(
-                click(maximized, Some(false), Point::new(100.0, 18.0), 2).0,
+                click(maximized, Point::new(100.0, 18.0), 2).0,
                 ["Drag", "Drag", "ToggleMaximize"]
             );
             assert_eq!(
-                click(maximized, Some(false), Point::new(450.0, 18.0), 2).0,
+                click(maximized, Point::new(450.0, 18.0), 2).0,
                 ["Search", "Search"]
             );
-            assert_eq!(
-                click(maximized, Some(true), Point::new(739.0, 18.0), 1).0,
-                ["ToggleSidePanel"]
-            );
-            assert!(click(maximized, None, Point::new(739.0, 18.0), 1)
-                .0
-                .is_empty());
         }
     }
 
@@ -362,10 +316,10 @@ mod tests {
                 mouse::Interaction::ResizingDiagonallyDown,
             ),
         ] {
-            let (messages, interaction) = click(false, None, Point::new(x, y), 1);
+            let (messages, interaction) = click(false, Point::new(x, y), 1);
             assert_eq!(messages, [format!("Resize({direction})")]);
             assert_eq!(interaction, cursor);
-            assert!(!click(true, None, Point::new(x, y), 1)
+            assert!(!click(true, Point::new(x, y), 1)
                 .0
                 .iter()
                 .any(|message| message.starts_with("Resize")));
@@ -402,7 +356,6 @@ mod tests {
                 Space::new().width(Fill).height(Fill).into(),
                 Space::new().into(),
                 false,
-                Some(false),
                 true,
                 std::convert::identity,
             );

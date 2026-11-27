@@ -31,8 +31,6 @@ tray:
   exit: "Exit"
 
 window:
-  show_side_panel: "Show side panel"
-  hide_side_panel: "Hide side panel"
   minimize: "Minimize"
   maximize: "Maximize"
   restore: "Restore"
@@ -92,6 +90,8 @@ nav:
   watchdog: Watchdog
   resource_thresholds: "Resource Thresholds"
   side_panel: "Side panel"
+  show_side_panel: "Show side panel"
+  hide_side_panel: "Hide side panel"
   dashboard: "Dashboard"
   power_plan_control: "Power Plan Control"
   cpu_control: "CPU Control"

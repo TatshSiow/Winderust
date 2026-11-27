@@ -339,7 +339,7 @@ fn floating_update_card(preferences: &settings_pages::Editor) -> Element<'_, Mes
 
 fn close_side_panel(open: &mut bool) -> impl iced::advanced::widget::Operation {
     *open = false;
-    iced::advanced::widget::operation::focusable::focus(window_frame::SIDE_PANEL_TOGGLE.into())
+    iced::advanced::widget::operation::focusable::focus(navigation::SIDE_PANEL_TOGGLE.into())
 }
 
 fn side_panel_dock<'a>(
@@ -1304,6 +1304,14 @@ impl WinderustApp {
             Message::Navigation(navigation::Event::Select(page)) => {
                 return self.update(Message::Page(page));
             }
+            Message::Navigation(navigation::Event::ToggleSidePanel) => {
+                if let Some(open) = self.side_panel_toggle_state() {
+                    self.side_panel_open = !open;
+                    if self.dashboard_status_open() {
+                        return self.load_power_plans();
+                    }
+                }
+            }
             Message::FeatureTab(tab) => {
                 if self.feature_tab() != tab && FeatureTab::for_page(self.page).contains(&tab) {
                     self.feature_tabs.insert(self.page, tab);
@@ -1988,14 +1996,6 @@ impl WinderustApp {
             Message::WindowAction(window_frame::Event::Close) => {
                 return self.update(Message::WindowClose);
             }
-            Message::WindowAction(window_frame::Event::ToggleSidePanel) => {
-                if let Some(open) = self.side_panel_toggle_state() {
-                    self.side_panel_open = !open;
-                    if self.dashboard_status_open() {
-                        return self.load_power_plans();
-                    }
-                }
-            }
             Message::WindowFocused => {
                 if !self.hidden && self.visible_page_needs_power_plans() {
                     self.power_plans_reload_pending |= self.power_plans_loading;
@@ -2013,7 +2013,7 @@ impl WinderustApp {
                         window_frame::Event::Resize(direction) => {
                             iced::window::drag_resize(window, direction)
                         }
-                        window_frame::Event::Close | window_frame::Event::ToggleSidePanel => {
+                        window_frame::Event::Close => {
                             unreachable!("App actions are handled before window operations")
                         }
                     };
@@ -3155,7 +3155,6 @@ impl WinderustApp {
             super::modal::picker(self.view_workspace(), picker_open, Message::DismissPickers),
             navigation_search_input(&self.navigation_search, search_available, search_open),
             self.maximized,
-            self.side_panel_toggle_state(),
             !picker_open
                 && !search_open
                 && (!self.process_context_open() || self.closing || !self.error_message.is_empty()),
@@ -3421,7 +3420,13 @@ impl WinderustApp {
         let page_list = navigation::page_list(self.page, &self.settings);
         let (navigation_width, side_panel_width, page_padding) =
             shell_widths(size.width, page_list.is_some());
-        let top_bar = navigation::top_bar(self.page, &self.settings).map(Message::Navigation);
+        let top_bar = navigation::top_bar(
+            self.page,
+            &self.settings,
+            self.side_panel_toggle_state(),
+            size.width,
+        )
+        .map(Message::Navigation);
         let top_bar = container(top_bar)
             .width(Fill)
             .style(widgets::navigation_surface);
@@ -4300,7 +4305,6 @@ mod tests {
                 content,
                 navigation_search_input("", true, open),
                 false,
-                None,
                 true,
                 Message::WindowAction,
             );
@@ -4634,7 +4638,7 @@ mod tests {
     }
 
     #[test]
-    fn closing_dock_with_keyboard_returns_focus_to_its_title_bar_button() {
+    fn closing_dock_with_keyboard_returns_focus_to_its_navigation_button() {
         use iced::advanced::{
             layout,
             widget::{operation::focusable, Operation, Tree},
@@ -4646,16 +4650,26 @@ mod tests {
         let viewport = iced::Rectangle::with_size(iced::Size::new(900.0, 620.0));
         let limits = layout::Limits::new(iced::Size::ZERO, viewport.size());
         let dock = |open: bool| {
+            let top_bar = navigation::top_bar(
+                Page::Dashboard,
+                &crate::config::Settings::default(),
+                Some(open),
+                viewport.width,
+            )
+            .map(Message::Navigation);
             let workspace = iced::widget::column![
                 page_header("Editor".into(), None, None, false),
                 button(text("Editor action")).on_press(Message::Save),
             ];
             let panel = open.then(|| iced::widget::Space::new().height(Fill).into());
             window_frame::view(
-                side_panel_dock(workspace.into(), panel, design::SIDE_PANEL_WIDTH),
+                iced::widget::column![
+                    top_bar,
+                    side_panel_dock(workspace.into(), panel, design::SIDE_PANEL_WIDTH),
+                ]
+                .into(),
                 iced::widget::Space::new().into(),
                 false,
-                Some(open),
                 true,
                 Message::WindowAction,
             )
@@ -4715,7 +4729,7 @@ mod tests {
                 .operate(&mut tree, layout, &renderer, &mut restore);
             assert!(matches!(
                 activate(&mut view, &mut tree, layout, key).as_slice(),
-                [Message::WindowAction(window_frame::Event::ToggleSidePanel)]
+                [Message::Navigation(navigation::Event::ToggleSidePanel)]
             ));
 
             let mut next = focusable::focus_next::<()>();
@@ -4728,7 +4742,7 @@ mod tests {
                 .operate(&mut tree, layout, &renderer, next.as_mut());
             assert!(matches!(
                 activate(&mut view, &mut tree, layout, key).as_slice(),
-                [Message::WindowAction(window_frame::Event::Minimize)]
+                [Message::Save]
             ));
         }
     }

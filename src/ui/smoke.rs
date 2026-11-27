@@ -733,7 +733,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             let _ = app.update(Message::Processes(ProcessMessage::Sort(Sort::GpuUsage)));
         }
         let was_open = app.side_panel_open;
-        let toggle_side_panel = || Message::WindowAction(window_frame::Event::ToggleSidePanel);
+        let toggle_side_panel = || Message::Navigation(navigation::Event::ToggleSidePanel);
         if page == Page::Dashboard {
             if app.processes.context_open() || app.processes.modal_open() {
                 let _ = app.update(Message::Processes(process_list::Message::CloseSelection));
@@ -2181,6 +2181,8 @@ struct NavigationLayout {
     count_labels: Vec<(Rectangle, usize)>,
     search: Option<Rectangle>,
     search_open: bool,
+    side_panel_toggle: Option<Rectangle>,
+    side_panel_labels: Vec<Rectangle>,
     selected: Option<(Id, Option<Rectangle>)>,
     left: Option<(Rectangle, Vector)>,
     right_close: Option<Rectangle>,
@@ -2204,6 +2206,8 @@ impl NavigationLayout {
             count_labels: Vec::new(),
             search: None,
             search_open: false,
+            side_panel_toggle: None,
+            side_panel_labels: Vec::new(),
             selected,
             left: None,
             right_close: None,
@@ -2239,6 +2243,9 @@ impl Operation<Message> for NavigationLayout {
         if let Ok(count) = label.parse() {
             self.count_labels.push((bounds, count));
         }
+        if label == t!("nav.side_panel").as_ref() {
+            self.side_panel_labels.push(bounds);
+        }
     }
 
     fn focusable(
@@ -2269,6 +2276,9 @@ impl Operation<Message> for NavigationLayout {
         if id == Some(&Id::from(SIDE_PANEL_CLOSE)) {
             self.right_close = Some(bounds);
         }
+        if id == Some(&Id::from(navigation::SIDE_PANEL_TOGGLE)) {
+            self.side_panel_toggle = Some(bounds);
+        }
     }
 
     fn finish(&self) -> operation::Outcome<Message> {
@@ -2278,11 +2288,23 @@ impl Operation<Message> for NavigationLayout {
         if self.search_open {
             return operation::Outcome::None;
         }
+        let toggle = self
+            .side_panel_toggle
+            .expect("Side panel toggle is focusable");
+        assert!(
+            (toggle.x + toggle.width + design::space::SMALL as f32 - self.window_width).abs()
+                <= 1.0
+        );
+        assert!(self.side_panel_labels.iter().any(|label| {
+            label.is_within(&toggle) && (label.center_y() - toggle.center_y()).abs() <= 1.0
+        }));
         for (id, bounds, count) in &self.workspaces {
             let bounds = bounds.unwrap_or_else(|| panic!("workspace is focusable: {id:?}"));
             assert!(bounds.width > 0.0 && bounds.x >= 0.0);
             assert!(bounds.x + bounds.width <= self.window_width + 1.0);
             assert!(search.y + search.height <= bounds.y);
+            assert!(bounds.x + bounds.width <= toggle.x);
+            assert!((bounds.center_y() - toggle.center_y()).abs() <= 1.0);
             let mut counts = self
                 .count_labels
                 .iter()

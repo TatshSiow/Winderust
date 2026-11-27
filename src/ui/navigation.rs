@@ -6,10 +6,12 @@ use rust_i18n::t;
 use std::collections::HashSet;
 
 pub(super) const PAGE_LIST_ID: &str = "navigation-page-list";
+pub(super) const SIDE_PANEL_TOGGLE: &str = "side-panel-toggle";
 
 #[derive(Debug, Clone)]
 pub(super) enum Event {
     Select(Page),
+    ToggleSidePanel,
 }
 
 pub(super) fn workspace_id(page: Page) -> Id {
@@ -91,11 +93,20 @@ pub(super) fn has_children(page: Page) -> bool {
         .is_some_and(|pages| pages.iter().any(|child| *child != page))
 }
 
-pub(super) fn top_bar(current: Page, settings: &Settings) -> Element<'static, Event> {
+pub(super) fn top_bar(
+    current: Page,
+    settings: &Settings,
+    side_panel: Option<bool>,
+    width: f32,
+) -> Element<'static, Event> {
     use iced::widget::{container, row, text, tooltip};
 
     let active = current.section_landing_page();
-    let inset = design::space::CONTROL as u16;
+    let workspace_inset = if width < 960.0 {
+        design::space::TIGHT
+    } else {
+        design::space::CONTROL
+    } as u16;
     let mut workspaces = row![].spacing(design::space::TINY).align_y(iced::Center);
     for page in workspace_pages(settings.advanced.show_advanced_controls) {
         let label = text(page.label())
@@ -122,18 +133,53 @@ pub(super) fn top_bar(current: Page, settings: &Settings) -> Element<'static, Ev
         workspaces = workspaces.push(
             widgets::button(container(entry).center_y(Fill))
                 .height(design::BUTTON_HEIGHT)
-                .padding([0, inset])
+                .padding([0, workspace_inset])
                 .focus_id(workspace_id(page))
                 .selected(active == page, widgets::selected)
                 .on_press(Event::Select(page)),
         );
     }
 
-    container(workspaces.height(Fill))
-        .padding([0, design::space::SMALL as u16])
-        .width(Fill)
-        .height(design::NAVIGATION_ROW_HEIGHT)
-        .into()
+    let panel_entry = row![
+        glyph_with_opacity(
+            "icons/panel-right-open.svg",
+            if side_panel.is_some() { 1.0 } else { 0.45 },
+        ),
+        text(t!("nav.side_panel").into_owned())
+            .size(design::typography::SECONDARY)
+            .wrapping(text::Wrapping::None),
+    ]
+    .spacing(design::space::TIGHT)
+    .align_y(iced::Center);
+    let panel_button = widgets::button(container(panel_entry).center_y(Fill))
+        .height(design::BUTTON_HEIGHT)
+        .padding([0, design::space::CONTROL as u16])
+        .focus_id(SIDE_PANEL_TOGGLE)
+        .style(widgets::quiet)
+        .selected(side_panel == Some(true), widgets::selected)
+        .on_press_maybe(side_panel.map(|_| Event::ToggleSidePanel));
+    let panel_button = widgets::tooltip(
+        panel_button,
+        text(
+            t!(match side_panel {
+                Some(true) => "nav.hide_side_panel",
+                Some(false) => "nav.show_side_panel",
+                None => "nav.side_panel",
+            })
+            .into_owned(),
+        ),
+        tooltip::Position::Bottom,
+    );
+    container(
+        row![workspaces.width(Fill), panel_button]
+            .height(Fill)
+            .spacing(design::space::TIGHT)
+            .align_y(iced::Center),
+    )
+    .padding([0, design::space::SMALL as u16])
+    .width(Fill)
+    .height(design::NAVIGATION_ROW_HEIGHT)
+    .into()
 }
 
 pub(super) fn page_list(current: Page, settings: &Settings) -> Option<Element<'static, Event>> {
