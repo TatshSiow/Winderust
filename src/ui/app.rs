@@ -102,15 +102,10 @@ fn reset_scroll(id: &'static str) -> Task<Message> {
 fn page_header<'a>(
     breadcrumb: Element<'a, Message>,
     profiles: Option<Element<'a, Message>>,
-    panel_button: Option<Element<'a, Message>>,
 ) -> Element<'a, Message> {
-    let mut toolbar = row![profiles.unwrap_or_else(|| iced::widget::Space::new().into())]
-        .push(iced::widget::Space::new().width(Fill))
-        .height(design::BUTTON_HEIGHT)
-        .align_y(iced::Center);
-    if let Some(button) = panel_button {
-        toolbar = toolbar.push(button);
-    }
+    let toolbar = container(profiles.unwrap_or_else(|| iced::widget::Space::new().into()))
+        .center_y(design::BUTTON_HEIGHT)
+        .width(Fill);
     column![
         container(breadcrumb).center_y(design::PAGE_BREADCRUMB_HEIGHT),
         toolbar,
@@ -187,7 +182,6 @@ fn page_canvas<'a>(
     .into()
 }
 
-const SIDE_PANEL_TOGGLE: &str = "side-panel-toggle";
 const SIDE_PANEL_CLOSE: &str = "side-panel-close";
 
 fn floating_card<'a>(
@@ -256,35 +250,9 @@ fn floating_update_card(preferences: &settings_pages::Editor) -> Element<'_, Mes
     )
 }
 
-fn side_panel_button(open: bool) -> Element<'static, Message> {
-    button(
-        row![
-            navigation::glyph("icons/panel-right-open.svg"),
-            text(t!("nav.side_panel").to_string()),
-        ]
-        .spacing(design::space::CONTROL)
-        .height(Fill)
-        .align_y(iced::Center),
-    )
-    .height(design::BUTTON_HEIGHT)
-    .padding([0, design::space::MEDIUM as u16])
-    .style(move |theme, status| {
-        let mut style = if open {
-            widgets::selected(theme, status)
-        } else {
-            widgets::secondary_button(theme, status)
-        };
-        style.text_color = widgets::quiet(theme, status).text_color;
-        style
-    })
-    .focus_id(SIDE_PANEL_TOGGLE)
-    .on_press(Message::ToggleSidePanel)
-    .into()
-}
-
 fn close_side_panel(open: &mut bool) -> impl iced::advanced::widget::Operation {
     *open = false;
-    iced::advanced::widget::operation::focusable::focus(SIDE_PANEL_TOGGLE.into())
+    iced::advanced::widget::operation::focusable::focus(window_frame::SIDE_PANEL_TOGGLE.into())
 }
 
 fn side_panel_dock<'a>(
@@ -808,7 +776,6 @@ enum Message {
     Navigation(navigation::Event),
     FeatureTab(FeatureTab),
     SidePanelTab(SidePanelTab),
-    ToggleSidePanel,
     CloseSidePanel,
     Preferences(settings_pages::Message),
     DismissPickers,
@@ -1394,10 +1361,6 @@ impl WinderustApp {
                 if SidePanelTab::for_page(self.page).contains(&tab) {
                     self.side_panel_tab = tab;
                 }
-            }
-            Message::ToggleSidePanel => {
-                self.side_panel_open = !self.side_panel_open;
-                self.navigation.dismiss();
             }
             Message::CloseSidePanel => {
                 return iced::advanced::widget::operate(close_side_panel(
@@ -2084,6 +2047,12 @@ impl WinderustApp {
             Message::WindowAction(window_frame::Event::Close) => {
                 return self.update(Message::WindowClose);
             }
+            Message::WindowAction(window_frame::Event::ToggleSidePanel) => {
+                if let Some(open) = self.side_panel_toggle_state() {
+                    self.side_panel_open = !open;
+                    self.navigation.dismiss();
+                }
+            }
             Message::WindowFocused => {
                 if !self.hidden && page_needs_power_plans(self.page, self.processes.rulesets_open())
                 {
@@ -2102,8 +2071,8 @@ impl WinderustApp {
                         window_frame::Event::Resize(direction) => {
                             iced::window::drag_resize(window, direction)
                         }
-                        window_frame::Event::Close => {
-                            unreachable!("Close is routed through WindowClose")
+                        window_frame::Event::Close | window_frame::Event::ToggleSidePanel => {
+                            unreachable!("App actions are handled before window operations")
                         }
                     };
                 }
@@ -3211,11 +3180,31 @@ impl WinderustApp {
         self.page == Page::ProcessList && self.processes.context_open()
     }
 
+    fn side_panel_available(&self) -> bool {
+        matches!(self.page, Page::ProcessList | Page::ActionLog)
+            || !SidePanelTab::for_page(self.page).is_empty()
+    }
+
+    fn side_panel_toggle_state(&self) -> Option<bool> {
+        (self.side_panel_available()
+            && !self.closing
+            && self.error_message.is_empty()
+            && !self.navigation_search_open
+            && !self.picker_open()
+            && !self.blocking_editor_open()
+            && self.power_tuning.review_origin().is_none()
+            && self.process_power_plan_preview().is_none()
+            && !(self.page == Page::ProcessList
+                && (self.processes.context_open() || self.processes.modal_open())))
+        .then_some(self.side_panel_open)
+    }
+
     fn view(&self, _window: iced::window::Id) -> Element<'_, Message> {
         let picker_open = self.picker_open();
         window_frame::view(
             super::modal::picker(self.view_workspace(), picker_open, Message::DismissPickers),
             self.maximized,
+            self.side_panel_toggle_state(),
             !picker_open
                 && (!self.process_context_open() || self.closing || !self.error_message.is_empty()),
             Message::WindowAction,
@@ -3517,9 +3506,7 @@ impl WinderustApp {
             .height(Fill)
             .style(widgets::navigation_surface);
         let navigation = shield(navigation.into());
-        let side_panel_available = matches!(self.page, Page::ProcessList | Page::ActionLog)
-            || !SidePanelTab::for_page(self.page).is_empty();
-        let side_panel = (self.side_panel_open && side_panel_available)
+        let side_panel = (self.side_panel_open && self.side_panel_available())
             .then(|| self.side_panel(read_power_source))
             .flatten()
             .map(shield);
@@ -3587,13 +3574,8 @@ impl WinderustApp {
             }
             profile_controls = Some(container(tabs).style(widgets::tab_bar));
         }
-        let panel_button = side_panel_available.then(|| side_panel_button(self.side_panel_open));
         let settings_are_pending = self.pending_settings_changes();
-        let heading = page_header(
-            breadcrumb.into(),
-            profile_controls.map(Into::into),
-            panel_button,
-        );
+        let heading = page_header(breadcrumb.into(), profile_controls.map(Into::into));
         let floating_card = if process_actions_open {
             None
         } else if settings_are_pending {
@@ -4561,7 +4543,6 @@ mod tests {
                             text("Home > Section > Feature").into(),
                             profiles
                                 .then(|| button(text("Plugged In / On Battery")).height(32).into()),
-                            available.then(|| button(text("Side panel")).height(32).into()),
                         );
                         let workspace = page_canvas(
                             heading,
@@ -4742,7 +4723,7 @@ mod tests {
     }
 
     #[test]
-    fn closing_dock_with_keyboard_returns_focus_to_its_toolbar_button() {
+    fn closing_dock_with_keyboard_returns_focus_to_its_title_bar_button() {
         use iced::advanced::{
             layout,
             widget::{operation::focusable, Operation, Tree},
@@ -4755,11 +4736,17 @@ mod tests {
         let limits = layout::Limits::new(iced::Size::ZERO, viewport.size());
         let dock = |open: bool| {
             let workspace = iced::widget::column![
-                page_header(text("Editor").into(), None, Some(side_panel_button(open))),
+                page_header(text("Editor").into(), None),
                 button(text("Editor action")).on_press(Message::Save),
             ];
             let panel = open.then(|| iced::widget::Space::new().height(Fill).into());
-            side_panel_dock(workspace.into(), panel, design::SIDE_PANEL_WIDTH)
+            window_frame::view(
+                side_panel_dock(workspace.into(), panel, design::SIDE_PANEL_WIDTH),
+                false,
+                Some(open),
+                true,
+                Message::WindowAction,
+            )
         };
         let activate =
             |view: &mut Element<'_, Message>, tree: &mut Tree, layout: Layout<'_>, key| {
@@ -4816,7 +4803,7 @@ mod tests {
                 .operate(&mut tree, layout, &renderer, &mut restore);
             assert!(matches!(
                 activate(&mut view, &mut tree, layout, key).as_slice(),
-                [Message::ToggleSidePanel]
+                [Message::WindowAction(window_frame::Event::ToggleSidePanel)]
             ));
 
             let mut next = focusable::focus_next::<()>();
@@ -4829,7 +4816,7 @@ mod tests {
                 .operate(&mut tree, layout, &renderer, next.as_mut());
             assert!(matches!(
                 activate(&mut view, &mut tree, layout, key).as_slice(),
-                [Message::Save]
+                [Message::WindowAction(window_frame::Event::Minimize)]
             ));
         }
     }

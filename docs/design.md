@@ -42,7 +42,7 @@ Prefer visible state, compact controls, and predictable rows. Use restrained acc
 
 ## App Shell
 
-- Use a compact themed title bar with the app icon/name and minimize, maximize/restore, and close controls. Follow the active Light, Dark, AMOLED, and accent palette; disable native title-bar decorations. Keep the left navigation and right work area beneath the title bar.
+- Use a compact themed title bar with the app icon/name, a Side panel toggle immediately left of Minimize, and the Maximize/Restore and Close controls. Follow the active Light, Dark, AMOLED, and accent palette. Disable native title-bar decorations and keep the left navigation and work area beneath the title bar.
 - Iced owns native dragging, resizing, minimizing, and maximizing. The caption supports drag and double-click maximize/restore; restored windows expose edge/corner resize targets. Both custom and native close requests use the existing tray, unsaved-change, and shutdown handling. Keep window controls available above dialogs.
 - Use a permanent 88px icon-and-label rail. Main entries are 64px high; center each icon and its actual one- or two-line label together vertically with equal top and bottom insets.
   Group chevrons overlay the icon row's right edge. Search, primary items, and bottom shortcuts share the same 76px item width and centerline. Keep the thin primary scrollbar within the existing 6px outer padding; do not apply the wider page gutter to the navigation rail. Log, Settings, and About stay below the scrollable primary list.
@@ -64,7 +64,7 @@ Prefer visible state, compact controls, and predictable rows. Use restrained acc
 - The rail stays 88px wide plus its divider. Keep content geometry independent of flyout state and the right status rail independent.
 - Center the shared header and content canvas within the work area beside the primary rail and any open side panel, with shared padding and a 1440px width cap. Every page reserves the same 48px breadcrumb area and 32px toolbar, including pages without power-source selectors, so page content starts at a stable position.
 - The right side panel is a 320px dock beside the editor, reserving its own width without covering content. Both areas remain interactive. Start closed and retain its open state throughout navigation, search, focus changes, and settings edits. Close only through panel controls. Pages without panel content use the full canvas and preserve the session's open preference for the next supported page. Keep existing tabs, scrolling, and actions. Dialogs cover both areas. There is no collapsed strip or persisted mode setting.
-- The side panel Close button returns focus to the toolbar's Side panel button so keyboard navigation can continue in the editor.
+- The title-bar toggle shows the side panel's current state and is inactive while a modal is open or the page has no panel. The in-panel Close button returns keyboard focus to the title-bar toggle.
 - Navigation labels and page sections live in `src/ui.rs`; page rendering
   dispatch stays in `WinderustApp::page_view` in `src/ui/app.rs`.
 
@@ -215,7 +215,7 @@ hover/press; background shading supplies feedback.
 ## Settings Pages
 
 - Settings and its Winderust Behaviour, Language and Appearance, and Experimental
-  Features pages have no side panel or Side panel button. Keep help inline.
+  Features pages keep help inline and use the full canvas.
 - The Settings Files card explains each file action before its picker opens. Export includes
   unsaved settings edits. A valid import replaces the active settings immediately and requires
   a clean settings draft.

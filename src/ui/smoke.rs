@@ -95,7 +95,20 @@ impl Run {
 
     fn scenarios(pages: &[Page]) -> VecDeque<usize> {
         let extra_start = pages.len() * 2;
-        if std::env::args().any(|arg| arg == "--feature-tabs-only") {
+        if std::env::args().any(|arg| arg == "--side-panel-only") {
+            (0..extra_start)
+                .filter(|index| {
+                    matches!(
+                        pages[index % pages.len()],
+                        Page::Home | Page::PowerPlanControl
+                    )
+                })
+                .chain(
+                    [0, 1, 16, DOCK_FOCUS_WIDE, DOCK_FOCUS_COMPACT]
+                        .map(|extra| extra_start + extra),
+                )
+                .collect()
+        } else if std::env::args().any(|arg| arg == "--feature-tabs-only") {
             std::iter::once(0)
                 .chain((0..extra_start).filter(|index| {
                     let page = pages[index % pages.len()];
@@ -644,6 +657,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             let _ = app.update(Message::Processes(ProcessMessage::Sort(Sort::GpuUsage)));
         }
         let was_open = app.side_panel_open;
+        let toggle_side_panel = || Message::WindowAction(window_frame::Event::ToggleSidePanel);
         let navigate = app.update(Message::Page(page));
         let feature_tab = match extra {
             Some(index @ FEATURE_TAB_STATES_START..) => {
@@ -840,12 +854,12 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                     | Page::TimerResolution
             )
         {
-            let _ = app.update(Message::ToggleSidePanel);
+            app.side_panel_open = true;
             assert_eq!(app.side_panel_tab, SidePanelTab::Status);
         }
         if matches!(extra, Some(5 | 70 | 71)) {
             assert!(SidePanelTab::for_page(page).contains(&SidePanelTab::Presets));
-            let _ = app.update(Message::ToggleSidePanel);
+            app.side_panel_open = true;
             let _ = app.update(Message::SidePanelTab(SidePanelTab::Presets));
             assert!(app.side_panel_open);
             assert_eq!(app.side_panel_tab, SidePanelTab::Presets);
@@ -1022,7 +1036,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
         }
         if extra == Some(9) {
             let before = app.side_panel_open;
-            let _ = app.update(Message::ToggleSidePanel);
+            let _ = app.update(toggle_side_panel());
             assert_eq!(app.side_panel_open, !before);
         }
         if extra == Some(20) {
@@ -1288,7 +1302,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             }
             let _ = app.update(Message::Page(page));
             assert_eq!(app.side_panel_tab, SidePanelTab::Status);
-            let _ = app.update(Message::ToggleSidePanel);
+            let _ = app.update(toggle_side_panel());
             assert!(app.side_panel_open);
             let _ = app.update(Message::SearchKeyboard {
                 key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape),
@@ -1305,7 +1319,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             assert!(app.side_panel_open);
             let _ = app.update(Message::CloseSidePanel);
             assert!(!app.side_panel_open);
-            let _ = app.update(Message::ToggleSidePanel);
+            let _ = app.update(toggle_side_panel());
             app.settings = SettingsEditor::with_settings((*app.settings).clone());
         }
         if matches!(extra, Some(44..=46)) {
@@ -1313,13 +1327,11 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             let _ = app.update(Message::SidePanelTab(tab));
             assert_eq!(app.side_panel_tab, tab);
             assert!(app.side_panel(is_plugged_in).is_some());
-            let _ = app.update(Message::ToggleSidePanel);
-            assert!(app.side_panel_open);
+            app.side_panel_open = true;
             app.settings = SettingsEditor::with_settings((*app.settings).clone());
         }
         if matches!(extra, Some(16 | 47..=50)) {
-            let _ = app.update(Message::ToggleSidePanel);
-            assert!(app.side_panel_open);
+            app.side_panel_open = extra != Some(50);
             app.settings = SettingsEditor::with_settings((*app.settings).clone());
         }
         if matches!(extra, Some(66..=69)) {
@@ -1399,7 +1411,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                 }),
                 ..Default::default()
             });
-            let _ = app.update(Message::ToggleSidePanel);
+            app.side_panel_open = true;
             let _ = app.update(Message::SidePanelTab(SidePanelTab::Status));
             assert_eq!(app.side_panel_tab, SidePanelTab::Status);
         }
@@ -1474,7 +1486,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                 let _ = app.update(Message::Adaptive(AdaptiveMessage::Collapse(
                     TuningGroup::CpuTriggers,
                 )));
-                let _ = app.update(Message::ToggleSidePanel);
+                app.side_panel_open = true;
                 TuningTab::Setup
             } else {
                 TuningTab::Exclusions
@@ -1493,7 +1505,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                     crate::config::ActionLogMode::Full
                 };
             let _ = app.update(Message::ActionLog(action_log::Message::LogMode(mode)));
-            let _ = app.update(Message::ToggleSidePanel);
+            app.side_panel_open = true;
             assert!(app.pending_settings_changes());
         }
         if matches!(extra, Some(87..=88)) {
@@ -1507,7 +1519,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             status.scanned_processes = 7;
             status.adjusted_processes = 3;
             status.efficiency_mode_shadowed_processes = 2;
-            let _ = app.update(Message::ToggleSidePanel);
+            app.side_panel_open = true;
             let _ = app.update(Message::SidePanelTab(SidePanelTab::Status));
             assert_eq!(app.side_panel_tab, SidePanelTab::Status);
         }
@@ -1697,7 +1709,21 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
         if matches!(extra, Some(DOCK_FOCUS_WIDE | DOCK_FOCUS_COMPACT)) {
             app.settings.cancel();
             app.reset_editors();
-            app.side_panel_open = true;
+            assert!(!app.side_panel_open);
+            for open in [true, false] {
+                let _ = app.update(toggle_side_panel());
+                assert_eq!(app.side_panel_open, open);
+                for destination in [Page::Home, Page::PowerPlanControl, page] {
+                    let _ = app.update(Message::Page(destination));
+                    assert_eq!(app.page, destination);
+                    assert_eq!(app.side_panel_open, open);
+                    let supported = destination != Page::Home;
+                    assert_eq!(app.side_panel_toggle_state(), supported.then_some(open));
+                    assert_eq!(app.side_panel(is_plugged_in).is_some(), supported);
+                }
+            }
+            let _ = app.update(toggle_side_panel());
+            assert!(app.side_panel_open);
         }
         if matches!(extra, Some(MEMORY_TRIM_PARTIAL | MEMORY_TRIM_UNKNOWN)) {
             use crate::memory_trim::{MemoryTrimReadback, MemoryTrimSnapshot, MemoryTrimStatus};

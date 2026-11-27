@@ -209,6 +209,8 @@ Append `--memory-trim-only` to check Memory Trim settings in both languages and
 at wide and compact sizes.
 Append `--priority-control-only` to check the Priority Control detection cards,
 preservation switches, and child-protection drafts in both languages.
+Append `--side-panel-only` to check the title bar toggle and dock in both languages
+and window sizes, including navigation through a page without panel content.
 Append `--watchdog-only` to capture the configured Watchdog pages and rule
 editors in both languages.
 
