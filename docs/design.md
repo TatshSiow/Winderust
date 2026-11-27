@@ -425,10 +425,12 @@ hover/press; background shading supplies feedback.
 - Resource Thresholds and Instance Limits keep shared options under Settings
   below their enable switches. Settings remain editable while the feature is off.
 - App Suspension Setup puts Background Suspension Delay and Auto resume when focused
-  under Settings. Advanced settings follows on Setup with separate TCP activity,
-  Audio playback, and Temporary resume cards. Show each timer with its corresponding
-  switch and keep it editable while the switch is off. Setup can scroll the last
-  timer above the floating Save card. Per-app policies live in Custom Rules.
+  under Settings. Follow with TCP detection, Audio detection, and Temporary resume
+  sections. Group Detect TCP activity and Detect audio playback with their own
+  delays. Put Resume periodically, Resume every, and Resume duration together in
+  Temporary resume. Keep the timers editable while their switches are off and allow
+  the last timer to scroll above the floating Save card. Per-app policies live in
+  Custom Rules.
 - Memory Trim starts with a Manual trim card above Enable Memory Trim. Trim now
   sits on the right, uses saved settings, and shows the running state while a request
   is pending. Show the last completed trim in the same card, with the observed

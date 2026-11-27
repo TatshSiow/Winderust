@@ -295,39 +295,41 @@ impl Editor {
                     .into(),
                 ])),
             ),
-            widgets::settings_section("common.advanced_settings", self.advanced(s)),
+            widgets::settings_section(
+                "app_suspension.tcp_detection_section",
+                widgets::settings_card(widgets::settings_rows([
+                    widgets::setting_row(
+                        "app_suspension.network_detection",
+                        widgets::switch(s.network_wake_enabled, Some(Message::Network)),
+                    )
+                    .into(),
+                    self.delay_row(Delay::Network, s),
+                ])),
+            ),
+            widgets::settings_section(
+                "app_suspension.audio_detection_section",
+                widgets::settings_card(widgets::settings_rows([
+                    widgets::setting_row(
+                        "app_suspension.audio_detection",
+                        widgets::switch(s.audio_wake_enabled, Some(Message::Audio)),
+                    )
+                    .into(),
+                    self.delay_row(Delay::Audio, s),
+                ])),
+            ),
+            widgets::settings_section(
+                "app_suspension.temporary_resume_section",
+                widgets::settings_card(widgets::settings_rows([
+                    widgets::setting_row(
+                        "app_suspension.temporary_resume",
+                        widgets::switch(s.temporary_thaw_enabled, Some(Message::Thaw)),
+                    )
+                    .into(),
+                    self.delay_row(Delay::ThawInterval, s),
+                    self.delay_row(Delay::ThawDuration, s),
+                ])),
+            ),
         ]
-    }
-
-    fn advanced<'a>(&'a self, s: &'a AppSuspensionSettings) -> iced::widget::Column<'a, Message> {
-        column![
-            widgets::settings_card(widgets::settings_rows([
-                widgets::setting_row(
-                    "app_suspension.network_detection",
-                    widgets::switch(s.network_wake_enabled, Some(Message::Network)),
-                )
-                .into(),
-                self.delay_row(Delay::Network, s),
-            ])),
-            widgets::settings_card(widgets::settings_rows([
-                widgets::setting_row(
-                    "app_suspension.audio_detection",
-                    widgets::switch(s.audio_wake_enabled, Some(Message::Audio)),
-                )
-                .into(),
-                self.delay_row(Delay::Audio, s),
-            ])),
-            widgets::settings_card(widgets::settings_rows([
-                widgets::setting_row(
-                    "app_suspension.temporary_resume",
-                    widgets::switch(s.temporary_thaw_enabled, Some(Message::Thaw)),
-                )
-                .into(),
-                self.delay_row(Delay::ThawInterval, s),
-                self.delay_row(Delay::ThawDuration, s),
-            ])),
-        ]
-        .spacing(widgets::CARD_GAP)
     }
 
     fn custom_rules<'a>(
