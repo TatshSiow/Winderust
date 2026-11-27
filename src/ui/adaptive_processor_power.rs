@@ -170,6 +170,25 @@ impl Editor {
         self.preset_dialog = None;
     }
 
+    pub(super) fn tabs(&self, compact: bool) -> Element<'static, Message> {
+        widgets::editor_tabs(
+            [
+                (
+                    Tab::BasePolicy,
+                    "adaptive_processor_power.base_processor_policy",
+                ),
+                (
+                    Tab::DemandProfiles,
+                    "adaptive_processor_power.demand_profiles",
+                ),
+            ]
+            .map(|(tab, key)| (tab, t!(key).to_string())),
+            self.tab,
+            compact,
+            Message::Tab,
+        )
+    }
+
     pub(super) fn view<'a>(&'a self, s: &'a SettingsEditor) -> Element<'a, Message> {
         let numbers = &self.numbers;
         macro_rules! number {
@@ -222,19 +241,6 @@ impl Editor {
             };
         }
         let source = s.selected_power_source();
-        let tabs = widgets::segmented_tabs(
-            [
-                (
-                    Tab::BasePolicy,
-                    "adaptive_processor_power.base_processor_policy",
-                ),
-                (
-                    Tab::DemandProfiles,
-                    "adaptive_processor_power.demand_profiles",
-                ),
-            ]
-            .map(|(tab, key)| (t!(key).to_string(), self.tab == tab, Message::Tab(tab))),
-        );
         let help_key = match self.tab {
             Tab::BasePolicy => "adaptive_processor_power.base_processor_policy_help",
             Tab::DemandProfiles => "adaptive_processor_power.demand_profiles_help",
@@ -374,12 +380,11 @@ impl Editor {
         }) {
             body = body.push(text(error).style(text::danger));
         }
-        column![
-            tabs,
-            scrollable(body).id(CONTENT_ID).width(Fill).height(Fill)
-        ]
-        .spacing(widgets::CARD_GAP)
-        .into()
+        scrollable(body)
+            .id(CONTENT_ID)
+            .width(Fill)
+            .height(Fill)
+            .into()
     }
 }
 
@@ -517,7 +522,7 @@ mod tests {
                     &layout::Limits::new(Size::ZERO, size),
                 );
                 let layout = layout::Layout::new(&node);
-                let body = unwrap_single_child(layout.children().nth(1).unwrap());
+                let body = unwrap_single_child(layout);
                 let mut messages = Vec::new();
                 for section in body.children().skip(3) {
                     let rows = unwrap_single_child(section.children().last().unwrap());

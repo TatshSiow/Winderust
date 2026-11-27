@@ -442,6 +442,50 @@ pub(super) fn segmented_tabs<'a, M: Clone + 'a>(
     iced::widget::container(tabs.wrap()).style(tab_bar).into()
 }
 
+pub(super) fn editor_tabs<'a, T: Copy + PartialEq + 'static, M: Clone + 'a>(
+    choices: impl IntoIterator<Item = (T, String)>,
+    selected: T,
+    compact: bool,
+    on_select: impl Fn(T) -> M + 'a,
+) -> Element<'a, M> {
+    if compact {
+        compact_header_select(choices, selected, 170, on_select)
+    } else {
+        segmented_tabs(
+            choices
+                .into_iter()
+                .map(|(value, label)| (label, value == selected, on_select(value))),
+        )
+    }
+}
+
+pub(super) fn compact_header_select<'a, T: Copy + PartialEq + 'static, M: Clone + 'a>(
+    choices: impl IntoIterator<Item = (T, String)>,
+    selected: T,
+    width: u32,
+    on_select: impl Fn(T) -> M + 'a,
+) -> Element<'a, M> {
+    #[derive(Clone, PartialEq)]
+    struct Choice<T>(T, String);
+
+    impl<T> std::fmt::Display for Choice<T> {
+        fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str(&self.1)
+        }
+    }
+
+    let options: Vec<_> = choices
+        .into_iter()
+        .map(|(value, label)| Choice(value, label))
+        .collect();
+    let selected = options.iter().find(|option| option.0 == selected).cloned();
+    pick_list(options, selected, move |choice| on_select(choice.0))
+        .same_option(|left, right| left.0 == right.0)
+        .compact_padding()
+        .width(width)
+        .into()
+}
+
 pub(super) fn tab_bar(theme: &iced::Theme) -> iced::widget::container::Style {
     let mut style = surface(theme);
     style.background = None;

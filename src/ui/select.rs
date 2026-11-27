@@ -52,6 +52,7 @@ impl<T> State<T> {
 
 pub(super) struct Select<'a, T: ToString + PartialEq + Clone, M> {
     field: Field<'a, T, M>,
+    padding: iced::Padding,
     width: Length,
     options: Rc<[T]>,
     same_option: fn(&T, &T) -> bool,
@@ -73,19 +74,20 @@ impl<'a, T: ToString + PartialEq + Clone + 'a, M: Clone + 'a> Select<'a, T, M> {
             .and_then(|value| options.iter().position(|option| option == value));
         let choose: Rc<dyn Fn(T) -> M> = Rc::new(choose);
         let callback = choose.clone();
+        let padding = iced::Padding {
+            right: (design::SELECT_PADDING[1] as u32 + design::ICON_SIZE + design::space::SMALL)
+                as f32,
+            ..iced::Padding::from(design::SELECT_PADDING)
+        };
         let field =
             iced::widget::pick_list(Rc::clone(&options), selected, move |value| callback(value))
                 .text_size(design::typography::BODY)
-                .padding(iced::Padding {
-                    right: (design::SELECT_PADDING[1] as u32
-                        + design::ICON_SIZE
-                        + design::space::SMALL) as f32,
-                    ..iced::Padding::from(design::SELECT_PADDING)
-                })
+                .padding(padding)
                 .handle(iced::widget::pick_list::Handle::None)
                 .style(widgets::select_field);
         Self {
             field,
+            padding,
             width: Length::Shrink,
             options,
             same_option: T::eq,
@@ -95,6 +97,14 @@ impl<'a, T: ToString + PartialEq + Clone + 'a, M: Clone + 'a> Select<'a, T, M> {
             menu: None,
         }
     }
+
+    pub(super) fn compact_padding(mut self) -> Self {
+        self.padding.left = design::space::CONTROL as f32;
+        self.padding.right = self.padding.left + (design::ICON_SIZE + design::space::TIGHT) as f32;
+        self.field = self.field.padding(self.padding);
+        self
+    }
+
     pub(super) fn same_option(mut self, same_option: fn(&T, &T) -> bool) -> Self {
         self.same_option = same_option;
         self
@@ -252,11 +262,7 @@ impl<'a, T: ToString + PartialEq + Clone + 'static, M: Clone + 'a> Widget<M, The
     ) -> layout::Node {
         // Only shrink-to-fit fields need to shape every option to find their width.
         if self.width != Length::Shrink {
-            let padding = iced::Padding {
-                right: (design::SELECT_PADDING[1] as u32 + design::ICON_SIZE + design::space::SMALL)
-                    as f32,
-                ..iced::Padding::from(design::SELECT_PADDING)
-            };
+            let padding = self.padding;
             let text_size = iced::Pixels(design::typography::BODY as f32);
             let intrinsic = Size::new(
                 text_size.0 + padding.left,
@@ -301,7 +307,7 @@ impl<'a, T: ToString + PartialEq + Clone + 'static, M: Clone + 'a> Widget<M, The
             renderer,
             "icons/chevron-right.svg",
             Rectangle {
-                x: bounds.x + bounds.width - design::SELECT_PADDING[1] as f32 - size,
+                x: bounds.x + bounds.width - self.padding.left - size,
                 y: bounds.center_y() - size / 2.0,
                 width: size,
                 height: size,

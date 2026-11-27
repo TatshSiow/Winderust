@@ -710,6 +710,15 @@ impl Editor {
         .into()
     }
 
+    pub(super) fn tabs(&self, compact: bool) -> Element<'static, Message> {
+        super::widgets::editor_tabs(
+            TuningTab::ALL.map(|tab| (tab, t!(tab.key()).to_string())),
+            self.tuning_tab,
+            compact,
+            Message::TuningTab,
+        )
+    }
+
     pub(super) fn view<'a>(
         &'a self,
         live: &'a Settings,
@@ -842,7 +851,6 @@ impl Editor {
             &self.live_numbers
         };
         let editable = !preset || self.preview.is_none();
-        let mut body = column![].spacing(super::widgets::CARD_GAP);
         macro_rules! number {
             ($key:expr, $min:expr, $max:expr, $($field:ident).+) => {{
                 let key = stringify!($($field).+);
@@ -887,16 +895,7 @@ impl Editor {
             };
         }
         let tab = interrupt_timing.map_or(TuningTab::Setup, |_| self.tuning_tab);
-        if !preset {
-            body = body.push(super::widgets::segmented_tabs(TuningTab::ALL.map(|next| {
-                (
-                    t!(next.key()).to_string(),
-                    next == tab,
-                    Message::TuningTab(next),
-                )
-            })));
-        }
-        let header = body;
+        let header = column![].spacing(super::widgets::CARD_GAP);
         let setup = (!preset && tab == TuningTab::Setup).then(|| self.setup_view(live));
         let header = if scroll_live_header {
             header.extend(setup)

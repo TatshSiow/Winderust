@@ -61,7 +61,9 @@ const FEATURE_TAB_STATES: &[(Page, FeatureTab)] = &[
     (Page::SleepPrevention, FeatureTab::CustomRules),
     (Page::ThreadPriority, FeatureTab::CustomRules),
 ];
-const EXTRA_STATES: usize = FEATURE_TAB_STATES_START + FEATURE_TAB_STATES.len();
+const FEATURE_TAB_STATES_END: usize = FEATURE_TAB_STATES_START + FEATURE_TAB_STATES.len();
+const NAVIGATION_PROCESSOR_POWER_COMPACT: usize = FEATURE_TAB_STATES_END;
+const EXTRA_STATES: usize = NAVIGATION_PROCESSOR_POWER_COMPACT + 1;
 pub(super) struct Run {
     pages: Vec<Page>,
     remaining: VecDeque<usize>,
@@ -136,6 +138,7 @@ impl Run {
                         NAVIGATION_POWER_COMPACT_ZH_TW,
                         NAVIGATION_RESIZE_TALL,
                         NAVIGATION_RESIZE_COMPACT,
+                        NAVIGATION_PROCESSOR_POWER_COMPACT,
                     ]
                     .map(|extra| extra_start + extra),
                 )
@@ -199,7 +202,7 @@ impl Run {
                         CPU_LIMITER_AFFINITY_COMPACT,
                     ]
                     .into_iter()
-                    .chain(FEATURE_TAB_STATES_START..EXTRA_STATES)
+                    .chain(FEATURE_TAB_STATES_START..FEATURE_TAB_STATES_END)
                     .map(|extra| extra_start + extra),
                 )
                 .collect()
@@ -294,11 +297,12 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                 | NAVIGATION_CPU_COMPACT_ZH_TW
                 | NAVIGATION_POWER_COMPACT
                 | NAVIGATION_POWER_COMPACT_ZH_TW
+                | NAVIGATION_PROCESSOR_POWER_COMPACT
         )
     );
     if run.ticks == 0 {
         let chinese = extra.map_or(run.index >= run.pages.len(), |index| {
-            index >= FEATURE_TAB_STATES_START && index % 2 == 1
+            (FEATURE_TAB_STATES_START..FEATURE_TAB_STATES_END).contains(&index) && index % 2 == 1
                 || matches!(
                     index,
                     1 | 5
@@ -391,7 +395,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                 | ADAPTIVE_RESTRAINT_RECOVERY
                 | ADAPTIVE_SETUP_ENABLED,
             ) => Page::AdaptiveEngine,
-            Some(5 | 70 | 71) => Page::AdaptiveProcessorPower,
+            Some(5 | 70 | 71 | NAVIGATION_PROCESSOR_POWER_COMPACT) => Page::AdaptiveProcessorPower,
             Some(11 | MEMORY_TRIM_PARTIAL | MEMORY_TRIM_UNKNOWN) => Page::MemoryTrim,
             Some(NAVIGATION_RESIZE_TALL) => Page::AdvancedControls,
             Some(KEEP_AWAKE_READY | KEEP_AWAKE_ACTIVE | KEEP_AWAKE_MIXED) => Page::SleepPrevention,
@@ -430,7 +434,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             Some(62..=65) => Page::InstanceLimits,
             Some(66..=69) => Page::InstanceBalancing,
             Some(83) => Page::ByTime,
-            Some(index @ FEATURE_TAB_STATES_START..) => {
+            Some(index @ FEATURE_TAB_STATES_START..FEATURE_TAB_STATES_END) => {
                 FEATURE_TAB_STATES[index - FEATURE_TAB_STATES_START].0
             }
             _ => run.pages[run.index % run.pages.len()],
@@ -732,7 +736,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
         }
         let navigate = app.update(Message::Page(page));
         let feature_tab = match extra {
-            Some(index @ FEATURE_TAB_STATES_START..) => {
+            Some(index @ FEATURE_TAB_STATES_START..FEATURE_TAB_STATES_END) => {
                 FEATURE_TAB_STATES[index - FEATURE_TAB_STATES_START].1
             }
             Some(
@@ -1387,6 +1391,10 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
 
             let _ = app.update(Message::AdaptiveProcessorPower(PowerMessage::NewPreset));
             assert!(app.adaptive_processor_power.preset_open());
+        } else if extra == Some(NAVIGATION_PROCESSOR_POWER_COMPACT) {
+            let _ = app.update(Message::AdaptiveProcessorPower(
+                adaptive_processor_power::Message::Tab(adaptive_processor_power::Tab::BasePolicy),
+            ));
         }
         if let Some(index @ 73..=76) = extra {
             exercise_cpu_preset_dialog(app, index);
@@ -1877,8 +1885,12 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             Some(33 | NAVIGATION_RESIZE_TALL) => iced::Size::new(900.0, 1000.0),
             Some(34) => iced::Size::new(1536.0, 960.0),
             Some(4 | 70 | ADAPTIVE_RESTRAINT_RECOVERY) => iced::Size::new(1120.0, 920.0),
-            Some(FEATURE_TAB_STATES_START..) if chinese => iced::Size::new(900.0, 620.0),
-            Some(FEATURE_TAB_STATES_START..) => iced::Size::new(1120.0, 760.0),
+            Some(FEATURE_TAB_STATES_START..FEATURE_TAB_STATES_END) if chinese => {
+                iced::Size::new(900.0, 620.0)
+            }
+            Some(FEATURE_TAB_STATES_START..FEATURE_TAB_STATES_END) => {
+                iced::Size::new(1120.0, 760.0)
+            }
             _ => iced::Size::new(
                 if extra.is_some_and(|i| i >= 13) {
                     1920.0
@@ -1920,8 +1932,14 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
     if compact_navigation {
         match run.ticks {
             3 => {
+                let section = app.page.section_landing_page();
+                let previous = navigation::children(section)
+                    .into_iter()
+                    .take_while(|&page| page != app.page)
+                    .last()
+                    .unwrap_or(section);
                 return Some(iced::widget::operation::focus(navigation::page_id(
-                    app.page.section_landing_page(),
+                    previous,
                 )));
             }
             5 => return Some(crate::ui::keyboard_focus::move_focus(true, false)),
@@ -2091,6 +2109,16 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                 620.0
             };
             assert!((app.window_settings.size.height - height).abs() <= 1.0);
+        }
+        if extra == Some(NAVIGATION_PROCESSOR_POWER_COMPACT) {
+            assert_eq!(app.page, Page::AdaptiveProcessorPower);
+            assert_eq!(
+                app.settings.general.language,
+                crate::config::AppLanguage::English
+            );
+            assert!((app.window_settings.size.width - 900.0).abs() <= 1.0);
+            assert!((app.window_settings.size.height - 620.0).abs() <= 1.0);
+            assert!(!app.blocking_editor_open());
         }
         Some(iced::window::screenshot(window).map(Message::SmokeScreenshot))
     } else {

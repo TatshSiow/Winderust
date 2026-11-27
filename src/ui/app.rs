@@ -111,24 +111,95 @@ fn reset_scroll(id: &'static str) -> Task<Message> {
     iced::widget::operation::snap_to(id, iced::widget::scrollable::RelativeOffset::START)
 }
 
-fn page_header(
+const EDITOR_TABS_MIN_WIDTH: f32 = 720.0;
+
+fn page_header<'a>(
     title: String,
-    profiles: Option<Element<'_, Message>>,
-    reserve_toolbar: bool,
-) -> Element<'_, Message> {
-    let title = container(widgets::heading(title, design::typography::SUBTITLE))
-        .center_y(design::PAGE_TITLE_HEIGHT)
-        .width(Fill);
-    if !reserve_toolbar {
-        return title.into();
+    tabs: Option<Element<'a, Message>>,
+    profiles: Option<Element<'a, Message>>,
+    compact: bool,
+) -> Element<'a, Message> {
+    let compact_title = compact && tabs.is_some() && profiles.is_some();
+    row![container(
+        widgets::heading(
+            title,
+            if compact_title {
+                design::typography::SECTION
+            } else {
+                design::typography::SUBTITLE
+            },
+        )
+        .wrapping(text::Wrapping::WordOrGlyph)
+    )
+    .center_y(Fill)
+    .width(Fill),]
+    .extend(tabs)
+    .extend(profiles)
+    .height(design::PAGE_TITLE_HEIGHT)
+    .spacing(if compact {
+        design::space::CONTROL
+    } else {
+        design::space::MEDIUM
+    })
+    .align_y(iced::Center)
+    .into()
+}
+
+fn power_source_tabs(
+    selected: PowerSourceProfile,
+    plugged_in: Option<bool>,
+    compact: bool,
+) -> Element<'static, Message> {
+    let profiles = [
+        (
+            PowerSourceProfile::PluggedIn,
+            "power_source.plugged_in",
+            true,
+        ),
+        (
+            PowerSourceProfile::OnBattery,
+            "power_source.on_battery",
+            false,
+        ),
+    ];
+    if compact {
+        return widgets::compact_header_select(
+            profiles.map(|(profile, key, source)| {
+                let indicator = if plugged_in == Some(source) {
+                    " •"
+                } else {
+                    ""
+                };
+                (profile, format!("{}{indicator}", t!(key)))
+            }),
+            selected,
+            124,
+            Message::PowerSource,
+        );
     }
-    let toolbar = container(profiles.unwrap_or_else(|| iced::widget::Space::new().into()))
-        .center_y(design::BUTTON_HEIGHT)
-        .width(Fill);
-    column![title, toolbar]
-        .spacing(design::space::SMALL)
-        .width(Fill)
-        .into()
+    let tabs = row(profiles.map(|(profile, key, source)| {
+        let live = plugged_in == Some(source);
+        let label = row![
+            widgets::heading(t!(key).to_string(), design::typography::BODY),
+            container(iced::widget::Space::new())
+                .width(6)
+                .height(6)
+                .style(move |theme: &Theme| container::Style {
+                    background: live.then(|| theme.palette().primary.into()),
+                    border: iced::border::rounded(3),
+                    ..Default::default()
+                }),
+        ]
+        .spacing(design::space::TIGHT)
+        .align_y(iced::Center);
+        button(container(label).center_y(Fill))
+            .height(design::BUTTON_HEIGHT)
+            .padding([0, design::space::MEDIUM as u16])
+            .on_press(Message::PowerSource(profile))
+            .style(move |theme, status| widgets::tab_style(theme, status, selected == profile))
+            .into()
+    }));
+    container(tabs).style(widgets::tab_bar).into()
 }
 
 const FLOATING_CARD_BOTTOM_INSET: u32 = design::space::CONTROL;
@@ -3348,55 +3419,30 @@ impl WinderustApp {
             .then(|| self.side_panel(read_power_source))
             .flatten()
             .map(shield);
-        let mut profile_controls = None;
-        if self.page.supports_power_source_profiles() {
-            let plugged_in = read_power_source();
-            let mut tabs = row![];
-            for (profile, key, live) in [
-                (
-                    PowerSourceProfile::PluggedIn,
-                    "power_source.plugged_in",
-                    plugged_in == Some(true),
-                ),
-                (
-                    PowerSourceProfile::OnBattery,
-                    "power_source.on_battery",
-                    plugged_in == Some(false),
-                ),
-            ] {
-                let selected = self.power_source == profile;
-                let mut label = row![widgets::heading(
-                    t!(key).to_string(),
-                    design::typography::BODY
-                )]
-                .spacing(design::space::TIGHT)
-                .align_y(iced::Center);
-                label = label.push(
-                    container(iced::widget::Space::new())
-                        .width(6)
-                        .height(6)
-                        .style(move |theme: &Theme| container::Style {
-                            background: live.then(|| theme.palette().primary.into()),
-                            border: iced::border::rounded(3),
-                            ..Default::default()
-                        }),
-                );
-                tabs = tabs.push(
-                    button(container(label).center_y(Fill))
-                        .height(32)
-                        .padding([0, design::space::MEDIUM as u16])
-                        .on_press(Message::PowerSource(profile))
-                        .style(move |theme, status| widgets::tab_style(theme, status, selected)),
-                );
-            }
-            profile_controls = Some(container(tabs).style(widgets::tab_bar));
-        }
+        let editor_width = size.width
+            - navigation_width
+            - side_panel.as_ref().map_or(0.0, |_| side_panel_width + 1.0)
+            - 2.0 * f32::from(page_padding);
+        let compact = editor_width < EDITOR_TABS_MIN_WIDTH;
+        let tabs = match self.page {
+            Page::AdaptiveEngine => Some(self.adaptive.tabs(compact).map(Message::Adaptive)),
+            Page::AdaptiveProcessorPower => Some(
+                self.adaptive_processor_power
+                    .tabs(compact)
+                    .map(Message::AdaptiveProcessorPower),
+            ),
+            page => feature_tabs::view(page, self.feature_tab(), compact, Message::FeatureTab),
+        };
+        let compact_profiles = compact && tabs.is_some();
+        let profile_controls = if self.page == Page::AdvancedPowerPlanTuning {
+            Some(self.power_tuning.tabs().map(Message::PowerTuning))
+        } else {
+            self.page.supports_power_source_profiles().then(|| {
+                power_source_tabs(self.power_source, read_power_source(), compact_profiles)
+            })
+        };
         let settings_are_pending = self.pending_settings_changes();
-        let heading = page_header(
-            self.page.label(),
-            profile_controls.map(Into::into),
-            self.page != Page::Dashboard,
-        );
+        let heading = page_header(self.page.label(), tabs, profile_controls, compact);
         let floating_card = if process_actions_open {
             None
         } else if settings_are_pending {
@@ -3408,10 +3454,6 @@ impl WinderustApp {
         };
         let content_height = (size.height - design::NAVIGATION_ROW_HEIGHT as f32 - 1.0).max(0.0);
         let content = self.page_view(settings_are_pending, read_power_source, content_height);
-        let content = match feature_tabs::view(self.page, self.feature_tab(), Message::FeatureTab) {
-            Some(tabs) => column![tabs, content].spacing(widgets::CARD_GAP).into(),
-            None => content,
-        };
         let content = container(super::motion::wrap(
             super::motion::wrap(
                 super::scrolling::repaint_group(content),
@@ -4368,24 +4410,38 @@ mod tests {
     fn save_controls_preserve_the_editor_viewport_and_scroll_range() {
         use iced::advanced::{layout, widget::Tree};
         let renderer = iced::Renderer::new(iced::Font::DEFAULT, iced::Pixels(14.0));
-        for width in [780.0, 1440.0, 1800.0] {
+        for width in [760.0, 1440.0, 1800.0] {
             let size = iced::Size::new(width, 600.0);
             let mut expected = None;
-            for (profiles, has_save_card, has_toast) in [
-                (false, false, false),
-                (true, false, false),
-                (false, true, false),
-                (true, true, false),
-                (false, false, true),
-                (false, true, true),
+            for (tabs, profiles, has_save_card, has_toast) in [
+                (false, false, false, false),
+                (true, false, false, false),
+                (false, true, false, false),
+                (true, true, false, false),
+                (false, false, true, false),
+                (true, true, true, false),
+                (false, false, false, true),
+                (false, true, true, true),
             ] {
                 for available in [false, true] {
                     for open in [false, true] {
+                        let available_width = width - if available && open { 321.0 } else { 0.0 };
+                        let compact = available_width < EDITOR_TABS_MIN_WIDTH;
                         let heading = page_header(
-                            "Feature".into(),
-                            profiles
-                                .then(|| button(text("Plugged In / On Battery")).height(32).into()),
-                            true,
+                            Page::AdaptiveProcessorPower.label(),
+                            tabs.then(|| {
+                                super::super::adaptive_processor_power::Editor::default()
+                                    .tabs(compact)
+                                    .map(Message::AdaptiveProcessorPower)
+                            }),
+                            profiles.then(|| {
+                                power_source_tabs(
+                                    PowerSourceProfile::PluggedIn,
+                                    Some(true),
+                                    compact && tabs,
+                                )
+                            }),
+                            compact,
                         );
                         let workspace = page_canvas(
                             heading,
@@ -4409,7 +4465,6 @@ mod tests {
                             &renderer,
                             &layout::Limits::new(iced::Size::ZERO, size),
                         );
-                        let available_width = width - if available && open { 321.0 } else { 0.0 };
                         assert_eq!(node.children()[0].size().width, available_width);
                         if available && open {
                             assert_eq!(node.children()[1].bounds().x, available_width);
@@ -4418,6 +4473,16 @@ mod tests {
                         let canvas = &workspace.children()[0];
                         let layers = &canvas.children()[0];
                         let column = &layers.children()[0];
+                        let header = &column.children()[0];
+                        assert_eq!(header.size().height, design::PAGE_TITLE_HEIGHT as f32);
+                        assert_eq!(
+                            header.children().len(),
+                            1 + usize::from(tabs) + usize::from(profiles)
+                        );
+                        assert!(header.children().iter().all(|child| {
+                            child.bounds().y >= 0.0
+                                && child.bounds().y + child.size().height <= header.size().height
+                        }));
                         let mut bounds = column.children()[1].bounds();
                         assert_eq!(bounds.y + bounds.height, size.height - PAGE_BOTTOM_INSET);
                         assert_eq!(
@@ -4579,7 +4644,7 @@ mod tests {
         let limits = layout::Limits::new(iced::Size::ZERO, viewport.size());
         let dock = |open: bool| {
             let workspace = iced::widget::column![
-                page_header("Editor".into(), None, true),
+                page_header("Editor".into(), None, None, false),
                 button(text("Editor action")).on_press(Message::Save),
             ];
             let panel = open.then(|| iced::widget::Space::new().height(Fill).into());

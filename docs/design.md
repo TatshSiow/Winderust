@@ -45,7 +45,7 @@ Prefer visible state, compact controls, and predictable rows. Use restrained acc
 - Use a compact themed title bar with the app icon/name, a centered Search input, a Side panel toggle immediately left of Minimize, and the Maximize/Restore and Close controls. Follow the active Light, Dark, AMOLED, and accent palette. The workspace row and work area follow the custom title bar.
 - Iced owns native dragging, resizing, minimizing, and maximizing. The caption supports drag and double-click maximize/restore; restored windows expose edge/corner resize targets. Both custom and native close requests use the existing tray, unsaved-change, and shutdown handling. Keep window controls available above dialogs.
 - Put text-only workspace tabs in one row under the title bar. Selecting a workspace opens its landing page. Highlight the active workspace on its landing page and on each of its child pages.
-- Workspaces with child pages show a left page list beside the editor, starting with the landing page. Highlight the current page in the list and keep feature tabs within the editor. Standalone workspaces use the available width beside any open right Side panel.
+- Workspaces with child pages show a left page list beside the editor, starting with the landing page. Highlight the current page in the list. Standalone workspaces use the available width beside any open right Side panel.
 - When Show enabled feature counts is on in Language and Appearance, display nonzero counts on the Watchdog, Power Plan Control, Priority Control, and CPU Control buttons in the workspace row. Mark enabled features with a dot beside their names in the left page list.
 - Tab moves through the workspace row and page list. Enter or Space opens the focused destination. Use a visible focus outline distinct from the selection tint.
 - Search uses one editable field in the title bar. Clicking the field, typing into it, or invoking a Search shortcut opens a panel aligned with the field above a dimmed workspace. Use the shared Select for the category filter and the shared button for Esc. Keep the panel shadow-free for partial repaints. An empty search in All shows just the filter row. Typing or choosing a category shows results with feature names and parent sections. Vertically center icons, labels, and chevrons in each result row and tint the Enter target.
@@ -56,9 +56,11 @@ Prefer visible state, compact controls, and predictable rows. Use restrained acc
   keeps Winderust in the notification area. Show conflicts and registration
   failures in text. Save commits the selection and Esc cancels recording.
 - Center the shared header and content canvas between the optional page list and
-  Side panel, with shared padding and a 1440px width cap. Reserve a 48px page
-  title area and a 32px toolbar so page content starts at a stable position.
-  Dashboard uses the title area and starts its metric strip below it.
+  Side panel, with shared padding and a 1440px width cap. Use one 48px header
+  row for the page title on the left and any feature tabs and power-source
+  selector on the right. Use a Select for feature tabs below 720px of editor
+  width, and for the power-source selector when both groups share that space.
+  Start editor content directly below the header on every page.
 - The right Side panel docks beside the editor, reserving its own width. Use a 320px dock on wide windows and on standalone pages. When the window is narrower than 1280 logical pixels and the page list is visible, reduce the dock to 280px to leave more room for the editor. Both areas remain interactive. Start closed and retain its open state throughout navigation, search, focus changes, and settings edits. Close through the title-bar toggle or the panel's Close button. Pages with no panel content use the available editor width and preserve the session's open preference for the next supported page. Dialogs cover the work area.
 - The title-bar toggle shows the side panel's current state and is inactive while a modal is open or the page has no panel. The in-panel Close button returns keyboard focus to the title-bar toggle.
 - Navigation labels and page sections live in `src/ui.rs`; page rendering
@@ -122,7 +124,7 @@ Prefer visible state, compact controls, and predictable rows. Use restrained acc
 ## Visual Language
 
 - Reuse `design.rs` tokens and `widgets.rs` styles. Buttons share 6px corners, 14px labels, and stable 1px outlines. Standard text actions and utility icons are 32px high; text actions use 12px horizontal padding through the shared action helper. Primary actions use a solid accent fill; secondary actions use a neutral outline with accent text; tertiary actions use a neutral outline and text. Quiet utilities show hover feedback; destructive actions use danger colors; persistent choices use accent outlines and tint. Preserve explicit dense-row and navigation geometry, native input, disabled states, and theme/accent support. Keep action feedback distinct from persistent selection.
-- Use an accent tint for the active workspace and page list entry. All page, panel, and dialog tabs use the same compact segmented design: 32px height, widths that fit their centered 14px semibold labels, one neutral outline, no outer inset or gap, and an accent-tinted, outlined selected segment. Tab labels retain normal theme text colors, including the side panel's Status / Presets tabs. Selection changes the tint and outline. Weekday selectors share this design and retain multiple selection. Plugged In / On Battery retains its live-source dot independently of the selected editing profile. Respect the current theme and accent without shadows or underlines.
+- Use an accent tint for the active workspace and page list entries. Segmented page, panel, and dialog tabs and the power-source selector use a 32px height, widths that fit their centered 14px semibold labels, one neutral outline, and an accent-tinted, outlined selected segment. Tab labels retain normal theme text colors, including the Side panel's Status / Presets tabs. Weekday selectors share this design and retain multiple selection. Plugged In / On Battery retains its live-source dot independently of the selected editing profile, including in its Select options when compact. Respect the current theme and accent without shadows or underlines.
 - Choose toggle knobs and checkmarks for contrast against the accent color.
 
 - The workspace row, page list, and docked Side panel use edge-aligned chrome with square outer corners and thin dividers. Cards, rules tables, dense table frames, settings groups, and settings dialogs share the surface outline (1px neutral at 75% opacity) and 10px radius. Keep dense table frames outside horizontal scrolling and preserve their borderless tiled interior for partial repaint efficiency.
@@ -232,9 +234,8 @@ hover/press; background shading supplies feedback.
   enabled with no CPU policy configured.
 - Setup puts collapsible CPU settings below the preset card. The Exclusions tab
   contains Exclude service hosts and per-app exclusions. Interrupt Timing has
-  its own tab. In short workspaces the tabs scroll with their content. In taller
-  workspaces the enable switch and preset picker stay visible while tuning cards
-  scroll. Keep the power-source toolbar and page header outside.
+  its own tab. In short workspaces the enable switch and preset picker scroll
+  with the tuning cards. In taller workspaces they stay visible above the cards.
 - The Status and Presets rail tabs share the preset library across power sources.
   Built-in previews show the same brief explanation as Setup. Custom preset
   editors retain a separate draft and show the tuning directly. Keep Exclude

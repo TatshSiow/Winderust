@@ -1033,6 +1033,16 @@ impl Editor {
             }
         }
     }
+    pub(super) fn tabs(&self) -> Element<'static, Message> {
+        widgets::segmented_tabs([Source::Ac, Source::Battery].map(|source| {
+            (
+                t!(source.label()).to_string(),
+                self.source_tab == source,
+                Message::SourceTab(source),
+            )
+        }))
+    }
+
     pub(super) fn view<'a>(
         &'a self,
         presets: &'a [AdvancedPowerPlanTuningPreset],
@@ -1040,13 +1050,6 @@ impl Editor {
         status: &PowerPlanStatus,
         mode: EffectivePowerMode,
     ) -> Element<'a, Message> {
-        let tabs = widgets::segmented_tabs([Source::Ac, Source::Battery].map(|source| {
-            (
-                t!(source.label()).to_string(),
-                self.source_tab == source,
-                Message::SourceTab(source),
-            )
-        }));
         let target_plan = self.selected_plan(plans);
         let choices = tuning_plans(plans)
             .map(|p| PlanChoice(p.guid.clone(), power_plan_label(p)))
@@ -1252,12 +1255,11 @@ impl Editor {
                     .wrapping(text::Wrapping::WordOrGlyph),
             );
         }
-        column![
-            tabs,
-            scrollable(body).id(CONTENT_ID).height(Fill).width(Fill)
-        ]
-        .spacing(widgets::CARD_GAP)
-        .into()
+        scrollable(body)
+            .id(CONTENT_ID)
+            .height(Fill)
+            .width(Fill)
+            .into()
     }
     pub(super) fn apply_review_modal(
         &self,

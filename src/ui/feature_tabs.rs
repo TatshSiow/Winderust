@@ -44,13 +44,16 @@ impl FeatureTab {
 pub(super) fn view<'a, M: Clone + 'a>(
     page: Page,
     selected: FeatureTab,
-    select: impl Fn(FeatureTab) -> M,
+    compact: bool,
+    select: impl Fn(FeatureTab) -> M + 'a,
 ) -> Option<Element<'a, M>> {
     let tabs = FeatureTab::for_page(page);
     (!tabs.is_empty()).then(|| {
-        widgets::segmented_tabs(
-            tabs.iter()
-                .map(|&tab| (tab.label(), tab == selected, select(tab))),
+        widgets::editor_tabs(
+            tabs.iter().map(|&tab| (tab, tab.label())),
+            selected,
+            compact,
+            select,
         )
     })
 }
