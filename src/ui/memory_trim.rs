@@ -1,6 +1,6 @@
 use super::design;
 use super::feature_tabs::{self, FeatureTab};
-use super::widgets::{checkbox, heading, numeric_setting, stepper};
+use super::widgets::{checkbox, heading, numeric_setting, slider_setting, slider_stepper, stepper};
 use crate::application::SettingsEditor;
 use crate::config::MemoryTrimSettings;
 use crate::memory_trim::{size_label, MemoryTrimReadback, MemoryTrimSnapshot, MemoryTrimStatus};
@@ -56,10 +56,14 @@ pub(super) enum Threshold {
 }
 impl Threshold {
     const ALL: [Self; 3] = [Self::Load, Self::WorkingSet, Self::Idle];
+    const MAX_MEMORY_LOAD: u32 = 100;
 
     fn label_and_maximum(self) -> (&'static str, u64) {
         match self {
-            Self::Load => ("memory_trim.memory_threshold", 100),
+            Self::Load => (
+                "memory_trim.memory_threshold",
+                u64::from(Self::MAX_MEMORY_LOAD),
+            ),
             Self::WorkingSet => ("memory_trim.working_set_threshold", 1_000_000),
             Self::Idle => ("memory_trim.idle_time", 86_400),
         }
@@ -249,6 +253,20 @@ impl Editor {
                 )
             }))
         };
+        let load = Threshold::Load;
+        let memory_load = super::widgets::settings_card(slider_setting(
+            load.label_and_maximum().0,
+            "%",
+            move || {
+                slider_stepper(
+                    load.value(settings),
+                    self.thresholds[load as usize].as_deref(),
+                    1..=Threshold::MAX_MEMORY_LOAD,
+                    1,
+                    move |raw| Message::Threshold(load, raw),
+                )
+            },
+        ));
         let trim_label = if trim_pending {
             t!("memory_trim.manual_trim_running")
         } else {
@@ -287,7 +305,7 @@ impl Editor {
                             Some(Message::ExcludeVisibleWindows),
                         ),
                     )),
-                    field(Threshold::Load, "%"),
+                    memory_load,
                     field(Threshold::WorkingSet, "MB"),
                     field(Threshold::Idle, "s"),
                 ]

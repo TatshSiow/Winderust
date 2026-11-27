@@ -24,6 +24,7 @@ use std::{borrow::Cow, collections::BTreeMap, rc::Rc};
 
 const ENERGY_PREFERENCE_LABEL: &str = "processor_power.energy_performance_preference";
 pub(super) const CONTENT_ID: &str = "advanced-power-plan-tuning-settings";
+pub(super) const PRESET_CONTENT_ID: &str = "power-tuning-preset-settings";
 
 fn tuning_plans(plans: &[PowerPlan]) -> impl Iterator<Item = &PowerPlan> {
     plans.iter().filter(|plan| !plan.managed_adaptive)
@@ -98,10 +99,8 @@ impl InvalidPercentages {
         value
     }
 
-    fn text(&self, field: Field, value: u32) -> String {
-        self.0[field as usize]
-            .clone()
-            .unwrap_or_else(|| value.to_string())
+    fn draft(&self, field: Field) -> Option<&str> {
+        self.0[field as usize].as_deref()
     }
 
     fn any(&self) -> bool {
@@ -109,8 +108,7 @@ impl InvalidPercentages {
     }
 
     fn feedback(&self, field: Field) -> Option<iced::widget::Text<'static>> {
-        self.0[field as usize]
-            .as_ref()
+        self.draft(field)
             .map(|_| text(t!("processor_power.invalid_percentage").to_string()).style(text::danger))
     }
 
@@ -1073,7 +1071,7 @@ impl Editor {
                     widgets::slider_setting(label, "%", move || {
                         widgets::slider_stepper(
                             u64::from(value),
-                            invalid.0[field as usize].as_deref(),
+                            invalid.draft(field),
                             0..=100,
                             1,
                             move |value| Message::ValueText(source, field, value),
@@ -1314,34 +1312,54 @@ impl Editor {
             p.values.processor,
             &p.invalid_percentages,
             |field, label, value| {
-                widgets::numeric_setting(label, "%", move || {
-                    widgets::stepper(
-                        &p.invalid_percentages.text(field, value),
-                        0..=100,
-                        1,
-                        editable.then_some(move |v| Message::PresetValueText(field, v)),
-                    )
-                })
+                if editable {
+                    widgets::slider_setting(label, "%", move || {
+                        widgets::slider_stepper(
+                            u64::from(value),
+                            p.invalid_percentages.draft(field),
+                            0..=100,
+                            1,
+                            move |v| Message::PresetValueText(field, v),
+                        )
+                    })
+                } else {
+                    widgets::setting_row(label, text(format!("{value}%"))).into()
+                }
             },
         ));
         let field = Field::EnergyPreference;
         let preference = p.values.energy_performance_preference.map(u32::from);
-        let keep = t!("processor_power.keep_plan_value");
-        let input = widgets::numeric_setting(ENERGY_PREFERENCE_LABEL, "%", move || {
-            if editable {
-                let input = p.invalid_percentages.0[field as usize]
-                    .clone()
-                    .or_else(|| preference.map(|value| value.to_string()))
-                    .unwrap_or_default();
-                text_input(&keep, &input)
-                    .width(design::SELECT_WIDTH)
-                    .on_input(move |raw| Message::PresetValueText(field, raw))
-                    .into()
-            } else {
-                text(preference.map_or_else(|| keep.to_string(), |value| format!("{value}%")))
-                    .into()
-            }
-        });
+        let draft = p.invalid_percentages.draft(field);
+        let input = if editable {
+            widgets::slider_setting_with_help(
+                ENERGY_PREFERENCE_LABEL,
+                "%",
+                "processor_power.blank_keeps_plan_value",
+                move || {
+                    widgets::slider_stepper_with_input(
+                        u64::from(preference.unwrap_or_default()),
+                        draft,
+                        0..=100,
+                        1,
+                        move |raw| Message::PresetValueText(field, raw),
+                        |raw| {
+                            let input = if preference.is_none() && draft.is_none() {
+                                ""
+                            } else {
+                                raw
+                            };
+                            widgets::numeric_input("—", input)
+                        },
+                    )
+                },
+            )
+        } else {
+            let display = preference.map_or_else(
+                || t!("processor_power.keep_plan_value").into_owned(),
+                |value| format!("{value}%"),
+            );
+            widgets::setting_row(ENERGY_PREFERENCE_LABEL, text(display)).into()
+        };
         values.push(with_percentage_feedback(
             input,
             p.invalid_percentages.feedback(field),
@@ -1406,7 +1424,12 @@ impl Editor {
                     .on_press_maybe(p.can_save(presets, index).then_some(Message::SavePreset)),
             );
         }
-        let frame = widgets::modal_frame(header, scrollable(form).height(Fill), footer, (800, 680));
+        let frame = widgets::modal_frame(
+            header,
+            scrollable(form).id(PRESET_CONTENT_ID).height(Fill),
+            footer,
+            (800, 680),
+        );
         Some(if editable {
             super::modal::dismiss_on_escape(frame, Message::ClosePreset)
         } else {
@@ -1517,13 +1540,13 @@ fn tuning_stage_error_message(error: &ProcessorPowerApplyError) -> String {
     };
     let (source, setting) = match stage {
         ValidatePlan => {
-            return t!("processor_power.validate_plan_failed", detail = detail).into_owned()
+            return t!("processor_power.validate_plan_failed", detail = detail).into_owned();
         }
         QueryActivePlan => {
-            return t!("processor_power.query_active_plan_failed", detail = detail).into_owned()
+            return t!("processor_power.query_active_plan_failed", detail = detail).into_owned();
         }
         ReactivatePlan => {
-            return t!("processor_power.reactivate_plan_failed", detail = detail).into_owned()
+            return t!("processor_power.reactivate_plan_failed", detail = detail).into_owned();
         }
         AcCoreParkingMinimum => (Source::Ac, "processor_power.core_parking_min"),
         BatteryCoreParkingMinimum => (Source::Battery, "processor_power.core_parking_min"),
@@ -2015,8 +2038,8 @@ mod tests {
         }
         assert_eq!(editor.values.unwrap().ac.processor.core_parking_min, 43);
         assert_eq!(
-            editor.invalid_percentages[Source::Battery as usize].text(Field::Boost, 100),
-            "101"
+            editor.invalid_percentages[Source::Battery as usize].draft(Field::Boost),
+            Some("101")
         );
         assert!(!editor.invalid_percentages[Source::Ac as usize].any());
         assert!(editor.validation_error().is_some());
@@ -2051,7 +2074,10 @@ mod tests {
         );
         assert!(!editor.dirty);
         assert_eq!(editor.values, Some(current.writable()));
-        assert_eq!(editor.invalid_percentages[0].text(Field::Parking, 100), "");
+        assert_eq!(
+            editor.invalid_percentages[0].draft(Field::Parking),
+            Some("")
+        );
         let error = t!("processor_power.invalid_percentage").to_string();
         assert_eq!(
             editor.review_apply(&[], ApplyOrigin::Save),

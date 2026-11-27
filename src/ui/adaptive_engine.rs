@@ -851,6 +851,45 @@ impl Editor {
             &self.live_numbers
         };
         let editable = !preset || self.preview.is_none();
+        let percentage = |value: u8,
+                          key: &'static str,
+                          label: &'static str,
+                          maximum: u32,
+                          apply: fn(&mut Settings, u64)| {
+            let draft = numbers.drafts.get(key).map(|draft| draft.text.as_str());
+            let max = u64::from(maximum);
+            if editable {
+                super::widgets::slider_setting(label, "%", move || {
+                    super::widgets::slider_stepper(
+                        u64::from(value),
+                        draft,
+                        1..=maximum,
+                        1,
+                        move |value| Message::Number(apply, value, 1, max, key, label),
+                    )
+                })
+            } else {
+                super::widgets::numeric_setting(label, "%", move || {
+                    super::widgets::stepper(
+                        draft.unwrap_or(&value.to_string()),
+                        1..=max,
+                        1,
+                        None::<fn(String) -> Message>,
+                    )
+                })
+            }
+        };
+        macro_rules! percent {
+            ($label:expr, $max:expr, $($field:ident).+) => {
+                percentage(
+                    s.$($field).+,
+                    stringify!($($field).+),
+                    $label,
+                    $max,
+                    |settings, value| settings.$($field).+ = value as u8,
+                )
+            };
+        }
         macro_rules! number {
             ($key:expr, $min:expr, $max:expr, $($field:ident).+) => {{
                 let key = stringify!($($field).+);
@@ -860,8 +899,6 @@ impl Editor {
                     "ms"
                 } else if key.ends_with("_seconds") {
                     "s"
-                } else if key.ends_with("_percent") || $max == 100 {
-                    "%"
                 } else {
                     ""
                 };
@@ -951,55 +988,22 @@ impl Editor {
                     )
                     .into()
                 });
-                let threshold_slider =
-                    |value: u8,
-                     key: &'static str,
-                     label: &'static str,
-                     apply: fn(&mut Settings, u64)| {
-                        if editable {
-                            super::widgets::slider_setting(label, "%", move || {
-                                super::widgets::slider_stepper(
-                                    u64::from(value),
-                                    numbers.drafts.get(key).map(|draft| draft.text.as_str()),
-                                    1..=100,
-                                    1,
-                                    move |value| Message::Number(apply, value, 1, 100, key, label),
-                                )
-                            })
-                        } else {
-                            super::widgets::numeric_setting(label, "%", move || {
-                                super::widgets::stepper(
-                                    &value.to_string(),
-                                    1..=100,
-                                    1,
-                                    None::<fn(String) -> Message>,
-                                )
-                            })
-                        }
-                    };
-                let shared_threshold = if foreground_threshold.is_some() {
-                    threshold_slider(
-                        cpu.foreground_or_system_cpu_threshold_percent,
-                        SHARED_THRESHOLD_FIELD,
-                        SYSTEM_THRESHOLD_LABEL,
-                        |s, n| {
-                            s.adaptive_engine_process
-                                .foreground_or_system_cpu_threshold_percent = n as u8
-                        },
-                    )
+                let shared_label = if foreground_threshold.is_some() {
+                    SYSTEM_THRESHOLD_LABEL
                 } else {
-                    number!(
-                        SHARED_THRESHOLD_LABEL,
-                        1,
-                        100,
-                        adaptive_engine_process.foreground_or_system_cpu_threshold_percent
-                    )
+                    SHARED_THRESHOLD_LABEL
                 };
+                let shared_threshold = percent!(
+                    shared_label,
+                    100,
+                    adaptive_engine_process.foreground_or_system_cpu_threshold_percent
+                );
                 let foreground_threshold = foreground_threshold.map(|value| {
-                    threshold_slider(
+                    percentage(
                         value,
                         FOREGROUND_THRESHOLD_FIELD,
                         FOREGROUND_THRESHOLD_LABEL,
+                        100,
                         |s, n| {
                             s.adaptive_engine_process.foreground_cpu_threshold_percent =
                                 Some(n as u8)
@@ -1007,9 +1011,8 @@ impl Editor {
                     )
                 });
                 let app_threshold = cpu.background_app_cpu_threshold_percent.min(100);
-                let recovery_threshold = column![number!(
+                let recovery_threshold = column![percent!(
                     "adaptive_engine_process.cpu_recovery_threshold",
-                    1,
                     100,
                     adaptive_engine_process.cpu_recovery_threshold_percent
                 )]
@@ -1038,9 +1041,8 @@ impl Editor {
                     .into_iter()
                     .flatten()
                     .chain([
-                        number!(
+                        percent!(
                             "adaptive_engine_process.background_app_cpu_threshold",
-                            1,
                             100,
                             adaptive_engine_process.background_app_cpu_threshold_percent
                         ),
@@ -1262,9 +1264,8 @@ impl Editor {
                         allocation =
                             allocation
                                 .push(super::widgets::settings_divider())
-                                .push(number!(
+                                .push(percent!(
                                     "adaptive_engine_process.processor_limit",
-                                    1,
                                     100,
                                     adaptive_engine_process.processor_limit_percent
                                 ));
@@ -1409,9 +1410,8 @@ impl Editor {
                     zone_content =
                         zone_content
                             .push(super::widgets::settings_divider())
-                            .push(number!(
+                            .push(percent!(
                                 "adaptive_engine_process.foreground_zone_share",
-                                1,
                                 99,
                                 adaptive_engine_process
                                     .dynamic_resource_zone_settings

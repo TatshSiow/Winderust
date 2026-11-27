@@ -89,6 +89,7 @@ pub(super) enum Message {
     OpenColorPicker(u32),
     PickerHue(u16),
     PickerSv(f32, f32),
+    PickerPercent(super::pickers::ColorPercent, String),
     PickerHex(String),
     CancelColorPicker,
     ColorPicked(Color),
@@ -203,6 +204,11 @@ impl Editor {
                     picker.set_sv(s, v);
                 }
             }
+            Message::PickerPercent(field, input) => {
+                if let Some(picker) = &mut self.picker {
+                    picker.set_percent(field, input);
+                }
+            }
             Message::PickerHex(hex) => {
                 if let Some(picker) = &mut self.picker {
                     picker.set_hex(hex);
@@ -278,6 +284,7 @@ impl Editor {
             | Message::OpenColorPicker(_)
             | Message::PickerHue(_)
             | Message::PickerSv(..)
+            | Message::PickerPercent(..)
             | Message::PickerHex(_)
             | Message::EditColor(_)
             | Message::CancelColorPicker => self.update_ui(s.general.update_channel, m),

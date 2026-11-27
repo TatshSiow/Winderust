@@ -1410,6 +1410,7 @@ impl WinderustApp {
                 | settings_pages::Message::CancelColorPicker
                 | settings_pages::Message::PickerHue(_)
                 | settings_pages::Message::PickerSv(..)
+                | settings_pages::Message::PickerPercent(..)
                 | settings_pages::Message::PickerHex(_)
                 | settings_pages::Message::RecordShortcut(_)
                 | settings_pages::Message::CancelShortcut
@@ -2102,6 +2103,7 @@ impl WinderustApp {
                 let entering_page = self.page != page;
                 if entering_page && self.page == Page::Dashboard {
                     self.processes.stop_gpu_usage_sampling();
+                    self.processes.reset_limiter_inputs();
                 }
                 self.preferences.dismiss_picker();
                 self.time_rules.dismiss_picker();
@@ -2372,7 +2374,10 @@ impl WinderustApp {
             Message::Save if self.adaptive_validation_error().is_some() => {
                 self.error_message = self.adaptive_validation_error().unwrap_or_default();
             }
-            Message::Save if self.cpu_limiter.has_invalid_inputs() => {
+            Message::Save
+                if self.cpu_limiter.has_invalid_inputs()
+                    || self.processes.has_invalid_limiter_inputs() =>
+            {
                 self.error_message = t!("cpu_limiter.invalid_limit").to_string();
             }
             Message::Save if self.power_tuning.has_invalid_inputs() => {
@@ -2657,6 +2662,7 @@ impl WinderustApp {
             || self.settings.validate_instance_balancing().is_err()
             || self.resource_thresholds.has_invalid_inputs()
             || self.cpu_limiter.has_invalid_inputs()
+            || self.processes.has_invalid_limiter_inputs()
             || self.power_tuning.has_invalid_inputs()
             || self.suspension.invalid_delay().is_some()
             || self.suspension.has_invalid_thresholds()
@@ -2837,6 +2843,7 @@ impl WinderustApp {
         self.preferences.reset_drafts();
         self.power_tuning.discard_editor();
         self.cpu_limiter = Default::default();
+        self.processes.reset_limiter_inputs();
         self.activity_inputs = Default::default();
         self.power_plan_control
             .reset_fallback_polling_interval_draft();

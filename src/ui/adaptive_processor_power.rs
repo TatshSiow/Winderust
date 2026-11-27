@@ -195,24 +195,22 @@ impl Editor {
             ($label:literal, $help:literal, $min:expr, adaptive_engine.$($field:ident).+) => {{
                 let key = stringify!(adaptive_engine.$($field).+);
                 let min = $min;
-                let formatted = s.adaptive_engine.$($field).+.to_string();
-                widgets::numeric_setting_with_help($label, "%", $help, move || {
-                    let value = numbers
-                        .drafts
-                        .get(key)
-                        .map_or(formatted.as_str(), |draft| draft.text.as_str());
-                    widgets::stepper(
-                        value,
+                let current = u64::from(s.adaptive_engine.$($field).+);
+                let draft = numbers.drafts.get(key).map(|draft| draft.text.as_str());
+                widgets::slider_setting_with_help($label, "%", $help, move || {
+                    widgets::slider_stepper(
+                        current,
+                        draft,
                         min..=100,
                         1,
-                        Some(move |value| Message::Number(
+                        move |value| Message::Number(
                             |settings, number| settings.$($field).+ = number as _,
                             value,
-                            min,
+                            u64::from(min),
                             100,
                             key,
                             $label,
-                        )),
+                        ),
                     )
                 })
             }};
@@ -267,12 +265,10 @@ impl Editor {
                     number!(
                         "processor_power.processor_max",
                         "adaptive_processor_power.processor_max_help",
-                        u64::from(
-                            s.adaptive_engine
-                                .base_processor_policy
-                                .performance_min
-                                .min(100)
-                        ),
+                        s.adaptive_engine
+                            .base_processor_policy
+                            .performance_min
+                            .min(100),
                         adaptive_engine.base_processor_policy.performance_max
                     ),
                 ])
@@ -528,8 +524,13 @@ mod tests {
                     let rows = unwrap_single_child(section.children().last().unwrap());
                     assert_eq!(rows.children().len(), 3, "one policy, divider and mode");
                     let policy = unwrap_single_child(rows.children().next().unwrap());
-                    let stepper = unwrap_single_child(policy.children().last().unwrap());
-                    let increment = stepper.children().last().unwrap().bounds().center();
+                    let controls = unwrap_single_child(policy.children().last().unwrap());
+                    assert_eq!(
+                        controls.children().len(),
+                        4,
+                        "minus, slider, plus and value"
+                    );
+                    let increment = controls.children().nth(2).unwrap().bounds().center();
                     for event in [
                         mouse::Event::ButtonPressed(mouse::Button::Left),
                         mouse::Event::ButtonReleased(mouse::Button::Left),

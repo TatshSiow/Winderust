@@ -1186,16 +1186,16 @@ pub(super) fn numeric_setting<'a, M: 'a>(
     )
 }
 
-pub(super) fn numeric_setting_with_help<'a, M: 'a>(
+pub(super) fn slider_setting_with_help<'a, M: 'a>(
     key: &'a str,
     unit: &'a str,
     help_key: &'a str,
-    control: impl Fn() -> Element<'a, M> + 'a,
+    control: impl Fn() -> Row<'a, M> + 'a,
 ) -> Element<'a, M> {
     bounded_setting(
-        NUMERIC_INLINE_MIN_WIDTH,
+        SLIDER_INLINE_MIN_WIDTH,
         move || setting_title_with_help(key, unit, help_key),
-        control,
+        move || control().width(SLIDER_CONTROL_WIDTH).into(),
     )
 }
 
@@ -1674,8 +1674,21 @@ pub(super) fn slider_stepper<'a, M: Clone + 'a>(
     step: u32,
     action: impl Fn(String) -> M + Clone + 'a,
 ) -> Row<'a, M> {
+    slider_stepper_with_input(value, draft, range, step, action, |input| {
+        numeric_input("", input)
+    })
+}
+
+pub(super) fn slider_stepper_with_input<'a, M: Clone + 'a>(
+    value: u64,
+    draft: Option<&str>,
+    range: std::ops::RangeInclusive<u32>,
+    step: u32,
+    action: impl Fn(String) -> M + Clone + 'a,
+    input: impl FnOnce(&str) -> iced::widget::TextInput<'a, M>,
+) -> Row<'a, M> {
     let formatted;
-    let input = if let Some(draft) = draft {
+    let text = if let Some(draft) = draft {
         draft
     } else {
         formatted = value.to_string();
@@ -1683,7 +1696,7 @@ pub(super) fn slider_stepper<'a, M: Clone + 'a>(
     };
     let stepper_range = u64::from(*range.start())..=u64::from(*range.end());
     let slider_value = value.clamp(*stepper_range.start(), *stepper_range.end()) as u32;
-    let (lower, upper) = step_values(input, stepper_range, u64::from(step));
+    let (lower, upper) = step_values(text, stepper_range, u64::from(step));
     let on_slide = action.clone();
     let slider = slider(range, slider_value, move |value| {
         on_slide(value.to_string())
@@ -1694,7 +1707,7 @@ pub(super) fn slider_stepper<'a, M: Clone + 'a>(
         slider,
         lower.map(|v| action(v.to_string())),
         upper.map(|v| action(v.to_string())),
-        numeric_input("", input).on_input(action),
+        input(text).on_input(action),
     )
 }
 

@@ -273,6 +273,8 @@ Append `--resource-thresholds-only` to check Resource Thresholds settings,
 action selectors, and Preview matches at wide and compact sizes.
 Append `--memory-trim-only` to check Memory Trim settings in both languages and
 at wide and compact sizes.
+Append `--percentage-popups-only` to check the accent color picker and custom
+Advanced Power Plan Tuning preset in both languages and at wide and compact sizes.
 Append `--priority-control-only` to check the Priority Control detection cards,
 preservation switches, and child-protection drafts in both languages.
 Append `--side-panel-only` to check the title bar toggle and dock in both languages

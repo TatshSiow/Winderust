@@ -618,7 +618,8 @@ impl Editor {
         let rule = &draft.rule;
         let monitor = rule.monitor(resource);
         let raw = &draft.monitors[resource as usize];
-        let unit = draft.metric(resource).unit();
+        let metric = draft.metric(resource);
+        let unit = metric.unit();
         let memory_unit = (resource == ResourceThresholdsResource::Memory).then(|| {
             widgets::setting_row(
                 "resource_thresholds.memory_unit",
@@ -652,15 +653,45 @@ impl Editor {
             .into_iter()
             .filter(|action| rule.allows_action(resource, *action))
             .collect::<Vec<_>>();
+            let update = move |value| Message::Threshold(resource, critical, value);
+            let threshold_setting = match metric {
+                ResourceThresholdsMetric::CpuPercent | ResourceThresholdsMetric::MemoryPercent => {
+                    let maximum = metric.maximum();
+                    let value = threshold
+                        .parse::<u64>()
+                        .ok()
+                        .filter(|value| (1..=maximum).contains(value))
+                        .unwrap_or_else(|| {
+                            if metric == rule.metric(resource) {
+                                response.threshold
+                            } else {
+                                1
+                            }
+                        });
+                    widgets::slider_setting(label, unit, move || {
+                        widgets::slider_stepper_with_input(
+                            value,
+                            Some(threshold),
+                            1..=maximum as u32,
+                            1,
+                            update,
+                            |raw| widgets::numeric_input("", raw).on_submit(Message::SaveRule),
+                        )
+                    })
+                }
+                ResourceThresholdsMetric::MemoryMb => {
+                    widgets::numeric_setting(label, unit, move || {
+                        widgets::text_input("", threshold)
+                            .align_x(iced::alignment::Horizontal::Center)
+                            .on_input(update)
+                            .on_submit(Message::SaveRule)
+                            .width(design::STANDALONE_NUMERIC_WIDTH)
+                            .into()
+                    })
+                }
+            };
             widgets::settings_rows([
-                widgets::numeric_setting(label, unit, move || {
-                    widgets::text_input("", threshold)
-                        .align_x(iced::alignment::Horizontal::Center)
-                        .on_input(move |value| Message::Threshold(resource, critical, value))
-                        .on_submit(Message::SaveRule)
-                        .width(design::STANDALONE_NUMERIC_WIDTH)
-                        .into()
-                }),
+                threshold_setting,
                 widgets::setting_row(
                     if critical {
                         "resource_thresholds.critical_action"

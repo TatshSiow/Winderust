@@ -63,7 +63,11 @@ const FEATURE_TAB_STATES: &[(Page, FeatureTab)] = &[
 ];
 const FEATURE_TAB_STATES_END: usize = FEATURE_TAB_STATES_START + FEATURE_TAB_STATES.len();
 const NAVIGATION_PROCESSOR_POWER_COMPACT: usize = FEATURE_TAB_STATES_END;
-const EXTRA_STATES: usize = NAVIGATION_PROCESSOR_POWER_COMPACT + 1;
+const COLOR_PICKER_WIDE: usize = NAVIGATION_PROCESSOR_POWER_COMPACT + 1;
+const COLOR_PICKER_COMPACT: usize = COLOR_PICKER_WIDE + 1;
+const TUNING_PRESET_WIDE: usize = COLOR_PICKER_COMPACT + 1;
+const TUNING_PRESET_COMPACT: usize = TUNING_PRESET_WIDE + 1;
+const EXTRA_STATES: usize = TUNING_PRESET_COMPACT + 1;
 pub(super) struct Run {
     pages: Vec<Page>,
     remaining: VecDeque<usize>,
@@ -254,6 +258,10 @@ impl Run {
                 .into_iter()
                 .map(|extra| extra_start + extra)
                 .collect()
+        } else if std::env::args().any(|arg| arg == "--percentage-popups-only") {
+            std::iter::once(0)
+                .chain((COLOR_PICKER_WIDE..=TUNING_PRESET_COMPACT).map(|extra| extra_start + extra))
+                .collect()
         } else if std::env::args().any(|arg| arg == "--watchdog-only") {
             [11, 21, 51, 52, 53]
                 .into_iter()
@@ -356,6 +364,8 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                         | GPU_MEMORY_COMPACT
                         | CPU_LIMITER_AFFINITY_COMPACT
                         | CPU_LIMITER_PROCESSORS_COMPACT
+                        | COLOR_PICKER_COMPACT
+                        | TUNING_PRESET_COMPACT
                 )
         });
         let page = match extra {
@@ -405,22 +415,23 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             Some(17 | 24 | 84..=85 | 92..=93) => Page::AdaptiveEngine,
             Some(18) => Page::EfficiencyMode,
             Some(19) => Page::ByActivity,
-            Some(20) => Page::AdvancedPowerPlanTuning,
+            Some(20 | 46 | TUNING_PRESET_WIDE | TUNING_PRESET_COMPACT) => {
+                Page::AdvancedPowerPlanTuning
+            }
             Some(21 | 72 | APP_SUSPENSION_FOCUS_OFF | APP_SUSPENSION_SETUP_COMPACT) => {
                 Page::AppSuspension
             }
-            Some(22) => Page::LanguageAndAppearance,
+            Some(22 | 40 | CONTRAST_DARK_APPEARANCE | COLOR_PICKER_WIDE | COLOR_PICKER_COMPACT) => {
+                Page::LanguageAndAppearance
+            }
             Some(23) => Page::About,
             Some(25 | 87..=88) => Page::ProcessPriority,
             Some(NAVIGATION_CPU_COMPACT | NAVIGATION_CPU_COMPACT_ZH_TW) => Page::AdaptiveEngine,
             Some(NAVIGATION_POWER_COMPACT | NAVIGATION_POWER_COMPACT_ZH_TW) => Page::ByFocus,
-            Some(40) => Page::LanguageAndAppearance,
             Some(41) => Page::AdaptiveEngine,
             Some(44 | 73 | 76) => Page::CpuSetsSoft,
             Some(45 | 74 | 75) => Page::ProcessorAffinityHard,
-            Some(46) => Page::AdvancedPowerPlanTuning,
             Some(47) => Page::AdaptiveEngine,
-            Some(CONTRAST_DARK_APPEARANCE) => Page::LanguageAndAppearance,
             Some(49 | 86) => Page::ActionLog,
             Some(50 | 77..=78 | SHOW_SHORTCUT_INVALID | SHOW_SHORTCUT_READY) => {
                 Page::WinderustBehaviour
@@ -1871,6 +1882,13 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             ) => iced::Size::new(1120.0, 760.0),
             _ if compact_navigation => iced::Size::new(900.0, 620.0),
             Some(40 | 43..=50 | 52..=69 | 71..=93) => iced::Size::new(900.0, 620.0),
+            _ if matches!(extra, Some(COLOR_PICKER_WIDE..=TUNING_PRESET_COMPACT)) => {
+                if chinese {
+                    iced::Size::new(900.0, 620.0)
+                } else {
+                    iced::Size::new(1120.0, 760.0)
+                }
+            }
             Some(26..=28) => iced::Size::new(1120.0, 760.0),
             Some(30) => iced::Size::new(1280.0, 720.0),
             Some(DASHBOARD_PREVIEW | 31) => iced::Size::new(1440.0, 900.0),
@@ -1957,6 +1975,24 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
     }
     if run.ticks == 3 {
         match extra {
+            Some(COLOR_PICKER_WIDE | COLOR_PICKER_COMPACT) => {
+                return Some(app.update(Message::Preferences(
+                    settings_pages::Message::AccentSource(crate::config::AccentColorSource::Custom),
+                )));
+            }
+            Some(TUNING_PRESET_WIDE | TUNING_PRESET_COMPACT) => {
+                use advanced_power_plan_tuning::{Field, Message as Tuning, PresetTarget};
+
+                let open = app.update(Message::PowerTuning(Tuning::OpenPreset(
+                    PresetTarget::Custom(None),
+                )));
+                let clear = app.update(Message::PowerTuning(Tuning::PresetValueText(
+                    Field::EnergyPreference,
+                    String::new(),
+                )));
+                assert!(app.power_tuning.preset_open());
+                return Some(Task::batch([open, clear]));
+            }
             Some(PROCESS_LIST_COMMIT_COMPACT) => {
                 return Some(iced::advanced::widget::operate(DashboardLayout::new(
                     true, false,
@@ -2043,6 +2079,17 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             iced::widget::scrollable::RelativeOffset::END,
         ));
     }
+    if matches!(extra, Some(COLOR_PICKER_WIDE | COLOR_PICKER_COMPACT)) && run.ticks == 11 {
+        return Some(app.update(Message::Preferences(
+            settings_pages::Message::OpenColorPicker(0x9574d2),
+        )));
+    }
+    if matches!(extra, Some(TUNING_PRESET_WIDE | TUNING_PRESET_COMPACT)) && run.ticks == 5 {
+        return Some(iced::widget::operation::snap_to(
+            advanced_power_plan_tuning::PRESET_CONTENT_ID,
+            iced::widget::scrollable::RelativeOffset { x: 0.0, y: 0.65 },
+        ));
+    }
     if matches!(
         extra,
         Some(62..=63 | 72 | MEMORY_TRIM_UNKNOWN | APP_SUSPENSION_SETUP_COMPACT)
@@ -2096,6 +2143,9 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             4
         }
     {
+        if matches!(extra, Some(COLOR_PICKER_WIDE | COLOR_PICKER_COMPACT)) {
+            assert!(app.preferences.picker_open());
+        }
         if matches!(
             extra,
             Some(NAVIGATION_RESIZE_TALL | NAVIGATION_RESIZE_COMPACT)
@@ -2614,6 +2664,16 @@ pub(super) fn captured(app: &mut WinderustApp, shot: iced::window::Screenshot) -
     }
     if app.navigation_search_open {
         return app.update(Message::CloseNavigationSearch);
+    }
+    if app.preferences.picker_open() {
+        return app.update(Message::Preferences(
+            settings_pages::Message::CancelColorPicker,
+        ));
+    }
+    if app.power_tuning.preset_open() {
+        return app.update(Message::PowerTuning(
+            advanced_power_plan_tuning::Message::ClosePreset,
+        ));
     }
     if app.page == Page::CpuLimiter && app.cpu_limiter.has_pending_editor() {
         let cancel = app.update(Message::CpuLimiter(cpu_limiter::Message::CancelRule));

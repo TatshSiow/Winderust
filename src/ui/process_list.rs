@@ -337,6 +337,7 @@ pub(super) struct ProcessList {
     detail_action_id: u64,
     detail_feedback: Option<Result<String, String>>,
     rulesets_error: Option<String>,
+    ruleset_limiter: super::cpu_limiter::CpuLimiter,
     current_query_id: u64,
     current: Vec<Value>,
     efficiency: Option<bool>,
@@ -384,6 +385,7 @@ impl Default for ProcessList {
             detail_action_id: 0,
             detail_feedback: None,
             rulesets_error: None,
+            ruleset_limiter: Default::default(),
             current_query_id: 0,
             current: Vec::new(),
             efficiency: None,
@@ -399,6 +401,14 @@ impl ProcessList {
                 .as_ref()
                 .and_then(Selection::ruleset_path)
                 .is_some()
+    }
+
+    pub(super) fn has_invalid_limiter_inputs(&self) -> bool {
+        self.ruleset_limiter.has_invalid_inputs()
+    }
+
+    pub(super) fn reset_limiter_inputs(&mut self) {
+        self.ruleset_limiter = Default::default();
     }
 
     fn refresh_if_due(&mut self, now: std::time::Instant) -> Task<Message> {
@@ -713,12 +723,18 @@ impl ProcessList {
                 let task = self.update(*message, settings, runtime);
                 self.selected = None;
                 self.rulesets_error = None;
+                self.reset_limiter_inputs();
                 self.context = None;
                 return task;
             }
             Message::PointerMoved(position) => self.pointer = position,
             Message::MenuBranch(menu) => self.menu_branch = menu,
-            Message::ProcessTab(tab) => self.process_tab = tab,
+            Message::ProcessTab(tab) => {
+                if tab != ProcessTab::Rulesets {
+                    self.reset_limiter_inputs();
+                }
+                self.process_tab = tab;
+            }
             Message::OpenDetails => {
                 self.context = None;
                 self.process_tab = ProcessTab::Rulesets;
@@ -798,6 +814,7 @@ impl ProcessList {
                 self.stopping = None;
                 self.reset_detail_feedback();
                 self.rulesets_error = None;
+                self.reset_limiter_inputs();
                 if return_to_table {
                     return iced::widget::operation::focus(PROCESS_TABLE);
                 }
@@ -900,6 +917,7 @@ impl ProcessList {
                 if self.selected.as_ref().is_some_and(Selection::can_stop) {
                     self.context = None;
                     self.stopping = self.selected.take().map(|selection| (selection, tree));
+                    self.reset_limiter_inputs();
                 }
             }
             Message::CancelStop => self.stopping = None,
@@ -989,7 +1007,8 @@ impl ProcessList {
             }
             Message::Details(message) => {
                 if let Some(path) = self.selected.as_ref().and_then(Selection::ruleset_path) {
-                    self.rulesets_error = details::update(settings, path, message);
+                    self.rulesets_error =
+                        details::update(settings, path, message, &mut self.ruleset_limiter);
                 }
             }
         }
@@ -1339,6 +1358,7 @@ impl ProcessList {
         self.stopping = None;
         self.reset_detail_feedback();
         self.rulesets_error = None;
+        self.reset_limiter_inputs();
         self.current.clear();
         self.efficiency = None;
         self.selected = Some(selection.clone());
@@ -2436,7 +2456,10 @@ impl ProcessList {
                                 "power_source.editing_profile",
                                 text(profile.into_owned()),
                             )))
-                            .push(details::view(settings, path, plans).map(Message::Details));
+                            .push(
+                                details::view(settings, path, plans, &self.ruleset_limiter)
+                                    .map(Message::Details),
+                            );
                     } else {
                         let key = if path.is_some_and(|path| path.to_str().is_none()) {
                             "process_list.rulesets_unsupported_path"

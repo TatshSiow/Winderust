@@ -113,9 +113,9 @@ Prefer visible state, compact controls, and predictable rows. Use restrained acc
 - Use the shared numeric setting row. Keep the label and unit on the left and
   the controls on the right. Stack the label above the right-aligned controls
   when the card is narrow.
-- Use a slider with minus, plus, and an editable value for ranges users may want
-  to explore. Use a compact stepper for precise integers and a numeric input
-  when the field accepts decimals or a blank override.
+- Use a slider with minus, plus, and an editable value for percentage settings
+  and other ranges users may want to explore. Use a compact stepper for precise
+  integers and a numeric input for decimal entries.
   Match the height, neutral fill, and outline of the step buttons and value field.
 - Group the two endpoints of an editable range and show validation beside the pair.
 - Use dropdowns for bounded option sets.
@@ -515,9 +515,10 @@ hover/press; background shading supplies feedback.
   actions. By Time keeps editable `HH:MM` fields alongside a 24-hour analog picker.
   Show separate Hour / Minute dials with numeric entry, advance to minutes after
   choosing an hour, and keep the rule dialog centered when the popup opens.
-  Color selection offers a gradient square, hue / saturation / brightness sliders, and hex entry,
-  with an opaque preview. Picker changes apply only on
-  submit; Cancel, Escape, focus loss, and navigation discard them. Saved-color
+  Color selection offers a gradient square, a hue slider, saturation and
+  brightness percentage controls, and hex entry with an opaque preview. Picker
+  changes apply only on submit. Cancel, Escape, focus loss, and navigation
+  discard them. Saved-color
   menus retain Escape/outside-click/focus-loss dismissal and reset with their item.
 - Priority Control keeps options visible in their Focus, Visible Window, and
   Background section cards. Process and Memory

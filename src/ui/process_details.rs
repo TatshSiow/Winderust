@@ -36,6 +36,7 @@ pub(in crate::ui) enum Message {
     Limiter(bool),
     LimiterMode(Tier, ProcessRuleMode),
     LimiterLimit(Tier, u8),
+    LimiterNumber(Tier, String),
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Plan(Option<String>, String);
@@ -56,7 +57,12 @@ fn adaptive_name_excluded(settings: &Settings, path: &str) -> bool {
         })
 }
 
-pub(super) fn update(s: &mut SettingsEditor, image_path: &str, m: Message) -> Option<String> {
+pub(super) fn update(
+    s: &mut SettingsEditor,
+    image_path: &str,
+    m: Message,
+    limiter: &mut cpu_limiter::CpuLimiter,
+) -> Option<String> {
     if !std::path::Path::new(image_path).is_absolute() {
         return None;
     }
@@ -256,35 +262,43 @@ pub(super) fn update(s: &mut SettingsEditor, image_path: &str, m: Message) -> Op
                 s.cpu_limiter
                     .rules
                     .retain(|r| !same_rule_executable_path(&r.executable_path, image_path));
+                *limiter = Default::default();
             } else if enabled && !has_rule && !crate::cpu_limiter::is_builtin_excluded(image_path) {
                 s.cpu_limiter.rules.push(new_cpu_limiter_rule(image_path));
             }
         }
         Message::LimiterMode(tier, value) => {
-            if let Some(i) = s.cpu_limiter.rules.iter().position(|r| {
-                r.affinity_limit.is_none()
-                    && same_rule_executable_path(&r.executable_path, image_path)
-            }) {
-                cpu_limiter::CpuLimiter::default().update_profile(
-                    s,
-                    cpu_limiter::Message::RuleMode(i, limiter_tier(tier), value),
-                );
-            }
+            update_limiter_rule(s, image_path, limiter, |index| {
+                cpu_limiter::Message::RuleMode(index, limiter_tier(tier), value)
+            });
         }
         Message::LimiterLimit(tier, value) => {
-            if let Some(i) = s.cpu_limiter.rules.iter().position(|r| {
-                r.affinity_limit.is_none()
-                    && same_rule_executable_path(&r.executable_path, image_path)
-            }) {
-                cpu_limiter::CpuLimiter::default().update_profile(
-                    s,
-                    cpu_limiter::Message::RuleLimit(i, limiter_tier(tier), value),
-                );
-            }
+            update_limiter_rule(s, image_path, limiter, |index| {
+                cpu_limiter::Message::RuleLimit(index, limiter_tier(tier), value)
+            });
+        }
+        Message::LimiterNumber(tier, raw) => {
+            update_limiter_rule(s, image_path, limiter, |index| {
+                cpu_limiter::Message::Number(Some(index), limiter_tier(tier), raw)
+            });
         }
     }
     None
 }
+
+fn update_limiter_rule(
+    settings: &mut SettingsEditor,
+    path: &str,
+    limiter: &mut cpu_limiter::CpuLimiter,
+    message: impl FnOnce(usize) -> cpu_limiter::Message,
+) {
+    if let Some(index) = settings.cpu_limiter.rules.iter().position(|rule| {
+        rule.affinity_limit.is_none() && same_rule_executable_path(&rule.executable_path, path)
+    }) {
+        limiter.update_profile(settings, message(index));
+    }
+}
+
 fn can_set_running_app_plan(path: &str) -> bool {
     can_add_exact_process_candidate(path, |_| false, by_running_app::is_builtin_excluded)
 }
@@ -300,6 +314,7 @@ pub(super) fn view<'a>(
     s: &'a Settings,
     path: &'a str,
     plans: PlanCatalog<'_>,
+    limiter_editor: &cpu_limiter::CpuLimiter,
 ) -> Element<'a, Message> {
     let excluded_by_name = adaptive_name_excluded(s, path);
     let adaptive = !s.adaptive_engine_process.excludes_executable_path(path);
@@ -607,19 +622,18 @@ pub(super) fn view<'a>(
             ));
     } else if let Some(rule) = limiter {
         for tier in Tier::ALL {
-            let (mode, limit) = match tier {
-                Tier::Focus => (rule.focus_mode, rule.focus_allowed_cpu_time_percent),
-                Tier::VisibleWindow => (
-                    rule.visible_window_mode,
-                    rule.visible_window_allowed_cpu_time_percent,
-                ),
-                Tier::Background => (
-                    rule.background_mode,
-                    rule.background_allowed_cpu_time_percent,
-                ),
-            };
+            let limit_tier = limiter_tier(tier);
+            let (mode, limit) = limit_tier.rule_values(rule);
             let mut controls = column![row![
-                text(tier.label()).width(Fill),
+                text(widgets::label_with_unit(
+                    &tier.label(),
+                    if mode == ProcessRuleMode::Enabled {
+                        "%"
+                    } else {
+                        ""
+                    },
+                ))
+                .width(Fill),
                 pick_list(
                     ProcessRuleMode::ALL.map(cpu_limiter::Mode),
                     Some(cpu_limiter::Mode(mode)),
@@ -628,13 +642,19 @@ pub(super) fn view<'a>(
             ]]
             .spacing(widgets::CARD_GAP);
             if mode == ProcessRuleMode::Enabled {
-                controls = controls.push(widgets::trailing_slider(cpu_limiter::limit_slider(
+                controls = controls.push(widgets::trailing_slider(limiter_editor.limit_field(
+                    &rule.executable_path,
+                    limit_tier,
                     limit,
                     move |v| Message::LimiterLimit(tier, v),
-                    container(text(format!("{limit}%"))).align_right(design::NUMERIC_WIDTH),
+                    move |raw| Message::LimiterNumber(tier, raw),
                 )));
             }
             card = card.push(widgets::settings_divider()).push(controls);
+        }
+        if limiter_editor.has_invalid_inputs() {
+            card =
+                card.push(text(t!("cpu_limiter.invalid_limit").into_owned()).style(text::danger));
         }
     }
     body = body.push(settings_card(card));
@@ -643,6 +663,68 @@ pub(super) fn view<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn update(settings: &mut SettingsEditor, path: &str, message: Message) -> Option<String> {
+        super::update(
+            settings,
+            path,
+            message,
+            &mut cpu_limiter::CpuLimiter::default(),
+        )
+    }
+
+    #[test]
+    fn cpu_limiter_text_edits_only_stage_valid_percentages() {
+        let path = r"C:\Apps\worker.exe";
+        let mut initial = Settings::default();
+        let mut rule = new_cpu_limiter_rule(path);
+        rule.focus_mode = ProcessRuleMode::Enabled;
+        initial.cpu_limiter.rules.push(rule);
+        let mut settings = SettingsEditor::with_settings(initial);
+        let mut limiter = cpu_limiter::CpuLimiter::default();
+
+        for invalid in ["", "0", "101"] {
+            let _ = super::update(
+                &mut settings,
+                path,
+                Message::LimiterNumber(Tier::Focus, invalid.into()),
+                &mut limiter,
+            );
+            assert!(limiter.has_invalid_inputs());
+            assert!(!settings.has_unsaved_changes());
+        }
+
+        let _ = super::update(
+            &mut settings,
+            path,
+            Message::LimiterNumber(Tier::Focus, "75".into()),
+            &mut limiter,
+        );
+        assert_eq!(
+            settings.cpu_limiter.rules[0].focus_allowed_cpu_time_percent,
+            75
+        );
+        assert!(!limiter.has_invalid_inputs());
+        assert!(settings.has_unsaved_changes());
+
+        let _ = super::update(
+            &mut settings,
+            path,
+            Message::LimiterNumber(Tier::Focus, String::new()),
+            &mut limiter,
+        );
+        let _ = super::update(
+            &mut settings,
+            path,
+            Message::LimiterMode(Tier::Focus, ProcessRuleMode::Default),
+            &mut limiter,
+        );
+        assert!(!limiter.has_invalid_inputs());
+        assert_eq!(
+            settings.cpu_limiter.rules[0].focus_allowed_cpu_time_percent,
+            75
+        );
+    }
 
     #[test]
     fn details_focus_plan_only_edits_the_exact_path() {

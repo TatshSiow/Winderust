@@ -536,6 +536,7 @@ processor_power:
   energy_performance_preference: "Energy performance preference"
   energy_performance_preference_help: "0% favors performance and 100% favors energy savings. Applies on processors that support autonomous performance control."
   keep_plan_value: "Keep the plan value"
+  blank_keeps_plan_value: "Leave blank to keep the plan value. 0% favors performance and 100% favors energy savings."
   boost_policy_help: "Sets the processor boost preference on systems that support this Windows setting."
   boost_mode: "Performance Boost Mode"
   boost_mode_help: "Controls how Windows selects performance above the processor's nominal level."

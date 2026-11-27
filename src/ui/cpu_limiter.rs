@@ -22,20 +22,6 @@ use crate::ui::process_rules::{
 };
 
 pub(super) const CHOOSE_PROCESSORS_ID: &str = "cpu-limiter-choose-processors";
-pub(super) fn limit_slider<'a, M: Clone + 'a>(
-    value: u8,
-    change: impl Fn(u8) -> M + 'a,
-    field: impl Into<Element<'a, M>>,
-) -> Row<'a, M> {
-    let decrease = (value > 1).then(|| change(value.saturating_sub(1)));
-    let increase = (value < 100).then(|| change(value.saturating_add(1)));
-    widgets::slider_controls(
-        slider(1..=100, value, change).width(Fill),
-        decrease,
-        increase,
-        field,
-    )
-}
 
 #[derive(Default)]
 pub(super) struct CpuLimiter {
@@ -137,7 +123,7 @@ impl Tier {
         }
     }
 
-    fn rule_values(self, rule: &CpuLimiterRule) -> (ProcessRuleMode, u8) {
+    pub(super) fn rule_values(self, rule: &CpuLimiterRule) -> (ProcessRuleMode, u8) {
         match self {
             Self::Focus => (rule.focus_mode, rule.focus_allowed_cpu_time_percent),
             Self::VisibleWindow => (
@@ -471,6 +457,25 @@ impl CpuLimiter {
             .cloned()
             .unwrap_or_else(|| value.to_string())
     }
+
+    pub(super) fn limit_field<'a, M: Clone + 'a>(
+        &self,
+        path: &str,
+        tier: Tier,
+        value: u8,
+        change: impl Fn(u8) -> M + 'a,
+        input: impl Fn(String) -> M + 'a,
+    ) -> Row<'a, M> {
+        let decrease = (value > 1).then(|| change(value.saturating_sub(1)));
+        let increase = (value < 100).then(|| change(value.saturating_add(1)));
+        widgets::slider_controls(
+            slider(1..=100, value, change).width(Fill),
+            decrease,
+            increase,
+            numeric_input("1-100", &self.number(path, tier, value)).on_input(input),
+        )
+    }
+
     fn limit_control(
         &self,
         index: Option<usize>,
@@ -482,12 +487,9 @@ impl CpuLimiter {
             Some(index) => Message::RuleLimit(index, tier, value),
             None => Message::Default(tier, value),
         };
-        limit_slider(
-            value,
-            change,
-            numeric_input("1-100", &self.number(path, tier, value))
-                .on_input(move |raw| Message::Number(index, tier, raw)),
-        )
+        self.limit_field(path, tier, value, change, move |raw| {
+            Message::Number(index, tier, raw)
+        })
     }
     pub(super) fn view<'a>(
         &'a self,
