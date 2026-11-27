@@ -9,11 +9,14 @@ use crate::{
     application::settings::RuntimeSettingsSnapshot,
     backend::{
         automation::{RuntimeHandle, RuntimeStatusSnapshot},
-        crash_recovery, privilege,
+        crash_recovery,
+        interrupt_timing::{export_report, CaptureUpdate, InterruptTimingCapture},
+        privilege,
     },
     config::{AdaptiveEngineExclusionRule, PowerSourceProfile, Settings},
     control::power_plan::PowerPlanOwner,
     power,
+    runtime::pressure_trace::PressureTrace,
     ui::adaptive_processor_power::BuiltInPreset,
     win_util::NamedMutexGuard,
 };
@@ -253,6 +256,25 @@ fn runtime_ready(settings: &Settings, status: &RuntimeStatusSnapshot) -> bool {
     power_ready && process_ready
 }
 
+fn finish_interrupt_capture(
+    report_path: &Path,
+    capture: Option<InterruptTimingCapture>,
+    report_requested: bool,
+) -> Result<(), String> {
+    if let Some(capture) = capture {
+        let report = capture
+            .finish_with_report()
+            .map_err(|error| format!("Interrupt Timing cleanup failed: {error}"))?;
+        if let Some(report) = report.filter(|_| report_requested) {
+            return export_report(report_path, &report);
+        }
+    }
+    if report_requested {
+        return Err("Benchmark ended before Interrupt Timing completed".to_owned());
+    }
+    Ok(())
+}
+
 fn run(path: &Path, case: &str) -> Result<(), String> {
     if !path.is_dir() {
         return Err("Benchmark directory does not exist".to_owned());
@@ -281,6 +303,11 @@ fn run(path: &Path, case: &str) -> Result<(), String> {
             "An existing Winderust Adaptive plan must be recovered before benchmarking".to_owned(),
         );
     }
+    let trace = path
+        .join("trace-engine-pressure")
+        .is_file()
+        .then(PressureTrace::start)
+        .transpose()?;
     let mut recovery = crash_recovery::RecoveryClient::start();
     if let Some(error) = crash_recovery::startup_error() {
         return Err(error);
@@ -290,13 +317,31 @@ fn run(path: &Path, case: &str) -> Result<(), String> {
         persisted_revision: Default::default(),
         value: Arc::clone(&settings),
     });
+    let capture_request = path.join("capture-interrupt-timing");
+    let capture_report = path.join("interrupt-timing.json");
+    let mut capture: Option<InterruptTimingCapture> = None;
+    let mut capture_started = false;
     let result = (|| {
         let start = Instant::now();
         let mut ready = false;
         let mut samples = String::new();
         while start.elapsed() < Duration::from_secs(600) {
+            if let Some(update) = capture.as_mut().and_then(InterruptTimingCapture::poll) {
+                let report = match update {
+                    CaptureUpdate::CleanupPending(error) => return Err(error.to_string()),
+                    CaptureUpdate::Finished(report) => {
+                        capture = None;
+                        report.map_err(|error| error.to_string())?
+                    }
+                };
+                export_report(&capture_report, &report)?;
+            }
             if path.join("stop").exists() {
                 break;
+            }
+            if !capture_started && capture_request.is_file() {
+                capture = Some(InterruptTimingCapture::start().map_err(|error| error.to_string())?);
+                capture_started = true;
             }
             if let Some(status) = runtime.status_snapshot_since(0) {
                 if let Some(error) = status
@@ -337,8 +382,14 @@ fn run(path: &Path, case: &str) -> Result<(), String> {
         }
         Ok(())
     })();
-    // Both cleanup stages must run, even when measurement or restoration fails.
+    // Finish all cleanup even when measurement or restoration fails.
+    if let Some(capture) = &mut capture {
+        capture.cancel();
+    }
     let shutdown = runtime.shutdown();
+    let report_requested =
+        result.is_ok() && (capture.is_some() || !capture_started && capture_request.is_file());
+    let capture_status = finish_interrupt_capture(&capture_report, capture, report_requested);
     let recovered = recovery.finish();
     let restored = power::active_plan().and_then(|plan| {
         if plan.guid.eq_ignore_ascii_case(&original) {
@@ -350,10 +401,22 @@ fn run(path: &Path, case: &str) -> Result<(), String> {
             ))
         }
     });
-    let errors: Vec<_> = [result, shutdown, recovered, restored]
-        .into_iter()
-        .filter_map(Result::err)
-        .collect();
+    let trace_status = trace.map_or(Ok(()), |trace| {
+        trace
+            .finish()
+            .and_then(|data| write(path, "engine-pressure.json", &data))
+    });
+    let errors: Vec<_> = [
+        result,
+        shutdown,
+        capture_status,
+        recovered,
+        restored,
+        trace_status,
+    ]
+    .into_iter()
+    .filter_map(Result::err)
+    .collect();
     if errors.is_empty() {
         Ok(())
     } else {

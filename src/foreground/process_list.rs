@@ -681,7 +681,7 @@ fn list_processes_with(
     Ok(processes)
 }
 
-pub(crate) fn observe_process_metadata(process: &mut ProcessInfo) -> Option<WinHandle> {
+fn observe_process_metadata(process: &mut ProcessInfo) -> Option<WinHandle> {
     let handle = open_process_for_query(process.id);
     process.session_id = process_session_id(process.id);
     let handle = handle?;
@@ -690,6 +690,13 @@ pub(crate) fn observe_process_metadata(process: &mut ProcessInfo) -> Option<WinH
     process.can_set_information = process_protection_from_handle(&handle) == Some(false)
         && process_has_access(process.id, PROCESS_SET_INFORMATION);
     Some(handle)
+}
+
+pub(crate) fn observe_policy_process_metadata(process: &mut ProcessInfo, with_path: bool) {
+    let handle = observe_process_metadata(process);
+    if let Some(handle) = handle.filter(|_| with_path) {
+        read_policy_process_path(process, &handle);
+    }
 }
 
 pub(crate) fn list_process_ancestry(root: u32) -> Result<Vec<ProcessInfo>, String> {
@@ -758,18 +765,20 @@ pub fn list_processes_with_paths() -> Result<Vec<ProcessInfo>, String> {
     })
 }
 
-pub(crate) fn enrich_process_paths(processes: &mut [ProcessInfo]) {
+fn read_policy_process_path(process: &mut ProcessInfo, handle: &WinHandle) {
     // Policy scans need SID safety classification, not display names.
-    for process in processes {
-        let Some(handle) = open_process_for_query(process.id) else {
-            continue;
-        };
-        process.image_path = process_image_path_from_handle(&handle);
-        process.creation_time = handle.process_creation_time();
-        process.user_name = None;
-        process.is_service_account = process_runs_as_service_account_from_handle(&handle);
-        process.is_critical = process_critical_from_handle(&handle);
-    }
+    process.image_path = process_image_path_from_handle(handle);
+    process.user_name = None;
+    process.is_service_account = process_runs_as_service_account_from_handle(handle);
+}
+
+pub(crate) fn enrich_policy_process_path(process: &mut ProcessInfo) {
+    let Some(handle) = open_process_for_query(process.id) else {
+        return;
+    };
+    process.creation_time = handle.process_creation_time();
+    process.is_critical = process_critical_from_handle(&handle);
+    read_policy_process_path(process, &handle);
 }
 
 pub fn list_process_ids() -> Result<Vec<u32>, String> {
@@ -1088,12 +1097,27 @@ pub(crate) fn verified_process_executable_path(process: &ProcessInfo) -> Option<
 
 /// Reads the image only if the current handle still belongs to the observed process.
 pub(crate) fn observed_process_executable_path(process: &ProcessInfo) -> Option<PathBuf> {
+    let (handle, _, _) = query_observed_process_times(process)?;
+    process_image_path_from_handle(&handle)
+}
+
+pub(crate) fn observed_process_executable_path_and_cpu(
+    process: &ProcessInfo,
+) -> Option<(PathBuf, (ProcessCpuSample, u64))> {
+    let (handle, creation_time, cpu_time_100ns) = query_observed_process_times(process)?;
+    let sample = ProcessCpuSample {
+        cpu_time_100ns,
+        sampled_at: Instant::now(),
+    };
+    let path = process_image_path_from_handle(&handle).filter(|path| path.is_absolute())?;
+    Some((path, (sample, creation_time)))
+}
+
+fn query_observed_process_times(process: &ProcessInfo) -> Option<(WinHandle, u64, u64)> {
     let expected_creation = process.creation_time?;
     let handle = open_process_for_query(process.id)?;
-    if handle.process_creation_time()? != expected_creation {
-        return None;
-    }
-    process_image_path_from_handle(&handle)
+    let (creation_time, cpu_time_100ns) = handle.process_times().ok()?;
+    (creation_time == expected_creation).then_some((handle, creation_time, cpu_time_100ns))
 }
 
 pub(super) fn process_image_and_critical(process_id: u32) -> Option<(PathBuf, Option<bool>)> {
@@ -1337,14 +1361,6 @@ pub(crate) fn query_process_image_path(process: &WinHandle) -> Result<PathBuf, u
 
         buffer.resize((buffer.len() * 2).min(PROCESS_IMAGE_PATH_MAX_BUFFER_LEN), 0);
     }
-}
-
-pub(crate) fn process_handle_matches_executable_path(
-    process: &WinHandle,
-    expected_executable_path: &Path,
-) -> bool {
-    process_image_path_from_handle(process)
-        .is_some_and(|actual| same_executable_path(&actual, expected_executable_path))
 }
 
 #[cfg(test)]
@@ -1622,12 +1638,20 @@ mod tests {
 
         let mut expected = current.clone();
         expected.user_name = None;
-        enrich_process_paths(std::slice::from_mut(&mut current));
+        enrich_policy_process_path(&mut current);
         assert!(
             current.user_name.is_none(),
             "runtime enrichment must omit account names"
         );
         assert_eq!(current, expected);
+
+        let mut fresh = list_process_entries()
+            .expect("process snapshot is available")
+            .into_iter()
+            .find(|process| process.id == process_id)
+            .expect("current process is present in its own snapshot");
+        observe_policy_process_metadata(&mut fresh, true);
+        assert_eq!(fresh, expected);
     }
 
     #[test]
@@ -1702,9 +1726,9 @@ mod tests {
     fn observed_image_and_visible_siblings_require_the_captured_generation() {
         let id = std::process::id();
         let handle = open_process_for_query(id).expect("current process should be queryable");
-        let creation_time = handle
-            .process_creation_time()
-            .expect("current process creation time should be readable");
+        let (creation_time, initial_cpu_time) = handle
+            .process_times()
+            .expect("current process times should be readable");
         let path =
             query_process_image_path(&handle).expect("current image path should be readable");
         let path_text = path.to_str().expect("current image path should be Unicode");
@@ -1737,6 +1761,13 @@ mod tests {
             )
         };
         observed.image_path = None;
+        let (sample_path, (sample, sample_creation_time)) =
+            observed_process_executable_path_and_cpu(&observed)
+                .expect("current process image and CPU time should be readable");
+        assert_eq!(sample_path, path);
+        assert_eq!(sample_creation_time, creation_time);
+        assert!(sample.cpu_time_100ns >= initial_cpu_time);
+        assert!(sample.cpu_time_100ns <= handle.process_times().unwrap().1);
         assert_eq!(
             process_executable_path(&observed).as_deref(),
             Some(path.as_path())
@@ -1746,6 +1777,7 @@ mod tests {
 
         observed.creation_time = Some(creation_time ^ 1);
         assert_eq!(observed_process_executable_path(&observed), None);
+        assert_eq!(observed_process_executable_path_and_cpu(&observed), None);
         assert_eq!(process_executable_path(&observed), None);
         assert!(!process_matches_executable_path(&observed, path_text));
         let stale = capture(&observed);
@@ -1754,6 +1786,7 @@ mod tests {
 
         observed.creation_time = None;
         assert_eq!(observed_process_executable_path(&observed), None);
+        assert_eq!(observed_process_executable_path_and_cpu(&observed), None);
         assert_eq!(process_executable_path(&observed), None);
         assert!(!process_matches_executable_path(&observed, path_text));
         let cached_path = PathBuf::from(r"C:\Apps\cached.exe");

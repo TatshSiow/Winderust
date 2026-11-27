@@ -566,9 +566,12 @@ impl RuntimeHandle {
         });
         let self_power_shared = Arc::clone(&shared);
         let self_power_error = Mutex::new(None);
-        let self_power = match SelfPowerRetryWatcher::start(Arc::new(move |result| {
-            report_self_power_result(&self_power_shared, &self_power_error, result)
-        })) {
+        let self_power = match SelfPowerRetryWatcher::start(
+            preserve_self_priority_in_tray(&settings.value),
+            Arc::new(move |result| {
+                report_self_power_result(&self_power_shared, &self_power_error, result)
+            }),
+        ) {
             Ok(watcher) => {
                 watcher.request().set_hidden_mode(tray::is_hidden_to_tray());
                 Some(watcher)
@@ -647,6 +650,12 @@ impl RuntimeHandle {
         };
 
         if settings_changed {
+            if let Some(watcher) = lock_unpoisoned(&self.self_power).as_ref() {
+                // Release the settings lock before self-power can report a result.
+                let preserve =
+                    preserve_self_priority_in_tray(&lock_unpoisoned(&self.shared.state).settings);
+                watcher.request().set_preserve_priority_in_tray(preserve);
+            }
             self.sync_windows_event_watcher(settings);
             self.sync_input_hook(settings);
             self.sync_worker(settings, false);
@@ -1167,6 +1176,16 @@ impl RuntimeHandle {
             Err(error) => update_worker_error(&self.shared, Some(error)),
         }
     }
+}
+
+fn preserve_self_priority_in_tray(settings: &Settings) -> bool {
+    // A configured battery policy must be able to wake even when AC was idle under load.
+    settings.general.enabled
+        && (adaptive_engine_process_required(settings)
+            || settings
+                .on_battery
+                .as_deref()
+                .is_some_and(adaptive_engine_process_required))
 }
 
 fn report_self_power_result(

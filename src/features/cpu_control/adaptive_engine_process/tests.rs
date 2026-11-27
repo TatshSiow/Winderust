@@ -356,24 +356,49 @@ fn adaptive_engine_process_selects_highest_scored_candidates() {
     let candidates = (0..=u32::from(max_targeted))
         .map(|process_id| AdaptiveEngineProcessCandidate {
             process_id,
-            process_name: format!("app{process_id}.exe"),
-            decision: AdaptiveEngineProcessDecision::LowerPriority,
-            tier: AdaptiveEngineProcessTier::Background,
+            decision: AdaptiveEngineProcessDecision::LimitProcessors,
+            usage_tenths: Some(process_id as u16),
             score: process_id,
         })
         .collect::<Vec<_>>();
 
-    let selected = select_adaptive_engine_process_candidates(candidates, max_targeted);
+    let selected = select_adaptive_engine_process_candidates(candidates, max_targeted, true, None);
 
     assert_eq!(selected.len(), usize::from(max_targeted));
     assert!(!selected.iter().any(|candidate| candidate.process_id == 0));
 }
 
 #[test]
+fn independent_placement_cap_skips_candidates_that_would_take_no_action() {
+    for (limiter_available, decision) in [
+        (true, AdaptiveEngineProcessDecision::LowerPriority),
+        (false, AdaptiveEngineProcessDecision::LimitProcessors),
+    ] {
+        let candidates = vec![
+            AdaptiveEngineProcessCandidate {
+                process_id: 1,
+                decision,
+                usage_tenths: Some(790),
+                score: 1_200,
+            },
+            AdaptiveEngineProcessCandidate {
+                process_id: 2,
+                decision: AdaptiveEngineProcessDecision::LimitProcessors,
+                usage_tenths: Some(810),
+                score: 810,
+            },
+        ];
+        let selected =
+            select_adaptive_engine_process_candidates(candidates, 1, limiter_available, Some(80));
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].process_id, 2);
+    }
+}
+
+#[test]
 fn adaptive_engine_process_selection_can_replace_cooler_selected_process() {
     let now = Instant::now();
     let selected = AdaptiveEngineProcessProcess {
-        process_name: "selected.exe".to_owned(),
         executable_path: r"C:\Apps\selected.exe".to_owned(),
         creation_time: 1,
         tier: AdaptiveEngineProcessTier::Background,
@@ -385,7 +410,6 @@ fn adaptive_engine_process_selection_can_replace_cooler_selected_process() {
         selected: true,
     };
     let hotter = AdaptiveEngineProcessProcess {
-        process_name: "hotter.exe".to_owned(),
         executable_path: r"C:\Apps\hotter.exe".to_owned(),
         creation_time: 2,
         tier: AdaptiveEngineProcessTier::Background,
@@ -402,17 +426,17 @@ fn adaptive_engine_process_selection_can_replace_cooler_selected_process() {
             adaptive_engine_process_candidate(
                 1,
                 &selected,
-                AdaptiveEngineProcessDecision::LowerPriority,
-                AdaptiveEngineProcessTier::Background,
+                AdaptiveEngineProcessDecision::LimitProcessors,
             ),
             adaptive_engine_process_candidate(
                 2,
                 &hotter,
-                AdaptiveEngineProcessDecision::LowerPriority,
-                AdaptiveEngineProcessTier::Background,
+                AdaptiveEngineProcessDecision::LimitProcessors,
             ),
         ],
         1,
+        true,
+        None,
     );
 
     assert_eq!(selected[0].process_id, 2);
@@ -422,7 +446,6 @@ fn adaptive_engine_process_selection_can_replace_cooler_selected_process() {
 fn adaptive_engine_process_candidate_score_uses_only_cpu_and_selection_stickiness() {
     let now = Instant::now();
     let process = |selected| AdaptiveEngineProcessProcess {
-        process_name: "worker.exe".to_owned(),
         executable_path: r"C:\Apps\worker.exe".to_owned(),
         creation_time: 1,
         tier: AdaptiveEngineProcessTier::Background,
@@ -438,13 +461,11 @@ fn adaptive_engine_process_candidate_score_uses_only_cpu_and_selection_stickines
         1,
         &process(false),
         AdaptiveEngineProcessDecision::LowerPriority,
-        AdaptiveEngineProcessTier::Background,
     );
     let repeated = adaptive_engine_process_candidate(
         1,
         &process(false),
         AdaptiveEngineProcessDecision::LowerPriority,
-        AdaptiveEngineProcessTier::Background,
     );
 
     assert_eq!(first.score, repeated.score);
@@ -452,7 +473,6 @@ fn adaptive_engine_process_candidate_score_uses_only_cpu_and_selection_stickines
         1,
         &process(true),
         AdaptiveEngineProcessDecision::LowerPriority,
-        AdaptiveEngineProcessTier::Background,
     );
     assert_eq!(
         selected.score,
@@ -526,6 +546,37 @@ fn load_aware_core_mask_picks_low_load_standard_processors() {
     let mask = load_aware_limited_core_mask(&processors, &usages, 50, None).unwrap();
 
     assert_eq!(mask, 0b1010);
+}
+
+#[test]
+fn scoped_placement_waits_for_a_meaningful_load_improvement() {
+    let processors: [_; 4] = std::array::from_fn(|index| LogicalProcessorInfo {
+        index,
+        core_index: index,
+        kind: LogicalProcessorKind::Standard,
+        efficiency_class: 0,
+    });
+    let mut manager = AdaptiveEngineProcessManager::default();
+    let start = Instant::now();
+    let mut select = |percent, usages: [f32; 4], elapsed_ms| {
+        manager.load_aware_cpu_allocation_mask(
+            percent,
+            None,
+            CpuAllocationPolicy::ScopedRestraint,
+            &processors,
+            &usages,
+            start + Duration::from_millis(elapsed_ms),
+        )
+    };
+    let first_pair_is_cooler = [5.0, 5.0, 35.0, 35.0];
+    let second_pair_is_cooler = [35.0, 35.0, 5.0, 5.0];
+
+    assert_eq!(select(50, first_pair_is_cooler, 0), Some(0b0011));
+    assert_eq!(select(50, second_pair_is_cooler, 2_999), Some(0b0011));
+    assert_eq!(select(50, [10.0, 10.0, 5.0, 5.0], 3_000), Some(0b0011));
+    assert_eq!(select(50, second_pair_is_cooler, 3_001), Some(0b1100));
+    assert_eq!(select(50, first_pair_is_cooler, 3_002), Some(0b1100));
+    assert_eq!(select(25, first_pair_is_cooler, 3_003), Some(0b0001));
 }
 
 #[test]
@@ -932,14 +983,18 @@ impl AdaptiveCpuObservations {
         &mut self,
         sample: Option<(ProcessCpuSample, u64)>,
     ) -> Option<AdaptiveEngineProcessCandidate> {
-        self.manager.update_adaptive_engine_process_sample(
+        let decision = self.manager.update_adaptive_engine_process_sample(
             42,
-            "worker.exe",
             self.path,
             &self.settings,
             self.tier,
             sample,
-        )
+        )?;
+        Some(adaptive_engine_process_candidate(
+            42,
+            &self.manager.tracked_processes[&42],
+            decision,
+        ))
     }
 }
 
@@ -978,7 +1033,9 @@ fn reset_pressure_observations_requires_fresh_cpu_intervals() {
     assert!(monitor.sample_busy_processor_for_test(0).is_none());
     assert!(monitor.sample_busy_processor_for_test(100).is_some());
 
-    observations.manager.reset_pressure_observations();
+    observations
+        .manager
+        .reset_pressure_observations("test observation reset");
 
     let monitor = &mut observations.manager.per_processor_usage;
     assert!(monitor.sample_busy_processor_for_test(200).is_none());
@@ -1152,7 +1209,7 @@ fn adaptive_role_changes_require_a_fresh_hot_interval() {
         assert!(tracked[&99].selected);
 
         let renewed = observations.sample(4, 22_000_000).unwrap();
-        assert_eq!(renewed.tier, to);
+        assert_eq!(observations.manager.tracked_processes[&42].tier, to);
         assert_eq!(renewed.decision, next_decision);
         assert_eq!(
             observations.manager.tracked_processes[&42].active_since,
@@ -1279,7 +1336,6 @@ fn adaptive_engine_source_wait_clears_qualification_and_rearms_after_update() {
     manager.tracked_processes.insert(
         42,
         AdaptiveEngineProcessProcess {
-            process_name: String::new(),
             executable_path: String::new(),
             creation_time: 1,
             tier: AdaptiveEngineProcessTier::Background,
@@ -1575,7 +1631,7 @@ fn native_pressure_restraint_focus_protections_are_independent() -> Result<(), S
                 &mut allocation,
                 &mut priority,
                 &mut log,
-                |id, _| {
+                |id| {
                     (id == target.id).then_some((
                         ProcessCpuSample {
                             cpu_time_100ns: elapsed_ms * 10_000,
@@ -1692,7 +1748,7 @@ fn native_restraint_placement_lifecycle(placement_only: bool) -> Result<(), Stri
             &mut allocation,
             &mut priority,
             &mut log,
-            |id, _| {
+            |id| {
                 (id == target.id).then_some((
                     ProcessCpuSample {
                         cpu_time_100ns: elapsed_ms * 10_000,

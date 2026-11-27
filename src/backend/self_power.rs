@@ -36,6 +36,23 @@ pub(crate) struct SelfPowerRequest<P: SelfPowerPlatform = WindowsSelfPowerPlatfo
 
 impl<P: SelfPowerPlatform> SelfPowerRequest<P> {
     pub(crate) fn set_hidden_mode(&self, hidden: bool) {
+        self.update(|controller| Some(controller.set_hidden_mode(hidden)));
+    }
+
+    pub(crate) fn set_preserve_priority_in_tray(&self, preserve: bool) {
+        self.update(|controller| {
+            if controller.preserve_priority_in_tray == preserve {
+                return None;
+            }
+            controller.preserve_priority_in_tray = preserve;
+            Some(controller.reconcile())
+        });
+    }
+
+    fn update(
+        &self,
+        apply: impl FnOnce(&mut SelfPowerController<P>) -> Option<Result<(), String>>,
+    ) {
         if lock_unpoisoned(&self.shared.wake).stopped {
             return;
         }
@@ -44,7 +61,9 @@ impl<P: SelfPowerPlatform> SelfPowerRequest<P> {
             if lock_unpoisoned(&self.shared.wake).stopped {
                 return;
             }
-            let result = controller.set_hidden_mode(hidden);
+            let Some(result) = apply(&mut controller) else {
+                return;
+            };
             (self.shared.report)(result);
         }
         let mut wake = lock_unpoisoned(&self.shared.wake);
@@ -64,9 +83,15 @@ pub(crate) struct SelfPowerRetryWatcher<
 }
 
 impl SelfPowerRetryWatcher {
-    pub(crate) fn start(report: SelfPowerReporter) -> Result<Self, String> {
+    pub(crate) fn start(
+        preserve_priority_in_tray: bool,
+        report: SelfPowerReporter,
+    ) -> Result<Self, String> {
         Self::with_controller(
-            SelfPowerController::default(),
+            SelfPowerController {
+                preserve_priority_in_tray,
+                ..SelfPowerController::default()
+            },
             report,
             SELF_POWER_SHUTDOWN_TIMEOUT,
         )
@@ -248,6 +273,7 @@ pub(crate) struct SelfPowerController<P: SelfPowerPlatform = WindowsSelfPowerPla
     platform: P,
     state: Option<ManagedSelfPowerState>,
     hidden_mode: bool,
+    preserve_priority_in_tray: bool,
     retry_at: Option<Instant>,
     retry_interval: Duration,
     shutdown: bool,
@@ -265,6 +291,7 @@ impl<P: SelfPowerPlatform> SelfPowerController<P> {
             platform,
             state: None,
             hidden_mode: false,
+            preserve_priority_in_tray: false,
             retry_at: None,
             retry_interval: SELF_POWER_RETRY_INTERVAL,
             shutdown: false,
@@ -324,7 +351,16 @@ impl<P: SelfPowerPlatform> SelfPowerController<P> {
             .ok_or_else(|| "Winderust self-power state disappeared.".to_owned())?;
         if !same_snapshot(current, state.expected) {
             if !state.preserve_baseline_after_failure {
-                state.baseline = current;
+                if current.priority_class != state.expected.priority_class {
+                    state.baseline.priority_class = current.priority_class;
+                }
+                if !same_power_state(current.power_throttling, state.expected.power_throttling) {
+                    state.baseline.power_throttling = rebase_power_throttling(
+                        state.baseline.power_throttling,
+                        state.expected.power_throttling,
+                        current.power_throttling,
+                    );
+                }
             }
             state.expected = current;
         }
@@ -336,7 +372,7 @@ impl<P: SelfPowerPlatform> SelfPowerController<P> {
             } else {
                 state.baseline.power_throttling
             },
-            priority_class: if self.hidden_mode {
+            priority_class: if enabled && !self.preserve_priority_in_tray {
                 PRIORITY_IDLE
             } else {
                 state.baseline.priority_class
@@ -443,6 +479,23 @@ fn same_snapshot(left: SelfPowerState, right: SelfPowerState) -> bool {
 
 fn same_power_state(left: PowerThrottlingState, right: PowerThrottlingState) -> bool {
     left == right
+}
+
+fn rebase_power_throttling(
+    baseline: PowerThrottlingState,
+    expected: PowerThrottlingState,
+    mut observed: PowerThrottlingState,
+) -> PowerThrottlingState {
+    let changed = (observed.control_mask ^ expected.control_mask)
+        | (observed.state_mask ^ expected.state_mask);
+    if changed & POWER_EXECUTION_SPEED == 0 {
+        // Changes to other flags must not turn the tray's EcoQoS request into the baseline.
+        observed.control_mask = (observed.control_mask & !POWER_EXECUTION_SPEED)
+            | (baseline.control_mask & POWER_EXECUTION_SPEED);
+        observed.state_mask = (observed.state_mask & !POWER_EXECUTION_SPEED)
+            | (baseline.state_mask & POWER_EXECUTION_SPEED);
+    }
+    observed
 }
 
 #[cfg(test)]

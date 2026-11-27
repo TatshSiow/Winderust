@@ -1,35 +1,30 @@
-use std::{path::Path, time::Duration, time::Instant};
+use std::time::{Duration, Instant};
 
 use windows_sys::Win32::{
-    Foundation::FILETIME,
-    System::{
-        SystemInformation::GetSystemTimeAsFileTime,
-        Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION},
-    },
+    Foundation::FILETIME, System::SystemInformation::GetSystemTimeAsFileTime,
 };
 
 use crate::{
     action_log::{ActionLog, ActionLogFeature, ActionLogResult},
     control::process::ProcessControlError,
     cpu::ProcessCpuSample,
-    foreground::process_handle_matches_executable_path,
-    win_util::{filetime_to_u64, WinHandle},
+    foreground::process_list::process_cpu_times,
+    win_util::filetime_to_u64,
 };
 
-pub(super) fn process_cpu_sample_with_identity(
-    process_id: u32,
-    executable_path: &str,
-) -> Option<(ProcessCpuSample, u64)> {
-    let process = ProcessHandle::open_query(process_id)?;
-    if !process.matches_executable_path(executable_path) {
-        return None;
-    }
-    process.cpu_sample_with_identity()
+pub(super) fn process_cpu_sample(process_id: u32) -> Option<(ProcessCpuSample, u64)> {
+    let (creation_time, cpu_time_100ns) = process_cpu_times(process_id)?;
+    Some((
+        ProcessCpuSample {
+            cpu_time_100ns,
+            sampled_at: Instant::now(),
+        },
+        creation_time,
+    ))
 }
 
 pub(super) fn process_age(process_id: u32, expected_creation_time: u64) -> Option<Duration> {
-    let process = ProcessHandle::open_query(process_id)?;
-    let creation_time_100ns = process.creation_time_100ns()?;
+    let (creation_time_100ns, _) = process_cpu_times(process_id)?;
     if creation_time_100ns != expected_creation_time {
         return None;
     }
@@ -108,38 +103,4 @@ pub(super) fn process_failure_message(
         process_name
     };
     format!("{action} {name} ({process_id}): {message}")
-}
-
-struct ProcessHandle(WinHandle);
-
-impl ProcessHandle {
-    fn open_query(process_id: u32) -> Option<Self> {
-        // SAFETY: process_id came from the current process snapshot and no inherited handle is
-        // requested.
-        let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, process_id) };
-        if !handle.is_null() {
-            Some(Self(WinHandle::new(handle)))
-        } else {
-            None
-        }
-    }
-
-    fn matches_executable_path(&self, expected: &str) -> bool {
-        process_handle_matches_executable_path(&self.0, Path::new(expected))
-    }
-
-    fn cpu_sample_with_identity(&self) -> Option<(ProcessCpuSample, u64)> {
-        let (creation, cpu_time_100ns) = self.0.process_times().ok()?;
-        Some((
-            ProcessCpuSample {
-                cpu_time_100ns,
-                sampled_at: Instant::now(),
-            },
-            creation,
-        ))
-    }
-
-    fn creation_time_100ns(&self) -> Option<u64> {
-        self.0.process_creation_time()
-    }
 }

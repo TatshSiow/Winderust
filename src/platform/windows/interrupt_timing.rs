@@ -123,13 +123,30 @@ impl InterruptTimingCapture {
         Some(CaptureUpdate::Finished(result))
     }
 
-    pub(crate) fn finish(mut self) -> Result<(), InterruptTimingError> {
+    pub(crate) fn finish(self) -> Result<(), InterruptTimingError> {
+        self.finish_with_grace(Duration::ZERO).map(|_| ())
+    }
+
+    #[cfg(feature = "runtime-benchmark")]
+    pub(crate) fn finish_with_report(
+        self,
+    ) -> Result<Option<InterruptTimingReport>, InterruptTimingError> {
+        // Give the reaper a bounded chance to confirm cleanup after a capture timeout.
+        self.finish_with_grace(CLEANUP_GRACE)
+    }
+
+    fn finish_with_grace(
+        mut self,
+        grace: Duration,
+    ) -> Result<Option<InterruptTimingReport>, InterruptTimingError> {
         self.cancel();
         let Some(outcome) = self.outcome.take() else {
-            return Ok(());
+            return Ok(None);
         };
-        match outcome.recv_timeout(self.deadline.saturating_duration_since(Instant::now())) {
-            Ok(Ok(_) | Err(InterruptTimingError::Cancelled)) => Ok(()),
+        let deadline = self.deadline + grace;
+        match outcome.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+            Ok(Ok(report)) => Ok(Some(report)),
+            Ok(Err(InterruptTimingError::Cancelled)) => Ok(None),
             Ok(Err(error)) => Err(error),
             Err(RecvTimeoutError::Timeout) => Err(pending_timeout()),
             Err(error) => Err(worker_error(error)),

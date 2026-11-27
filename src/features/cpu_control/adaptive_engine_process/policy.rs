@@ -139,13 +139,11 @@ pub(super) fn adaptive_engine_process_candidate(
     process_id: u32,
     process: &AdaptiveEngineProcessProcess,
     decision: AdaptiveEngineProcessDecision,
-    tier: AdaptiveEngineProcessTier,
 ) -> AdaptiveEngineProcessCandidate {
     AdaptiveEngineProcessCandidate {
         process_id,
-        process_name: process.process_name.clone(),
         decision,
-        tier,
+        usage_tenths: process.last_usage_tenths,
         score: u32::from(process.last_usage_tenths.unwrap_or_default())
             + if process.selected {
                 ADAPTIVE_ENGINE_PROCESS_SELECTION_STICKINESS_TENTHS
@@ -158,7 +156,16 @@ pub(super) fn adaptive_engine_process_candidate(
 pub(super) fn select_adaptive_engine_process_candidates(
     mut candidates: Vec<AdaptiveEngineProcessCandidate>,
     maximum_restrained_apps: u8,
+    limit_background_processors: bool,
+    zone_threshold: Option<u8>,
 ) -> Vec<AdaptiveEngineProcessCandidate> {
+    candidates.retain(|candidate| {
+        (limit_background_processors
+            && candidate.decision == AdaptiveEngineProcessDecision::LimitProcessors)
+            || zone_threshold.is_some_and(|threshold| {
+                fresh_background_competition(candidate.usage_tenths, threshold)
+            })
+    });
     candidates.sort_by(|left, right| {
         right
             .score

@@ -9,8 +9,11 @@ Read the relevant section before changing feature policy, ownership, restoration
   Prevention selects candidates from one Toolhelp process snapshot using the
   rule selector or prior process ID before reading process metadata. Each row's
   first metadata attempt stays with that catalog. A later full catalog request
-  fills the remaining rows from the same snapshot, and scoped callers reuse a
-  complete path-enriched catalog when available. Exact path, process identity,
+  fills the remaining rows from the same snapshot. If the full request needs
+  paths, newly observed rows share one query handle for metadata, image path,
+  and service-account classification. Previously observed rows retain their
+  captured generation. Scoped callers reuse a complete path-enriched catalog
+  when available. Exact path, process identity,
   and protection checks still apply. The next pass takes a fresh snapshot.
 - Action Log entries and summaries remain in memory across automation worker
   restarts. The worker publishes its cleanup entries as it returns the log.
@@ -556,12 +559,19 @@ Read the relevant section before changing feature policy, ownership, restoration
   unknown indices. Exit clears the points.
 - `src/backend/self_power.rs` owns Winderust's hidden-to-tray priority and Power
   Throttling lifecycle, including strict baseline capture, verification, compensation, retry, and
-  clean shutdown. Visibility changes apply synchronously; a process-lifetime
+  clean shutdown. While hidden, it requests EcoQoS and keeps the captured process
+  priority when automation is enabled and either saved power profile enables
+  Adaptive Engine process policies.
+  This lets automation respond to sustained CPU load after a power-source change.
+  Otherwise it requests Idle priority. Visibility and saved settings changes
+  apply synchronously. A process-lifetime
   worker retries failures every five seconds even when automation is disabled,
   and sleeps without polling while settled. Shutdown waits at most two seconds
   for self-power restoration and reports unconfirmed completion without waiting
-  indefinitely on a stalled native call. Showing the window restores its baseline even when Adaptive Engine is enabled,
-  so foreground rendering is not throttled by Winderust. Raw current-process query/set calls live only in
+  indefinitely on a stalled native call. Showing the window restores the
+  execution-speed and priority baseline. An external timer-resolution change
+  preserves that baseline, and a direct external change to execution speed or
+  priority becomes the baseline for that setting. Raw current-process query/set calls live only in
   `src/platform/windows/self_power.rs`. This process-lifetime state does not use crash recovery.
 
 ## Failure handling

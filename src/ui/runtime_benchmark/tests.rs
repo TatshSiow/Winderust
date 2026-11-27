@@ -1,6 +1,75 @@
 use super::*;
 
 #[test]
+fn unfinished_interrupt_capture_reports_an_error_after_cleanup() {
+    use crate::backend::interrupt_timing::InterruptTimingError;
+
+    let path = Path::new("interrupt-timing.json");
+    assert!(finish_interrupt_capture(path, None, false).is_ok());
+    let error = "Benchmark ended before Interrupt Timing completed";
+    assert_eq!(
+        finish_interrupt_capture(path, None, true),
+        Err(error.to_owned())
+    );
+
+    let (capture, outcome) = InterruptTimingCapture::expired_for_test();
+    outcome.send(Err(InterruptTimingError::Cancelled)).unwrap();
+    assert_eq!(
+        finish_interrupt_capture(path, Some(capture), true),
+        Err(error.to_owned())
+    );
+
+    let (capture, outcome) = InterruptTimingCapture::expired_for_test();
+    outcome
+        .send(Err(InterruptTimingError::Cleanup(
+            "trace still active".into(),
+        )))
+        .unwrap();
+    assert_eq!(
+        finish_interrupt_capture(path, Some(capture), true),
+        Err("Interrupt Timing cleanup failed: trace still active".into())
+    );
+}
+
+#[test]
+fn benchmark_stop_exports_a_report_that_arrives_during_cleanup() {
+    use crate::backend::interrupt_timing::InterruptTimingReport;
+
+    let path = std::env::temp_dir().join(format!(
+        "winderust-benchmark-interrupt-timing-{}.json",
+        std::process::id()
+    ));
+    let report = InterruptTimingReport {
+        capture_start: None,
+        events_lost: 1,
+        buffers_lost: 0,
+        invalid_intervals: 0,
+        incomplete_intervals: 0,
+        invalid_image_records: 0,
+        unresolved_attribution: 0,
+        modules: Vec::new(),
+        per_cpu: None,
+        timeline: std::array::from_fn(|_| Default::default()),
+    };
+    let (capture, outcome) = InterruptTimingCapture::expired_for_test();
+    outcome.send(Ok(report.clone())).unwrap();
+    finish_interrupt_capture(&path, Some(capture), true).unwrap();
+    let exported: InterruptTimingReport =
+        serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    assert_eq!(report, exported);
+    fs::remove_file(&path).unwrap();
+
+    let (mut capture, outcome) = InterruptTimingCapture::expired_for_test();
+    assert!(matches!(
+        capture.poll(),
+        Some(CaptureUpdate::CleanupPending(_))
+    ));
+    outcome.send(Ok(report)).unwrap();
+    finish_interrupt_capture(&path, Some(capture), false).unwrap();
+    assert!(!path.exists());
+}
+
+#[test]
 fn benchmark_cases_change_only_the_named_tuning() {
     let speed = settings_for("Speed").unwrap();
     let mut expected = Settings::default();

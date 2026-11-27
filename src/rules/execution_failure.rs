@@ -68,6 +68,10 @@ pub struct ExecutionFailureTracker<K = String> {
 }
 
 impl<K: Ord> ExecutionFailureTracker<K> {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.states.is_empty()
+    }
+
     pub fn clear(&mut self) {
         self.states.clear();
     }
@@ -145,6 +149,9 @@ impl<K: Ord> ExecutionFailureTracker<K> {
 
 impl ExecutionFailureTracker {
     pub fn process_suppression(&mut self, process_name: &str) -> ExecutionSuppression {
+        if self.is_empty() {
+            return ExecutionSuppression::default();
+        }
         let Some(key) = process_failure_key(process_name) else {
             return ExecutionSuppression::default();
         };
@@ -160,6 +167,9 @@ impl ExecutionFailureTracker {
     }
 
     pub fn clear_process_failure(&mut self, process_name: &str) {
+        if self.is_empty() {
+            return;
+        }
         if let Some(key) = process_failure_key(process_name) {
             self.clear_key_failure(&key);
         }
@@ -211,11 +221,22 @@ mod tests {
     #[test]
     fn permanent_process_failure_suppresses_immediately() {
         let mut tracker = ExecutionFailureTracker::default();
+        let path = r"C:\Apps\service.exe";
 
-        assert!(tracker.suppress_process_failure(r"C:\Apps\service.exe"));
         assert_eq!(
-            tracker.process_suppression(r"C:\Apps\service.exe"),
+            tracker.process_suppression(path),
+            ExecutionSuppression::default()
+        );
+        assert!(tracker.suppress_process_failure(path));
+        assert_eq!(
+            tracker.process_suppression(path),
             ExecutionSuppression::active(false)
+        );
+        tracker.clear_process_failure("C:/Apps/service.exe");
+        assert!(tracker.is_empty());
+        assert_eq!(
+            tracker.process_suppression(path),
+            ExecutionSuppression::default()
         );
     }
 }

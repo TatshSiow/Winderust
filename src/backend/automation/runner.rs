@@ -810,7 +810,7 @@ impl RuntimeCore {
             .is_some_and(|previous| previous.plugged_in != plugged_in);
         if events.suspend_resume {
             self.adaptive_engine_process_manager
-                .reset_pressure_observations();
+                .reset_pressure_observations("Windows resumed from sleep");
         }
         if source_changed
             || events.suspend_resume

@@ -77,6 +77,20 @@ transcript accompany every run under `target/throughput-*`. The host measures th
 headless engine, has a ten-minute timeout, and retains the normal single-instance
 and recovery barriers. The feature is excluded from normal builds.
 
+For a diagnostic run, create `trace-engine-pressure` in a fresh runtime
+benchmark directory before startup. At shutdown the host writes
+`engine-pressure.json` with the CPU observations and pressure decisions.
+While the workload is active, create `capture-interrupt-timing` in that same
+directory to request one five-second Interrupt Timing capture. Leave the run
+active until `interrupt-timing.json` is written. Setting the `stop` marker
+before the capture completes cancels it and reports an unfinished capture
+while still running the normal shutdown and recovery.
+
+Use the capture's UTC start and timing uncertainty to line up its one-second
+buckets with the engine decisions and Action Log. Check the event loss and
+invalid interval counts before interpreting the result. Keep diagnostic runs
+separate from performance measurements because capture adds work to the system.
+
 For placement/power diagnostics, include `DefaultPCores` and use `-Telemetry`.
 `DefaultPCores` uses the same disabled-engine settings as Default, but restricts
 the benchmark process to the discovered performance-core mask during ST only.

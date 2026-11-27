@@ -91,6 +91,8 @@ Setup places the shared CPU triggers and recovery card above three independent p
   Only during CPU Pressure Restraint restricts the limiter to apps with verified
   restraint. Each app's limit ends when its restraint ends or loses verification.
   The option requires CPU Pressure Restraint and defaults off.
+  Eligible foreground launches can briefly defer processor placement while CPU
+  Pressure Restraint continues to evaluate the established background load.
   Processor placement only selects this scope automatically and preserves the stored
   standalone limiter preferences for switching back.
   Restore child process affinity is off by default. With a hard affinity method,
@@ -130,6 +132,8 @@ restraint, Maximum restraint time, and the optional idle pause.
 Zoning requires fresh foreground observations outside startup grace and current hot eligible
 background competition. Excluded, protected, unavailable, overridden, and suppressed targets do
 not establish competition. Background placement must succeed before foreground narrowing.
+Explicit CPU placement rules and processes that would receive neither limit nor zoning
+are filtered before the independent placement candidate cap.
 When competition disappears, foreground zoning is withdrawn on the next reconciliation even
 if foreground pressure remains high. Background-only limiting may independently remain eligible.
 
@@ -181,9 +185,15 @@ migration or copying from the limiter is performed.
 - Efficiency Mode and Adaptive Engine policy submit typed claims through RuntimeCore. Each
   controller revalidates exact identity, access, protection, and cross-session policy before a
   mutation.
-- Adaptive Engine checks CPU pressure at the configured CPU sample interval whenever
-  any CPU policy is enabled. It checks foreground identity and samples CPU use before scanning
-  for background candidates under pressure. Quiet passes still reconcile existing claims.
+- Adaptive Engine checks CPU pressure at the configured reaction interval whenever any CPU
+  Behaviour policy is enabled. It verifies foreground identity before selecting candidates and
+  samples foreground CPU when the pressure source or Dynamic Resource Zones uses it.
+  Quiet passes still reconcile existing claims.
+  Candidate CPU counters are accepted only when creation time matches the process catalog.
+  Without an exact-path exclusion, a candidate that still needs an executable path reads its
+  CPU counter and image from the same query handle. The pass reuses its verified image path
+  for eligibility, and the native controller checks creation time and executable path together
+  before applying a change.
   Foreground and process lifecycle events may schedule an immediate safety pass to release
   obsolete foreground roles.
   Restraint requires at least two valid hot observations for the same process
@@ -238,10 +248,13 @@ migration or copying from the limiter is performed.
   baseline and restraint/recovery episode. Re-entry requires a fresh valid interval;
   skipped/excluded targets cannot retain stale candidate tracking.
 - Adaptive Engine resets its pressure observations on a delivered Windows suspend/resume event.
-- Least-used selection samples its configured All, P-core, or E-core pool and changes the selected mask only after
-  the existing rebalance interval or a meaningful load improvement. Fixed topology and custom
-  selections do not rebalance. Least-used selection requires a fresh load interval after sampling
-  pauses.
+- Least-used selection samples its configured All, P-core, or E-core pool.
+  When placement is scoped to CPU Pressure Restraint, a load-driven change
+  requires at least three seconds since the current mask was selected and a
+  reduction of at least 15 percentage points in average CPU load.
+  Independent placement and Dynamic Resource Zones can rebalance when either
+  condition is met. Fixed topology and custom selections do not rebalance.
+  Least-used selection requires a fresh load interval after sampling pauses.
 - Reduce affinity (Hard) requires one active processor group and uses a stable per-process choice
   from its captured original mask. It leaves at least one logical processor and respects custom
   default CPU Sets. Both hard methods can also preserve an already narrowed affinity. The
