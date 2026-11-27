@@ -165,8 +165,8 @@ impl Editor {
                 widgets::Choice(true, t!("common.enabled").to_string()),
             ];
             let selected = choices[usize::from(value)].clone();
-            let default = widgets::setting_row(
-                "common.default",
+            let setting = tier.setting_row(
+                "efficiency_mode.tier_setting",
                 pick_list(choices, Some(selected), move |v| {
                     Message::Default(tier, v.0)
                 })
@@ -181,7 +181,7 @@ impl Editor {
             });
             let rows = detection_row
                 .into_iter()
-                .chain([default.into()])
+                .chain([setting.into()])
                 .chain(protection);
             body = body.push(widgets::settings_section(
                 tier.label_key(),

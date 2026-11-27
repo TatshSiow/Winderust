@@ -45,6 +45,23 @@ impl Tier {
         t!(self.label_key()).into_owned()
     }
 
+    pub(super) fn setting_row<'a, M: 'a>(
+        self,
+        setting_key: &str,
+        action: impl Into<Element<'a, M>>,
+    ) -> iced::widget::Row<'a, M> {
+        let context = match self {
+            Self::Background => "priority_control.background_process_setting",
+            Self::Focus => "priority_control.focused_process_setting",
+            Self::VisibleWindow => "priority_control.visible_window_process_setting",
+        };
+        let label = t!(context, setting = t!(setting_key)).into_owned();
+        let title = widgets::heading(label, design::typography::BODY)
+            .wrapping(iced::widget::text::Wrapping::WordOrGlyph)
+            .width(Fill);
+        widgets::setting_row_with_title(column![title].width(Fill), action)
+    }
+
     pub(super) fn detection_key(self) -> Option<&'static str> {
         match self {
             Self::Focus => Some("common.foreground_detection"),
@@ -617,6 +634,7 @@ impl Editor {
 
     fn setup(settings: &Settings, kind: Kind, choices: Rc<[Value]>) -> Column<'_, Message> {
         let enable_key = format!("{}.enable", kind.key());
+        let setting_key = format!("{}.tier_setting", kind.key());
         let mut body = column![widgets::toggle_card(
             &enable_key,
             kind.enabled(settings),
@@ -644,7 +662,7 @@ impl Editor {
                 .width(design::SELECT_WIDTH)
                 .into()
             };
-            let default = widgets::setting_row("common.default", control);
+            let setting = tier.setting_row(&setting_key, control);
             let preserve = kind.preserve(settings, tier).map(|preserve| {
                 let label = match tier {
                     Tier::Focus => "common.preserve_foreground_priority",
@@ -666,7 +684,7 @@ impl Editor {
             });
             let rows = detection
                 .into_iter()
-                .chain([default.into()])
+                .chain([setting.into()])
                 .chain(preserve)
                 .chain(children);
             body = body.push(widgets::settings_section(

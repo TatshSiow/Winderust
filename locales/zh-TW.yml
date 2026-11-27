@@ -649,6 +649,7 @@ efficiency_mode:
   release_reason_retry_completed: "已完成還原重試"
   enable: "啟用自動效率模式"
   enable_help: "為符合條件的應用程式套用閒置優先順序與 EcoQoS，應用程式會繼續執行。"
+  tier_setting: "效率模式"
   custom_rules_help: "選擇預設以繼承符合層級的設定，或為該應用程式選擇啟用或停用。"
 
 interrupt_timing:
@@ -949,6 +950,9 @@ adaptive_engine_process:
 
 
 priority_control:
+  background_process_setting: "背景處理程序%{setting}"
+  focused_process_setting: "焦點處理程序%{setting}"
+  visible_window_process_setting: "有可見視窗的處理程序%{setting}"
   protect_child_processes: "保護子處理程序"
   protect_child_processes_help: "對此處偵測到的應用程式之子處理程序及其後代，略過背景預設值與規則。"
   custom_rules_help: "啟用的規則會覆寫相符層級的設定。選擇「預設」可略過此應用程式並還原先前的設定。停用此功能也會還原設定。"
@@ -957,6 +961,7 @@ process_priority:
   enable: "啟用處理程序優先順序"
   shadowed_by_efficiency_mode: "效率模式優先"
   enable_help: "為符合條件的處理程序套用 CPU 排程的優先順序類別。"
+  tier_setting: "優先順序等級"
   priority_default: "預設"
   priority_realtime: "即時"
   priority_high: "高"
@@ -968,6 +973,7 @@ process_priority:
 thread_priority:
   enable: "啟用執行緒優先順序"
   enable_help: "調整執行緒的排程優先順序，Windows 也會參考處理程序的優先順序類別。新執行緒會在下次重新整理時納入。"
+  tier_setting: "執行緒優先順序等級"
   priority_default: "預設"
   priority_time_critical: "時間關鍵"
   priority_highest: "最高"
@@ -980,6 +986,7 @@ thread_priority:
 dynamic_priority_boost:
   enable: "啟用動態優先順序提升"
   enable_help: "控制 Windows 是否可暫時提高執行緒的優先順序，以改善回應速度。"
+  tier_setting: "動態優先順序提升"
   boost_default: "預設"
   boost_enabled: "啟用"
   boost_disabled: "停用"
@@ -987,6 +994,7 @@ dynamic_priority_boost:
 io_priority:
   enable: "啟用 I/O 優先順序"
   enable_help: "為符合條件的處理程序設定 Windows I/O 優先順序提示。"
+  tier_setting: " I/O 優先順序等級"
   priority_default: "預設"
   priority_critical: "關鍵"
   priority_high: "高"
@@ -997,6 +1005,7 @@ io_priority:
 gpu_priority:
   enable: "啟用 GPU 優先順序"
   enable_help: "設定 Windows 圖形排程的優先順序。在「實驗性功能」啟用「顯示所有優先順序值」，即可選擇「高」與「即時」。"
+  tier_setting: " GPU 優先順序等級"
   priority_default: "預設"
   priority_realtime: "即時"
   priority_high: "高"
@@ -1008,6 +1017,7 @@ gpu_priority:
 memory_priority:
   enable: "啟用記憶體優先順序"
   enable_help: "系統記憶體不足時，Windows 會優先回收優先順序較低的記憶體頁面。"
+  tier_setting: "記憶體優先順序等級"
   priority_default: "預設"
   priority_very_low: "非常低"
   priority_low: "低"

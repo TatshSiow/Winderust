@@ -243,9 +243,11 @@ hover/press; background shading supplies feedback.
   selection and enablement stage changes for the selected source through the
   shared Save and Discard flow.
 - Priority Control Setup shows the Background, Focus, and Visible Window settings
-  in open cards. Use the same switch rows for detection, priority preservation,
-  and child protection. Turning a row off does not lock its configuration. Runtime
-  precedence and protection rules live in [Runtime contracts](runtime-contracts.md).
+  in open cards. Name each selector for its process context and setting, such as
+  Background process I/O priority level. Use the same switch rows for detection,
+  priority preservation, and child protection. Turning a row off does not lock
+  its configuration. Runtime precedence and protection rules live in
+  [Runtime contracts](runtime-contracts.md).
 - Place a Protect child processes switch inside each Priority Control feature's
   Foreground Detection and Visible Window Detection cards. Both switches
   default on and use the selected power profile and the standard Save flow.

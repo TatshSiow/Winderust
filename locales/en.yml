@@ -647,6 +647,7 @@ efficiency_mode:
   release_reason_retry_completed: "restoration retry completed"
   enable: "Enable automatic Efficiency Mode"
   enable_help: "Apply Idle priority and EcoQoS to eligible apps while they keep running."
+  tier_setting: "efficiency mode"
   custom_rules_help: "Choose Default to inherit the matching tier's setting, or set Enabled or Disabled for that app."
 
 interrupt_timing:
@@ -946,6 +947,9 @@ adaptive_engine_process:
   custom_rule_pattern_help: "Use * for any number of characters and ? for one character. Patterns match the file name only."
 
 priority_control:
+  background_process_setting: "Background process %{setting}"
+  focused_process_setting: "Focused process %{setting}"
+  visible_window_process_setting: "Visible-window process %{setting}"
   protect_child_processes: "Protect child processes"
   protect_child_processes_help: "Skip Background defaults and rules for descendants of apps detected here."
   custom_rules_help: "An enabled app rule overrides its tier. Choose Default to skip the app and restore its previous setting. Turning off this feature also restores previous settings."
@@ -953,6 +957,7 @@ priority_control:
 io_priority:
   enable: "Enable I/O Priority"
   enable_help: "Set the Windows I/O priority hint for eligible processes."
+  tier_setting: "I/O priority level"
   priority_default: "Default"
   priority_critical: "Critical"
   priority_high: "High"
@@ -964,6 +969,7 @@ process_priority:
   enable: "Enable Process Priority"
   shadowed_by_efficiency_mode: "Yielded to Efficiency Mode"
   enable_help: "Apply a CPU scheduling priority class to eligible processes."
+  tier_setting: "priority level"
   priority_default: "Default"
   priority_realtime: "Realtime"
   priority_high: "High"
@@ -975,6 +981,7 @@ process_priority:
 thread_priority:
   enable: "Enable Thread Priority"
   enable_help: "Adjust thread scheduling priority alongside the process priority class. New threads are picked up on the next refresh."
+  tier_setting: "thread priority level"
   priority_default: "Default"
   priority_time_critical: "Time Critical"
   priority_highest: "Highest"
@@ -987,6 +994,7 @@ thread_priority:
 dynamic_priority_boost:
   enable: "Enable Dynamic Priority Boost"
   enable_help: "Control whether Windows can briefly boost thread priorities to improve responsiveness."
+  tier_setting: "dynamic priority boost"
   boost_default: "Default"
   boost_enabled: "Enabled"
   boost_disabled: "Disabled"
@@ -994,6 +1002,7 @@ dynamic_priority_boost:
 gpu_priority:
   enable: "Enable GPU Priority"
   enable_help: "Set Windows graphics scheduling priority. In Experimental Features, turn on Expose all priority values to show High and Realtime."
+  tier_setting: "GPU priority level"
   priority_default: "Default"
   priority_realtime: "Realtime"
   priority_high: "High"
@@ -1005,6 +1014,7 @@ gpu_priority:
 memory_priority:
   enable: "Enable Memory Priority"
   enable_help: "Windows prefers to reclaim lower-priority pages first when memory runs low."
+  tier_setting: "memory priority level"
   priority_default: "Default"
   priority_very_low: "Very Low"
   priority_low: "Low"
