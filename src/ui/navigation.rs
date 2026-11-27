@@ -84,18 +84,6 @@ impl History {
     }
 }
 
-pub(super) fn breadcrumb_path(page: Page) -> Vec<Page> {
-    let mut path = vec![Page::Home];
-    let parent = page.section_landing_page();
-    if parent != Page::Home && parent != page {
-        path.push(parent);
-    }
-    if page != Page::Home {
-        path.push(page);
-    }
-    path
-}
-
 pub(super) fn has_children(page: Page) -> bool {
     page.child_pages()
         .is_some_and(|pages| pages.iter().any(|child| *child != page))
@@ -652,23 +640,6 @@ mod tests {
         assert_eq!(history.travel(true), None);
         assert_eq!(history.travel(false), Some(Page::ProcessList));
         assert_eq!(history.travel(false), Some(Page::Home));
-    }
-
-    #[test]
-    fn breadcrumb_path_keeps_ancestors_in_order() {
-        assert_eq!(breadcrumb_path(Page::Home), vec![Page::Home]);
-        assert_eq!(
-            breadcrumb_path(Page::AdaptiveEngine),
-            vec![Page::Home, Page::CpuControl, Page::AdaptiveEngine]
-        );
-        assert_eq!(
-            breadcrumb_path(Page::MemoryTrim),
-            vec![Page::Home, Page::Watchdog, Page::MemoryTrim]
-        );
-        assert_eq!(
-            breadcrumb_path(Page::EfficiencyMode),
-            vec![Page::Home, Page::PriorityControl, Page::EfficiencyMode]
-        );
     }
 
     #[test]

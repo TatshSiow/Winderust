@@ -108,15 +108,14 @@ fn reset_scroll(id: &'static str) -> Task<Message> {
     iced::widget::operation::snap_to(id, iced::widget::scrollable::RelativeOffset::START)
 }
 
-fn page_header<'a>(
-    breadcrumb: Element<'a, Message>,
-    profiles: Option<Element<'a, Message>>,
-) -> Element<'a, Message> {
+fn page_header(title: String, profiles: Option<Element<'_, Message>>) -> Element<'_, Message> {
     let toolbar = container(profiles.unwrap_or_else(|| iced::widget::Space::new().into()))
         .center_y(design::BUTTON_HEIGHT)
         .width(Fill);
     column![
-        container(breadcrumb).center_y(design::PAGE_BREADCRUMB_HEIGHT),
+        container(widgets::heading(title, design::typography::SUBTITLE))
+            .center_y(design::PAGE_TITLE_HEIGHT)
+            .width(Fill),
         toolbar,
     ]
     .spacing(design::space::SMALL)
@@ -415,7 +414,6 @@ pub(crate) fn run(
                 error_message: String::new(),
                 page: Page::Home,
                 navigation_history: navigation::History::default(),
-                breadcrumb: vec![Page::Home],
                 window: None,
                 window_settings: iced::window::Settings {
                     size: iced::Size::new(1120.0, 760.0),
@@ -747,7 +745,6 @@ struct WinderustApp {
     error_message: String,
     page: Page,
     navigation_history: navigation::History,
-    breadcrumb: Vec<Page>,
     window: Option<iced::window::Id>,
     window_settings: iced::window::Settings,
     maximized: bool,
@@ -2033,8 +2030,6 @@ impl WinderustApp {
                 self.preferences.replace_settings_open = false;
                 self.navigation_history.visit(page);
                 self.side_panel_tab = SidePanelTab::initial_for_page(page);
-                let path = navigation::breadcrumb_path(page);
-                self.breadcrumb = path;
                 if entering_page && page == Page::Home {
                     self.home
                         .set_power_source(home::PowerSourceReading::Collecting);
@@ -3324,27 +3319,6 @@ impl WinderustApp {
             .then(|| self.side_panel(read_power_source))
             .flatten()
             .map(shield);
-        const BREADCRUMB_TEXT_SIZE: u32 = design::typography::SUBTITLE;
-        let mut header = row![].spacing(design::space::COMPACT).align_y(iced::Center);
-        for (index, page) in self.breadcrumb.iter().copied().enumerate() {
-            let mut item = row![].spacing(design::space::COMPACT).align_y(iced::Center);
-            if index > 0 {
-                item = item.push(navigation::glyph("icons/chevron-right.svg"));
-            }
-            item = if page == self.page {
-                item.push(widgets::heading(page.label(), BREADCRUMB_TEXT_SIZE))
-            } else {
-                item.push(
-                    button(text(page.label()).size(BREADCRUMB_TEXT_SIZE))
-                        .padding(0)
-                        .style(widgets::quiet)
-                        .on_press(Message::Page(page)),
-                )
-            };
-            header = header.push(item);
-        }
-        let breadcrumb =
-            container(header.wrap().vertical_spacing(design::space::TIGHT)).width(Fill);
         let mut profile_controls = None;
         if self.page.supports_power_source_profiles() {
             let plugged_in = read_power_source();
@@ -3389,7 +3363,7 @@ impl WinderustApp {
             profile_controls = Some(container(tabs).style(widgets::tab_bar));
         }
         let settings_are_pending = self.pending_settings_changes();
-        let heading = page_header(breadcrumb.into(), profile_controls.map(Into::into));
+        let heading = page_header(self.page.label(), profile_controls.map(Into::into));
         let floating_card = if process_actions_open {
             None
         } else if settings_are_pending {
@@ -4380,7 +4354,7 @@ mod tests {
                 for available in [false, true] {
                     for open in [false, true] {
                         let heading = page_header(
-                            text("Home > Section > Feature").into(),
+                            "Feature".into(),
                             profiles
                                 .then(|| button(text("Plugged In / On Battery")).height(32).into()),
                         );
@@ -4576,7 +4550,7 @@ mod tests {
         let limits = layout::Limits::new(iced::Size::ZERO, viewport.size());
         let dock = |open: bool| {
             let workspace = iced::widget::column![
-                page_header(text("Editor").into(), None),
+                page_header("Editor".into(), None),
                 button(text("Editor action")).on_press(Message::Save),
             ];
             let panel = open.then(|| iced::widget::Space::new().height(Fill).into());

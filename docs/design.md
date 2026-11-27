@@ -55,7 +55,7 @@ Prefer visible state, compact controls, and predictable rows. Use restrained acc
   Search. Help explains the valid combinations and that enabling the shortcut
   keeps Winderust in the notification area. Show conflicts and registration
   failures in text. Save commits the selection and Esc cancels recording.
-- Center the shared header and content canvas between the optional page list and Side panel, with shared padding and a 1440px width cap. Every page reserves the same 48px breadcrumb area and 32px toolbar, including pages with no power-source selectors, so page content starts at a stable position.
+- Center the shared header and content canvas between the optional page list and Side panel, with shared padding and a 1440px width cap. Every page reserves the same 48px page title area and 32px toolbar, including pages with no power-source selectors, so page content starts at a stable position.
 - The right Side panel docks beside the editor, reserving its own width. Use a 320px dock on wide windows and on standalone pages. When the window is narrower than 1280 logical pixels and the page list is visible, reduce the dock to 280px to leave more room for the editor. Both areas remain interactive. Start closed and retain its open state throughout navigation, search, focus changes, and settings edits. Close through the title-bar toggle or the panel's Close button. Pages with no panel content use the available editor width and preserve the session's open preference for the next supported page. Dialogs cover the work area.
 - The title-bar toggle shows the side panel's current state and is inactive while a modal is open or the page has no panel. The in-panel Close button returns keyboard focus to the title-bar toggle.
 - Navigation labels and page sections live in `src/ui.rs`; page rendering
@@ -567,7 +567,7 @@ hover/press; background shading supplies feedback.
 - Executable rule tables show App name and Executable path. Long paths wrap
   within their column so the full target stays readable. Name-based rules
   show their exact filename and Any path with an Executable name label.
-- Keep breadcrumbs anchored at the top left. Power-source selectors stay beneath the breadcrumb.
+- Keep the page title anchored at the top left. Power-source selectors stay beneath the title.
 - Quit confirmation is centered over a dimmed window. With unsaved changes show Cancel, Save and quit, and Quit without saving; otherwise show Cancel and Quit. Shutdown errors stay visible.
 
 - CPU triggers and recovery groups the monitored CPU readings and thresholds with the
@@ -601,7 +601,7 @@ hover/press; background shading supplies feedback.
 
 - The user-approved 2026-10-30 dashboard direction guides the palette, spacing, and metric hierarchy. The App Shell section owns current navigation and window behavior.
 - Use 16px card padding, 12px card gaps, regular Segoe UI body text at 14px, 13px Side panel labels, semibold headings, and prominent 28px dashboard values. Describe text rendering in terms of advanced shaping, system font fallback, and DPI-aware software rendering.
-- Use one 18px breadcrumb heading on every page: Home > section > current page, omitting unused levels. Ancestors are clickable; the current page is semibold text. Home shows only Home. Wrap the path in narrow windows; do not repeat the current page as a separate title.
+- Show the current page name as an 18px semibold title.
 - Home uses a two-by-two chart grid above Enabled Features and Recent Logs. Shared content is capped at 1440px.
 - Dense virtual process and log tables retain borderless tiled backgrounds and existing row geometry.
 - Keep System/Light/Dark/AMOLED and custom/system accent behavior. Do not infer new telemetry or optimization guarantees from the reference image.
