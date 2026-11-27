@@ -1,221 +1,54 @@
-use super::{assets, design};
+use super::{assets, design, widgets};
 use crate::config::Settings;
 use crate::ui::{self, Page};
-use iced::{Element, Theme};
+use iced::{advanced::widget::Id, Element, Fill};
 use rust_i18n::t;
 use std::collections::HashSet;
-use std::time::{Duration, Instant};
 
-const OPEN_DELAY: Duration = Duration::from_millis(250);
-const CLOSE_DELAY: Duration = Duration::from_millis(300);
+pub(super) const SEARCH_ID: &str = "navigation-search-trigger";
+pub(super) const PAGE_LIST_ID: &str = "navigation-page-list";
 
 #[derive(Debug, Clone)]
 pub(super) enum Event {
-    Hover(Page),
-    Leave(Page),
-    OpenKeyboard(Page),
-    Enter,
-    Exit,
-    Dismiss,
-    Blur,
-    Tick(Instant),
     Select(Page),
     Search,
-    FocusMove(Option<Page>, bool),
-    Tab(Option<Page>, bool),
-    Key(iced::keyboard::Key, bool),
 }
 
-#[derive(Default)]
-pub(super) struct Flyout {
-    pub section: Option<Page>,
-    pub selected: Option<usize>,
-    hovered: Option<Page>,
-    inside: bool,
-    pending_open: Option<(Page, Instant)>,
-    close_at: Option<Instant>,
+pub(super) fn workspace_id(page: Page) -> Id {
+    format!("navigation-workspace-{page:?}").into()
 }
 
-impl Flyout {
-    pub fn timer(&self) -> Option<(Instant, Duration)> {
-        self.pending_open
-            .map(|(_, due)| (due, OPEN_DELAY))
-            .or_else(|| self.close_at.map(|due| (due, CLOSE_DELAY)))
-    }
-
-    pub fn dismiss(&mut self) {
-        *self = Self::default();
-    }
-
-    pub fn update(&mut self, event: &Event, now: Instant) {
-        match *event {
-            Event::OpenKeyboard(page) => {
-                self.section = Some(page);
-                self.pending_open = None;
-                self.close_at = None;
-                self.selected = Some(0);
-            }
-            Event::Hover(page) => {
-                self.hovered = Some(page);
-                self.close_at = None;
-                self.pending_open =
-                    (self.section != Some(page)).then_some((page, now + OPEN_DELAY));
-            }
-            Event::Leave(page) if self.hovered == Some(page) => {
-                self.hovered = None;
-                self.pending_open = None;
-                if !self.inside && self.section.is_some() {
-                    self.close_at = Some(now + CLOSE_DELAY);
-                }
-            }
-            Event::Enter => {
-                self.inside = true;
-                self.pending_open = None;
-                self.close_at = None;
-            }
-            Event::Exit => {
-                self.inside = false;
-                if self.hovered.is_none() {
-                    self.close_at = Some(now + CLOSE_DELAY);
-                }
-            }
-            Event::Tick(_) => {
-                if let Some((page, due)) = self.pending_open {
-                    if now >= due {
-                        self.section = Some(page);
-                        self.selected = None;
-                        self.pending_open = None;
-                    }
-                }
-                if self.close_at.is_some_and(|due| now >= due) {
-                    self.dismiss();
-                }
-            }
-            Event::Dismiss => self.dismiss(),
-            _ => {}
-        }
-    }
-}
-
-#[cfg(test)]
-mod flyout_tests {
-    use super::*;
-
-    #[test]
-    fn hover_delays_cancel_stale_opens_and_allow_crossing_into_the_panel() {
-        let start = Instant::now();
-        let mut state = Flyout::default();
-        let mut send = |event, millis| {
-            let now = start + Duration::from_millis(millis);
-            state.update(&event, now);
-            state.section
-        };
-        assert_eq!(send(Event::Hover(Page::SettingsHome), 0), None);
-        assert_eq!(send(Event::Tick(start), 249), None);
-        assert_eq!(send(Event::Hover(Page::PowerPlanControl), 249), None);
-        assert_eq!(send(Event::Leave(Page::SettingsHome), 250), None);
-        assert_eq!(send(Event::Tick(start), 498), None);
-        assert_eq!(send(Event::Tick(start), 499), Some(Page::PowerPlanControl));
-        send(Event::Leave(Page::PowerPlanControl), 500);
-        send(Event::Enter, 650);
-        assert_eq!(send(Event::Tick(start), 900), Some(Page::PowerPlanControl));
-        send(Event::Exit, 1000);
-        send(Event::Hover(Page::PowerPlanControl), 1299);
-        assert_eq!(send(Event::Tick(start), 1400), Some(Page::PowerPlanControl));
-        send(Event::Leave(Page::PowerPlanControl), 1500);
-        assert_eq!(send(Event::Tick(start), 1799), Some(Page::PowerPlanControl));
-        assert_eq!(send(Event::Tick(start), 1800), None);
-        assert!(state.timer().is_none());
-    }
-
-    #[test]
-    fn keyboard_open_and_dismissal_cancel_pending_timers() {
-        let now = Instant::now();
-        let mut state = Flyout::default();
-        state.update(&Event::Hover(Page::SettingsHome), now);
-        state.update(&Event::Leave(Page::SettingsHome), now);
-        assert!(state.timer().is_none());
-        state.update(&Event::Hover(Page::SettingsHome), now);
-        state.update(&Event::OpenKeyboard(Page::PowerPlanControl), now);
-        assert_eq!(state.section, Some(Page::PowerPlanControl));
-        assert!(state.timer().is_none());
-        state.update(&Event::Tick(now), now + Duration::from_secs(1));
-        assert_eq!(state.section, Some(Page::PowerPlanControl));
-        state.update(&Event::Hover(Page::SettingsHome), now);
-        state.update(&Event::Dismiss, now);
-        state.update(&Event::Tick(now), now + Duration::from_secs(1));
-        assert_eq!(state.section, None);
-        state.update(&Event::OpenKeyboard(Page::SettingsHome), now);
-        assert_eq!(state.selected, Some(0));
-        state.dismiss();
-        assert_eq!(state.section, None);
-        assert!(state.timer().is_none());
-    }
-}
-
-pub(super) fn rail_id(page: Option<Page>) -> iced::advanced::widget::Id {
-    format!("navigation-{page:?}").into()
-}
-
-const PRIMARY_RAIL_ID: &str = "navigation-primary";
-
-pub(super) fn reveal_after_resize<M: Send + 'static>(section: Page) -> iced::Task<M> {
-    super::keyboard_focus::reveal_within(
-        PRIMARY_RAIL_ID.into(),
-        (!is_utility(section)).then(|| rail_id(Some(section))),
-    )
-}
-
-pub(super) fn item_style(
-    theme: &Theme,
-    status: iced::widget::button::Status,
-    active: bool,
-    focused: bool,
-) -> iced::widget::button::Style {
-    let mut style = if active {
-        super::widgets::selected(theme, status)
-    } else {
-        super::widgets::quiet(theme, status)
-    };
-    if focused {
-        if super::design::is_contrast(theme) {
-            style.border.color = theme.palette().text;
-            style.border.width = 3.0;
-        } else {
-            style.border.color = super::widgets::accent_text(theme, style.background);
-            style.border.width = 2.0;
-        }
-    }
-    style
+pub(super) fn page_id(page: Page) -> Id {
+    format!("navigation-page-{page:?}").into()
 }
 
 pub(super) fn children(section: Page) -> Vec<Page> {
-    Page::sections()
-        .iter()
-        .find(|group| group.landing_page == section)
-        .map(|group| {
-            group
-                .pages
-                .iter()
-                .copied()
-                .filter(|p| *p != section)
-                .collect()
-        })
+    section
+        .child_pages()
         .unwrap_or_default()
+        .iter()
+        .copied()
+        .filter(|page| *page != section)
+        .collect()
 }
 
-pub(super) fn is_utility(page: Page) -> bool {
+fn is_utility(page: Page) -> bool {
     matches!(page, Page::ActionLog | Page::SettingsHome | Page::About)
 }
 
-pub(super) fn rail_pages(show_advanced: bool) -> Vec<Page> {
-    let (mut primary, utilities): (Vec<_>, Vec<_>) = Page::sections()
-        .iter()
-        .map(|section| section.landing_page)
-        .filter(|page| *page != Page::AdvancedControls || show_advanced)
-        .partition(|page| !is_utility(*page));
-    primary.extend(utilities);
-    primary
+fn workspace_sections(show_advanced: bool) -> impl Iterator<Item = &'static ui::PageSection> {
+    let sections = Page::sections().iter();
+    sections
+        .clone()
+        .filter(move |section| {
+            !is_utility(section.landing_page)
+                && (show_advanced || section.landing_page != Page::AdvancedControls)
+        })
+        .chain(sections.filter(|section| is_utility(section.landing_page)))
+}
+
+pub(super) fn workspace_pages(show_advanced: bool) -> impl Iterator<Item = Page> {
+    workspace_sections(show_advanced).map(|section| section.landing_page)
 }
 
 pub(super) struct History {
@@ -266,79 +99,136 @@ pub(super) fn breadcrumb_path(page: Page) -> Vec<Page> {
 }
 
 pub(super) fn has_children(page: Page) -> bool {
-    Page::sections().iter().any(|section| {
-        section.landing_page == page && section.pages.iter().any(|child| *child != page)
-    })
+    page.child_pages()
+        .is_some_and(|pages| pages.iter().any(|child| *child != page))
 }
 
-pub(super) fn rail<'a, Message: 'a>(
-    search: Element<'a, Message>,
-    primary: Element<'a, Message>,
-    utilities: Element<'a, Message>,
-) -> Element<'a, Message> {
-    use iced::widget::{column, container, rule};
+pub(super) fn top_bar(
+    current: Page,
+    show_advanced: bool,
+    search_open: bool,
+) -> Element<'static, Event> {
+    use iced::widget::{container, row, text, Space};
+
+    let active = current.section_landing_page();
     let inset = design::space::CONTROL as u16;
-    container(
-        column![
-            container(search).padding([0, inset]),
-            super::scrolling::navigation_scrollable(primary)
-                .id(PRIMARY_RAIL_ID)
-                .height(iced::Fill),
-            container(rule::horizontal(1)).padding([0, inset]),
-            container(utilities).padding([0, inset]),
+    let style_button = |content: Element<'static, Event>| {
+        widgets::button(container(content).center_y(Fill))
+            .height(design::BUTTON_HEIGHT)
+            .padding([0, inset])
+    };
+    let mut workspaces = row![].spacing(design::space::TINY).align_y(iced::Center);
+    for page in workspace_pages(show_advanced) {
+        workspaces = workspaces.push(
+            style_button(
+                text(page.label())
+                    .size(design::typography::SECONDARY)
+                    .wrapping(text::Wrapping::None)
+                    .into(),
+            )
+            .focus_id(workspace_id(page))
+            .selected(active == page, widgets::selected)
+            .on_press(Event::Select(page)),
+        );
+    }
+
+    let search = style_button(
+        row![
+            glyph("icons/search.svg"),
+            text(t!("home.search").into_owned())
+                .size(design::typography::SECONDARY)
+                .wrapping(text::Wrapping::None),
         ]
+        .align_y(iced::Center)
         .spacing(design::space::TIGHT)
-        .height(iced::Fill),
+        .into(),
     )
-    .padding([inset, 0])
-    .width(design::NAVIGATION_RAIL_WIDTH)
-    .height(iced::Fill)
-    .style(super::widgets::navigation_surface)
+    .focus_id(SEARCH_ID)
+    .selected(search_open, |theme, status| {
+        let mut style = widgets::quiet(theme, status);
+        if status == iced::widget::button::Status::Active {
+            style.background = Some(theme.palette().primary.scale_alpha(0.05).into());
+        }
+        style
+    })
+    .on_press(Event::Search);
+
+    container(
+        workspaces
+            .push(Space::new().width(Fill))
+            .push(search)
+            .height(Fill),
+    )
+    .padding([0, design::space::SMALL as u16])
+    .width(Fill)
+    .height(design::NAVIGATION_ROW_HEIGHT)
     .into()
 }
 
-pub(super) fn rail_item<'a, Message: Clone + 'a>(
-    page: Page,
-    selected: bool,
-    message: Message,
-) -> Element<'a, Message> {
-    use iced::widget::{column, container, stack, text};
-    let mut icon_row = stack![container(icon(page, selected))
-        .center_x(iced::Fill)
-        .height(design::ICON_SIZE)];
-    if has_children(page) {
-        icon_row = icon_row.push(
-            container(assets::icon(
-                "icons/chevron-right.svg",
-                12,
-                super::widgets::muted_color,
-            ))
-            .align_right(iced::Fill)
-            .center_y(design::ICON_SIZE),
+pub(super) fn page_list(current: Page, settings: &Settings) -> Option<Element<'static, Event>> {
+    use iced::widget::{column, container, row, text, Space};
+
+    let section = current.section_landing_page();
+    if !has_children(section) {
+        return None;
+    }
+
+    let count = settings
+        .general
+        .show_enabled_feature_counts_in_sidebar
+        .then(|| section_enabled_feature_count(settings, section))
+        .flatten();
+
+    let mut entries = column![].spacing(design::space::TINY).width(Fill);
+    for page in std::iter::once(section).chain(children(section)) {
+        let active = current == page;
+        let mut entry = row![
+            icon(page, active),
+            text(page.label())
+                .size(design::typography::SECONDARY)
+                .wrapping(text::Wrapping::WordOrGlyph)
+                .width(Fill),
+        ]
+        .spacing(design::space::SMALL)
+        .align_y(iced::Center);
+
+        if let Some(count) = count.filter(|_| page == section) {
+            entry = entry.push(
+                container(text(count.to_string()).size(design::typography::BADGE))
+                    .padding([2, 6])
+                    .style(move |theme| widgets::indicator_chip(theme, count > 0)),
+            );
+        } else if let Some(enabled) = feature_page_enabled(settings, page) {
+            entry = entry.push(container(Space::new()).width(6).height(6).style(
+                move |theme: &iced::Theme| container::Style {
+                    background: enabled.then(|| theme.palette().success.into()),
+                    border: iced::border::rounded(3),
+                    ..Default::default()
+                },
+            ));
+        }
+
+        entries = entries.push(
+            widgets::button(entry)
+                .focus_id(page_id(page))
+                .width(Fill)
+                .padding(design::space::SMALL as u16)
+                .selected(active, widgets::selected)
+                .on_press(Event::Select(page)),
         );
     }
-    let content = column![
-        icon_row,
-        container(
-            text(page.label())
-                .size(design::typography::BADGE)
-                .width(iced::Fill)
-                .align_x(iced::Center),
-        )
-        .width(iced::Fill)
-        .max_height(30)
-        .clip(true),
-    ]
-    .spacing(design::space::TIGHT)
-    .align_x(iced::Center);
-    super::widgets::button(container(content).center_x(iced::Fill).center_y(iced::Fill))
-        .pointer_only()
-        .width(iced::Fill)
-        .height(design::NAVIGATION_ITEM_HEIGHT)
-        .padding([design::space::CONTROL as u16, design::space::TIGHT as u16])
-        .selected(selected, super::widgets::selected)
-        .on_press(message)
-        .into()
+
+    let scroll = super::scrolling::navigation_scrollable(
+        entries.padding([design::space::CONTROL as u16, 0]),
+    )
+    .id(PAGE_LIST_ID)
+    .width(Fill)
+    .height(Fill);
+    Some(super::motion::wrap(
+        scroll,
+        false,
+        super::motion::Effect::Content(section as u64),
+    ))
 }
 
 pub(super) fn icon<'a, Message: 'a>(page: Page, selected: bool) -> Element<'a, Message> {
@@ -492,19 +382,7 @@ pub(super) fn section_enabled_feature_count(settings: &Settings, page: Page) -> 
 pub(super) fn dashboard_sections_in_nav_order(
     show_advanced_controls: bool,
 ) -> impl Iterator<Item = &'static ui::PageSection> {
-    Page::sections()
-        .iter()
-        .filter(|section| {
-            section.landing_page != Page::Home && !nav_section_in_footer(section.landing_page)
-        })
-        .filter(move |section| {
-            show_advanced_controls || section.landing_page != Page::AdvancedControls
-        })
-        .chain(
-            Page::sections()
-                .iter()
-                .filter(|section| nav_section_in_footer(section.landing_page)),
-        )
+    workspace_sections(show_advanced_controls).filter(|section| section.landing_page != Page::Home)
 }
 
 pub(super) fn dashboard_search_pages(query: &str, show_advanced_controls: bool) -> Vec<Page> {
@@ -754,17 +632,16 @@ pub(super) fn dashboard_page_search_text(page: Page) -> String {
     search
 }
 
-pub(super) fn nav_section_in_footer(page: Page) -> bool {
-    matches!(page, Page::ActionLog | Page::SettingsHome | Page::About)
-}
-
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     #[test]
     fn watchdog_pages_are_discoverable_with_advanced_controls_hidden() {
-        assert!(rail_pages(false)
-            .windows(2)
-            .any(|pages| pages == [Page::ProcessList, Page::Watchdog]));
+        assert_eq!(
+            workspace_pages(false).take(3).collect::<Vec<_>>(),
+            [Page::Home, Page::ProcessList, Page::Watchdog],
+        );
         assert_eq!(
             dashboard_search_pages("watchdog", false),
             [
@@ -831,167 +708,38 @@ mod tests {
         );
     }
 
-    use super::*;
     #[test]
-    fn rail_keeps_search_primary_and_utilities_aligned_at_both_heights() {
-        use iced::advanced::{layout, widget::Tree, Layout};
-        use iced::widget::{column, container, text};
-        use iced::{Fill, Rectangle, Size};
-        for height in [480.0, 1080.0] {
-            let mut primary = column![].spacing(design::space::TIGHT).width(Fill);
-            let mut utilities = column![].spacing(design::space::TIGHT).width(Fill);
-            for page in rail_pages(true) {
-                let item = rail_item(page, page == Page::Watchdog, ());
-                if is_utility(page) {
-                    utilities = utilities.push(item);
-                } else {
-                    primary = primary.push(item);
-                }
-            }
-            let search = super::super::widgets::button(
-                container(
-                    column![
-                        glyph("icons/search.svg"),
-                        text(t!("home.search").to_string()).size(design::typography::BADGE),
-                    ]
-                    .spacing(design::space::TIGHT)
-                    .align_x(iced::Center),
-                )
-                .center_x(Fill)
-                .center_y(Fill),
-            )
-            .width(Fill)
-            .height(design::NAVIGATION_ITEM_HEIGHT)
-            .padding([design::space::CONTROL as u16, design::space::TIGHT as u16])
-            .style(super::super::widgets::quiet)
-            .on_press(());
-            let mut view = rail(search.into(), primary.into(), utilities.into());
-            let renderer = iced::Renderer::new(
-                iced::Font {
-                    weight: iced::font::Weight::Normal,
-                    ..design::typography::FONT
-                },
-                iced::Pixels(14.0),
-            );
-            let mut tree = Tree::new(&view);
-            let bounds = Rectangle::with_size(Size::new(design::NAVIGATION_RAIL_WIDTH, height));
-            let node = view.as_widget_mut().layout(
-                &mut tree,
-                &renderer,
-                &layout::Limits::new(Size::ZERO, bounds.size()),
-            );
-            let column = Layout::new(&node).children().next().unwrap();
-            let children: Vec<_> = column.children().collect();
-            let check_item = |item: Layout<'_>| {
-                assert_eq!(item.bounds().width, design::NAVIGATION_RAIL_WIDTH - 12.0);
+    fn page_list_is_only_present_for_workspaces_with_children() {
+        let settings = Settings::default();
+        for section in Page::sections() {
+            for page in std::iter::once(section.landing_page).chain(section.pages.iter().copied()) {
                 assert_eq!(
-                    item.bounds().center_x(),
-                    design::NAVIGATION_RAIL_WIDTH / 2.0
+                    page_list(page, &settings).is_some(),
+                    section.pages != [section.landing_page],
+                    "{page:?}",
                 );
-                assert_eq!(item.bounds().height, design::NAVIGATION_ITEM_HEIGHT as f32);
-            };
-            check_item(children[0].children().next().unwrap());
-            let primary = children[1]
-                .children()
-                .next()
-                .unwrap()
-                .children()
-                .next()
-                .unwrap();
-            assert_eq!(
-                primary.bounds().height > children[1].bounds().height,
-                height == 480.0
-            );
-            for item in primary.children() {
-                check_item(item);
             }
-            for item in children[3].children().next().unwrap().children() {
-                check_item(item);
-            }
-            let mut messages = Vec::new();
-            view.as_widget_mut().update(
-                &mut tree,
-                &iced::Event::Window(iced::window::Event::RedrawRequested(Instant::now())),
-                Layout::new(&node),
-                iced::mouse::Cursor::Unavailable,
-                &renderer,
-                &mut iced::advanced::clipboard::Null,
-                &mut iced::advanced::Shell::new(&mut messages),
-                &bounds,
-            );
         }
     }
 
     #[test]
-    fn rail_items_fit_their_width_and_keep_geometry_when_selected() {
-        fn leaves(
-            node: &iced::advanced::layout::Node,
-            offset: iced::Point,
-            bounds: &mut Vec<iced::Rectangle>,
-        ) {
-            let local = node.bounds();
-            let origin = iced::Point::new(offset.x + local.x, offset.y + local.y);
-            if node.children().is_empty() {
-                bounds.push(iced::Rectangle::new(origin, local.size()));
-            } else {
-                for child in node.children() {
-                    leaves(child, origin, bounds);
-                }
-            }
-        }
-        let renderer = iced::Renderer::new(iced::Font::DEFAULT, iced::Pixels(14.0));
-        for section in Page::sections() {
-            let mut sizes = Vec::new();
-            for selected in [false, true] {
-                let mut view = rail_item(section.landing_page, selected, ());
-                let mut tree = iced::advanced::widget::Tree::new(&view);
-                let layout = view.as_widget_mut().layout(
-                    &mut tree,
-                    &renderer,
-                    &iced::advanced::layout::Limits::new(
-                        iced::Size::ZERO,
-                        iced::Size::new(design::NAVIGATION_RAIL_WIDTH - 12.0, 900.0),
-                    ),
-                );
-                assert!(layout.size().width <= design::NAVIGATION_RAIL_WIDTH - 12.0);
-                assert_eq!(layout.size().height, design::NAVIGATION_ITEM_HEIGHT as f32);
-                let mut bounds = Vec::new();
-                leaves(&layout, iced::Point::ORIGIN, &mut bounds);
-                let icon = bounds
-                    .iter()
-                    .find(|bounds| bounds.size() == iced::Size::new(18.0, 18.0))
-                    .expect("Rail item contains its icon");
-                assert_eq!(icon.x + icon.width / 2.0, layout.size().width / 2.0);
-                let label = bounds
-                    .iter()
-                    .find(|bounds| bounds.width > 18.0 && bounds.height > 12.0)
-                    .expect("Rail item contains its label");
-                let top = icon.y;
-                let bottom = layout.size().height - (label.y + label.height);
-                assert!(
-                    (top - bottom).abs() < 0.01,
-                    "Unequal rail insets: {top} / {bottom}"
-                );
-                assert!(
-                    (label.y - (icon.y + icon.height) - design::space::TIGHT as f32).abs() < 0.01
-                );
-                if has_children(section.landing_page) {
-                    let chevron = bounds
-                        .iter()
-                        .find(|bounds| bounds.size() == iced::Size::new(12.0, 12.0))
-                        .expect("Group contains a chevron");
-                    assert_eq!(chevron.y + chevron.height / 2.0, icon.y + icon.height / 2.0);
-                    assert!(chevron.x > icon.x + icon.width);
-                }
-                sizes.push(layout.size());
-            }
-            assert_eq!(sizes[0], sizes[1]);
-        }
-        assert!(!has_children(Page::Home));
-        assert!(!has_children(Page::ProcessList));
-        assert!(has_children(Page::PowerPlanControl));
-        assert!(has_children(Page::SettingsHome));
+    fn advanced_workspace_is_optional_and_utilities_keep_their_order() {
+        let standard: Vec<_> = workspace_pages(false).collect();
+        let extended: Vec<_> = workspace_pages(true).collect();
+        assert_eq!(
+            &standard[standard.len() - 3..],
+            &[Page::ActionLog, Page::SettingsHome, Page::About],
+        );
+        assert_eq!(extended[standard.len() - 3], Page::AdvancedControls);
+        assert_eq!(
+            extended
+                .into_iter()
+                .filter(|page| *page != Page::AdvancedControls)
+                .collect::<Vec<_>>(),
+            standard,
+        );
     }
+
     #[test]
     fn every_page_has_a_bundled_icon_and_sidebar_counts_follow_feature_settings() {
         for section in Page::sections() {

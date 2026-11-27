@@ -42,28 +42,22 @@ Prefer visible state, compact controls, and predictable rows. Use restrained acc
 
 ## App Shell
 
-- Use a compact themed title bar with the app icon/name, a Side panel toggle immediately left of Minimize, and the Maximize/Restore and Close controls. Follow the active Light, Dark, AMOLED, and accent palette. Disable native title-bar decorations and keep the left navigation and work area beneath the title bar.
+- Use a compact themed title bar with the app icon/name, a Side panel toggle immediately left of Minimize, and the Maximize/Restore and Close controls. Follow the active Light, Dark, AMOLED, and accent palette. The workspace row and work area follow the custom title bar.
 - Iced owns native dragging, resizing, minimizing, and maximizing. The caption supports drag and double-click maximize/restore; restored windows expose edge/corner resize targets. Both custom and native close requests use the existing tray, unsaved-change, and shutdown handling. Keep window controls available above dialogs.
-- Use a permanent 88px icon-and-label rail. Main entries are 64px high; center each icon and its actual one- or two-line label together vertically with equal top and bottom insets.
-  Group chevrons overlay the icon row's right edge. Search, primary items, and bottom shortcuts share the same 76px item width and centerline. Keep the thin primary scrollbar within the existing 6px outer padding; do not apply the wider page gutter to the navigation rail. Log, Settings, and About stay below the scrollable primary list.
-- Secondary navigation always floats in a 252px overlay adjacent to its parent, using the existing surface, border, and radius. Clamp it inside the window and scroll long lists. Opening or dismissing it never changes main-content geometry.
-  Hover a parent for 250ms to open or switch its child menu. Clicking a rail item navigates directly to its page and dismisses pending or open flyouts. Keep it open over either area, allow 300ms to cross between them, and cancel outdated timers. Wake only for a pending delay; do not poll while idle.
-  Choosing a page closes the flyout. Outside clicks, Escape, and window focus loss dismiss it without changing the current page or active rail highlight.
-- Flyouts list only child pages. Use a plain section heading for context, with existing enabled-feature count chips and individual status dots. Do not include a parent-page navigation entry or pin action. There is no persistent secondary sidebar or saved navigation mode. Category landing pages stay accessible directly from the rail and expose their existing child-page cards.
-- Tab focuses rail entries; Up/Down move rail focus, Enter/Space opens the focused page, and Right Arrow opens a category's child flyout with its first child focused. Up/Down/Tab move through child pages; Enter selects; Escape/Left dismisses and returns focus to the parent. Show focus outlines and scroll only as far as needed to reveal focused or newly selected sections. Touch users can navigate through category landing-page cards without hover.
-- When the window gets shorter, keep the focused primary rail item in view. If focus is elsewhere, reveal the active primary section. Resizing leaves keyboard focus where it is.
-- Global search opens a focused palette above the page. Dismiss floating navigation
-  before opening search. Follow the compact Fumadocs reference: a 640px upper-center panel, borderless search field, Esc keycap, and compact category-filter row over a dimmed backdrop. Match the filter row to the search panel background. Esc uses the standard shared button; the dropdown uses the standard shared Select with project colors and interaction styles. Tint the selected compact result to identify the Enter target. Vertically center icons, one- or two-line labels, and chevrons within each fixed-height result row. Keep the search panel shadow-free: upstream tiny-skia quad shadows draw outside partial repaint damage and accumulate black patches. Empty All searches omit the result list; typing or choosing a category reveals inset results. Results show function names and parent sections. Enter
+- Put workspace navigation and Search in one row under the title bar. Selecting a workspace opens its landing page. Highlight the active workspace on its landing page and on each of its child pages.
+- Workspaces with child pages show a left page list beside the editor, starting with the landing page. Highlight the current page in the list and keep feature tabs within the editor. Standalone workspaces use the available width beside any open right Side panel.
+- When enabled-feature counts are on in Language and Appearance, show the count of enabled modules beside the landing page entry for Watchdog, Power Plan Control, Priority Control, and CPU Control. Mark enabled features with a dot beside the corresponding page name.
+- Tab moves through the workspace row and page list. Enter or Space opens the focused destination. Use a visible focus outline distinct from the selection tint.
+- Global search opens a focused palette above the page. Follow the compact Fumadocs reference: a 640px upper-center panel, borderless search field, Esc keycap, and compact category-filter row over a dimmed backdrop. Match the filter row to the search panel background. Esc uses the standard shared button; the dropdown uses the standard shared Select with project colors and interaction styles. Tint the selected compact result to identify the Enter target. Vertically center icons, one- or two-line labels, and chevrons within each fixed-height result row. Keep the search panel shadow-free: upstream tiny-skia quad shadows draw outside partial repaint damage and accumulate black patches. Empty All searches omit the result list; typing or choosing a category reveals inset results. Results show function names and parent sections. Enter
   opens the selected result; Up/Down move selection and scroll it into view. New queries and filters select the first result. Escape, Close, or clicking outside dismisses the palette.
-- Search defaults to Ctrl+K or / within the app window, respecting keys captured by text inputs and menus. Settings > Winderust Behaviour provides primary and alternate shortcut recording, clearing, and default restoration through normal Save. The rail Search entry matches other navigation item heights, icon/label spacing, and vertical centering. Navigation entries, including Search, have no hover tooltips. Keep Search to its icon and label; give Search only a subtle tint with neutral text while the palette is open, retaining the current page as the primary selection.
+- Search defaults to Ctrl+K or / within the app window, respecting keys captured by text inputs and menus. Settings > Winderust Behaviour provides primary and alternate shortcut recording, clearing, and default restoration through normal Save.
 - Keyboard Shortcuts in Winderust Behaviour includes the optional system-wide
   Show Winderust shortcut. Use the same keyboard recording and Clear controls as
   Search. Help explains the valid combinations and that enabling the shortcut
   keeps Winderust in the notification area. Show conflicts and registration
   failures in text. Save commits the selection and Esc cancels recording.
-- The rail stays 88px wide plus its divider. Keep content geometry independent of flyout state and the right status rail independent.
-- Center the shared header and content canvas within the work area beside the primary rail and any open side panel, with shared padding and a 1440px width cap. Every page reserves the same 48px breadcrumb area and 32px toolbar, including pages without power-source selectors, so page content starts at a stable position.
-- The right side panel is a 320px dock beside the editor, reserving its own width without covering content. Both areas remain interactive. Start closed and retain its open state throughout navigation, search, focus changes, and settings edits. Close only through panel controls. Pages without panel content use the full canvas and preserve the session's open preference for the next supported page. Keep existing tabs, scrolling, and actions. Dialogs cover both areas. There is no collapsed strip or persisted mode setting.
+- Center the shared header and content canvas between the optional page list and Side panel, with shared padding and a 1440px width cap. Every page reserves the same 48px breadcrumb area and 32px toolbar, including pages with no power-source selectors, so page content starts at a stable position.
+- The right Side panel docks beside the editor, reserving its own width. Use a 320px dock on wide windows and on standalone pages. When the window is narrower than 1280 logical pixels and the page list is visible, reduce the dock to 280px to leave more room for the editor. Both areas remain interactive. Start closed and retain its open state throughout navigation, search, focus changes, and settings edits. Close through the title-bar toggle or the panel's Close button. Pages with no panel content use the available editor width and preserve the session's open preference for the next supported page. Dialogs cover the work area.
 - The title-bar toggle shows the side panel's current state and is inactive while a modal is open or the page has no panel. The in-panel Close button returns keyboard focus to the title-bar toggle.
 - Navigation labels and page sections live in `src/ui.rs`; page rendering
   dispatch stays in `WinderustApp::page_view` in `src/ui/app.rs`.
@@ -126,10 +120,10 @@ Prefer visible state, compact controls, and predictable rows. Use restrained acc
 ## Visual Language
 
 - Reuse `design.rs` tokens and `widgets.rs` styles. Buttons share 6px corners, 14px labels, and stable 1px outlines. Standard text actions and utility icons are 32px high; text actions use 12px horizontal padding through the shared action helper. Primary actions use a solid accent fill; secondary actions use a neutral outline with accent text; tertiary actions use a neutral outline and text. Quiet utilities show hover feedback; destructive actions use danger colors; persistent choices use accent outlines and tint. Preserve explicit dense-row and navigation geometry, native input, disabled states, and theme/accent support. Keep action feedback distinct from persistent selection.
-- Navigation selection uses a rounded vertical pill. All page, panel, and dialog tabs use the same compact segmented design: 32px height, widths that fit their centered 14px semibold labels, one neutral outline, no outer inset or gap, and an accent-tinted, outlined selected segment. Tab labels retain normal theme text colors, including the side panel's Status / Presets tabs. Selection changes the tint and outline. Weekday selectors share this design and retain multiple selection. Plugged In / On Battery retains its live-source dot independently of the selected editing profile. Respect the current theme and accent without shadows or underlines.
+- Use an accent tint for the active workspace and page list entry. All page, panel, and dialog tabs use the same compact segmented design: 32px height, widths that fit their centered 14px semibold labels, one neutral outline, no outer inset or gap, and an accent-tinted, outlined selected segment. Tab labels retain normal theme text colors, including the side panel's Status / Presets tabs. Selection changes the tint and outline. Weekday selectors share this design and retain multiple selection. Plugged In / On Battery retains its live-source dot independently of the selected editing profile. Respect the current theme and accent without shadows or underlines.
 - Choose toggle knobs and checkmarks for contrast against the accent color.
 
-- The navigation rail and docked right panel use edge-aligned chrome with square outer corners, workspace-facing thin dividers, and no gaps between shell surfaces. Floating navigation uses the shared outlined surface. Cards, rules tables, dense table frames, settings groups, and settings dialogs share the surface outline (1px neutral at 75% opacity) and 10px radius. Keep dense table frames outside horizontal scrolling and preserve their borderless tiled interior for partial repaint efficiency.
+- The workspace row, page list, and docked Side panel use edge-aligned chrome with square outer corners and thin dividers. Cards, rules tables, dense table frames, settings groups, and settings dialogs share the surface outline (1px neutral at 75% opacity) and 10px radius. Keep dense table frames outside horizontal scrolling and preserve their borderless tiled interior for partial repaint efficiency.
 - Base surfaces use cool pale neutrals in light mode and slate tones in dark mode; panels have subtle 1px outlines. Inputs, dropdowns, and menus use the neutral control surface, distinct from cards: slightly lighter in Dark and AMOLED, darker in Light. Keep control hover fills opaque, and internal settings dividers subtler than outer card borders. AMOLED workspace and dock remain pure black. Accent color marks primary action, active navigation, selection, and important status.
 - Respect `AppThemeMode`, `AccentColorSource`, and system accent behavior through the Iced theme and `settings_pages.rs` color helpers. Derive workspace, navigation, card/field, button, border, divider, and muted-text colors from the selected accent using restrained grayscale tints in the shared palette. Chart series and informational Process List colors also follow accent roles. Keep body/help text readable, semantic success/warning/danger distinct, and existing contrast rules for accent fills and marks. Accent changes must refresh the complete theme immediately, including cached chart/table surfaces.
 - Language and Appearance offers System, Light, Dark, and AMOLED. AMOLED uses a pure-black workspace and docked navigation with near-black accent-tinted cards and controls. System follows Windows light, dark, and contrast themes. During a Windows contrast theme, System uses the Windows window and selection color pairs and holds the saved accent for when the contrast theme is turned off. Composite rows retain readable text and icons with an outlined selection. Menus use a paired fill and foreground, and keyboard focus uses a separate outline.
@@ -207,15 +201,13 @@ hover/press; background shading supplies feedback.
   unavailable reading and `0 MB` for a measured zero. Show readings on individual
   process rows. Leave grouped totals unavailable because Windows can attribute
   the same GPU allocation to multiple processes.
-- Language and Appearance owns the enabled-feature counts toggle. When enabled, the secondary navigation header shows a numeric pill for Watchdog, Power Plan Control, Priority Control, and CPU Control based on the section's enabled modules. The primary rail stays unbadged.
-- Language and Appearance separately owns the feature-card status toggle. When enabled, landing cards backed by a feature switch show Enabled or Disabled in the theme's normal text color.
 - Editable policy cells should use inline dropdown controls. Avoid modal flows for simple policy edits.
 - Columns are resizable and initially fit their content. Double-click a divider to auto-fit; the last visible column fills remaining width. Preserve the layout tests.
 
 ## Settings Pages
 
 - Settings and its Winderust Behaviour, Language and Appearance, and Experimental
-  Features pages keep help inline and use the full canvas.
+  Features pages keep help inline in the editor beside the Settings page list.
 - The Settings Files card explains each file action before its picker opens. Export includes
   unsaved settings edits. A valid import replaces the active settings immediately and requires
   a clean settings draft.
@@ -418,11 +410,11 @@ hover/press; background shading supplies feedback.
 
 ### Watchdog
 
-- Place Watchdog after Process List in the primary navigation. Show Resource
+- Place Watchdog after Process List in the workspace row. Show Resource
   Thresholds, Memory Trim, Keep Running, Sleep Prevention, Instance Limits,
   and App Suspension in that order. Reuse the existing landing-page cards and
-  link each one to its own editor. Use the full canvas for the Watchdog landing
-  page and each Watchdog editor. Keep feature actions and help on their pages.
+  link each one to its own editor. Keep feature actions and help in the central
+  editor beside the Watchdog page list.
 - Each Watchdog feature uses shared settings across power sources and omits the
   Plugged In and On Battery selector.
 - Resource Thresholds and Instance Limits keep shared options under Settings
@@ -494,6 +486,8 @@ hover/press; background shading supplies feedback.
   independently expandable, and groups navigation and feature-card display settings.
   Use square color swatches and shared select widths. About groups identity and
   updates into separate surfaces.
+- When feature-card status is on in Language and Appearance, landing cards backed
+  by a feature switch show Enabled or Disabled in the theme's normal text color.
 - About shows the author name without inspiration or license prose. Its external-link
   buttons use GitHub and Discord marks, a book for Documentation, and scales for
   License, with icon and label centered within the button. The Updates card retains
@@ -607,8 +601,7 @@ hover/press; background shading supplies feedback.
 ## Current reference layout
 
 - The user-approved 2026-10-30 dashboard direction guides the palette, spacing, and metric hierarchy. The App Shell section owns current navigation and window behavior.
-- Keep the 88px primary rail, floating child menus, tinted selected entries, all existing categories, and independent global search.
-- Use 16px card padding, 12px card gaps, regular Segoe UI body text at 14px, 13px sidebar labels, semibold headings, and prominent 28px dashboard values. The primary rail uses 11px centered wrapping labels. Keep advanced shaping, system font fallback, and DPI-aware software text rendering; do not claim ClearType support.
+- Use 16px card padding, 12px card gaps, regular Segoe UI body text at 14px, 13px Side panel labels, semibold headings, and prominent 28px dashboard values. Describe text rendering in terms of advanced shaping, system font fallback, and DPI-aware software rendering.
 - Use one 18px breadcrumb heading on every page: Home > section > current page, omitting unused levels. Ancestors are clickable; the current page is semibold text. Home shows only Home. Wrap the path in narrow windows; do not repeat the current page as a separate title.
 - Home uses a two-by-two chart grid above Enabled Features and Recent Logs. Shared content is capped at 1440px.
 - Dense virtual process and log tables retain borderless tiled backgrounds and existing row geometry.
@@ -645,9 +638,10 @@ hover/press; background shading supplies feedback.
 
 Use the [render harness](development.md#rendering-and-performance) for both locales,
 light/dark themes, AMOLED, minimum-size and desktop windows, empty/populated rules,
-collapsed/expanded groups, live/editable/read-only presets, side panels, flyouts, and
-search. Check header controls independently from expansion; each must retain its own
-hit target. Preserve live/preset navigation and collapse-state isolation.
+collapsed/expanded groups, live/editable/read-only presets, workspace navigation,
+Side panels, and search. Check header controls independently from expansion; each
+must retain its own hit target. Preserve live/preset navigation and collapse-state
+isolation.
 
 Follow the [PStack verification workflow](development.md#pstack-verification) for
 changed workflows. Review the captures and check the relevant Windows interactions

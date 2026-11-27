@@ -330,7 +330,7 @@ pub(super) fn popup_scrollable<'a, Message: 'a>(
         .style(scroll_style)
 }
 
-/// The compact navigation rail keeps its scrollbar inside the outer inset.
+/// Keep the page list scrollbar inside the outer inset.
 pub(super) fn navigation_scrollable<'a, Message: 'a>(
     content: impl Into<Element<'a, Message>>,
 ) -> iced::widget::Scrollable<'a, Message> {

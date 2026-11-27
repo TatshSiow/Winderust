@@ -339,9 +339,8 @@ mod tests {
 
     #[test]
     fn reveals_nested_controls_by_focus_or_id_without_scrolling_siblings() {
-        use crate::ui::{navigation, navigation_flyout, Page};
-
         const FOCUS_SCOPE: &str = "test-focus-scope";
+        const REVEAL_TARGET: &str = "reveal-target";
 
         #[derive(Default)]
         struct Snapshot {
@@ -358,7 +357,7 @@ mod tests {
                 if state.is_focused() {
                     self.focused = Some((self.count, bounds));
                 }
-                if id == Some(&navigation::rail_id(Some(Page::About))) {
+                if id == Some(&Id::from(REVEAL_TARGET)) {
                     self.marked = Some(bounds);
                 }
                 self.count += 1;
@@ -409,17 +408,9 @@ mod tests {
             let inner = iced::widget::column![
                 widgets::action_button("First action").on_press(()),
                 iced::widget::Space::new().height(400),
-                navigation_flyout::view(
-                    Page::About,
-                    navigation::rail_item(
-                        Page::About,
-                        true,
-                        navigation::Event::Select(Page::About)
-                    ),
-                    None,
-                    false,
-                )
-                .map(|_| ()),
+                widgets::action_button("Last action")
+                    .focus_id(REVEAL_TARGET)
+                    .on_press(()),
             ]
             .spacing(8);
             let inner = if pane {
@@ -504,7 +495,7 @@ mod tests {
                 &node,
                 &renderer,
                 Box::new(Reveal {
-                    target: Some(navigation::rail_id(Some(Page::About))),
+                    target: Some(REVEAL_TARGET.into()),
                     focus_scope: Some(FOCUS_SCOPE.into()),
                     ..Reveal::default()
                 }),
@@ -535,7 +526,7 @@ mod tests {
                 &node,
                 &renderer,
                 Box::new(Reveal {
-                    target: Some(navigation::rail_id(Some(Page::About))),
+                    target: Some(REVEAL_TARGET.into()),
                     focus_scope: Some(FOCUS_SCOPE.into()),
                     ..Reveal::default()
                 }),

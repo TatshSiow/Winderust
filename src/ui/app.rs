@@ -34,11 +34,20 @@ use crate::{
 };
 
 // Iced supplies logical pixels; do not apply the monitor DPI a second time.
-fn shell_widths(width: f32) -> (f32, f32, u16) {
+fn shell_widths(width: f32, has_page_list: bool) -> (f32, f32, u16) {
+    let compact = width < 1280.0;
     (
-        design::NAVIGATION_RAIL_WIDTH + 1.0,
-        design::SIDE_PANEL_WIDTH,
-        if width < 1280.0 {
+        match (has_page_list, compact) {
+            (false, _) => 0.0,
+            (true, true) => design::COMPACT_PAGE_NAVIGATION_WIDTH,
+            (true, false) => design::PAGE_NAVIGATION_WIDTH,
+        },
+        if compact && has_page_list {
+            design::COMPACT_SIDE_PANEL_WIDTH
+        } else {
+            design::SIDE_PANEL_WIDTH
+        },
+        if compact {
             design::space::MEDIUM
         } else {
             design::space::WIDE
@@ -366,7 +375,6 @@ pub(crate) fn run(
                 navigation_search_open: false,
                 navigation_search_scope: SearchScope(None),
                 navigation_search_selected: 0,
-                navigation: navigation::Flyout::default(),
                 feature_tabs: HashMap::new(),
                 side_panel_open: false,
                 side_panel_tab: SidePanelTab::initial_for_page(Page::Home),
@@ -497,15 +505,6 @@ pub(crate) fn run(
                         .map(|(page, _)| Message::PollPreviewMatches(page))
                 })
                 .unwrap_or_else(Subscription::none),
-            app.navigation
-                .timer()
-                .filter(|_| !app.hidden)
-                .map(|(due, delay)| {
-                    iced::time::every(delay)
-                        .with(due)
-                        .map(|(_, now)| Message::Navigation(navigation::Event::Tick(now)))
-                })
-                .unwrap_or_else(Subscription::none),
             iced::window::close_requests().map(Message::WindowCloseRequested),
             iced::event::listen_raw(|event, _, _| match event {
                 iced::Event::Window(iced::window::Event::Focused) => Some(Message::WindowFocused),
@@ -536,9 +535,6 @@ pub(crate) fn run(
                     iced::Event::Mouse(iced::mouse::Event::ButtonPressed(
                         iced::mouse::Button::Forward,
                     )) => Some(Message::NavigateHistory(true)),
-                    iced::Event::Window(iced::window::Event::Unfocused) => {
-                        Some(Message::Navigation(navigation::Event::Dismiss))
-                    }
                     _ => None,
                 }
             }),
@@ -687,7 +683,6 @@ struct WinderustApp {
     navigation_search_open: bool,
     navigation_search_scope: SearchScope,
     navigation_search_selected: usize,
-    navigation: navigation::Flyout,
     feature_tabs: HashMap<Page, FeatureTab>,
     side_panel_open: bool,
     side_panel_tab: SidePanelTab,
@@ -1064,14 +1059,6 @@ impl WinderustApp {
             return self.update(Message::OpenNavigationSearch);
         }
         if status == iced::event::Status::Ignored {
-            if key == Key::Named(Named::Escape)
-                && (self.navigation.section.is_some() || self.navigation.timer().is_some())
-            {
-                return self.update_navigation(navigation::Event::Dismiss);
-            }
-            if self.navigation.selected.is_some() && self.navigation.section.is_some() {
-                return self.update_navigation(navigation::Event::Key(key, modifiers.shift()));
-            }
             if self.preferences.show_update
                 && key == Key::Named(Named::Escape)
                 && modifiers.is_empty()
@@ -1130,172 +1117,6 @@ impl WinderustApp {
         self.update(Message::Preferences(message))
     }
 
-    fn focus_navigation(&self, page: Option<Page>) -> Task<Message> {
-        let id = navigation::rail_id(page);
-        iced::widget::operation::focus(id.clone()).chain(super::keyboard_focus::reveal(Some(id)))
-    }
-
-    fn update_navigation(&mut self, event: navigation::Event) -> Task<Message> {
-        use iced::keyboard::{key::Named, Key};
-        use navigation::Event as Nav;
-        let tabbing = matches!(event, Nav::Tab(..));
-        match event {
-            Nav::Select(page) => return self.update(Message::Page(page)),
-            Nav::Search => return self.update(Message::OpenNavigationSearch),
-            Nav::Blur => self.navigation.selected = None,
-            Nav::OpenKeyboard(page) => {
-                self.navigation
-                    .update(&Nav::OpenKeyboard(page), std::time::Instant::now());
-                return self.focus_navigation(Some(page));
-            }
-            Nav::FocusMove(page, forward) | Nav::Tab(page, forward) => {
-                let rail_pages =
-                    navigation::rail_pages(self.settings.global().advanced.show_advanced_controls);
-                let pages: Vec<_> = std::iter::once(None)
-                    .chain(rail_pages.iter().copied().map(Some))
-                    .collect();
-                if let Some(index) = pages.iter().position(|p| *p == page) {
-                    if tabbing
-                        && ((forward && index + 1 == pages.len()) || (!forward && index == 0))
-                    {
-                        return super::keyboard_focus::move_focus(forward, false);
-                    }
-                    let index = if forward {
-                        (index + 1) % pages.len()
-                    } else {
-                        (index + pages.len() - 1) % pages.len()
-                    };
-                    self.navigation.selected = None;
-                    return self.focus_navigation(pages[index]);
-                }
-            }
-            Nav::Key(key, shift) => {
-                if let Some(section) = self.navigation.section {
-                    let pages = navigation::children(section);
-                    let count = pages.len();
-                    if count == 0 {
-                        return Task::none();
-                    }
-                    let selected = self.navigation.selected.unwrap_or(0);
-                    self.navigation.selected = Some(match key {
-                        Key::Named(Named::Escape | Named::ArrowLeft) => {
-                            self.navigation.dismiss();
-                            return self.focus_navigation(Some(section));
-                        }
-                        Key::Named(Named::ArrowDown) => self
-                            .navigation
-                            .selected
-                            .map_or(0, |index| (index + 1) % count),
-                        Key::Named(Named::Tab) if !shift => self
-                            .navigation
-                            .selected
-                            .map_or(0, |index| (index + 1) % count),
-                        Key::Named(Named::ArrowUp | Named::Tab) => self
-                            .navigation
-                            .selected
-                            .map_or(count - 1, |index| (index + count - 1) % count),
-                        Key::Named(Named::Home) => 0,
-                        Key::Named(Named::End) => count - 1,
-                        Key::Named(Named::Enter | Named::Space) => {
-                            return self.update_navigation(Nav::Select(pages[selected]));
-                        }
-                        _ => selected,
-                    });
-                    if let Some(index) = self.navigation.selected {
-                        return iced::widget::operation::snap_to(
-                            "secondary-navigation",
-                            iced::widget::scrollable::RelativeOffset {
-                                x: 0.0,
-                                y: index as f32 / pages.len().saturating_sub(1).max(1) as f32,
-                            },
-                        );
-                    }
-                }
-            }
-            event => {
-                let now = match event {
-                    Nav::Tick(now) => now,
-                    _ => std::time::Instant::now(),
-                };
-                self.navigation.update(&event, now);
-            }
-        }
-        Task::none()
-    }
-
-    fn navigation_panel(&self, section: Page) -> Element<'_, navigation::Event> {
-        use navigation::Event as Nav;
-        let selected = self.navigation.selected;
-        let focused = move |index| selected == Some(index);
-        let mut header =
-            row![widgets::heading(section.label(), design::typography::SECTION).width(Fill)]
-                .spacing(design::space::TIGHT)
-                .align_y(iced::Center);
-        if self
-            .settings
-            .global()
-            .general
-            .show_enabled_feature_counts_in_sidebar
-        {
-            if let Some(count) = navigation::section_enabled_feature_count(&self.settings, section)
-            {
-                header = header.push(
-                    container(text(count.to_string()).size(design::typography::BADGE))
-                        .padding([2, 6])
-                        .style(move |theme| widgets::indicator_chip(theme, count > 0)),
-                );
-            }
-        }
-        let mut pages = column![].spacing(design::space::TIGHT);
-        for (index, page) in navigation::children(section).into_iter().enumerate() {
-            let mut entry = row![text(page.label())
-                .size(design::typography::BODY)
-                .width(Fill)]
-            .spacing(design::space::SMALL)
-            .align_y(iced::Center);
-            if navigation::feature_page_enabled(&self.settings, page) == Some(true) {
-                entry = entry.push(
-                    container(iced::widget::Space::new())
-                        .width(6)
-                        .height(6)
-                        .style(|theme: &Theme| container::Style {
-                            background: Some(theme.palette().success.into()),
-                            border: iced::border::rounded(3),
-                            ..Default::default()
-                        }),
-                );
-            }
-            pages = pages.push(
-                button(entry)
-                    .pointer_only()
-                    .width(Fill)
-                    .padding([design::space::MEDIUM as u16, design::space::SMALL as u16])
-                    .style(move |theme, status| {
-                        navigation::item_style(theme, status, self.page == page, focused(index))
-                    })
-                    .on_press(Nav::Select(page)),
-            );
-        }
-        let height = iced::Shrink;
-        super::scrolling::repaint_popup(
-            container(
-                column![
-                    header,
-                    iced::widget::rule::horizontal(1),
-                    super::scrolling::popup_scrollable(pages)
-                        .id("secondary-navigation")
-                        .height(height)
-                ]
-                .spacing(design::space::MEDIUM)
-                .height(height),
-            )
-            .padding(design::space::MEDIUM as u16)
-            .width(Fill)
-            .height(height)
-            .style(widgets::surface),
-        )
-    }
-
     fn update(&mut self, message: Message) -> Task<Message> {
         if self.exiting && !message.allowed_during_exit() {
             return Task::none();
@@ -1339,7 +1160,6 @@ impl WinderustApp {
             }
             Message::OpenNavigationSearch if self.adaptive_processor_power.preset_open() => {}
             Message::OpenNavigationSearch => {
-                self.navigation.dismiss();
                 self.navigation_search_open = true;
                 self.navigation_search_scope = SearchScope(None);
                 self.navigation_search_selected = 0;
@@ -1347,10 +1167,18 @@ impl WinderustApp {
                 return iced::widget::operation::focus("navigation-search");
             }
             Message::CloseNavigationSearch => {
-                self.navigation_search_open = false;
+                let was_open = std::mem::take(&mut self.navigation_search_open);
                 self.navigation_search.clear();
+                if was_open {
+                    return iced::widget::operation::focus(navigation::SEARCH_ID);
+                }
             }
-            Message::Navigation(event) => return self.update_navigation(event),
+            Message::Navigation(navigation::Event::Select(page)) => {
+                return self.update(Message::Page(page));
+            }
+            Message::Navigation(navigation::Event::Search) => {
+                return self.update(Message::OpenNavigationSearch);
+            }
             Message::FeatureTab(tab) => {
                 if self.feature_tab() != tab && FeatureTab::for_page(self.page).contains(&tab) {
                     self.feature_tabs.insert(self.page, tab);
@@ -1415,9 +1243,6 @@ impl WinderustApp {
             }
             Message::Preferences(settings_pages::Message::ReplaceSettingsPrompt(open)) => {
                 self.preferences.replace_settings_open = open && self.can_replace_settings();
-                if self.preferences.replace_settings_open {
-                    self.navigation.dismiss();
-                }
             }
             Message::Preferences(settings_pages::Message::ConfirmReplaceSettings) => {
                 if std::mem::take(&mut self.preferences.replace_settings_open)
@@ -1464,13 +1289,6 @@ impl WinderustApp {
                 | settings_pages::Message::DismissUpdate
                 | settings_pages::Message::Checked(..)),
             ) => {
-                if matches!(
-                    message,
-                    settings_pages::Message::OpenColorPicker(_)
-                        | settings_pages::Message::EditColor(_)
-                ) {
-                    self.navigation.dismiss();
-                }
                 self.preferences
                     .update_ui(self.settings.global().general.update_channel, message);
             }
@@ -1803,9 +1621,6 @@ impl WinderustApp {
             }
 
             Message::PowerRules(kind, message) => {
-                if matches!(message, power_rules::Message::OpenTimePicker(_)) {
-                    self.navigation.dismiss();
-                }
                 let editor = match kind {
                     power_rules::Kind::Time => &mut self.time_rules,
                     power_rules::Kind::CpuLoad => &mut self.cpu_rules,
@@ -2050,7 +1865,6 @@ impl WinderustApp {
             Message::WindowAction(window_frame::Event::ToggleSidePanel) => {
                 if let Some(open) = self.side_panel_toggle_state() {
                     self.side_panel_open = !open;
-                    self.navigation.dismiss();
                 }
             }
             Message::WindowFocused => {
@@ -2087,9 +1901,10 @@ impl WinderustApp {
                     }
                     if self.window_is_restored() && size.width > 0.0 && size.height > 0.0 {
                         self.window_settings.size = size;
-                        if shrank {
-                            return navigation::reveal_after_resize(
-                                self.page.section_landing_page(),
+                        if shrank && navigation::has_children(self.page.section_landing_page()) {
+                            return super::keyboard_focus::reveal_within(
+                                navigation::PAGE_LIST_ID.into(),
+                                Some(navigation::page_id(self.page)),
                             );
                         }
                     }
@@ -2179,7 +1994,6 @@ impl WinderustApp {
                 self.sync_visible_process_list_suspensions();
                 self.navigation_search_open = false;
                 self.navigation_search.clear();
-                self.navigation.dismiss();
                 if entering_page && page == Page::Win32PrioritySeparation {
                     self.priority_separation.refresh();
                 }
@@ -2187,10 +2001,9 @@ impl WinderustApp {
                     self.power_tuning.ensure_plan(&self.power_plans);
                 }
                 let mut tasks = Vec::new();
-                let section = page.section_landing_page();
-                if !navigation::is_utility(section) {
-                    tasks.push(super::keyboard_focus::reveal(Some(navigation::rail_id(
-                        Some(section),
+                if navigation::has_children(page.section_landing_page()) {
+                    tasks.push(super::keyboard_focus::reveal(Some(navigation::page_id(
+                        page,
                     ))));
                 }
                 if page_needs_power_plans(page, self.processes.rulesets_open()) {
@@ -2227,9 +2040,6 @@ impl WinderustApp {
                     .processes
                     .update(message, &mut self.settings, &self.runtime)
                     .map(Message::Processes);
-                if self.processes.modal_open() || self.processes.context_open() {
-                    self.navigation.dismiss();
-                }
                 return if load_plans && self.processes.rulesets_open() {
                     Task::batch([task, self.load_power_plans()])
                 } else {
@@ -2778,7 +2588,6 @@ impl WinderustApp {
         self.processes.stop_gpu_usage_sampling();
         self.hidden = true;
         self.hwnd = None;
-        self.navigation.dismiss();
         self.navigation_search_open = false;
         self.preferences.dismiss_picker();
         self.preferences.cancel_shortcut_capture();
@@ -3447,65 +3256,18 @@ impl WinderustApp {
                 content
             }
         };
-        let (navigation_width, side_panel_width, page_padding) = shell_widths(size.width);
-        let mut primary = column![].spacing(design::space::TIGHT).width(Fill);
-        let mut utilities = column![].spacing(design::space::TIGHT).width(Fill);
-        for page in navigation::rail_pages(self.settings.global().advanced.show_advanced_controls) {
-            let item = super::navigation_flyout::view(
-                page,
-                navigation::rail_item(
-                    page,
-                    self.page.section_landing_page() == page,
-                    navigation::Event::Select(page),
-                ),
-                (self.navigation.section == Some(page)).then(|| self.navigation_panel(page)),
-                self.navigation.selected.is_some(),
-            )
-            .map(Message::Navigation);
-            if navigation::is_utility(page) {
-                utilities = utilities.push(item);
-            } else {
-                primary = primary.push(item);
-            }
-        }
-        let search = super::navigation_flyout::search(
-            button(
-                container(
-                    column![
-                        navigation::glyph("icons/search.svg"),
-                        text(t!("home.search").to_string())
-                            .size(design::typography::BADGE)
-                            .width(Fill)
-                            .align_x(iced::Center),
-                    ]
-                    .spacing(design::space::TIGHT)
-                    .align_x(iced::Center),
-                )
-                .center_x(Fill)
-                .center_y(Fill),
-            )
-            .pointer_only()
-            .width(Fill)
-            .height(design::NAVIGATION_ITEM_HEIGHT)
-            .padding([design::space::CONTROL as u16, design::space::TIGHT as u16])
-            .selected(self.navigation_search_open, |theme, status| {
-                let mut style = widgets::quiet(theme, status);
-                if status == iced::widget::button::Status::Active {
-                    style.background = Some(theme.palette().primary.scale_alpha(0.05).into());
-                }
-                style
-            })
-            .on_press(navigation::Event::Search)
-            .into(),
+        let page_list = navigation::page_list(self.page, &self.settings);
+        let (navigation_width, side_panel_width, page_padding) =
+            shell_widths(size.width, page_list.is_some());
+        let top_bar = navigation::top_bar(
+            self.page,
+            self.settings.global().advanced.show_advanced_controls,
+            self.navigation_search_open,
         )
         .map(Message::Navigation);
-        let rail = navigation::rail(search, primary.into(), utilities.into());
-        let navigation = row![rail, iced::widget::rule::vertical(1)];
-        let navigation = container(navigation)
-            .width(navigation_width)
-            .height(Fill)
+        let top_bar = container(top_bar)
+            .width(Fill)
             .style(widgets::navigation_surface);
-        let navigation = shield(navigation.into());
         let side_panel = (self.side_panel_open && self.side_panel_available())
             .then(|| self.side_panel(read_power_source))
             .flatten()
@@ -3585,7 +3347,8 @@ impl WinderustApp {
                 .show_update
                 .then(|| floating_update_card(&self.preferences))
         };
-        let content = self.page_view(settings_are_pending, read_power_source, size.height);
+        let content_height = (size.height - design::NAVIGATION_ROW_HEIGHT as f32 - 1.0).max(0.0);
+        let content = self.page_view(settings_are_pending, read_power_source, content_height);
         let content = match feature_tabs::view(self.page, self.feature_tab(), Message::FeatureTab) {
             Some(tabs) => column![tabs, content].spacing(widgets::CARD_GAP).into(),
             None => content,
@@ -3609,16 +3372,29 @@ impl WinderustApp {
             None
         };
         let body = page_canvas(shield(heading), content.into(), floating_card, toast);
-        let layout = row![
-            navigation,
+        let mut workspace = row![].height(Fill);
+        if let Some(page_list) = page_list {
+            let navigation = container(page_list.map(Message::Navigation))
+                .width(navigation_width - 1.0)
+                .height(Fill)
+                .style(widgets::navigation_surface);
+            workspace = workspace
+                .push(shield(navigation.into()))
+                .push(iced::widget::rule::vertical(1));
+        }
+        workspace = workspace.push(
             container(body)
                 .padding([0, page_padding])
                 .width(Fill)
                 .height(Fill),
+        );
+        let layout = column![
+            shield(top_bar.into()),
+            iced::widget::rule::horizontal(1),
+            side_panel_dock(workspace.into(), side_panel, side_panel_width),
         ]
         .height(Fill)
         .into();
-        let layout = side_panel_dock(layout, side_panel, side_panel_width);
         if self.navigation_search_open {
             let searching = !self.navigation_search.trim().is_empty();
             let choices = navigation_search_choices(
@@ -5230,22 +5006,23 @@ mod tests {
             (2560.0, 1.5),
         ] {
             let width = physical_width / scale;
-            let (navigation, panel, padding) = shell_widths(width);
-            assert_eq!(navigation, design::NAVIGATION_RAIL_WIDTH + 1.0);
-            assert!(panel <= design::SIDE_PANEL_WIDTH);
-            let content = width - navigation - 2.0 * padding as f32;
-            assert!(content >= 800.0, "{width}: {content}");
+            let (navigation, panel, padding) = shell_widths(width, true);
+            let content = width - navigation - panel - 2.0 * padding as f32;
+            assert!(content >= 440.0, "{width}: {content}");
         }
         assert_eq!(
-            shell_widths(1920.0),
+            shell_widths(1920.0, true),
             (
-                design::NAVIGATION_RAIL_WIDTH + 1.0,
+                design::PAGE_NAVIGATION_WIDTH,
                 design::SIDE_PANEL_WIDTH,
                 design::space::WIDE as u16
             )
         );
-        let (navigation, _, padding) = shell_widths(900.0);
-        assert!(900.0 - navigation - 2.0 * padding as f32 >= 780.0);
+        let (navigation, panel, padding) = shell_widths(900.0, true);
+        assert!(900.0 - navigation - panel - 2.0 * padding as f32 >= 440.0);
+        let (navigation, panel, _) = shell_widths(900.0, false);
+        assert_eq!(navigation, 0.0);
+        assert_eq!(panel, design::SIDE_PANEL_WIDTH);
     }
 
     #[test]

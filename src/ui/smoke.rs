@@ -7,6 +7,10 @@ use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 static REQUESTED: AtomicBool = AtomicBool::new(false);
+const NAVIGATION_CPU_COMPACT: usize = 35;
+const NAVIGATION_CPU_COMPACT_ZH_TW: usize = 36;
+const NAVIGATION_POWER_COMPACT: usize = 37;
+const NAVIGATION_POWER_COMPACT_ZH_TW: usize = 42;
 const PROCESS_LIST_COMMIT_WIDE: usize = 94;
 const PROCESS_LIST_COMMIT_COMPACT: usize = 95;
 const HOME_ENABLED_FEATURES_COMPACT: usize = 96;
@@ -23,8 +27,8 @@ const DOCK_FOCUS_WIDE: usize = 106;
 const DOCK_FOCUS_COMPACT: usize = 107;
 const MEMORY_TRIM_PARTIAL: usize = 108;
 const MEMORY_TRIM_UNKNOWN: usize = 109;
-const RAIL_RESIZE_TALL: usize = 110;
-const RAIL_RESIZE_COMPACT: usize = 111;
+const NAVIGATION_RESIZE_TALL: usize = 110;
+const NAVIGATION_RESIZE_COMPACT: usize = 111;
 const KEEP_AWAKE_READY: usize = 112;
 const KEEP_AWAKE_ACTIVE: usize = 113;
 const GPU_MEMORY_WIDE: usize = 114;
@@ -95,7 +99,22 @@ impl Run {
 
     fn scenarios(pages: &[Page]) -> VecDeque<usize> {
         let extra_start = pages.len() * 2;
-        if std::env::args().any(|arg| arg == "--side-panel-only") {
+        if std::env::args().any(|arg| arg == "--navigation-only") {
+            [0, pages.len()]
+                .into_iter()
+                .chain(
+                    [
+                        NAVIGATION_CPU_COMPACT,
+                        NAVIGATION_CPU_COMPACT_ZH_TW,
+                        NAVIGATION_POWER_COMPACT,
+                        NAVIGATION_POWER_COMPACT_ZH_TW,
+                        NAVIGATION_RESIZE_TALL,
+                        NAVIGATION_RESIZE_COMPACT,
+                    ]
+                    .map(|extra| extra_start + extra),
+                )
+                .collect()
+        } else if std::env::args().any(|arg| arg == "--side-panel-only") {
             (0..extra_start)
                 .filter(|index| {
                     matches!(
@@ -237,11 +256,20 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
     if extra == Some(EXTRA_STATES) {
         return Some(app.shutdown());
     }
-    if extra == Some(RAIL_RESIZE_COMPACT) && run.ticks == 0 {
+    if extra == Some(NAVIGATION_RESIZE_COMPACT) && run.ticks == 0 {
         // Exercise the native resize without navigating or changing keyboard focus.
         run.ticks = 1;
         return Some(iced::window::resize(window, iced::Size::new(900.0, 620.0)));
     }
+    let compact_navigation = matches!(
+        extra,
+        Some(
+            NAVIGATION_CPU_COMPACT
+                | NAVIGATION_CPU_COMPACT_ZH_TW
+                | NAVIGATION_POWER_COMPACT
+                | NAVIGATION_POWER_COMPACT_ZH_TW
+        )
+    );
     if run.ticks == 0 {
         let chinese = extra.map_or(run.index >= run.pages.len(), |index| {
             index >= FEATURE_TAB_STATES_START && index % 2 == 1
@@ -251,9 +279,9 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                         | 7
                         | 9
                         | 11
-                        | 36
+                        | NAVIGATION_CPU_COMPACT_ZH_TW
                         | 40
-                        | 42
+                        | NAVIGATION_POWER_COMPACT_ZH_TW
                         | 45
                         | 46
                         | 49
@@ -319,7 +347,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             ) => Page::AdaptiveEngine,
             Some(5 | 70 | 71) => Page::AdaptiveProcessorPower,
             Some(11 | MEMORY_TRIM_PARTIAL | MEMORY_TRIM_UNKNOWN) => Page::MemoryTrim,
-            Some(RAIL_RESIZE_TALL) => Page::AdvancedControls,
+            Some(NAVIGATION_RESIZE_TALL) => Page::AdvancedControls,
             Some(KEEP_AWAKE_READY | KEEP_AWAKE_ACTIVE | KEEP_AWAKE_MIXED) => Page::SleepPrevention,
             Some(12 | 82) => Page::ByFocus,
             Some(13) => Page::Home,
@@ -336,8 +364,9 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             Some(22) => Page::LanguageAndAppearance,
             Some(23) => Page::About,
             Some(25 | 87..=88) => Page::ProcessPriority,
-            Some(26..=37) => Page::Home,
-            Some(38 | 42 | 43) => Page::Home,
+            Some(26..=34 | 38 | 43) => Page::Home,
+            Some(NAVIGATION_CPU_COMPACT | NAVIGATION_CPU_COMPACT_ZH_TW) => Page::AdaptiveEngine,
+            Some(NAVIGATION_POWER_COMPACT | NAVIGATION_POWER_COMPACT_ZH_TW) => Page::ByFocus,
             Some(
                 HOME_ENABLED_FEATURES_COMPACT
                 | HOME_POWER_SOURCE_UNAVAILABLE
@@ -396,7 +425,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
         };
         rust_i18n::set_locale(app.settings.general.language.locale());
         app.appearance = settings_pages::theme(&app.settings.general);
-        if extra == Some(RAIL_RESIZE_TALL) {
+        if compact_navigation || extra == Some(NAVIGATION_RESIZE_TALL) {
             app.settings
                 .edit_global(|settings| settings.advanced.show_advanced_controls = true);
         }
@@ -866,31 +895,13 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             assert!(app.side_panel(is_plugged_in).is_some());
         }
         if extra == Some(0) {
-            let section = Page::SettingsHome;
-            let _ = app.update(Message::Navigation(navigation::Event::Select(section)));
-            assert_eq!(app.page, section);
-            assert_eq!(app.navigation.section, None);
-            let _ = app.update(Message::Page(page));
-            let _ = app.update(Message::Navigation(navigation::Event::OpenKeyboard(
-                section,
-            )));
-            assert_eq!(app.page, page);
-            assert_eq!(app.navigation.section, Some(section));
-            let _ = app.update(Message::Navigation(navigation::Event::Dismiss));
-            assert_eq!(app.navigation.section, None);
-            let _ = app.update(Message::Navigation(navigation::Event::OpenKeyboard(
-                Page::PowerPlanControl,
-            )));
-            assert_eq!(app.navigation.section, Some(Page::PowerPlanControl));
-            let _ = app.update(Message::Page(page));
-            assert_eq!(app.navigation.section, None);
-            let _ = app.update(Message::OpenNavigationSearch);
+            let _ = app.update(Message::Navigation(navigation::Event::Search));
             assert!(app.navigation_search_open);
             let _ = app.update(Message::NavigationSearch("cpu".into()));
             let _ = app.update(Message::CloseNavigationSearch);
             assert!(!app.navigation_search_open);
             assert!(app.navigation_search.is_empty());
-            let _ = app.update(Message::OpenNavigationSearch);
+            let _ = app.update(Message::Navigation(navigation::Event::Search));
             let _ = app.update(Message::Page(page));
             assert!(!app.navigation_search_open);
             assert!(app.navigation_search.is_empty());
@@ -1253,44 +1264,23 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
         } else {
             Task::none()
         };
-        let navigation = if matches!(extra, Some(35..=37 | 42)) {
-            let section = if extra == Some(36) {
-                Page::AdvancedControls
-            } else {
-                Page::SettingsHome
-            };
-            let _ = app.update(Message::Navigation(navigation::Event::OpenKeyboard(
-                section,
-            )));
+        let navigation = if compact_navigation {
+            let section = page.section_landing_page();
+            let select = |page| Message::Navigation(navigation::Event::Select(page));
+            let _ = app.update(select(Page::Home));
+            assert_eq!(app.page, Page::Home);
+            let _ = app.update(select(section));
+            assert_eq!(app.page, section);
+            let _ = app.update(select(page));
             assert_eq!(app.page, page);
-            assert_eq!(app.navigation.selected, Some(0));
-            let _ = app.update(Message::Navigation(navigation::Event::Key(
-                iced::keyboard::Key::Named(iced::keyboard::key::Named::End),
-                false,
-            )));
-            assert_eq!(
-                app.navigation.selected,
-                Some(navigation::children(section).len() - 1)
-            );
-            let _ = app.update(Message::Navigation(navigation::Event::Key(
-                iced::keyboard::Key::Named(iced::keyboard::key::Named::Enter),
-                false,
-            )));
-            assert_eq!(app.page, *navigation::children(section).last().unwrap());
-            assert_eq!(app.navigation.section, None);
-            let _ = app.update(Message::Page(page));
-            let _ = app.update(Message::Navigation(navigation::Event::OpenKeyboard(
-                section,
-            )));
-            let _ = app.update(Message::Navigation(navigation::Event::Key(
-                iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape),
-                false,
-            )));
+            let _ = app.update(Message::NavigateHistory(false));
+            assert_eq!(app.page, section);
+            let forward = app.update(Message::NavigateHistory(true));
             assert_eq!(app.page, page);
-            assert_eq!(app.navigation.section, None);
-            app.update(Message::Navigation(navigation::Event::OpenKeyboard(
-                section,
-            )))
+            assert!(!app.side_panel_open);
+            let _ = app.update(toggle_side_panel());
+            assert_eq!(app.side_panel_toggle_state(), Some(true));
+            forward
         } else {
             Task::none()
         };
@@ -1315,7 +1305,6 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             let _ = app.update(Message::OpenNavigationSearch);
             assert!(app.side_panel_open);
             let _ = app.update(Message::CloseNavigationSearch);
-            let _ = app.update(Message::Navigation(navigation::Event::Dismiss));
             assert!(app.side_panel_open);
             let _ = app.update(Message::CloseSidePanel);
             assert!(!app.side_panel_open);
@@ -1606,7 +1595,6 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             use crate::backend::interrupt_timing::InterruptTimingReport;
             use adaptive_engine::{Message as AdaptiveMessage, TuningTab};
 
-            let _ = app.update(Message::CpuLimiter(cpu_limiter::Message::CancelRule));
             app.adaptive.reset_drafts();
             let before = app.settings.runtime_settings_snapshot().value;
             let draft = app.settings.adaptive_engine_process.clone();
@@ -1714,7 +1702,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                 let _ = app.update(toggle_side_panel());
                 assert_eq!(app.side_panel_open, open);
                 for destination in [Page::Home, Page::PowerPlanControl, page] {
-                    let _ = app.update(Message::Page(destination));
+                    let _ = app.update(Message::Navigation(navigation::Event::Select(destination)));
                     assert_eq!(app.page, destination);
                     assert_eq!(app.side_panel_open, open);
                     let supported = destination != Page::Home;
@@ -1776,11 +1764,12 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             Some(
                 6 | 11 | CONTRAST_DARK_APPEARANCE | HOME_HISTORY_WIDE | CPU_LIMITER_AFFINITY_WIDE,
             ) => iced::Size::new(1120.0, 760.0),
-            Some(35..=37 | 40 | 42 | 44..=50 | 52..=69 | 71..=93) => iced::Size::new(900.0, 620.0),
+            _ if compact_navigation => iced::Size::new(900.0, 620.0),
+            Some(40 | 44..=50 | 52..=69 | 71..=93) => iced::Size::new(900.0, 620.0),
             Some(30) => iced::Size::new(1280.0, 720.0),
             Some(31) => iced::Size::new(1440.0, 900.0),
             Some(32) => iced::Size::new(1920.0, 720.0),
-            Some(33 | RAIL_RESIZE_TALL) => iced::Size::new(900.0, 1000.0),
+            Some(33 | NAVIGATION_RESIZE_TALL) => iced::Size::new(900.0, 1000.0),
             Some(34) => iced::Size::new(1536.0, 960.0),
             Some(4 | 70 | ADAPTIVE_RESTRAINT_RECOVERY) => iced::Size::new(1120.0, 920.0),
             Some(FEATURE_TAB_STATES_START..) if chinese => iced::Size::new(900.0, 620.0),
@@ -1822,6 +1811,30 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             _ => {}
         }
     }
+    if compact_navigation {
+        match run.ticks {
+            3 => {
+                return Some(iced::widget::operation::focus(navigation::page_id(
+                    app.page.section_landing_page(),
+                )));
+            }
+            5 => return Some(crate::ui::keyboard_focus::move_focus(true, false)),
+            7 => {
+                return Some(iced::advanced::widget::operate(NavigationLayout::new(
+                    app.page,
+                    app.window_settings.size.width,
+                    app.settings.global().advanced.show_advanced_controls,
+                )));
+            }
+            _ => {}
+        }
+    } else if extra.is_none() && app.page == Page::Home && run.ticks == 3 {
+        return Some(iced::advanced::widget::operate(NavigationLayout::new(
+            app.page,
+            app.window_settings.size.width,
+            app.settings.global().advanced.show_advanced_controls,
+        )));
+    }
     if run.ticks == 3 {
         match extra {
             Some(CPU_LIMITER_AFFINITY_COMPACT) => {
@@ -1835,9 +1848,9 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                 );
             }
             Some(CONTRAST_DARK_APPEARANCE) => {
-                return Some(iced::widget::operation::focus(navigation::rail_id(Some(
+                return Some(iced::widget::operation::focus(navigation::workspace_id(
                     Page::SettingsHome,
-                ))));
+                )));
             }
             Some(CONTRAST_LIGHT_PROCESS_LIST) => {
                 return Some(Task::batch([
@@ -1922,10 +1935,13 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             4
         }
     {
-        if matches!(extra, Some(RAIL_RESIZE_TALL | RAIL_RESIZE_COMPACT)) {
+        if matches!(
+            extra,
+            Some(NAVIGATION_RESIZE_TALL | NAVIGATION_RESIZE_COMPACT)
+        ) {
             assert_eq!(app.page, Page::AdvancedControls);
             assert!(app.settings.global().advanced.show_advanced_controls);
-            let height = if extra == Some(RAIL_RESIZE_TALL) {
+            let height = if extra == Some(NAVIGATION_RESIZE_TALL) {
                 1000.0
             } else {
                 620.0
@@ -1935,6 +1951,107 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
         Some(iced::window::screenshot(window).map(Message::SmokeScreenshot))
     } else {
         Some(Task::none())
+    }
+}
+
+struct NavigationLayout {
+    window_width: f32,
+    workspaces: Vec<(Id, Option<Rectangle>)>,
+    search: Option<Rectangle>,
+    selected: Option<(Id, Option<Rectangle>)>,
+    left: Option<(Rectangle, Vector)>,
+    right_close: Option<Rectangle>,
+}
+
+impl NavigationLayout {
+    fn new(page: Page, window_width: f32, show_advanced: bool) -> Self {
+        let workspaces = Page::sections()
+            .iter()
+            .map(|section| section.landing_page)
+            .filter(|&section| show_advanced || section != Page::AdvancedControls)
+            .map(|section| (navigation::workspace_id(section), None))
+            .collect();
+        let selected = (!navigation::children(page.section_landing_page()).is_empty())
+            .then(|| (navigation::page_id(page), None));
+        Self {
+            window_width,
+            workspaces,
+            search: None,
+            selected,
+            left: None,
+            right_close: None,
+        }
+    }
+}
+
+impl Operation<Message> for NavigationLayout {
+    fn traverse(&mut self, visit: &mut dyn FnMut(&mut dyn Operation<Message>)) {
+        visit(self);
+    }
+
+    fn scrollable(
+        &mut self,
+        id: Option<&Id>,
+        bounds: Rectangle,
+        _: Rectangle,
+        translation: Vector,
+        _: &mut dyn operation::Scrollable,
+    ) {
+        if id == Some(&Id::from(navigation::PAGE_LIST_ID)) {
+            self.left = Some((bounds, translation));
+        }
+    }
+
+    fn focusable(
+        &mut self,
+        id: Option<&Id>,
+        bounds: Rectangle,
+        state: &mut dyn operation::Focusable,
+    ) {
+        if let Some((_, workspace)) = self.workspaces.iter_mut().find(|(key, _)| id == Some(key)) {
+            *workspace = Some(bounds);
+        }
+        if let Some((key, selected)) = &mut self.selected {
+            if id == Some(key) {
+                assert!(state.is_focused(), "Tab focuses the next page");
+                *selected = Some(bounds);
+            }
+        }
+        if id == Some(&Id::from(navigation::SEARCH_ID)) {
+            self.search = Some(bounds);
+        }
+        if id == Some(&Id::from(SIDE_PANEL_CLOSE)) {
+            self.right_close = Some(bounds);
+        }
+    }
+
+    fn finish(&self) -> operation::Outcome<Message> {
+        let search = self
+            .search
+            .expect("Search is available in the workspace row");
+        for bounds in self
+            .workspaces
+            .iter()
+            .map(|(id, rect)| rect.unwrap_or_else(|| panic!("workspace is focusable: {id:?}")))
+            .chain([search])
+        {
+            assert!(bounds.width > 0.0 && bounds.x >= 0.0);
+            assert!(bounds.x + bounds.width <= self.window_width + 1.0);
+            assert!((bounds.center_y() - search.center_y()).abs() <= 1.0);
+        }
+        if let Some((_, selected)) = self.selected {
+            let (left, translation) = self.left.expect("selected workspace has a page list");
+            let active = selected.expect("active page is focusable");
+            assert!((active - translation).is_within(&left));
+            assert!(left.y >= search.y + search.height);
+            let close = self.right_close.expect("right Side panel is open");
+            assert!(left.x + left.width < close.x);
+            assert!(close.x + close.width <= self.window_width + 1.0);
+        } else {
+            assert!(self.left.is_none());
+            assert!(self.right_close.is_none());
+        }
+        operation::Outcome::None
     }
 }
 
@@ -2206,6 +2323,11 @@ pub(super) fn captured(app: &mut WinderustApp, shot: iced::window::Screenshot) -
         .pop_front()
         .unwrap_or(run.pages.len() * 2 + EXTRA_STATES);
     run.ticks = 0;
+    if app.page == Page::CpuLimiter && app.cpu_limiter.has_pending_editor() {
+        let cancel = app.update(Message::CpuLimiter(cpu_limiter::Message::CancelRule));
+        assert!(!app.cpu_limiter.has_pending_editor());
+        return cancel;
+    }
     Task::none()
 }
 

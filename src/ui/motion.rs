@@ -85,14 +85,14 @@ pub(super) fn wrap_action<'a, M: 'a>(
     target: bool,
     effect: Effect,
     action: Option<Action<'a, M>>,
-    focus_id: Option<&'static str>,
+    focus_id: Option<Id>,
 ) -> Element<'a, M> {
     Element::new(Motion {
         content: content.into(),
         target,
         effect,
         action: action.map(|handle| KeyboardAction::Activate {
-            id: focus_id.map(Id::new),
+            id: focus_id,
             handle,
         }),
     })

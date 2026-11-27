@@ -211,6 +211,8 @@ Append `--priority-control-only` to check the Priority Control detection cards,
 preservation switches, and child-protection drafts in both languages.
 Append `--side-panel-only` to check the title bar toggle and dock in both languages
 and window sizes, including navigation through a page without panel content.
+Append `--navigation-only` to check workspace navigation, the page list, and
+resizing at the minimum window width.
 Append `--watchdog-only` to capture the configured Watchdog pages and rule
 editors in both languages.
 
@@ -279,9 +281,8 @@ for interactive software rendering. Keep the time popup outside the scroll body
 and cap its responsive host to the rule dialog's dimensions so both stay centered.
 `src/ui/modal.rs` shields modal backgrounds and makes picker overlays consume
 workspace input even outside their popup bounds. Keep popup surfaces opaque for
-hit testing through Iced overlay groups; guard the workspace below the window
-chrome so caption controls and resize edges remain available. Opening a picker
-also dismisses pending navigation flyouts.
+hit testing through Iced overlay groups. Guard the workspace below the window
+chrome so caption controls and resize edges remain available.
 The shared popover
 wrapper retains context-menu dismissal on focus loss, clipped hit testing, and
 item identity resets. Action Log retains its hover popover. Numeric steppers keep

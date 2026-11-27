@@ -24,7 +24,6 @@ mod memory_trim;
 mod modal;
 mod motion;
 mod navigation;
-mod navigation_flyout;
 mod pickers;
 mod popover;
 mod power_plan_control;

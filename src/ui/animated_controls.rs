@@ -1,6 +1,6 @@
 //! Native pointer controls with interpolated styles and shared keyboard activation.
 use super::{design, motion, widgets};
-use iced::{Element, Length, Padding, Theme};
+use iced::{advanced::widget::Id, Element, Length, Padding, Theme};
 use std::{cell::Cell, rc::Rc};
 
 pub(super) fn color(a: iced::Color, b: iced::Color, t: f32) -> iced::Color {
@@ -28,7 +28,7 @@ pub(super) struct Button<'a, M> {
     inner: iced::widget::Button<'a, M>,
     on_press: Option<M>,
     keyboard: bool,
-    focus_id: Option<&'static str>,
+    focus_id: Option<Id>,
     progress: Rc<Cell<f32>>,
     selection: Option<(bool, Rc<Cell<f32>>)>,
 }
@@ -98,8 +98,8 @@ impl<'a, M: 'a> Button<'a, M> {
         self.keyboard = false;
         self
     }
-    pub(super) fn focus_id(mut self, id: &'static str) -> Self {
-        self.focus_id = Some(id);
+    pub(super) fn focus_id(mut self, id: impl Into<Id>) -> Self {
+        self.focus_id = Some(id.into());
         self
     }
     pub(super) fn style(

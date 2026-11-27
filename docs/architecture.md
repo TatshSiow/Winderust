@@ -124,8 +124,10 @@ remain available in Git history rather than in the active documentation set.
 - `src/ui/app.rs`: `WinderustApp` composition, message dispatch, subscriptions,
   native window/tray lifecycle, settings publication, and teardown. Runtime work remains
   in typed commands and services; UI drafts do not belong in `RuntimeCore`.
-- `src/ui/`: page editors and views; `widgets.rs` supplies shared controls, `status_rail.rs` presents runtime status, and `navigation.rs` maps pages
-  to bundled icons. `process_list.rs` owns table sorting, grouping, and pending actions.
+- `src/ui/`: page editors and views. `widgets.rs` supplies shared controls,
+  `status_rail.rs` presents runtime status, and `navigation.rs` owns workspace
+  navigation, page lists, and history. `process_list.rs` owns table sorting,
+  grouping, and pending actions.
 - `src/ui/process_rules.rs`: shared process eligibility and rule-construction helpers.
 - `src/ui.rs`: page enum, section grouping, labels, and small UI-independent helpers.
 - `src/config/settings.rs`: persisted settings structs and defaults;
@@ -232,7 +234,10 @@ remain available in Git history rather than in the active documentation set.
 
 ## Navigation
 
-Pages are grouped in `src/ui.rs`:
+`PAGE_SECTIONS` in `src/ui.rs` defines the workspaces in the top navigation row.
+Selecting a workspace opens its landing page. Workspaces with child pages show
+their destinations in a contextual list to the left of the editor. Editor tabs
+show views within the selected page.
 
 - Home: dashboard.
 - Process List: process table and per-process policy surface.
@@ -242,11 +247,11 @@ Pages are grouped in `src/ui.rs`:
 - Priority Control includes Process Priority, Efficiency Mode, Thread Priority,
   Dynamic Priority Boost, I/O Priority, GPU Priority, and Memory Priority.
 - CPU Control: Adaptive Engine, CPU Limiter, CPU Sets (Soft), Processor Affinity (Hard), Instance Balancing.
+- Advanced Controls includes Timer Resolution and Win32 Priority Separation.
 - Action Log.
 - Settings: Winderust Behaviour, Language and Appearance, Experimental
   Features.
 - About.
-- Advanced Controls includes Timer Resolution and Win32 Priority Separation.
 
 Keep navigation changes in `Page`, `PAGE_SECTIONS`, labels, locale files, and
 `WinderustApp::page_view` in `src/ui/app.rs` together.
