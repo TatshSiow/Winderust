@@ -69,6 +69,24 @@ in the harness. Coverage is limited to process mutations and helper exit.
 Fixture modes are available in `recovery-smoke` builds. If a running app locks
 the debug executable, add `--target-dir target/recovery-smoke`.
 
+## Keep Running checks
+
+Run these ignored checks from the ordinary user's interactive Windows desktop.
+The platform checks verify native executable identity and the separate paths
+for canceling a suspended launch and accepting an exact child. The runtime
+check verifies that an enabled rule waits for an absent app. It then watches
+a disposable executable copy, verifies a relaunch after its last instance
+exits normally, and issues the Process List Stop command. It checks that the
+replacement exits and the rule stays paused past its next retry.
+
+```powershell
+cargo test --locked --bin winderust platform::windows::keep_running::tests::native_ -- --ignored --nocapture --test-threads=1
+cargo test --locked --bin winderust native_keep_running_ -- --ignored --nocapture --test-threads=1
+```
+
+The runtime check uses in-memory settings and touches only its own fixture.
+A terminal isolated from the Windows shell cannot verify desktop launches.
+
 ## Sleep Prevention checks
 
 The ignored native checks verify both independent temporary timers and release

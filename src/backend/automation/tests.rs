@@ -10,6 +10,8 @@ use crate::config::{
     TimerResolutionRule, WeekdaySetting,
 };
 
+mod keep_running_native;
+
 fn runtime_settings(snapshot: Settings) -> RuntimeSettingsSnapshot {
     runtime_settings_with_runtime_and_persisted_revisions(
         snapshot,
