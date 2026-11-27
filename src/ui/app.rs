@@ -1738,11 +1738,6 @@ impl WinderustApp {
             {
                 return self.save_settings();
             }
-            Message::PowerTuning(advanced_power_plan_tuning::Message::SourceTab(source)) => {
-                if self.power_tuning.select_source_tab(source) {
-                    return reset_scroll(advanced_power_plan_tuning::CONTENT_ID);
-                }
-            }
             Message::PowerTuning(message) => {
                 self.power_tuning
                     .update(&mut self.settings, &self.power_plans, message)
@@ -3168,10 +3163,15 @@ impl WinderustApp {
 
     fn view_workspace(&self) -> Element<'_, Message> {
         let content = self.view_content();
-        if let Some(modal) = self
-            .power_tuning
-            .apply_review_modal(&self.power_plans, &self.status.power_plan_status)
-        {
+        if let Some(modal) = self.power_tuning.apply_review_modal(
+            &self.power_plans,
+            &self.status.power_plan_status,
+            self.effective_power_mode
+                .as_ref()
+                .map_or(crate::power::EffectivePowerMode::Unknown, |monitor| {
+                    monitor.snapshot()
+                }),
+        ) {
             return centered_modal(content, modal.map(Message::PowerTuning));
         }
         if self.closing || !self.error_message.is_empty() {
@@ -3355,7 +3355,10 @@ impl WinderustApp {
         } else if page == Page::AdvancedPowerPlanTuning {
             Some(
                 self.power_tuning
-                    .presets_panel(&self.settings.global().advanced_power_plan_tuning_presets)
+                    .presets_panel(
+                        &self.settings.global().advanced_power_plan_tuning_presets,
+                        &self.power_plans,
+                    )
                     .map(Message::PowerTuning),
             )
         } else if page == Page::CpuSetsSoft && self.side_panel_tab == SidePanelTab::Presets {
@@ -3434,13 +3437,10 @@ impl WinderustApp {
             page => feature_tabs::view(page, self.feature_tab(), compact, Message::FeatureTab),
         };
         let compact_profiles = compact && tabs.is_some();
-        let profile_controls = if self.page == Page::AdvancedPowerPlanTuning {
-            Some(self.power_tuning.tabs().map(Message::PowerTuning))
-        } else {
-            self.page.supports_power_source_profiles().then(|| {
-                power_source_tabs(self.power_source, read_power_source(), compact_profiles)
-            })
-        };
+        let profile_controls = self
+            .page
+            .supports_power_source_profiles()
+            .then(|| power_source_tabs(self.power_source, read_power_source(), compact_profiles));
         let settings_are_pending = self.pending_settings_changes();
         let heading = page_header(self.page.label(), tabs, profile_controls, compact);
         let floating_card = if process_actions_open {
@@ -3769,11 +3769,7 @@ impl WinderustApp {
                     &self.settings.global().advanced_power_plan_tuning_presets,
                     &self.power_plans,
                     &self.status.power_plan_status,
-                    self.effective_power_mode
-                        .as_ref()
-                        .map_or(crate::power::EffectivePowerMode::Unknown, |monitor| {
-                            monitor.snapshot()
-                        }),
+                    scroll_clearance,
                 )
                 .map(Message::PowerTuning),
 

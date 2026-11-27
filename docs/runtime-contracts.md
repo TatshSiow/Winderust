@@ -524,9 +524,9 @@ Read the relevant section before changing feature policy, ownership, restoration
   Adaptive Processor Power.
   Tuning presets and Adaptive Processor Power profiles store concrete boost modes.
 - Advanced Power Plan Tuning captures the target plan's GUID, live values, and
-  normalized draft in the review. The same review gates page Apply and any save
-  that includes tuning edits. A fresh read must match the draft's original
-  readback before review and match the reviewed values before the staged write.
+  normalized draft in the review that gates saves with tuning edits. A fresh
+  read must match the draft's original readback before review and match the
+  reviewed values before the staged write.
   Save and Save and Exit also verify the review before saving portable settings.
   If the recheck after that save fails, feedback reports the settings already
   saved and the remaining tuning error.

@@ -1096,13 +1096,6 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             let _ = app.update(toggle_side_panel());
             assert_eq!(app.side_panel_open, !before);
         }
-        if extra == Some(20) {
-            let _ = app.update(Message::PowerTuning(
-                advanced_power_plan_tuning::Message::SourceTab(
-                    advanced_power_plan_tuning::Source::Battery,
-                ),
-            ));
-        }
         if extra == Some(18) {
             check_child_protection_drafts(app);
             app.settings.efficiency_mode.enabled = true;
@@ -2042,6 +2035,12 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
         return Some(iced::widget::operation::snap_to(
             "by-cpu-load-rule-details",
             iced::widget::scrollable::RelativeOffset { x: 0.0, y: 1.0 },
+        ));
+    }
+    if extra == Some(20) && run.ticks == 3 {
+        return Some(iced::widget::operation::snap_to(
+            advanced_power_plan_tuning::CONTENT_ID,
+            iced::widget::scrollable::RelativeOffset::END,
         ));
     }
     if matches!(

@@ -18,7 +18,7 @@ use crate::power::{
 };
 use crate::ui::scrolling::scrollable;
 use iced::widget::{column, row, text};
-use iced::{Element, Fill};
+use iced::{Element, Fill, Padding};
 use rust_i18n::t;
 use std::{borrow::Cow, collections::BTreeMap, rc::Rc};
 
@@ -44,7 +44,6 @@ pub(super) struct Editor {
     unverified_apply: Option<UnverifiedApply>,
     pending_activation: Option<ApplyReview>,
     restore_points: BTreeMap<String, RestorePoint>,
-    source_tab: Source,
     selected_presets: [Option<PresetChoice>; 2],
 }
 #[derive(Default)]
@@ -77,13 +76,6 @@ impl Source {
         match self {
             Self::Ac => "power_source.plugged_in",
             Self::Battery => "power_source.on_battery",
-        }
-    }
-
-    fn other(self) -> Self {
-        match self {
-            Self::Ac => Self::Battery,
-            Self::Battery => Self::Ac,
         }
     }
 }
@@ -169,7 +161,6 @@ impl PresetEditor {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ApplyOrigin {
-    Page,
     Save,
     Restore,
 }
@@ -274,9 +265,7 @@ impl ApplyReview {
 #[derive(Debug, Clone)]
 pub(super) enum Message {
     Plan(String),
-    SourceTab(Source),
     Refresh,
-    ReviewApply,
     ReviewRestore,
     ConfirmApply,
     CancelApply,
@@ -294,10 +283,6 @@ pub(super) enum Message {
     Remove(usize),
 }
 impl Editor {
-    pub(super) fn select_source_tab(&mut self, source: Source) -> bool {
-        std::mem::replace(&mut self.source_tab, source) != source
-    }
-
     fn selected_preset(
         &self,
         source: Source,
@@ -387,23 +372,6 @@ impl Editor {
                 .find_map(|source| self.invalid_processor_minimum(source))
                 .map(processor_range_error)
         }
-    }
-
-    fn hidden_source_error(&self) -> Option<String> {
-        let source = self.source_tab.other();
-        let error = if self.invalid_percentages[source as usize].any() {
-            t!("processor_power.invalid_percentage").into_owned()
-        } else {
-            processor_range_error(self.invalid_processor_minimum(source)?)
-        };
-        Some(
-            t!(
-                "processor_power.invalid_other_source",
-                source = t!(source.label()),
-                error = error
-            )
-            .into_owned(),
-        )
     }
 
     pub(super) fn ensure_plan(&mut self, plans: &[PowerPlan]) {
@@ -842,9 +810,6 @@ impl Editor {
         message: Message,
     ) {
         match message {
-            Message::SourceTab(source) => {
-                self.select_source_tab(source);
-            }
             Message::Plan(guid) => {
                 if self
                     .target
@@ -862,11 +827,6 @@ impl Editor {
                 }
             }
             Message::Refresh => self.refresh(plans),
-            Message::ReviewApply => {
-                if let Err(error) = self.review_apply(plans, ApplyOrigin::Page) {
-                    self.status = error.into();
-                }
-            }
             Message::ReviewRestore => {
                 if let Err(error) = self.review_restore(plans) {
                     self.status = error.into();
@@ -1033,22 +993,12 @@ impl Editor {
             }
         }
     }
-    pub(super) fn tabs(&self) -> Element<'static, Message> {
-        widgets::segmented_tabs([Source::Ac, Source::Battery].map(|source| {
-            (
-                t!(source.label()).to_string(),
-                self.source_tab == source,
-                Message::SourceTab(source),
-            )
-        }))
-    }
-
     pub(super) fn view<'a>(
         &'a self,
         presets: &'a [AdvancedPowerPlanTuningPreset],
         plans: &[PowerPlan],
         status: &PowerPlanStatus,
-        mode: EffectivePowerMode,
+        bottom_clearance: f32,
     ) -> Element<'a, Message> {
         let target_plan = self.selected_plan(plans);
         let choices = tuning_plans(plans)
@@ -1056,57 +1006,40 @@ impl Editor {
             .collect::<Vec<_>>();
         let selected =
             target_plan.map(|plan| PlanChoice(plan.guid.clone(), power_plan_label(plan)));
-        let mut mode_context = column![text(
-            t!(
-                "processor_power.effective_power_mode",
-                mode = mode_label(mode)
-            )
-            .to_string()
-        )]
-        .spacing(design::space::TIGHT);
-        if let Some(plan) = target_plan {
-            if !plan.active {
-                let active = plans
-                    .iter()
-                    .find(|p| p.active)
-                    .map(power_plan_label)
-                    .or_else(|| {
-                        (status.active_plan_read_error.is_none()
-                            && power_plan_control::managed_by_adaptive_processor_power(
-                                status, plans,
-                            ))
-                        .then(|| ADAPTIVE_PLAN_NAME.to_owned())
-                    });
-                let message = match active {
-                    Some(plan) => t!("processor_power.target_plan_inactive", plan = plan),
-                    None => t!("processor_power.active_plan_unavailable"),
-                };
-                mode_context = mode_context
-                    .push(text(message.into_owned()).wrapping(text::Wrapping::WordOrGlyph));
-            } else if self.personality == Some(PowerPlanPersonality::Balanced)
-                && !matches!(
-                    mode,
-                    EffectivePowerMode::Unknown | EffectivePowerMode::Balanced
-                )
-            {
-                mode_context = mode_context.push(
-                    text(t!("processor_power.overlay_warning").to_string())
-                        .wrapping(text::Wrapping::WordOrGlyph),
-                );
-            }
+        let mut target = vec![widgets::setting_row(
+            "processor_power.target_plan",
+            pick_list(choices, selected, |p| Message::Plan(p.0)),
+        )
+        .into()];
+        if target_plan.is_some_and(|plan| !plan.active) {
+            let active = plans
+                .iter()
+                .find(|p| p.active)
+                .map(power_plan_label)
+                .or_else(|| {
+                    (status.active_plan_read_error.is_none()
+                        && power_plan_control::managed_by_adaptive_processor_power(status, plans))
+                    .then(|| ADAPTIVE_PLAN_NAME.to_owned())
+                });
+            let message = match active {
+                Some(plan) => t!("processor_power.target_plan_inactive", plan = plan),
+                None => t!("processor_power.active_plan_unavailable"),
+            };
+            target.push(
+                text(message.into_owned())
+                    .wrapping(text::Wrapping::WordOrGlyph)
+                    .into(),
+            );
+        }
+        let feedback = self.status_for_plan(target_plan);
+        if !feedback.is_empty() {
+            target.push(text(feedback).wrapping(text::Wrapping::WordOrGlyph).into());
         }
         let mut body = column![widgets::settings_section(
             "common.power_plan",
-            widgets::settings_card(widgets::settings_rows([
-                super::widgets::setting_row(
-                    "processor_power.target_plan",
-                    pick_list(choices, selected, |p| Message::Plan(p.0)),
-                )
-                .into(),
-                mode_context.into(),
-            ])),
+            widgets::settings_card(widgets::settings_rows(target)),
         )]
-        .spacing(super::widgets::CARD_GAP);
+        .spacing(widgets::CARD_GAP);
         if let (Some(values), Some(readback)) = (self.values, self.readback) {
             let options: Rc<[_]> = BUILT_INS
                 .into_iter()
@@ -1122,140 +1055,118 @@ impl Editor {
                         .map(|p| PresetChoice(p.name.clone(), p.values.normalized())),
                 )
                 .collect();
-            let source = self.source_tab;
-            let (preset_label, values, readback) = match source {
-                Source::Ac => ("processor_power.ac_preset", values.ac, readback.ac),
-                Source::Battery => (
-                    "processor_power.battery_preset",
-                    values.battery,
-                    readback.battery,
-                ),
-            };
-            let selected = self.selected_preset(source, values, &options);
-            let action = preset_select(options, selected, move |p| Message::Load(source, p));
-            let invalid = &self.invalid_percentages[source as usize];
-            let slider = |field: Field, label: &'static str, value| {
-                widgets::slider_setting(label, "%", move || {
-                    widgets::slider_stepper(
-                        u64::from(value),
-                        invalid.0[field as usize].as_deref(),
-                        0..=100,
-                        1,
-                        move |value| Message::ValueText(source, field, value),
-                    )
-                })
-            };
-            body = body.push(widgets::settings_section(
-                "common.presets",
-                widgets::settings_card(widgets::setting_row(preset_label, action)),
-            ));
-            let mut controls =
-                Vec::from(processor_percentage_rows(values.processor, invalid, slider));
-            if let Some(value) = values.energy_performance_preference {
-                controls.push(with_percentage_feedback(
-                    slider(
-                        Field::EnergyPreference,
-                        ENERGY_PREFERENCE_LABEL,
-                        u32::from(value),
+            let source_settings = |source: Source| {
+                let (preset_label, values, readback) = match source {
+                    Source::Ac => ("processor_power.ac_preset", values.ac, readback.ac),
+                    Source::Battery => (
+                        "processor_power.battery_preset",
+                        values.battery,
+                        readback.battery,
                     ),
-                    invalid.feedback(Field::EnergyPreference),
-                ));
-            } else {
-                let status = show_setting_readback(
-                    readback.energy_performance_preference,
-                    |value| format!("{}%", u32::from(value)),
-                    std::convert::identity,
-                );
-                controls.push(
-                    super::widgets::setting_row(
-                        ENERGY_PREFERENCE_LABEL,
-                        text(status).style(text::secondary),
-                    )
-                    .into(),
-                );
-            }
-            let boost = tuning_choice(
-                readback.processor.boost_mode,
-                values.processor.boost_mode,
-                |mode| {
-                    pick_list(
-                        ProcessorBoostMode::ALL.map(BoostChoice),
-                        Some(BoostChoice(mode)),
-                        move |v| Message::Boost(source, v.0),
-                    )
-                    .width(280)
-                    .into()
-                },
-            );
-            controls.push(super::widgets::setting_row("processor_power.boost_mode", boost).into());
-            body = body.push(widgets::settings_section(
-                "processor_power.processor_settings",
-                widgets::settings_card(widgets::settings_rows(controls)),
-            ));
-            let scheduling = scheduling_fields(values)
-                .into_iter()
-                .map(|(field, label, policy)| {
-                    let status = match field {
-                        SchedulingField::LongRunning => readback.scheduling_policy,
-                        SchedulingField::ShortRunning => readback.short_scheduling_policy,
-                    };
-                    let control = tuning_choice(status, policy, |policy| {
+                };
+                let selected = self.selected_preset(source, values, &options);
+                let action = preset_select(Rc::clone(&options), selected, move |p| {
+                    Message::Load(source, p)
+                });
+                let invalid = &self.invalid_percentages[source as usize];
+                let slider = |field: Field, label: &'static str, value| {
+                    widgets::slider_setting(label, "%", move || {
+                        widgets::slider_stepper(
+                            u64::from(value),
+                            invalid.0[field as usize].as_deref(),
+                            0..=100,
+                            1,
+                            move |value| Message::ValueText(source, field, value),
+                        )
+                    })
+                };
+                let mut controls =
+                    Vec::from(processor_percentage_rows(values.processor, invalid, slider));
+                if let Some(value) = values.energy_performance_preference {
+                    controls.push(with_percentage_feedback(
+                        slider(
+                            Field::EnergyPreference,
+                            ENERGY_PREFERENCE_LABEL,
+                            u32::from(value),
+                        ),
+                        invalid.feedback(Field::EnergyPreference),
+                    ));
+                } else {
+                    let status = show_setting_readback(
+                        readback.energy_performance_preference,
+                        |value| format!("{}%", u32::from(value)),
+                        std::convert::identity,
+                    );
+                    controls.push(
+                        super::widgets::setting_row(
+                            ENERGY_PREFERENCE_LABEL,
+                            text(status).style(text::secondary),
+                        )
+                        .into(),
+                    );
+                }
+                let boost = tuning_choice(
+                    readback.processor.boost_mode,
+                    values.processor.boost_mode,
+                    |mode| {
                         pick_list(
-                            ProcessorSchedulingPolicy::ALL.map(|v| SchedulingChoice(Some(v))),
-                            Some(SchedulingChoice(Some(policy))),
-                            move |v| {
-                                Message::Scheduling(
-                                    source,
-                                    field,
-                                    v.0.expect("available scheduling choices contain a policy"),
-                                )
-                            },
+                            ProcessorBoostMode::ALL.map(BoostChoice),
+                            Some(BoostChoice(mode)),
+                            move |v| Message::Boost(source, v.0),
                         )
                         .width(280)
                         .into()
-                    });
-                    widgets::setting_row(label, control).into()
-                });
-            body = body.push(widgets::settings_section(
-                "processor_power.scheduling_section",
-                widgets::settings_card(widgets::settings_rows(scheduling)),
-            ));
-        }
-        let mut actions = row![
-            action_button(t!("processor_power.refresh_values").to_string())
-                .on_press_maybe(self.target.as_ref().map(|_| Message::Refresh)),
-            action_button(t!("settings.apply").to_string())
-                .style(super::widgets::primary_button)
-                .on_press_maybe(
-                    (self.values.is_some()
-                        && self.dirty
-                        && self.validation_error().is_none()
-                        && target_plan.is_some())
-                    .then_some(Message::ReviewApply)
+                    },
+                );
+                controls
+                    .push(super::widgets::setting_row("processor_power.boost_mode", boost).into());
+                let scheduling =
+                    scheduling_fields(values)
+                        .into_iter()
+                        .map(|(field, label, policy)| {
+                            let status = match field {
+                                SchedulingField::LongRunning => readback.scheduling_policy,
+                                SchedulingField::ShortRunning => readback.short_scheduling_policy,
+                            };
+                            let control = tuning_choice(status, policy, |policy| {
+                                pick_list(
+                                    ProcessorSchedulingPolicy::ALL
+                                        .map(|v| SchedulingChoice(Some(v))),
+                                    Some(SchedulingChoice(Some(policy))),
+                                    move |v| {
+                                        Message::Scheduling(
+                                            source,
+                                            field,
+                                            v.0.expect(
+                                                "available scheduling choices contain a policy",
+                                            ),
+                                        )
+                                    },
+                                )
+                                .width(280)
+                                .into()
+                            });
+                            widgets::setting_row(label, control).into()
+                        });
+                widgets::settings_section(
+                    source.label(),
+                    column![
+                        widgets::settings_card(widgets::setting_row(preset_label, action)),
+                        widgets::settings_section(
+                            "processor_power.processor_settings",
+                            widgets::settings_card(widgets::settings_rows(controls)),
+                        ),
+                        widgets::settings_section(
+                            "processor_power.scheduling_section",
+                            widgets::settings_card(widgets::settings_rows(scheduling)),
+                        ),
+                    ]
+                    .spacing(widgets::CARD_GAP),
                 )
-        ]
-        .spacing(design::space::SMALL)
-        .align_y(iced::Center);
-        if self.restore_point_for(plans).is_some() {
-            actions = actions.push(
-                action_button(t!("processor_power.restore_previous").to_string())
-                    .on_press(Message::ReviewRestore),
-            );
+            };
+            body = body.extend([Source::Ac, Source::Battery].map(source_settings));
         }
-        body = body
-            .push(widgets::settings_section(
-                "common.actions",
-                widgets::settings_card(actions),
-            ))
-            .push(text(self.status_for_plan(target_plan)).wrapping(text::Wrapping::WordOrGlyph));
-        if let Some(error) = self.hidden_source_error() {
-            body = body.push(
-                text(error)
-                    .style(text::danger)
-                    .wrapping(text::Wrapping::WordOrGlyph),
-            );
-        }
-        scrollable(body)
+        scrollable(body.padding(Padding::ZERO.bottom(bottom_clearance)))
             .id(CONTENT_ID)
             .height(Fill)
             .width(Fill)
@@ -1265,6 +1176,7 @@ impl Editor {
         &self,
         plans: &[PowerPlan],
         status: &PowerPlanStatus,
+        mode: EffectivePowerMode,
     ) -> Option<Element<'_, Message>> {
         let review = self.review.as_ref()?;
         let review_row = |label: &str, value: String| {
@@ -1290,16 +1202,26 @@ impl Editor {
             target = target
                 .push(text(t!("common.selected_plan_unavailable").to_string()).style(text::danger));
         }
-        let active = power_plan_control::current_plan_guid(status, plans).filter(|guid| {
-            status.active_plan_read_error.is_none() && !guid.eq_ignore_ascii_case(&review.guid)
-        });
+        let active = power_plan_control::current_plan_guid(status, plans)
+            .filter(|_| status.active_plan_read_error.is_none());
         if let Some(guid) = active {
-            let plan = if power_plan_control::managed_by_adaptive_processor_power(status, plans) {
-                ADAPTIVE_PLAN_NAME.to_owned()
-            } else {
-                power_plan_control::plan_name(plans, guid)
-            };
-            target = target.push(review_row("common.current_power_plan", plan));
+            if !guid.eq_ignore_ascii_case(&review.guid) {
+                let plan = if power_plan_control::managed_by_adaptive_processor_power(status, plans)
+                {
+                    ADAPTIVE_PLAN_NAME.to_owned()
+                } else {
+                    power_plan_control::plan_name(plans, guid)
+                };
+                target = target.push(review_row("common.current_power_plan", plan));
+            } else if target_available
+                && self.personality == Some(PowerPlanPersonality::Balanced)
+                && !matches!(
+                    mode,
+                    EffectivePowerMode::Unknown | EffectivePowerMode::Balanced
+                )
+            {
+                target = target.push(widgets::help_text("processor_power.overlay_warning"));
+            }
         }
         let mut body = column![widgets::settings_card(target)].spacing(widgets::CARD_GAP);
         let mut has_changes = false;
@@ -1494,8 +1416,21 @@ impl Editor {
     pub(super) fn presets_panel<'a>(
         &'a self,
         presets: &'a [AdvancedPowerPlanTuningPreset],
+        plans: &[PowerPlan],
     ) -> Element<'a, Message> {
-        let mut rail = widgets::preset_list().push(widgets::heading(
+        let mut rail = widgets::preset_list().push(
+            action_button(t!("processor_power.refresh_values").to_string())
+                .width(Fill)
+                .on_press_maybe(self.target.as_ref().map(|_| Message::Refresh)),
+        );
+        if self.restore_point_for(plans).is_some() {
+            rail = rail.push(
+                action_button(t!("processor_power.restore_previous").to_string())
+                    .width(Fill)
+                    .on_press(Message::ReviewRestore),
+            );
+        }
+        rail = rail.push(widgets::heading(
             t!("common.built_in_presets").to_string(),
             design::typography::SECONDARY,
         ));
@@ -1790,19 +1725,20 @@ fn processor_percentage_rows<'a, B>(
     values: ProcessorPowerValues<B>,
     invalid: &InvalidPercentages,
     control: impl Fn(Field, &'static str, u32) -> Element<'a, Message>,
-) -> [Element<'a, Message>; 3] {
+) -> [Element<'a, Message>; 4] {
     let range_error =
         invalid.processor_range_feedback(values.performance_min, values.performance_max);
-    let [parking, minimum, maximum, boost] = fields(values);
+    let [parking, minimum, (max_field, max_label, max_value), boost] = fields(values);
     let row = |(field, label, value)| {
         with_percentage_feedback(control(field, label, value), invalid.feedback(field))
     };
     [
         row(parking),
-        column![row(minimum), row(maximum)]
-            .spacing(design::space::SMALL)
-            .extend(range_error.map(Element::from))
-            .into(),
+        row(minimum),
+        with_percentage_feedback(
+            control(max_field, max_label, max_value),
+            invalid.feedback(max_field).or(range_error),
+        ),
         row(boost),
     ]
 }
@@ -1966,18 +1902,6 @@ fn preset_label(p: ProcessorPowerPreset) -> String {
     })
     .to_string()
 }
-fn mode_label(mode: EffectivePowerMode) -> std::borrow::Cow<'static, str> {
-    t!(match mode {
-        EffectivePowerMode::Unknown => "processor_power.mode_unknown",
-        EffectivePowerMode::BatterySaver => "processor_power.mode_battery_saver",
-        EffectivePowerMode::BetterBattery => "processor_power.mode_better_battery",
-        EffectivePowerMode::Balanced => "processor_power.mode_balanced",
-        EffectivePowerMode::HighPerformance => "processor_power.mode_high_performance",
-        EffectivePowerMode::MaxPerformance => "processor_power.mode_max_performance",
-        EffectivePowerMode::GameMode => "processor_power.mode_game_mode",
-        EffectivePowerMode::MixedReality => "processor_power.mode_mixed_reality",
-    })
-}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2079,29 +2003,22 @@ mod tests {
     }
 
     #[test]
-    fn source_tabs_preserve_both_drafts_and_identify_hidden_errors() {
+    fn power_source_controls_preserve_independent_drafts() {
         let mut editor = Editor::default();
         editor.set_readback(Some(tuning_retry_baseline()));
         let mut settings = test_settings();
         for message in [
             Message::ValueText(Source::Ac, Field::Parking, "43".into()),
-            Message::SourceTab(Source::Battery),
             Message::ValueText(Source::Battery, Field::Boost, "101".into()),
         ] {
             editor.update(&mut settings, &[], message);
         }
-        assert_eq!(editor.source_tab, Source::Battery);
-        assert!(editor.hidden_source_error().is_none());
-        assert!(editor.select_source_tab(Source::Ac));
-        assert!(!editor.select_source_tab(Source::Ac));
         assert_eq!(editor.values.unwrap().ac.processor.core_parking_min, 43);
         assert_eq!(
             editor.invalid_percentages[Source::Battery as usize].text(Field::Boost, 100),
             "101"
         );
-        assert!(editor
-            .hidden_source_error()
-            .is_some_and(|error| error.contains(t!(Source::Battery.label()).as_ref())));
+        assert!(!editor.invalid_percentages[Source::Ac as usize].any());
         assert!(editor.validation_error().is_some());
     }
 
@@ -2316,7 +2233,7 @@ mod tests {
             name: "Balanced".into(),
             current,
             requested: ApplyReview::request(current, draft),
-            origin: ApplyOrigin::Page,
+            origin: ApplyOrigin::Save,
         };
         assert_eq!(
             review.changes(Source::Ac).collect::<Vec<_>>(),
@@ -2351,7 +2268,7 @@ mod tests {
             name: "Balanced".into(),
             current: current.into(),
             requested,
-            origin: ApplyOrigin::Page,
+            origin: ApplyOrigin::Save,
         };
         let mut actual = current;
         actual.ac.processor.performance_min = 25;
@@ -2400,26 +2317,21 @@ mod tests {
             dirty: true,
             ..Default::default()
         };
-        let review = |current, origin| ApplyReview {
+        let review = |current| ApplyReview {
             guid: "plan".into(),
             name: "Balanced".into(),
             current,
             requested: ApplyReview::request(current, draft),
-            origin,
+            origin: ApplyOrigin::Save,
         };
         let mut changed_percentage = baseline;
         changed_percentage.ac.processor.core_parking_min = 75;
         let mut changed_unknown_policy = baseline;
         changed_unknown_policy.ac.scheduling_policy = PowerSettingReadback::Unknown(11);
         assert_eq!(baseline.writable(), changed_unknown_policy.writable());
-        for (current, origin) in [
-            (changed_percentage, ApplyOrigin::Page),
-            (changed_unknown_policy, ApplyOrigin::Save),
-        ] {
+        for current in [changed_percentage, changed_unknown_policy] {
             assert_eq!(
-                editor
-                    .begin_apply_review(review(current, origin))
-                    .unwrap_err(),
+                editor.begin_apply_review(review(current)).unwrap_err(),
                 t!("processor_power.review_refresh_required")
             );
             assert!(editor.review.is_none());
@@ -2429,9 +2341,7 @@ mod tests {
             assert_eq!(editor.target.as_deref(), Some("plan"));
         }
 
-        editor
-            .begin_apply_review(review(baseline, ApplyOrigin::Save))
-            .unwrap();
+        editor.begin_apply_review(review(baseline)).unwrap();
         let review = editor.review.unwrap();
         assert_eq!(review.origin, ApplyOrigin::Save);
         assert!(review.changes(Source::Ac).next().is_none());
@@ -2576,13 +2486,13 @@ mod tests {
             Some(ProcessorPowerApplyStage::QueryActivePlan),
             readback(after),
         );
-        editor.review_apply(&plans, ApplyOrigin::Page).unwrap();
+        editor.review_apply(&plans, ApplyOrigin::Save).unwrap();
         assert!(!editor.confirm_apply(&plans));
         assert!(editor.dirty);
         assert_eq!(editor.readback, initial_readback_available.then_some(after));
         assert!(editor.restore_point_for(&plans).is_none());
         if !initial_readback_available {
-            assert!(editor.review_apply(&plans, ApplyOrigin::Page).is_err());
+            assert!(editor.review_apply(&plans, ApplyOrigin::Save).is_err());
             store.set_values(after);
         }
 
@@ -2618,12 +2528,12 @@ mod tests {
         );
         assert_eq!(editor.restore_points.len(), 1);
         if !initial_readback_available {
-            assert!(editor.review_apply(&plans, ApplyOrigin::Page).is_err());
+            assert!(editor.review_apply(&plans, ApplyOrigin::Save).is_err());
             store.set_values(before);
             editor.refresh(&plans);
         }
 
-        editor.review_apply(&plans, ApplyOrigin::Page).unwrap();
+        editor.review_apply(&plans, ApplyOrigin::Save).unwrap();
         assert!(editor.is_activation_retry(editor.review.as_ref().unwrap()));
         store.set_apply_result(None, Ok(before));
         assert!(editor.confirm_apply(&plans));
@@ -2660,7 +2570,7 @@ mod tests {
         editor.ensure_plan(&plans);
         editor.values = Some(stored.writable());
         editor.update_dirty();
-        editor.review_apply(&plans, ApplyOrigin::Page).unwrap();
+        editor.review_apply(&plans, ApplyOrigin::Save).unwrap();
         store.set_apply_result(Some(ReactivatePlan), Ok(stored));
         assert!(!editor.confirm_apply(&plans));
 
@@ -2668,7 +2578,7 @@ mod tests {
         newer.battery.processor.performance_max = 85;
         editor.values = Some(newer);
         editor.update_dirty();
-        editor.review_apply(&plans, ApplyOrigin::Page).unwrap();
+        editor.review_apply(&plans, ApplyOrigin::Save).unwrap();
         store.set_apply_result(Some(BatteryPerformanceMaximum), Ok(stored));
         assert!(!editor.confirm_apply(&plans));
         assert_eq!(editor.values, Some(newer));
@@ -2676,7 +2586,7 @@ mod tests {
         editor.values = Some(stored.writable());
         editor.update_dirty();
         assert!(editor.dirty);
-        editor.review_apply(&plans, ApplyOrigin::Page).unwrap();
+        editor.review_apply(&plans, ApplyOrigin::Save).unwrap();
         assert!(editor.is_activation_retry(editor.review.as_ref().unwrap()));
         store.set_apply_result(None, Ok(stored));
         assert!(editor.confirm_apply(&plans));
@@ -2702,10 +2612,10 @@ mod tests {
         editor.values = Some(after.writable());
         editor.update_dirty();
         store.set_apply_result(Some(ProcessorPowerApplyStage::ReactivatePlan), Ok(after));
-        editor.review_apply(&plans, ApplyOrigin::Page).unwrap();
+        editor.review_apply(&plans, ApplyOrigin::Save).unwrap();
         assert!(!editor.confirm_apply(&plans));
 
-        editor.review_apply(&plans, ApplyOrigin::Page).unwrap();
+        editor.review_apply(&plans, ApplyOrigin::Save).unwrap();
         plans[0].managed_adaptive = true;
         editor.ensure_plan(&plans);
         assert!(!editor.confirm_apply(&plans));
@@ -2714,7 +2624,7 @@ mod tests {
         assert!(editor.selected_plan(&plans).is_none());
         plans[0].managed_adaptive = false;
 
-        editor.review_apply(&plans, ApplyOrigin::Page).unwrap();
+        editor.review_apply(&plans, ApplyOrigin::Save).unwrap();
         let mut external = after;
         external.ac.short_scheduling_policy = PowerSettingReadback::Unknown(19);
         assert_eq!(external.writable(), after.writable());
@@ -2726,7 +2636,7 @@ mod tests {
         );
         assert!(editor.dirty);
         assert_eq!(
-            editor.review_apply(&plans, ApplyOrigin::Page),
+            editor.review_apply(&plans, ApplyOrigin::Save),
             Err(t!("processor_power.review_refresh_required").into_owned())
         );
         assert_eq!(store.requests().len(), 1);
@@ -2768,7 +2678,7 @@ mod tests {
         requested.ac.processor.performance_max = 85;
         editor.values = Some(requested);
         editor.update_dirty();
-        editor.review_apply(&plans, ApplyOrigin::Page).unwrap();
+        editor.review_apply(&plans, ApplyOrigin::Save).unwrap();
 
         let unavailable = || AdvancedPowerPlanTuningError::ReadValues("test failure".into());
         store.set_apply_result(None, Err(unavailable()));
@@ -2834,7 +2744,7 @@ mod tests {
             name: plans[0].name.clone(),
             current: previous,
             requested: applied.writable(),
-            origin: ApplyOrigin::Page,
+            origin: ApplyOrigin::Save,
         };
         assert!(editor.remember_verified_write(&review, applied));
 
@@ -3077,7 +2987,7 @@ mod tests {
             name: plan.name,
             current,
             requested: draft,
-            origin: ApplyOrigin::Page,
+            origin: ApplyOrigin::Save,
         });
 
         editor.update(&mut settings, &plans, Message::Refresh);
@@ -3090,7 +3000,7 @@ mod tests {
                 .as_deref(),
             Some("")
         );
-        assert_eq!(editor.review_origin(), Some(ApplyOrigin::Page));
+        assert_eq!(editor.review_origin(), Some(ApplyOrigin::Save));
         assert_eq!(
             editor.status(),
             t!(

@@ -389,28 +389,31 @@ hover/press; background shading supplies feedback.
 
 ### Advanced Power Plan Tuning
 
-- Offer saved Windows plans in the target selector. Keep the observed Windows
-  power mode and any inactive-plan or mode override message in the target card.
+- Offer saved Windows plans in the target selector and identify a different
+  active plan when the target is inactive.
   If the temporary Winderust Adaptive plan is active, show it as the active plan
   while the selected saved plan remains editable.
-- Show Performance Boost Mode and the long- and short-running thread policies
-  separately for Plugged In and On Battery. Offer all six scheduling choices
-  for recognized policy values. For unavailable controls, distinguish missing,
+- Show Plugged In and On Battery settings in consecutive sections. Each has a
+  preset selector, processor settings, and long- and short-running thread
+  policies. Offer all six scheduling choices for recognized policy values. For
+  unavailable controls, distinguish missing,
   unreadable, and unknown values, and show the raw index for unknown values.
   Keep the other controls editable. Percentage fields use the shared slider row.
-  Show processor minimum and maximum together and put range feedback beneath
-  them. Require a valid range before opening the apply review.
+  Give processor minimum and maximum separate rows and report invalid ranges
+  beneath them. Require a valid range before opening the apply review.
 - Built-in presets keep current scheduling policies; custom presets can capture
   choices or keep current. Re-read after every Apply attempt, including partial
   failure. Adaptive Engine does not own these persistent writes.
-- Apply and Save open the same review for pending tuning edits. Show the target
-  plan and only changed values, grouped by Plugged In and On Battery. Identify
-  a known active plan when it differs from the target. Cancel keeps the tuning
+- Save opens the review for pending tuning edits. Show the target plan, any
+  Windows power mode override warning, and only changed values, grouped by
+  Plugged In and On Battery. Identify a known active plan when it differs from
+  the target. Cancel keeps the tuning
   draft. If a catalog refresh finds the target unavailable, keep the review open
   and show the reason in the target card. Disable confirmation until a refresh
   confirms the target is available.
-- Restore previous tuning values opens the same review for the selected plan's
-  previous values. It is available for the current Winderust session after a
+- Offer Refresh values and Restore previous tuning values in the Presets Side
+  panel. Restore opens the review for the selected plan's previous values. It
+  is available for the current Winderust session after a
   verified change and requires applying or discarding any pending edits first.
 
 ### Watchdog
