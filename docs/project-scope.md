@@ -39,7 +39,8 @@ Process Lasso is a useful comparison point, not the target to clone. Prefer smal
 - Win32 Priority Separation for Windows scheduler time slices and foreground
   boost, with backup and restore.
 - Interrupt Timing for read-only DPC and ISR capture with JSON report export.
-- Process List as the main per-process policy surface.
+- Dashboard with system telemetry and Process List as the main per-process
+  policy surface.
 
 ## Process Lasso Parity
 

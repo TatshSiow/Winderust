@@ -1,8 +1,8 @@
 use super::{
     action_log, adaptive_engine, adaptive_processor_power, advanced_power_plan_tuning,
-    app_suspension, by_activity, cpu_allocation, cpu_limiter, design, efficiency_mode,
-    feature_tabs, home, instance_balancing, instance_limits, interrupt_timing, keep_running,
-    memory_trim, navigation, power_plan_control, power_rules, priority_control, process_list,
+    app_suspension, by_activity, cpu_allocation, cpu_limiter, dashboard, design, efficiency_mode,
+    feature_tabs, instance_balancing, instance_limits, interrupt_timing, keep_running, memory_trim,
+    navigation, power_plan_control, power_rules, priority_control, process_list,
     process_power_plans, resource_thresholds, settings_pages, sleep_prevention, status_rail, tasks,
     timer_resolution, widgets, win32_priority_separation, window_frame,
 };
@@ -57,12 +57,14 @@ fn shell_widths(width: f32, has_page_list: bool) -> (f32, f32, u16) {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SidePanelTab {
+    Settings,
     Status,
     Presets,
 }
 impl SidePanelTab {
     fn for_page(feature_page: Page) -> &'static [Self] {
         match feature_page {
+            Page::Dashboard => &[Self::Settings, Self::Status],
             Page::AdaptiveEngine
             | Page::AdaptiveProcessorPower
             | Page::CpuSetsSoft
@@ -97,6 +99,7 @@ impl SidePanelTab {
 
     fn label(self) -> String {
         t!(match self {
+            Self::Settings => "nav.settings",
             Self::Status => "common.status",
             Self::Presets => "common.presets",
         })
@@ -108,19 +111,24 @@ fn reset_scroll(id: &'static str) -> Task<Message> {
     iced::widget::operation::snap_to(id, iced::widget::scrollable::RelativeOffset::START)
 }
 
-fn page_header(title: String, profiles: Option<Element<'_, Message>>) -> Element<'_, Message> {
+fn page_header(
+    title: String,
+    profiles: Option<Element<'_, Message>>,
+    reserve_toolbar: bool,
+) -> Element<'_, Message> {
+    let title = container(widgets::heading(title, design::typography::SUBTITLE))
+        .center_y(design::PAGE_TITLE_HEIGHT)
+        .width(Fill);
+    if !reserve_toolbar {
+        return title.into();
+    }
     let toolbar = container(profiles.unwrap_or_else(|| iced::widget::Space::new().into()))
         .center_y(design::BUTTON_HEIGHT)
         .width(Fill);
-    column![
-        container(widgets::heading(title, design::typography::SUBTITLE))
-            .center_y(design::PAGE_TITLE_HEIGHT)
-            .width(Fill),
-        toolbar,
-    ]
-    .spacing(design::space::SMALL)
-    .width(Fill)
-    .into()
+    column![title, toolbar]
+        .spacing(design::space::SMALL)
+        .width(Fill)
+        .into()
 }
 
 const FLOATING_CARD_BOTTOM_INSET: u32 = design::space::CONTROL;
@@ -376,11 +384,11 @@ pub(crate) fn run(
                 navigation_search_selected: 0,
                 feature_tabs: HashMap::new(),
                 side_panel_open: false,
-                side_panel_tab: SidePanelTab::initial_for_page(Page::Home),
+                side_panel_tab: SidePanelTab::initial_for_page(Page::Dashboard),
                 preferences: settings_pages::Editor::default(),
-                home: home::Model::default(),
+                dashboard: dashboard::Model::default(),
                 action_log: action_log::Editor::default(),
-                sampler: std::sync::Arc::new(std::sync::Mutex::new(home::Sampler::default())),
+                sampler: std::sync::Arc::new(std::sync::Mutex::new(dashboard::Sampler::default())),
                 sampled_at: std::time::Instant::now(),
                 sampling: false,
                 catalog_sampled_at: std::time::Instant::now(),
@@ -412,7 +420,7 @@ pub(crate) fn run(
                 runtime: std::sync::Arc::new(runtime),
                 status: RuntimeStatusSnapshot::default(),
                 error_message: String::new(),
-                page: Page::Home,
+                page: Page::Dashboard,
                 navigation_history: navigation::History::default(),
                 window: None,
                 window_settings: iced::window::Settings {
@@ -536,7 +544,7 @@ pub(crate) fn run(
                     _ => None,
                 }
             }),
-            if app.page == Page::ProcessList && app.processes.resizing_columns() {
+            if app.page == Page::Dashboard && app.processes.resizing_columns() {
                 iced::event::listen_raw(|event, _, _| match event {
                     iced::Event::Mouse(iced::mouse::Event::CursorMoved { position }) => Some(
                         Message::Processes(process_list::Message::ResizeMoved(position.x)),
@@ -589,14 +597,14 @@ impl std::fmt::Display for SearchScope {
 
 fn navigation_search_choices(query: &str, advanced: bool, scope: SearchScope) -> Vec<Page> {
     let mut pages = if query.trim().is_empty() {
-        navigation::dashboard_sections_in_nav_order(advanced)
+        navigation::workspace_sections(advanced)
             .filter(|section| scope.0 == Some(section.landing_page))
             .flat_map(|section| {
                 std::iter::once(section.landing_page).chain(section.pages.iter().copied())
             })
             .collect::<Vec<_>>()
     } else {
-        navigation::dashboard_search_pages(query, advanced)
+        navigation::search_pages(query, advanced)
     };
     if let Some(section) = scope.0 {
         pages.retain(|page| page.section_landing_page() == section);
@@ -616,7 +624,7 @@ fn search_selection(selected: usize, count: usize, down: bool) -> usize {
 }
 
 fn navigation_search_input(query: &str, available: bool, open: bool) -> Element<'_, Message> {
-    let input = widgets::text_input(&t!("home.search_placeholder"), query)
+    let input = widgets::text_input(&t!("dashboard.search_placeholder"), query)
         .id(SEARCH_INPUT_ID)
         .line_height(iced::Pixels(16.0))
         .padding(iced::Padding {
@@ -709,9 +717,9 @@ struct WinderustApp {
     side_panel_open: bool,
     side_panel_tab: SidePanelTab,
     preferences: settings_pages::Editor,
-    home: home::Model,
+    dashboard: dashboard::Model,
     action_log: action_log::Editor,
-    sampler: std::sync::Arc<std::sync::Mutex<home::Sampler>>,
+    sampler: std::sync::Arc<std::sync::Mutex<dashboard::Sampler>>,
     sampled_at: std::time::Instant,
     sampling: bool,
     catalog_sampled_at: std::time::Instant,
@@ -797,8 +805,8 @@ enum Message {
     Preferences(settings_pages::Message),
     DismissPickers,
     Status(status_rail::Message),
-    Home(home::Message),
-    Sample(Result<home::Sample, String>),
+    Dashboard(dashboard::Message),
+    Sample(Result<dashboard::Sample, String>),
     ActionLog(action_log::Message),
     ExportLog(Option<PathBuf>),
     Suspension(app_suspension::Message),
@@ -902,7 +910,7 @@ impl WinderustApp {
             && !self.blocking_editor_open()
             && self.power_tuning.review_origin().is_none()
             && self.process_power_plan_preview().is_none()
-            && !(self.page == Page::ProcessList
+            && !(self.page == Page::Dashboard
                 && (self.processes.context_open() || self.processes.modal_open()))
     }
 
@@ -1030,7 +1038,7 @@ impl WinderustApp {
             _ if review_open => Some(Message::PowerTuning(
                 advanced_power_plan_tuning::Message::CancelApply,
             )),
-            Page::ProcessList
+            Page::Dashboard
                 if key == Key::Named(Named::Escape)
                     && modifiers.is_empty()
                     && self.processes.modal_open() =>
@@ -1232,8 +1240,11 @@ impl WinderustApp {
                 }
             }
             Message::SidePanelTab(tab) => {
-                if SidePanelTab::for_page(self.page).contains(&tab) {
+                if self.side_panel_tab != tab && SidePanelTab::for_page(self.page).contains(&tab) {
                     self.side_panel_tab = tab;
+                    if self.dashboard_status_open() {
+                        return self.load_power_plans();
+                    }
                 }
             }
             Message::CloseSidePanel => {
@@ -1262,21 +1273,21 @@ impl WinderustApp {
                     }
                 }
             }
-            Message::Home(home::Message::Navigate(page)) => {
+            Message::Dashboard(dashboard::Message::Navigate(page)) => {
                 return self.update(Message::Page(page));
             }
-            Message::Home(home::Message::HoverChart(kind, slot)) => {
-                self.home.hover_chart(kind, slot)
+            Message::Dashboard(dashboard::Message::HoverChart(kind, slot)) => {
+                self.dashboard.hover_chart(kind, slot)
             }
-            Message::Home(home::Message::InspectChart(kind, action)) => {
-                self.home.inspect_chart(kind, action)
+            Message::Dashboard(dashboard::Message::InspectChart(kind, action)) => {
+                self.dashboard.inspect_chart(kind, action)
             }
             Message::Sample(result) => {
                 self.sampling = false;
                 match result {
-                    Ok(sample) => self.home.record(sample),
+                    Ok(sample) => self.dashboard.record(sample),
                     Err(error) => {
-                        self.home.record_unavailable();
+                        self.dashboard.record_unavailable();
                         self.error_message = error;
                     }
                 }
@@ -1874,7 +1885,9 @@ impl WinderustApp {
                         crate::backend::diagnostics::error(&format!(
                             "Loading power plans failed: {error}"
                         ));
-                        if self.error_message.is_empty() {
+                        if self.error_message.is_empty()
+                            && page_needs_power_plans(self.page, self.processes.rulesets_open())
+                        {
                             self.error_message =
                                 t!("power_plan_control.catalog_unavailable").to_string();
                         }
@@ -1911,11 +1924,13 @@ impl WinderustApp {
             Message::WindowAction(window_frame::Event::ToggleSidePanel) => {
                 if let Some(open) = self.side_panel_toggle_state() {
                     self.side_panel_open = !open;
+                    if self.dashboard_status_open() {
+                        return self.load_power_plans();
+                    }
                 }
             }
             Message::WindowFocused => {
-                if !self.hidden && page_needs_power_plans(self.page, self.processes.rulesets_open())
-                {
+                if !self.hidden && self.visible_page_needs_power_plans() {
                     self.power_plans_reload_pending |= self.power_plans_loading;
                     return self.load_power_plans();
                 }
@@ -2019,7 +2034,7 @@ impl WinderustApp {
             Message::Page(_) if self.adaptive_processor_power.preset_open() => {}
             Message::Page(page) => {
                 let entering_page = self.page != page;
-                if entering_page && self.page == Page::ProcessList {
+                if entering_page && self.page == Page::Dashboard {
                     self.processes.stop_gpu_usage_sampling();
                 }
                 self.preferences.dismiss_picker();
@@ -2029,10 +2044,12 @@ impl WinderustApp {
                 self.preferences.cancel_shortcut_capture();
                 self.preferences.replace_settings_open = false;
                 self.navigation_history.visit(page);
-                self.side_panel_tab = SidePanelTab::initial_for_page(page);
-                if entering_page && page == Page::Home {
-                    self.home
-                        .set_power_source(home::PowerSourceReading::Collecting);
+                if entering_page || page != Page::Dashboard {
+                    self.side_panel_tab = SidePanelTab::initial_for_page(page);
+                }
+                if entering_page && page == Page::Dashboard {
+                    self.dashboard
+                        .set_power_source(dashboard::PowerSourceReading::Collecting);
                 }
                 self.page = page;
                 self.sync_visible_process_list_suspensions();
@@ -2057,7 +2074,7 @@ impl WinderustApp {
                 if page_needs_power_plans(page, self.processes.rulesets_open()) {
                     tasks.push(self.load_power_plans());
                 }
-                if page == Page::ProcessList && !self.hidden {
+                if page == Page::Dashboard && !self.hidden {
                     tasks.push(
                         self.processes
                             .update(
@@ -2172,7 +2189,7 @@ impl WinderustApp {
                         if self.power_plans_loading {
                             self.power_plans_reload_pending = true;
                         } else if !self.hidden
-                            && page_needs_power_plans(self.page, self.processes.rulesets_open())
+                            && self.visible_page_needs_power_plans()
                             && !self.power_plans.iter().any(|plan| plan.active)
                         {
                             work.push(self.load_power_plans());
@@ -2200,7 +2217,7 @@ impl WinderustApp {
                     }
                 }
                 if !self.hidden {
-                    if self.page == Page::ProcessList {
+                    if self.page == Page::Dashboard {
                         work.push(
                             self.processes
                                 .update(
@@ -2219,7 +2236,7 @@ impl WinderustApp {
                         work.push(self.load_catalog());
                     }
                 }
-                if self.page == Page::Home
+                if self.page == Page::Dashboard
                     && !self.hidden
                     && !self.sampling
                     && self.sampled_at.elapsed() >= Duration::from_secs(1)
@@ -2588,7 +2605,7 @@ impl WinderustApp {
     }
 
     fn sync_visible_process_list_suspensions(&mut self) {
-        if self.page == Page::ProcessList && !self.hidden {
+        if self.page == Page::Dashboard && !self.hidden {
             self.processes.sync_suspended_processes(
                 &self
                     .status
@@ -2600,9 +2617,9 @@ impl WinderustApp {
     }
 
     fn show_window(&mut self) -> Task<Message> {
-        if self.hidden && self.page == Page::Home {
-            self.home
-                .set_power_source(home::PowerSourceReading::Collecting);
+        if self.hidden && self.page == Page::Dashboard {
+            self.dashboard
+                .set_power_source(dashboard::PowerSourceReading::Collecting);
         }
         self.hidden = false;
         self.sync_visible_process_list_suspensions();
@@ -3034,12 +3051,22 @@ impl WinderustApp {
     }
 
     fn process_context_open(&self) -> bool {
-        self.page == Page::ProcessList && self.processes.context_open()
+        self.page == Page::Dashboard && self.processes.context_open()
     }
 
     fn side_panel_available(&self) -> bool {
-        matches!(self.page, Page::ProcessList | Page::ActionLog)
-            || !SidePanelTab::for_page(self.page).is_empty()
+        self.page == Page::ActionLog || !SidePanelTab::for_page(self.page).is_empty()
+    }
+
+    fn dashboard_status_open(&self) -> bool {
+        self.page == Page::Dashboard
+            && self.side_panel_open
+            && self.side_panel_tab == SidePanelTab::Status
+    }
+
+    fn visible_page_needs_power_plans(&self) -> bool {
+        self.dashboard_status_open()
+            || page_needs_power_plans(self.page, self.processes.rulesets_open())
     }
 
     fn side_panel_toggle_state(&self) -> Option<bool> {
@@ -3222,7 +3249,13 @@ impl WinderustApp {
         read_power_source: impl FnOnce() -> Option<bool>,
     ) -> Option<Element<'_, Message>> {
         let page = self.page;
-        if page == Page::ProcessList {
+        if self.dashboard_status_open() {
+            Some(
+                self.dashboard
+                    .status(self.settings.persisted(), &self.status, &self.power_plans)
+                    .map(Message::Dashboard),
+            )
+        } else if page == Page::Dashboard {
             Some(self.processes.side_panel().map(Message::Processes))
         } else if page == Page::ActionLog {
             Some(
@@ -3295,7 +3328,7 @@ impl WinderustApp {
         let observed_power_source = std::cell::OnceCell::new();
         let read_power_source =
             || *observed_power_source.get_or_init(crate::backend::power_source::is_plugged_in);
-        let process_actions_open = self.page == Page::ProcessList
+        let process_actions_open = self.page == Page::Dashboard
             && (self.processes.modal_open() || self.processes.context_open());
         let shield = |content| {
             if process_actions_open {
@@ -3359,7 +3392,11 @@ impl WinderustApp {
             profile_controls = Some(container(tabs).style(widgets::tab_bar));
         }
         let settings_are_pending = self.pending_settings_changes();
-        let heading = page_header(self.page.label(), profile_controls.map(Into::into));
+        let heading = page_header(
+            self.page.label(),
+            profile_controls.map(Into::into),
+            self.page != Page::Dashboard,
+        );
         let floating_card = if process_actions_open {
             None
         } else if settings_are_pending {
@@ -3386,7 +3423,7 @@ impl WinderustApp {
         ))
         .width(Fill)
         .height(Fill);
-        let toast = if self.page == Page::ProcessList && !process_actions_open {
+        let toast = if self.page == Page::Dashboard && !process_actions_open {
             self.processes
                 .action_toast()
                 .map(|toast| toast.map(Message::Processes))
@@ -3424,7 +3461,7 @@ impl WinderustApp {
             let mut results = column![].spacing(design::space::TINY);
             if show_results && choices.is_empty() {
                 results = results.push(
-                    container(text(t!("home.no_matching_functions").to_string()))
+                    container(text(t!("dashboard.no_matching_functions").to_string()))
                         .padding(design::space::MEDIUM as u16),
                 );
             }
@@ -3466,7 +3503,7 @@ impl WinderustApp {
             }
             let scopes: Vec<_> = std::iter::once(SearchScope(None))
                 .chain(
-                    navigation::dashboard_sections_in_nav_order(
+                    navigation::workspace_sections(
                         self.settings.global().advanced.show_advanced_controls,
                     )
                     .map(|section| SearchScope(Some(section.landing_page))),
@@ -3474,7 +3511,7 @@ impl WinderustApp {
                 .collect();
             let mut search_content = column![container(
                 row![
-                    text(t!("home.search_filter").to_string())
+                    text(t!("dashboard.search_filter").to_string())
                         .size(design::typography::CAPTION)
                         .style(text::secondary),
                     super::select::Select::new(
@@ -3839,23 +3876,18 @@ impl WinderustApp {
                     scroll_clearance,
                 )
                 .map(Message::CpuLimiter),
-            Page::ProcessList => self
-                .processes
-                .view(
-                    &self.settings,
-                    if self.power_plans_loading {
-                        process_list::PlanCatalog::Loading
-                    } else if self.power_plans_loaded {
-                        process_list::PlanCatalog::Loaded(&self.power_plans)
-                    } else {
-                        process_list::PlanCatalog::Unavailable
-                    },
-                )
-                .map(Message::Processes),
-            Page::Home => self
-                .home
-                .view(self.settings.persisted(), &self.status)
-                .map(Message::Home),
+            Page::Dashboard => self.processes.view_with_header(
+                &self.settings,
+                if self.power_plans_loading {
+                    process_list::PlanCatalog::Loading
+                } else if self.power_plans_loaded {
+                    process_list::PlanCatalog::Loaded(&self.power_plans)
+                } else {
+                    process_list::PlanCatalog::Unavailable
+                },
+                Some(self.dashboard.metrics().map(Message::Dashboard)),
+                Message::Processes,
+            ),
             Page::WinderustBehaviour
             | Page::LanguageAndAppearance
             | Page::ExperimentalFeatures
@@ -4065,7 +4097,7 @@ fn tray_retry_due(
 }
 
 fn page_needs_power_plans(page: Page, process_rulesets_open: bool) -> bool {
-    (page == Page::ProcessList && process_rulesets_open)
+    (page == Page::Dashboard && process_rulesets_open)
         || page.section_landing_page() == Page::PowerPlanControl
 }
 
@@ -4204,10 +4236,10 @@ mod tests {
         let bounds = Rectangle::with_size(Size::new(900.0, 620.0));
         let frame = |open| {
             let background = iced::widget::mouse_area(
-                button("Home")
+                button("Dashboard")
                     .width(Fill)
                     .height(Fill)
-                    .on_press(Message::Page(Page::Home)),
+                    .on_press(Message::Page(Page::Dashboard)),
             )
             .on_enter(Message::Page(Page::About))
             .on_scroll(|_| Message::Page(Page::ActionLog));
@@ -4353,6 +4385,7 @@ mod tests {
                             "Feature".into(),
                             profiles
                                 .then(|| button(text("Plugged In / On Battery")).height(32).into()),
+                            true,
                         );
                         let workspace = page_canvas(
                             heading,
@@ -4546,7 +4579,7 @@ mod tests {
         let limits = layout::Limits::new(iced::Size::ZERO, viewport.size());
         let dock = |open: bool| {
             let workspace = iced::widget::column![
-                page_header("Editor".into(), None),
+                page_header("Editor".into(), None, true),
                 button(text("Editor action")).on_press(Message::Save),
             ];
             let panel = open.then(|| iced::widget::Space::new().height(Fill).into());
@@ -4638,7 +4671,10 @@ mod tests {
         use iced::advanced::{layout, widget::Tree};
 
         let renderer = iced::Renderer::new(iced::Font::DEFAULT, iced::Pixels(14.0));
-        assert!(SidePanelTab::for_page(Page::Home).is_empty());
+        assert_eq!(
+            SidePanelTab::for_page(Page::Dashboard),
+            &[SidePanelTab::Settings, SidePanelTab::Status]
+        );
         assert!(SidePanelTab::for_page(Page::Win32PrioritySeparation).is_empty());
         for landing in [Page::SettingsHome, Page::Watchdog] {
             for page in std::iter::once(landing).chain(navigation::children(landing)) {
@@ -4649,6 +4685,7 @@ mod tests {
             for height in [500.0, 1000.0] {
                 let size = iced::Size::new(width, height);
                 for feature_page in [
+                    Page::Dashboard,
                     Page::AdaptiveEngine,
                     Page::AdaptiveProcessorPower,
                     Page::CpuSetsSoft,
@@ -5067,8 +5104,8 @@ mod tests {
 
     #[test]
     fn power_plan_catalog_is_requested_on_pages_that_use_it() {
-        assert!(!page_needs_power_plans(Page::ProcessList, false));
-        assert!(page_needs_power_plans(Page::ProcessList, true));
+        assert!(!page_needs_power_plans(Page::Dashboard, false));
+        assert!(page_needs_power_plans(Page::Dashboard, true));
         for process_rulesets_open in [false, true] {
             assert!(page_needs_power_plans(
                 Page::PowerPlanControl,
@@ -5077,7 +5114,10 @@ mod tests {
             for &page in Page::PowerPlanControl.child_pages().unwrap() {
                 assert!(page_needs_power_plans(page, process_rulesets_open));
             }
-            assert!(!page_needs_power_plans(Page::Home, process_rulesets_open));
+            assert!(!page_needs_power_plans(
+                Page::ActionLog,
+                process_rulesets_open
+            ));
         }
     }
 

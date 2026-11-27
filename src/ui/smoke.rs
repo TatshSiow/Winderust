@@ -11,14 +11,15 @@ const NAVIGATION_CPU_COMPACT: usize = 35;
 const NAVIGATION_CPU_COMPACT_ZH_TW: usize = 36;
 const NAVIGATION_POWER_COMPACT: usize = 37;
 const NAVIGATION_POWER_COMPACT_ZH_TW: usize = 42;
+const DASHBOARD_PREVIEW: usize = 13;
 const PROCESS_LIST_COMMIT_WIDE: usize = 94;
 const PROCESS_LIST_COMMIT_COMPACT: usize = 95;
-const HOME_ENABLED_FEATURES_COMPACT: usize = 96;
-const HOME_POWER_SOURCE_UNAVAILABLE: usize = 97;
+const DASHBOARD_ENABLED_FEATURES_COMPACT: usize = 96;
+const DASHBOARD_POWER_SOURCE_UNAVAILABLE: usize = 97;
 const CONTRAST_DARK_APPEARANCE: usize = 98;
 const CONTRAST_LIGHT_PROCESS_LIST: usize = 99;
-const HOME_HISTORY_WIDE: usize = 100;
-const HOME_HISTORY_COMPACT: usize = 101;
+const DASHBOARD_HISTORY_WIDE: usize = 100;
+const DASHBOARD_HISTORY_COMPACT: usize = 101;
 const RESOURCE_PREVIEW_WIDE: usize = 102;
 const RESOURCE_PREVIEW_COMPACT: usize = 103;
 const SHOW_SHORTCUT_INVALID: usize = 104;
@@ -101,7 +102,25 @@ impl Run {
 
     fn scenarios(pages: &[Page]) -> VecDeque<usize> {
         let extra_start = pages.len() * 2;
-        if std::env::args().any(|arg| arg == "--search-only") {
+        if std::env::args().any(|arg| arg == "--dashboard-preview-only") {
+            [extra_start + DASHBOARD_PREVIEW].into()
+        } else if std::env::args().any(|arg| arg == "--dashboard-only") {
+            [0, pages.len()]
+                .into_iter()
+                .chain(
+                    [
+                        PROCESS_LIST_COMMIT_COMPACT,
+                        DASHBOARD_ENABLED_FEATURES_COMPACT,
+                        DASHBOARD_POWER_SOURCE_UNAVAILABLE,
+                        DASHBOARD_HISTORY_WIDE,
+                        DASHBOARD_HISTORY_COMPACT,
+                        79,
+                        80,
+                    ]
+                    .map(|extra| extra_start + extra),
+                )
+                .collect()
+        } else if std::env::args().any(|arg| arg == "--search-only") {
             [0, pages.len()]
                 .into_iter()
                 .chain([26, 27, 28, 43].map(|extra| extra_start + extra))
@@ -126,7 +145,7 @@ impl Run {
                 .filter(|index| {
                     matches!(
                         pages[index % pages.len()],
-                        Page::Home | Page::PowerPlanControl
+                        Page::Dashboard | Page::PowerPlanControl
                     )
                 })
                 .chain(
@@ -317,9 +336,9 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                         | 91
                         | 93
                         | PROCESS_LIST_COMMIT_COMPACT
-                        | HOME_ENABLED_FEATURES_COMPACT
+                        | DASHBOARD_ENABLED_FEATURES_COMPACT
                         | CONTRAST_LIGHT_PROCESS_LIST
-                        | HOME_HISTORY_COMPACT
+                        | DASHBOARD_HISTORY_COMPACT
                         | RESOURCE_PREVIEW_COMPACT
                         | SHOW_SHORTCUT_READY
                         | DOCK_FOCUS_COMPACT
@@ -345,7 +364,26 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                 | CPU_LIMITER_PROCESSORS_COMPACT,
             ) => Page::CpuLimiter,
             Some(2) => Page::SettingsHome,
-            Some(3) => Page::Home,
+            Some(
+                3
+                | DASHBOARD_PREVIEW
+                | 14
+                | 26..=34
+                | 38
+                | 39
+                | 43
+                | 48
+                | 79..=80
+                | PROCESS_LIST_COMMIT_WIDE
+                | PROCESS_LIST_COMMIT_COMPACT
+                | DASHBOARD_ENABLED_FEATURES_COMPACT
+                | DASHBOARD_POWER_SOURCE_UNAVAILABLE
+                | CONTRAST_LIGHT_PROCESS_LIST
+                | DASHBOARD_HISTORY_WIDE
+                | DASHBOARD_HISTORY_COMPACT
+                | GPU_MEMORY_WIDE
+                | GPU_MEMORY_COMPACT,
+            ) => Page::Dashboard,
             Some(
                 4
                 | 6..=10
@@ -358,8 +396,6 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             Some(NAVIGATION_RESIZE_TALL) => Page::AdvancedControls,
             Some(KEEP_AWAKE_READY | KEEP_AWAKE_ACTIVE | KEEP_AWAKE_MIXED) => Page::SleepPrevention,
             Some(12 | 82) => Page::ByFocus,
-            Some(13) => Page::Home,
-            Some(14) => Page::ProcessList,
             Some(15) => Page::PowerPlanControl,
             Some(16) => Page::ActionLog,
             Some(17 | 24 | 84..=85 | 92..=93) => Page::AdaptiveEngine,
@@ -372,27 +408,15 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             Some(22) => Page::LanguageAndAppearance,
             Some(23) => Page::About,
             Some(25 | 87..=88) => Page::ProcessPriority,
-            Some(26..=34 | 38 | 43) => Page::Home,
             Some(NAVIGATION_CPU_COMPACT | NAVIGATION_CPU_COMPACT_ZH_TW) => Page::AdaptiveEngine,
             Some(NAVIGATION_POWER_COMPACT | NAVIGATION_POWER_COMPACT_ZH_TW) => Page::ByFocus,
-            Some(
-                HOME_ENABLED_FEATURES_COMPACT
-                | HOME_POWER_SOURCE_UNAVAILABLE
-                | HOME_HISTORY_WIDE
-                | HOME_HISTORY_COMPACT,
-            ) => Page::Home,
-            Some(39) => Page::ProcessList,
             Some(40) => Page::LanguageAndAppearance,
             Some(41) => Page::AdaptiveEngine,
             Some(44 | 73 | 76) => Page::CpuSetsSoft,
             Some(45 | 74 | 75) => Page::ProcessorAffinityHard,
             Some(46) => Page::AdvancedPowerPlanTuning,
             Some(47) => Page::AdaptiveEngine,
-            Some(48 | 79..=80) => Page::ProcessList,
-            Some(PROCESS_LIST_COMMIT_WIDE | PROCESS_LIST_COMMIT_COMPACT) => Page::ProcessList,
-            Some(GPU_MEMORY_WIDE | GPU_MEMORY_COMPACT) => Page::ProcessList,
             Some(CONTRAST_DARK_APPEARANCE) => Page::LanguageAndAppearance,
-            Some(CONTRAST_LIGHT_PROCESS_LIST) => Page::ProcessList,
             Some(49 | 86) => Page::ActionLog,
             Some(50 | 77..=78 | SHOW_SHORTCUT_INVALID | SHOW_SHORTCUT_READY) => {
                 Page::WinderustBehaviour
@@ -418,7 +442,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             crate::config::AppLanguage::English
         };
         app.settings.general.theme_mode =
-            if chinese || extra.is_some_and(|i| (14..=34).contains(&i)) {
+            if chinese || extra.is_some_and(|i| (DASHBOARD_PREVIEW..=34).contains(&i)) {
                 crate::config::AppThemeMode::Dark
             } else {
                 crate::config::AppThemeMode::Light
@@ -695,6 +719,17 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
         }
         let was_open = app.side_panel_open;
         let toggle_side_panel = || Message::WindowAction(window_frame::Event::ToggleSidePanel);
+        if page == Page::Dashboard {
+            if app.processes.context_open() || app.processes.modal_open() {
+                let _ = app.update(Message::Processes(process_list::Message::CloseSelection));
+            }
+            if page == app.page {
+                let _ = app.update(Message::SidePanelTab(SidePanelTab::Settings));
+            }
+        }
+        if extra == Some(DASHBOARD_PREVIEW) {
+            app.processes.populate_smoke_rows();
+        }
         let navigate = app.update(Message::Page(page));
         let feature_tab = match extra {
             Some(index @ FEATURE_TAB_STATES_START..) => {
@@ -1151,18 +1186,18 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
         if matches!(
             extra,
             Some(
-                13 | 29
+                DASHBOARD_PREVIEW | 29
                     ..=34
                         | 38
                         | 42
                         | 43
-                        | HOME_ENABLED_FEATURES_COMPACT
-                        | HOME_POWER_SOURCE_UNAVAILABLE
-                        | HOME_HISTORY_WIDE
-                        | HOME_HISTORY_COMPACT
+                        | DASHBOARD_ENABLED_FEATURES_COMPACT
+                        | DASHBOARD_POWER_SOURCE_UNAVAILABLE
+                        | DASHBOARD_HISTORY_WIDE
+                        | DASHBOARD_HISTORY_COMPACT
             )
         ) {
-            app.home.populate_smoke_history();
+            app.dashboard.populate_smoke_history();
             app.settings.general.enabled = true;
             app.settings.cpu_limiter.enabled = true;
             app.settings.process_priority.enabled = true;
@@ -1187,11 +1222,17 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
         if matches!(extra, Some(GPU_MEMORY_WIDE | GPU_MEMORY_COMPACT)) {
             app.side_panel_open = extra == Some(GPU_MEMORY_COMPACT);
         }
-        if extra == Some(HOME_POWER_SOURCE_UNAVAILABLE) {
-            app.home
-                .set_power_source(home::PowerSourceReading::Unavailable);
+        if extra == Some(DASHBOARD_POWER_SOURCE_UNAVAILABLE) {
+            app.dashboard
+                .set_power_source(dashboard::PowerSourceReading::Unavailable);
         }
-        if matches!(extra, Some(13 | 16 | 29..=34 | 38 | 42 | 43 | 49 | 86)) {
+        if matches!(
+            extra,
+            Some(
+                DASHBOARD_PREVIEW | 16 | 29
+                    ..=34 | 38 | 42 | 43 | 49 | 86 | DASHBOARD_ENABLED_FEATURES_COMPACT
+            )
+        ) {
             use crate::action_log::{ActionLogEntry, ActionLogFeature, ActionLogResult};
             app.status.action_log_entries = Arc::new(
                 (0..10)
@@ -1253,7 +1294,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                     assert_eq!(app.page, expected);
                     assert!(!app.navigation_search_open);
                     assert!(app.navigation_search.is_empty());
-                    let _ = app.update(Message::Page(Page::Home));
+                    let _ = app.update(Message::Page(Page::Dashboard));
                     let _ = app.update(Message::NavigationSearch("cpu".into()));
                     let _ = app.update(down());
                 }
@@ -1274,8 +1315,8 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
         let navigation = if compact_navigation {
             let section = page.section_landing_page();
             let select = |page| Message::Navigation(navigation::Event::Select(page));
-            let _ = app.update(select(Page::Home));
-            assert_eq!(app.page, Page::Home);
+            let _ = app.update(select(Page::Dashboard));
+            assert_eq!(app.page, Page::Dashboard);
             let _ = app.update(select(section));
             assert_eq!(app.page, section);
             let _ = app.update(select(page));
@@ -1384,6 +1425,25 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                 true,
             )));
         }
+        let dashboard_status = if extra == Some(DASHBOARD_PREVIEW) {
+            let _ = app.update(Message::SidePanelTab(SidePanelTab::Status));
+            app.side_panel_open = true;
+            Task::none()
+        } else if matches!(
+            extra,
+            Some(DASHBOARD_ENABLED_FEATURES_COMPACT | DASHBOARD_POWER_SOURCE_UNAVAILABLE)
+        ) {
+            assert_eq!(app.side_panel_tab, SidePanelTab::Settings);
+            assert!(!app.side_panel_open);
+            let _ = app.update(toggle_side_panel());
+            assert!(app.side_panel_open);
+            let status = app.update(Message::SidePanelTab(SidePanelTab::Status));
+            assert!(app.dashboard_status_open());
+            assert!(app.side_panel(is_plugged_in).is_some());
+            status
+        } else {
+            Task::none()
+        };
         if matches!(extra, Some(81..=83)) {
             use crate::control::power_plan::{PowerPlanOwner, PowerPlanStatus};
             use crate::rules::DecisionState;
@@ -1708,11 +1768,11 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             for open in [true, false] {
                 let _ = app.update(toggle_side_panel());
                 assert_eq!(app.side_panel_open, open);
-                for destination in [Page::Home, Page::PowerPlanControl, page] {
+                for destination in [Page::About, Page::Dashboard, Page::PowerPlanControl, page] {
                     let _ = app.update(Message::Navigation(navigation::Event::Select(destination)));
                     assert_eq!(app.page, destination);
                     assert_eq!(app.side_panel_open, open);
-                    let supported = destination != Page::Home;
+                    let supported = destination != Page::About;
                     assert_eq!(app.side_panel_toggle_state(), supported.then_some(open));
                     assert_eq!(app.side_panel(is_plugged_in).is_some(), supported);
                 }
@@ -1777,9 +1837,10 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
         let size = match extra {
             Some(
                 PROCESS_LIST_COMMIT_COMPACT
-                | HOME_ENABLED_FEATURES_COMPACT
+                | DASHBOARD_ENABLED_FEATURES_COMPACT
+                | DASHBOARD_POWER_SOURCE_UNAVAILABLE
                 | CONTRAST_LIGHT_PROCESS_LIST
-                | HOME_HISTORY_COMPACT
+                | DASHBOARD_HISTORY_COMPACT
                 | SHOW_SHORTCUT_READY
                 | DOCK_FOCUS_COMPACT
                 | MEMORY_TRIM_PARTIAL
@@ -1801,13 +1862,17 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                 RESOURCE_PREVIEW_WIDE | SHOW_SHORTCUT_INVALID | DOCK_FOCUS_WIDE | KEEP_AWAKE_READY,
             ) => iced::Size::new(1120.0, 760.0),
             Some(
-                6 | 11 | CONTRAST_DARK_APPEARANCE | HOME_HISTORY_WIDE | CPU_LIMITER_AFFINITY_WIDE,
+                6
+                | 11
+                | CONTRAST_DARK_APPEARANCE
+                | DASHBOARD_HISTORY_WIDE
+                | CPU_LIMITER_AFFINITY_WIDE,
             ) => iced::Size::new(1120.0, 760.0),
             _ if compact_navigation => iced::Size::new(900.0, 620.0),
             Some(40 | 43..=50 | 52..=69 | 71..=93) => iced::Size::new(900.0, 620.0),
             Some(26..=28) => iced::Size::new(1120.0, 760.0),
             Some(30) => iced::Size::new(1280.0, 720.0),
-            Some(31) => iced::Size::new(1440.0, 900.0),
+            Some(DASHBOARD_PREVIEW | 31) => iced::Size::new(1440.0, 900.0),
             Some(32) => iced::Size::new(1920.0, 720.0),
             Some(33 | NAVIGATION_RESIZE_TALL) => iced::Size::new(900.0, 1000.0),
             Some(34) => iced::Size::new(1536.0, 960.0),
@@ -1837,6 +1902,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             switch_tab,
             search,
             navigation,
+            dashboard_status,
         ]));
     }
     run.ticks += 1;
@@ -1868,15 +1934,32 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             }
             _ => {}
         }
-    } else if extra.is_none() && app.page == Page::Home && run.ticks == 3 {
-        return Some(iced::advanced::widget::operate(NavigationLayout::new(
-            app.page,
-            app.window_settings.size.width,
-            &app.settings,
-        )));
+    } else if extra.is_none() && app.page == Page::Dashboard && run.ticks == 3 {
+        return Some(Task::batch([
+            iced::advanced::widget::operate(NavigationLayout::new(
+                app.page,
+                app.window_settings.size.width,
+                &app.settings,
+            )),
+            iced::advanced::widget::operate(DashboardLayout::new(false, false)),
+        ]));
     }
     if run.ticks == 3 {
         match extra {
+            Some(PROCESS_LIST_COMMIT_COMPACT) => {
+                return Some(iced::advanced::widget::operate(DashboardLayout::new(
+                    true, false,
+                )));
+            }
+            Some(
+                DASHBOARD_PREVIEW
+                | DASHBOARD_ENABLED_FEATURES_COMPACT
+                | DASHBOARD_POWER_SOURCE_UNAVAILABLE,
+            ) => {
+                return Some(iced::advanced::widget::operate(DashboardLayout::new(
+                    true, true,
+                )));
+            }
             Some(26..=28 | 43) => {
                 return Some(iced::advanced::widget::operate(NavigationLayout {
                     search_open: true,
@@ -1906,16 +1989,16 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                     ))),
                 ]));
             }
-            Some(HOME_HISTORY_WIDE | HOME_HISTORY_COMPACT) => {
-                let kind = if extra == Some(HOME_HISTORY_WIDE) {
-                    home::ChartKind::Cpu
+            Some(DASHBOARD_HISTORY_WIDE | DASHBOARD_HISTORY_COMPACT) => {
+                let kind = if extra == Some(DASHBOARD_HISTORY_WIDE) {
+                    dashboard::ChartKind::Cpu
                 } else {
-                    home::ChartKind::Network
+                    dashboard::ChartKind::Network
                 };
                 for _ in 0..2 {
-                    let _ = app.update(Message::Home(home::Message::InspectChart(
+                    let _ = app.update(Message::Dashboard(dashboard::Message::InspectChart(
                         kind,
-                        home::HistoryAction::Step { newer: false },
+                        dashboard::HistoryAction::Step { newer: false },
                     )));
                 }
                 return Some(iced::widget::operation::focus(kind.focus_id()).chain(
@@ -1925,9 +2008,9 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             _ => {}
         }
     }
-    if extra == Some(HOME_ENABLED_FEATURES_COMPACT) && run.ticks == 3 {
+    if extra == Some(DASHBOARD_ENABLED_FEATURES_COMPACT) && run.ticks == 5 {
         return Some(iced::widget::operation::snap_to(
-            "home-content",
+            "dashboard-status",
             iced::widget::scrollable::RelativeOffset::END,
         ));
     }
@@ -1973,6 +2056,21 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             adaptive_engine::CONTENT_ID,
             iced::widget::scrollable::RelativeOffset { x: 0.0, y },
         ));
+    }
+    if extra == Some(DASHBOARD_PREVIEW) && run.ticks == 11 {
+        app.processes.populate_smoke_rows();
+        let guid = "381b4222-f694-41f0-9685-ff5bb260df2e".to_owned();
+        app.status.power_plan_status = Arc::new(crate::control::power_plan::PowerPlanStatus {
+            current_guid: Some(guid.clone()),
+            ..Default::default()
+        });
+        app.power_plans = vec![crate::power::PowerPlan {
+            guid,
+            name: "Balanced".into(),
+            active: true,
+            managed_adaptive: false,
+        }];
+        return Some(Task::none());
     }
     if run.ticks
         == if extra.is_some_and(|i| i >= 13) {
@@ -2130,6 +2228,87 @@ impl Operation<Message> for NavigationLayout {
         } else {
             assert!(self.left.is_none());
             assert!(self.right_close.is_none());
+        }
+        operation::Outcome::None
+    }
+}
+
+struct DashboardLayout {
+    dock_open: bool,
+    status_open: bool,
+    charts: [(Id, Option<Rectangle>); 4],
+    table: Option<Rectangle>,
+    dock: Option<Rectangle>,
+    status: Option<Rectangle>,
+}
+
+impl DashboardLayout {
+    fn new(dock_open: bool, status_open: bool) -> Self {
+        use dashboard::ChartKind::{Cpu, Io, Memory, Network};
+
+        Self {
+            dock_open,
+            status_open,
+            charts: [Cpu, Memory, Io, Network].map(|kind| (Id::from(kind.focus_id()), None)),
+            table: None,
+            dock: None,
+            status: None,
+        }
+    }
+}
+
+impl Operation<Message> for DashboardLayout {
+    fn traverse(&mut self, visit: &mut dyn FnMut(&mut dyn Operation<Message>)) {
+        visit(self);
+    }
+
+    fn scrollable(
+        &mut self,
+        id: Option<&Id>,
+        bounds: Rectangle,
+        _: Rectangle,
+        _: Vector,
+        _: &mut dyn operation::Scrollable,
+    ) {
+        if id == Some(&Id::from("process-list")) {
+            self.table = Some(bounds);
+        } else if id == Some(&Id::from("dashboard-status")) {
+            self.status = Some(bounds);
+        }
+    }
+
+    fn focusable(&mut self, id: Option<&Id>, bounds: Rectangle, _: &mut dyn operation::Focusable) {
+        for (key, chart) in &mut self.charts {
+            if id == Some(key) {
+                *chart = Some(bounds);
+            }
+        }
+        if id == Some(&Id::from(SIDE_PANEL_CLOSE)) {
+            self.dock = Some(bounds);
+        }
+    }
+
+    fn finish(&self) -> operation::Outcome<Message> {
+        let table = self.table.expect("Dashboard contains the Process List");
+        assert!(
+            table.height >= 108.0,
+            "Process List displays at least three rows"
+        );
+        let charts = self.charts.each_ref().map(|(id, bounds)| {
+            bounds.unwrap_or_else(|| panic!("Dashboard chart visible: {id:?}"))
+        });
+        for chart in &charts {
+            assert!(chart.width > 0.0 && chart.height > 0.0);
+            assert!((chart.y - charts[0].y).abs() <= 1.0);
+            assert!(chart.y + chart.height <= table.y);
+        }
+        for pair in charts.windows(2) {
+            assert!(pair[0].x + pair[0].width <= pair[1].x);
+        }
+        assert_eq!(self.dock.is_some(), self.dock_open);
+        assert_eq!(self.status.is_some(), self.status_open);
+        if let Some(status) = self.status {
+            assert!(charts[3].x + charts[3].width <= status.x);
         }
         operation::Outcome::None
     }

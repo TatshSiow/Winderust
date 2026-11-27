@@ -27,7 +27,6 @@ pub(super) mod typography {
     pub const SECTION: u32 = 16;
     pub const SUBTITLE: u32 = 18;
     pub const DIALOG_TITLE: u32 = 24;
-    pub const TITLE: u32 = 28;
 }
 
 pub(super) const CONTROL_PADDING: [u16; 2] = [5, 12];

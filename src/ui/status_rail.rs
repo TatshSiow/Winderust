@@ -176,7 +176,7 @@ pub(super) fn view<'a>(
         }
         (_, FeatureRunState::Paused) if waiting_for_power_source(page, runtime) => (
             "sidebar_status.paused",
-            "home.power_source_unavailable",
+            "dashboard.power_source_unavailable",
             "common.waiting",
         ),
         (Page::CpuLimiter, FeatureRunState::Paused)
@@ -1753,7 +1753,7 @@ mod tests {
         ] {
             let paused = rail_text(view(page, &settings, &runtime, &[], None).unwrap());
             assert_eq!(paused[0], t!("sidebar_status.paused"));
-            assert_eq!(paused[1], t!("home.power_source_unavailable"));
+            assert_eq!(paused[1], t!("dashboard.power_source_unavailable"));
         }
 
         let features = std::sync::Arc::make_mut(&mut runtime.feature_status);
@@ -1809,7 +1809,7 @@ mod tests {
         efficiency.waiting_for_power_source = true;
         let paused = render(&runtime, None);
         assert_eq!(paused[0], t!("sidebar_status.paused"));
-        assert_eq!(paused[1], t!("home.power_source_unavailable"));
+        assert_eq!(paused[1], t!("dashboard.power_source_unavailable"));
 
         let efficiency = &mut std::sync::Arc::make_mut(&mut runtime.feature_status).efficiency_mode;
         efficiency.last_error = Some("restore failed".into());
@@ -1857,7 +1857,7 @@ mod tests {
         timer.waiting_for_power_source = true;
         let paused = labels(&runtime);
         assert_eq!(paused[0], t!("sidebar_status.paused"));
-        assert_eq!(paused[1], t!("home.power_source_unavailable"));
+        assert_eq!(paused[1], t!("dashboard.power_source_unavailable"));
 
         let timer = &mut std::sync::Arc::make_mut(&mut runtime.feature_status).timer_resolution;
         timer.requested_100ns = Some(100_000);

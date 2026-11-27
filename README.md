@@ -29,7 +29,8 @@
 > Alpha state, expects things to break,imperfect or not nicely handled.
 
 <p align="center">
-  <img src="resources/Home.png" alt="Winderust Home dashboard" width="960">
+  <img src="resources/Dashboard.png" alt="Winderust Dashboard with live metrics and a process table" width="960">
+  <br><em>Dashboard shown with sample data.</em>
 </p>
 
 ## Features
@@ -49,7 +50,7 @@
   - App Suspension - pause selected apps when inactive.
 - Timer Resolution for selected apps.
 - Instance Balancing - distribute whole-core CPU Sets (Soft) preferences across eligible app instances in your Windows session.
-- Process List - inspect running processes, apply controls, and edit per-app rules.
+- Dashboard - monitor CPU, memory, disk, and network, inspect running processes, and edit per-app rules.
 - Action Log - review action history and export it to CSV.
 - Win32 Priority Separation - adjust Windows scheduler time slices and foreground boost, with backup and restore.
 - Interrupt Timing - capture DPC and ISR activity in Adaptive Engine. View the capture timeline or export the report to JSON.

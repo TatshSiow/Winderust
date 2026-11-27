@@ -281,6 +281,9 @@ Append `--navigation-only` to check workspace navigation, the page list, and
 resizing at the minimum window width.
 Append `--search-only` to check the centered title-bar Search field, results,
 and keyboard selection in both languages.
+Append `--dashboard-only` to check the metric strip, process table and
+Side panel in both languages at the minimum window size. Use
+`--dashboard-preview-only` for the wide README capture with sample data.
 Append `--watchdog-only` to capture the configured Watchdog pages and rule
 editors in both languages.
 

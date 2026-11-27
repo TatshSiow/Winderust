@@ -258,17 +258,20 @@ mod tests {
             );
             return;
         }
-        for (locale, home, unavailable) in [
-            ("en", "Home", "Unavailable"),
-            ("zh-TW", "\u{9996}\u{9801}", "無法使用"),
-            ("en", "Home", "Unavailable"),
+        for (locale, dashboard, unavailable) in [
+            ("en", "Dashboard", "Unavailable"),
+            ("zh-TW", "\u{5100}\u{8868}\u{677f}", "無法使用"),
+            ("en", "Dashboard", "Unavailable"),
         ] {
             rust_i18n::set_locale(locale);
-            assert_eq!(rust_i18n::t!("nav.home"), home);
+            assert_eq!(rust_i18n::t!("nav.dashboard"), dashboard);
             assert_eq!(rust_i18n::t!("common.unavailable"), unavailable);
         }
         assert_eq!(rust_i18n::t!("common.rule", number = 7), "Rule 7");
-        assert_eq!(rust_i18n::t!("nav.home", locale = "unknown-locale"), "Home");
+        assert_eq!(
+            rust_i18n::t!("nav.dashboard", locale = "unknown-locale"),
+            "Dashboard"
+        );
     }
 
     #[test]

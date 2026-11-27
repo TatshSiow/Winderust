@@ -34,7 +34,9 @@ fn is_utility(page: Page) -> bool {
     matches!(page, Page::ActionLog | Page::SettingsHome | Page::About)
 }
 
-fn workspace_sections(show_advanced: bool) -> impl Iterator<Item = &'static ui::PageSection> {
+pub(super) fn workspace_sections(
+    show_advanced: bool,
+) -> impl Iterator<Item = &'static ui::PageSection> {
     let sections = Page::sections().iter();
     sections
         .clone()
@@ -57,7 +59,7 @@ pub(super) struct History {
 impl Default for History {
     fn default() -> Self {
         Self {
-            pages: vec![Page::Home],
+            pages: vec![Page::Dashboard],
             cursor: 0,
         }
     }
@@ -113,7 +115,7 @@ pub(super) fn top_bar(current: Page, settings: &Settings) -> Element<'static, Ev
                 container(text(count.to_string()).size(design::typography::BADGE))
                     .padding([2, 6])
                     .style(|theme| widgets::indicator_chip(theme, true)),
-                text(t!("home.enabled_features").into_owned()),
+                text(t!("dashboard.enabled_features").into_owned()),
                 tooltip::Position::Bottom,
             ));
         }
@@ -215,7 +217,7 @@ pub(super) fn glyph_with_opacity<'a, Message: 'a>(
 }
 pub(super) fn icon_path(page: Page) -> &'static str {
     match page {
-        Page::Home => "icons/house.svg",
+        Page::Dashboard => "icons/house.svg",
         Page::PowerPlanControl => "icons/zap.svg",
         Page::Watchdog => "icons/shield.svg",
         Page::CpuControl => "icons/cpu.svg",
@@ -231,7 +233,6 @@ pub(super) fn icon_path(page: Page) -> &'static str {
         Page::DynamicPriorityBoost => "icons/trending-up-down.svg",
         Page::CpuLimiter => "icons/octagon-minus.svg",
         Page::CpuSetsSoft => "icons/life-buoy.svg",
-        Page::ProcessList => "icons/list.svg",
         Page::AdaptiveEngine => "icons/brain-circuit.svg",
         Page::EfficiencyMode => "icons/leaf.svg",
         Page::AppSuspension => "icons/monitor-pause.svg",
@@ -336,13 +337,7 @@ pub(super) fn section_enabled_feature_count(settings: &Settings, page: Page) -> 
     })
 }
 
-pub(super) fn dashboard_sections_in_nav_order(
-    show_advanced_controls: bool,
-) -> impl Iterator<Item = &'static ui::PageSection> {
-    workspace_sections(show_advanced_controls).filter(|section| section.landing_page != Page::Home)
-}
-
-pub(super) fn dashboard_search_pages(query: &str, show_advanced_controls: bool) -> Vec<Page> {
+pub(super) fn search_pages(query: &str, show_advanced_controls: bool) -> Vec<Page> {
     let query = query.trim().to_lowercase();
     if query.is_empty() {
         return Vec::new();
@@ -351,18 +346,18 @@ pub(super) fn dashboard_search_pages(query: &str, show_advanced_controls: bool) 
     let mut pages = Vec::new();
     let mut seen = HashSet::new();
 
-    for section in dashboard_sections_in_nav_order(show_advanced_controls) {
-        let section_matches = dashboard_page_matches_query(section.landing_page, &query);
+    for section in workspace_sections(show_advanced_controls) {
+        let section_matches = page_matches_query(section.landing_page, &query);
         if section_matches && seen.insert(section.landing_page) {
             pages.push(section.landing_page);
         }
 
         for page in section.pages.iter().copied() {
-            if page == Page::Home || !seen.insert(page) {
+            if !seen.insert(page) {
                 continue;
             }
 
-            if section_matches || dashboard_page_matches_query(page, &query) {
+            if section_matches || page_matches_query(page, &query) {
                 pages.push(page);
             }
         }
@@ -371,8 +366,8 @@ pub(super) fn dashboard_search_pages(query: &str, show_advanced_controls: bool) 
     pages
 }
 
-fn dashboard_page_matches_query(page: Page, query: &str) -> bool {
-    let mut text = dashboard_page_search_text(page);
+fn page_matches_query(page: Page, query: &str) -> bool {
+    let mut text = page_search_text(page);
     if text.is_ascii() {
         text.make_ascii_lowercase();
     } else {
@@ -381,14 +376,17 @@ fn dashboard_page_matches_query(page: Page, query: &str) -> bool {
     query.split_whitespace().all(|term| text.contains(term))
 }
 
-pub(super) fn dashboard_page_search_text(page: Page) -> String {
+fn page_search_text(page: Page) -> String {
     let label = page.label();
     let section = page.section_label();
     let mut search = match page {
-        Page::Home => format!(
-            "{label} {section} {} {} overview summary current automation decision power plan cpu enabled rules",
-            t!("home.intro_1"),
-            t!("home.intro_2"),
+        Page::Dashboard => format!(
+            "{label} {section} {} {} {} {} {} process list running processes pid process rules priority gpu cpu affinity efficiency policy overview summary current automation decision power plan enabled features telemetry history",
+            t!("process_list.title"),
+            t!("dashboard.by_cpu_load"),
+            t!("dashboard.memory_usage"),
+            t!("dashboard.io_usage"),
+            t!("dashboard.network_usage"),
         ),
         Page::PowerPlanControl => format!(
             "{label} {section} {} {} power plan automation foreground focused app running app performance mode cpu load activity idle schedule time battery plugged ac dc",
@@ -468,10 +466,6 @@ pub(super) fn dashboard_page_search_text(page: Page) -> String {
             "{label} {section} {} {} cpu sets soft preferred processors per app foreground",
             t!("cpu_sets_soft.enable_help"),
             t!("cpu_allocation.rules_help"),
-        ),
-        Page::ProcessList => format!(
-            "{label} {section} {} running processes pid process rules priority gpu cpu affinity efficiency policy overview",
-            t!("process_list.title"),
         ),
         Page::AdaptiveEngine => format!(
             "{label} {section} {} adaptive engine cpu scheduling foreground background priority cpu spike stutter restraint processor placement",
@@ -594,13 +588,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn process_list_search_finds_dashboard() {
+        assert_eq!(
+            search_pages("process list", false).first(),
+            Some(&Page::Dashboard)
+        );
+    }
+
+    #[test]
     fn watchdog_pages_are_discoverable_with_advanced_controls_hidden() {
         assert_eq!(
             workspace_pages(false).take(3).collect::<Vec<_>>(),
-            [Page::Home, Page::ProcessList, Page::Watchdog],
+            [Page::Dashboard, Page::Watchdog, Page::PowerPlanControl],
         );
         assert_eq!(
-            dashboard_search_pages("watchdog", false),
+            search_pages("watchdog", false),
             [
                 Page::Watchdog,
                 Page::ResourceThresholds,
@@ -612,7 +614,7 @@ mod tests {
             ]
         );
         assert!(feature_toggle(Page::Watchdog).is_none());
-        assert!(dashboard_search_pages("memory trim", false).contains(&Page::MemoryTrim));
+        assert!(search_pages("memory trim", false).contains(&Page::MemoryTrim));
     }
 
     #[test]
@@ -635,17 +637,17 @@ mod tests {
     fn page_history_supports_back_forward_and_new_branches() {
         let mut history = History::default();
         assert_eq!(history.travel(false), None);
-        history.visit(Page::ProcessList);
+        history.visit(Page::Watchdog);
         history.visit(Page::ActionLog);
-        assert_eq!(history.travel(false), Some(Page::ProcessList));
-        history.visit(Page::ProcessList);
+        assert_eq!(history.travel(false), Some(Page::Watchdog));
+        history.visit(Page::Watchdog);
         assert_eq!(history.travel(true), Some(Page::ActionLog));
         assert_eq!(history.travel(true), None);
-        assert_eq!(history.travel(false), Some(Page::ProcessList));
+        assert_eq!(history.travel(false), Some(Page::Watchdog));
         history.visit(Page::About);
         assert_eq!(history.travel(true), None);
-        assert_eq!(history.travel(false), Some(Page::ProcessList));
-        assert_eq!(history.travel(false), Some(Page::Home));
+        assert_eq!(history.travel(false), Some(Page::Watchdog));
+        assert_eq!(history.travel(false), Some(Page::Dashboard));
     }
 
     #[test]
@@ -731,10 +733,10 @@ mod tests {
             section_enabled_feature_count(&settings, Page::CpuControl),
             Some(cpu_count + 1)
         );
-        assert!(dashboard_search_pages("adaptive engine", false).contains(&Page::AdaptiveEngine));
-        assert!(dashboard_search_pages("efficiency mode", false).contains(&Page::EfficiencyMode));
-        assert!(dashboard_search_pages("suspension", false).contains(&Page::AppSuspension));
-        assert!(!dashboard_search_pages("timer resolution", false).contains(&Page::TimerResolution));
-        assert!(dashboard_search_pages("timer resolution", true).contains(&Page::TimerResolution));
+        assert!(search_pages("adaptive engine", false).contains(&Page::AdaptiveEngine));
+        assert!(search_pages("efficiency mode", false).contains(&Page::EfficiencyMode));
+        assert!(search_pages("suspension", false).contains(&Page::AppSuspension));
+        assert!(!search_pages("timer resolution", false).contains(&Page::TimerResolution));
+        assert!(search_pages("timer resolution", true).contains(&Page::TimerResolution));
     }
 }

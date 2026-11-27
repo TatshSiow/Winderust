@@ -458,6 +458,67 @@ impl ProcessList {
     }
 
     #[cfg(feature = "render-smoke")]
+    pub(super) fn populate_smoke_rows(&mut self) {
+        let now = std::time::Instant::now();
+        self.hide_inaccessible = false;
+        self.population_loaded = true;
+        self.refresh_started_at = Some(now);
+        self.processes.clear();
+        self.samples.clear();
+        self.cpu.clear();
+        self.icons.clear();
+        for (index, (name, cpu, memory)) in [
+            ("browser.exe", 9.3, 1160),
+            ("code-editor.exe", 5.4, 719),
+            ("build-worker.exe", 4.6, 446),
+            ("file-manager.exe", 2.4, 132),
+            ("project-sync.exe", 1.6, 98),
+            ("terminal.exe", 0.8, 85),
+            ("audio-host.exe", 0.7, 56),
+            ("desktop-shell.exe", 0.3, 38),
+            ("media-viewer.exe", 0.2, 154),
+            ("note-editor.exe", 0.1, 67),
+            ("update-agent.exe", 0.1, 21),
+            ("window-host.exe", 0.0, 45),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let id = 1204 + index as u32 * 44;
+            self.processes.push(ProcessInfo {
+                id,
+                creation_time: None,
+                parent_id: None,
+                session_id: Some(1),
+                user_name: Some("Demo User".into()),
+                is_service_account: Some(false),
+                is_critical: Some(false),
+                can_set_information: true,
+                name: name.into(),
+                // A relative path and absent creation time cannot authorize a live action.
+                image_path: Some(PathBuf::from(name)),
+            });
+            self.samples.insert(
+                id,
+                ProcessResourceSample {
+                    cpu: crate::cpu::ProcessCpuSample {
+                        cpu_time_100ns: 0,
+                        sampled_at: now,
+                    },
+                    creation_time: 0,
+                    working_set_bytes: Some(memory * 1024 * 1024),
+                    private_commit_bytes: None,
+                    efficiency_mode: Some(index >= 9),
+                },
+            );
+            self.cpu.insert(id, cpu);
+        }
+        self.sort = Sort::Cpu;
+        self.descending = true;
+        self.rebuild();
+    }
+
+    #[cfg(feature = "render-smoke")]
     pub(super) fn show_copy_path_fixture(&mut self, context: bool) {
         self.selected = Some(Selection {
             nested: false,
@@ -1687,20 +1748,27 @@ impl ProcessList {
                 .spacing(design::space::SMALL)
                 .align_y(iced::Center),
             );
-        column![
-            super::widgets::panel_heading(t!("nav.settings").to_string()),
-            scrollable(filters.padding([0, design::space::MEDIUM as u16])).height(Fill)
-        ]
-        .spacing(design::space::MEDIUM)
-        .height(Fill)
-        .into()
+        scrollable(filters.padding([0, design::space::MEDIUM as u16]))
+            .height(Fill)
+            .into()
     }
 
-    pub(super) fn view<'a>(
+    #[cfg(test)]
+    fn view<'a>(
         &'a self,
         settings: &'a SettingsEditor,
         plans: PlanCatalog<'a>,
     ) -> Element<'a, Message> {
+        self.view_with_header(settings, plans, None, std::convert::identity)
+    }
+
+    pub(super) fn view_with_header<'a, M: Clone + 'a>(
+        &'a self,
+        settings: &'a SettingsEditor,
+        plans: PlanCatalog<'a>,
+        header: Option<Element<'a, M>>,
+        map: impl Fn(Message) -> M + Copy + 'a,
+    ) -> Element<'a, M> {
         let count = if self.population_loaded {
             t!("process_list.count", count = self.processes.len())
         } else if self.refreshing || self.error.is_none() {
@@ -1964,7 +2032,15 @@ impl ProcessList {
             }
             layers.into()
         })));
-        let body = mouse_area(body).on_move(Message::PointerMoved);
+        let body = Element::from(mouse_area(body).on_move(Message::PointerMoved)).map(map);
+        let body = if let Some(header) = header {
+            column![header, body]
+                .spacing(super::widgets::CARD_GAP)
+                .height(Fill)
+                .into()
+        } else {
+            body
+        };
         if let Some((stopping, tree)) = &self.stopping {
             let (title, warning, action) = if *tree {
                 (
@@ -2012,10 +2088,13 @@ impl ProcessList {
                         }
                     }
                 )),
-                container(iced::widget::opaque(dialog))
-                    .padding(design::space::MEDIUM as u16)
-                    .center_x(Fill)
-                    .center_y(Fill),
+                Element::from(
+                    container(iced::widget::opaque(dialog))
+                        .padding(design::space::MEDIUM as u16)
+                        .center_x(Fill)
+                        .center_y(Fill),
+                )
+                .map(map),
             ]
             .into();
         }
@@ -2047,7 +2126,7 @@ impl ProcessList {
             if let Some(anchor) = self.context {
                 return iced::widget::stack![
                     super::modal::background(body),
-                    responsive(move |_size| {
+                    Element::from(responsive(move |_size| {
                         let menu_branch = |branch| {
                             Message::MenuBranch(if eligible { branch } else { MenuBranch::Closed })
                         };
@@ -2300,7 +2379,8 @@ impl ProcessList {
                                 )
                             })
                             .into()
-                    })
+                    }))
+                    .map(map),
                 ]
                 .into();
             }
@@ -2473,19 +2553,22 @@ impl ProcessList {
                         ..Default::default()
                     }
                 }))
-                .on_press(Message::CloseSelection)
-                .on_right_press(Message::CloseSelection),
-                container(iced::widget::opaque(
-                    container(details)
-                        .width(Fill)
-                        .max_width(960)
-                        .height(Fill)
-                        .max_height(680)
-                        .style(super::widgets::surface)
-                ))
-                .padding(design::space::MEDIUM as u16)
-                .center_x(Fill)
-                .center_y(Fill),
+                .on_press(map(Message::CloseSelection))
+                .on_right_press(map(Message::CloseSelection)),
+                Element::from(
+                    container(iced::widget::opaque(
+                        container(details)
+                            .width(Fill)
+                            .max_width(960)
+                            .height(Fill)
+                            .max_height(680)
+                            .style(super::widgets::surface)
+                    ))
+                    .padding(design::space::MEDIUM as u16)
+                    .center_x(Fill)
+                    .center_y(Fill),
+                )
+                .map(map),
             ]
             .into();
         }
@@ -3235,7 +3318,7 @@ mod tests {
         assert!(!list.rulesets_open());
     }
     #[test]
-    fn page_process_list_transitions_keep_repaints_bounded() {
+    fn dashboard_transitions_keep_repaints_bounded() {
         use crate::automation::RuntimeStatusSnapshot;
         use iced::advanced::{layout, renderer::Renderer as _, widget::Tree, Layout};
         use iced::{mouse, Rectangle, Size};
@@ -3252,8 +3335,8 @@ mod tests {
         };
         list.rebuild();
         let settings = SettingsEditor::with_settings(Settings::default());
-        let mut home = super::super::home::Model::default();
-        home.populate_smoke_history();
+        let mut dashboard = super::super::dashboard::Model::default();
+        dashboard.populate_smoke_history();
         let log = super::super::action_log::Editor::default();
         let entries: Vec<_> = (1..=500)
             .map(|id| crate::action_log::ActionLogEntry {
@@ -3276,28 +3359,25 @@ mod tests {
         let mut tree = Tree::empty();
         let mut previous = Vec::new();
         for frame in 0..16 {
-            let home_page = frame < 8 && frame % 2 == 0;
+            let dock_closed = frame < 8 && frame % 2 == 0;
             let log_page = frame >= 8 && frame % 2 == 0;
-            let content = if home_page {
-                home.view(&settings, &status).map(|_| Message::Refresh)
-            } else if log_page {
+            let content = if log_page {
                 log.view(&status.action_log_entries, &[])
                     .map(|_| Message::Refresh)
             } else {
-                list.view(&settings, PlanCatalog::Loaded(&[]))
+                list.view_with_header(
+                    &settings,
+                    PlanCatalog::Loaded(&[]),
+                    Some(dashboard.metrics().map(|_| Message::Refresh)),
+                    std::convert::identity,
+                )
             };
             let page = super::super::motion::wrap(
                 scrolling::repaint_group(content),
                 true,
-                super::super::motion::Effect::Content(if home_page {
-                    0
-                } else if log_page {
-                    1
-                } else {
-                    2
-                }),
+                super::super::motion::Effect::Content(u64::from(log_page)),
             );
-            let mut view: Element<'_, Message> = if home_page {
+            let mut view: Element<'_, Message> = if dock_closed {
                 page
             } else {
                 let panel = if log_page {
@@ -3342,7 +3422,7 @@ mod tests {
             previous = renderer.layers().to_vec();
             assert!(
                 damage.len() <= 4,
-                "Page / Process List transition {frame} fragmented into {} repaint regions",
+                "Dashboard transition {frame} fragmented into {} repaint regions",
                 damage.len()
             );
             let damaged_area: f32 = damage
@@ -3361,7 +3441,7 @@ mod tests {
         use std::time::Instant;
 
         let font_start = Instant::now();
-        let _ = super::super::widgets::text_width("Home", design::typography::BODY);
+        let _ = super::super::widgets::text_width("Dashboard", design::typography::BODY);
         eprintln!("Font warmup: {:?}", font_start.elapsed());
         let start = Instant::now();
         let population = load_population(false, None).unwrap();

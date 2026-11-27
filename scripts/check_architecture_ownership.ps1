@@ -773,8 +773,8 @@ Assert-NoSourceMatch `
     -Paths @('src/backend/automation.rs', 'src/backend/automation', 'src/control')
 
 Assert-SourceMatchCount `
-    -Boundary 'WinderustApp owns one Home read model' `
-    -Pattern '^\s*home:\s*home::Model,' `
+    -Boundary 'WinderustApp owns one Dashboard metrics read model' `
+    -Pattern '^\s*dashboard:\s*dashboard::Model,' `
     -Paths @('src/ui/app.rs') `
     -ExpectedCount 1
 
@@ -784,9 +784,9 @@ Assert-NoSourceMatch `
     -Paths @('src/ui/app.rs')
 
 Assert-NoSourceMatch `
-    -Boundary 'Home model keeps native sampling handles on its worker' `
+    -Boundary 'Dashboard keeps native sampling handles on its worker' `
     -Pattern '^\s*\w+:\s*(?:CpuUsageMonitor|IoUsageMonitor|NetworkUsageMonitor)|unsafe impl Send|Mutex<(?:CpuUsageMonitor|IoUsageMonitor|NetworkUsageMonitor)' `
-    -Paths @('src/ui/home.rs')
+    -Paths @('src/ui/dashboard.rs')
 
 Assert-SourceMatchCount `
     -Boundary 'WinderustApp owns one settings and update UI editor' `

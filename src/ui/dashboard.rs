@@ -29,54 +29,15 @@ const HISTORY_WINDOW: std::time::Duration =
     std::time::Duration::from_secs((HISTORY_LEN - 1) as u64);
 // One-second sampling is dispatched on 250ms UI ticks; allow dispatch and worker jitter.
 const MAX_SAMPLE_GAP: std::time::Duration = std::time::Duration::from_millis(1500);
-const CHART_AXIS_WIDTH: f32 = 64.0;
 const CHART_FILL_ALPHA: f32 = 0.08;
-const RECENT_LOG_LIMIT: usize = 20;
+const METRIC_CARD_HEIGHT: u32 = 118;
+const METRIC_PLOT_HEIGHT: u32 = 42;
+const WIDE_METRIC_PLOT_HEIGHT: u32 = 80;
+const WIDE_METRIC_CARD_WIDTH: f32 = 216.0;
+const METRIC_READOUT_WIDTH: u32 = 108;
+const METRIC_READOUT_HEIGHT: u32 = 42;
+const RECENT_LOG_LIMIT: usize = 5;
 
-struct DashboardLayout {
-    columns: usize,
-    chart_height: f32,
-    summary_height: f32,
-    fits: bool,
-}
-
-impl DashboardLayout {
-    fn for_size(size: iced::Size) -> Self {
-        let columns = if size.width >= 1280.0 && size.height < 680.0 {
-            4
-        } else if size.width >= 720.0 {
-            2
-        } else {
-            1
-        };
-        let chart_rows = 4 / columns;
-        let summary_rows = if columns == 1 { 2 } else { 1 };
-        let gaps = (chart_rows + summary_rows - 1) as f32 * super::widgets::CARD_GAP as f32;
-        let available = size.height - gaps - 4.0;
-        let minimum_summary = if columns == 1 {
-            220.0
-        } else if size.width < 1000.0 {
-            176.0
-        } else {
-            160.0
-        };
-        let chart_height = ((available - minimum_summary * summary_rows as f32)
-            / chart_rows as f32)
-            .floor()
-            .clamp(200.0, 244.0);
-        let summary_height = ((available - chart_height * chart_rows as f32) / summary_rows as f32)
-            .floor()
-            .clamp(minimum_summary, 288.0);
-        let fits = gaps + chart_height * chart_rows as f32 + summary_height * summary_rows as f32
-            <= size.height;
-        Self {
-            columns,
-            chart_height,
-            summary_height,
-            fits,
-        }
-    }
-}
 #[derive(Debug)]
 pub(super) struct Sampler {
     channels: Result<
@@ -173,7 +134,7 @@ fn fixture_timestamp(start: Instant, offset: std::time::Duration) -> SampleTimes
     }
 }
 impl Sampler {
-    // Call from an application task once per second while Home sampling is enabled.
+    // Call from an application task once per second while Dashboard sampling is enabled.
     // Dropping Sampler disconnects requests and lets its worker drop all native monitors.
     pub(super) fn sample(&mut self) -> Result<Sample, String> {
         let (request, response) = self.channels.as_ref().map_err(Clone::clone)?;
@@ -329,246 +290,198 @@ impl Model {
         }
     }
 
-    pub(super) fn view<'a>(
-        &'a self,
-        settings: &'a Settings,
-        status: &'a RuntimeStatusSnapshot,
-    ) -> Element<'a, Message> {
+    pub(super) fn metrics(&self) -> Element<'_, Message> {
+        let now = Instant::now();
+        let chart_end = self.chart_end(now);
+        let sample = if self.overdue(now) {
+            Sample::default()
+        } else {
+            self.latest
+        };
         responsive(move |size| {
-            let now = Instant::now();
-            let chart_end = self.chart_end(now);
-            let displayed_sample = if self.overdue(now) {
-                Sample::default()
-            } else {
-                self.latest
-            };
-            let layout = DashboardLayout::for_size(iced::Size::new(
-                (size.width - super::scrolling::SCROLLBAR_GUTTER).max(0.0),
-                size.height,
-            ));
-            let mut body = column![].spacing(super::widgets::CARD_GAP);
-            for kinds in [
+            let kinds = [
                 ChartKind::Cpu,
                 ChartKind::Memory,
                 ChartKind::Io,
                 ChartKind::Network,
-            ]
-            .chunks(layout.columns)
-            {
-                let mut charts = row![].spacing(super::widgets::CARD_GAP);
-                for kind in kinds {
-                    charts = charts.push(self.chart_card(
-                        *kind,
-                        self.chart_at(*kind, chart_end),
-                        layout.chart_height,
-                        displayed_sample,
-                    ));
-                }
-                body = body.push(charts);
-            }
-            let power_source = match self.latest.power_source {
-                PowerSourceReading::Available(source) => Some(source),
-                _ => None,
-            };
-            let entries = power_source.map(|source| {
+            ];
+            let gaps = (kinds.len() - 1) as f32 * design::space::SMALL as f32;
+            let wide = (size.width - gaps) / kinds.len() as f32 >= WIDE_METRIC_CARD_WIDTH;
+            row(kinds
+                .map(|kind| self.chart_card(kind, self.chart_at(kind, chart_end), sample, wide)))
+            .width(Fill)
+            .spacing(design::space::SMALL)
+            .into()
+        })
+        .height(METRIC_CARD_HEIGHT)
+        .into()
+    }
+
+    pub(super) fn status<'a>(
+        &'a self,
+        settings: &'a Settings,
+        runtime: &'a RuntimeStatusSnapshot,
+        plans: &[crate::power::PowerPlan],
+    ) -> Element<'a, Message> {
+        let now = Instant::now();
+        let sample = if self.overdue(now) {
+            Sample::default()
+        } else {
+            self.latest
+        };
+        let (source, entries) = match self.latest.power_source {
+            PowerSourceReading::Available(source) => {
                 let profile = match source {
                     PowerSourceProfile::PluggedIn => settings,
                     PowerSourceProfile::OnBattery => settings.battery_profile(),
                 };
                 let activity = if settings.general.enabled {
-                    status.by_activity_state(source, &profile.by_activity, now)
+                    runtime.by_activity_state(source, &profile.by_activity, now)
                 } else {
                     ActivityState::Unknown
                 };
-                enabled_features(
-                    profile,
-                    source,
-                    &status.feature_status,
-                    &displayed_sample,
-                    activity,
-                )
-            });
-            let count = entries.as_ref().map(Vec::len);
-            let mut title = row![super::widgets::heading(
-                t!("home.enabled_features").to_string(),
-                design::typography::SECTION
-            )]
-            .spacing(design::space::SMALL)
-            .align_y(iced::Center);
-            if let Some(count) = count {
-                title = title.push(
-                    container(text(count.to_string()).size(design::typography::CAPTION))
-                        .padding([2, 8])
-                        .style(move |theme| super::widgets::indicator_chip(theme, count > 0)),
-                );
-            }
-            let master = button(
-                text(
-                    if settings.general.enabled {
-                        t!("home.master_switch_enabled")
-                    } else {
-                        t!("home.master_switch_disabled")
-                    }
-                    .to_string(),
-                )
-                .size(design::typography::CAPTION),
-            )
-            .padding(0)
-            .style(super::widgets::quiet)
-            .on_press(Message::Navigate(Page::WinderustBehaviour));
-            let header: Element<'_, Message> = if size.width >= 1000.0 {
-                row![title, iced::widget::Space::new().width(Fill), master]
-                    .align_y(iced::Center)
-                    .into()
-            } else {
-                column![title, master].spacing(design::space::TIGHT).into()
-            };
-            let mut features = column![];
-            for (page, detail) in entries.into_iter().flatten() {
-                features = features.push(
-                    button(
-                        row![
-                            container(iced::widget::Space::new())
-                                .width(8)
-                                .height(8)
-                                .style(|theme: &Theme| container::Style {
-                                    background: Some(theme.palette().success.into()),
-                                    border: iced::border::rounded(4),
-                                    ..Default::default()
-                                }),
-                            text(page.label())
-                                .size(design::typography::SECONDARY)
-                                .width(Fill),
-                            text(detail)
-                                .size(design::typography::CAPTION)
-                                .style(text::secondary),
-                        ]
-                        .spacing(design::space::SMALL)
-                        .align_y(iced::Center),
-                    )
-                    .width(Fill)
-                    .padding([6, 4])
-                    .style(super::widgets::quiet)
-                    .on_press(Message::Navigate(page)),
-                );
-                features = features.push(iced::widget::rule::horizontal(1));
-            }
-            let feature_content: Element<'_, Message> = if count.is_some_and(|count| count > 0) {
-                scrollable(features)
-                    .id("home-enabled-features")
-                    .height(Fill)
-                    .into()
-            } else {
-                let empty_message = match self.latest.power_source {
-                    PowerSourceReading::Collecting => "home.collecting",
-                    _ if count.is_some() => "home.no_enabled_features",
-                    _ => "home.power_source_unavailable",
+                let label = match source {
+                    PowerSourceProfile::PluggedIn => "power_source.plugged_in",
+                    PowerSourceProfile::OnBattery => "power_source.on_battery",
                 };
-                container(
-                    text(t!(empty_message).to_string())
-                        .align_x(iced::Center)
-                        .style(text::secondary),
+                (
+                    label,
+                    Some(enabled_features(
+                        profile,
+                        source,
+                        &runtime.feature_status,
+                        &sample,
+                        activity,
+                    )),
                 )
-                .padding(design::space::SMALL as u16)
-                .center_x(Fill)
-                .center_y(Fill)
-                .into()
-            };
-            let enabled = container(
-                column![header, iced::widget::rule::horizontal(1), feature_content,]
-                    .spacing(design::space::SMALL),
-            )
-            .padding(design::space::LARGE as u16)
-            .height(layout.summary_height)
-            .width(Fill)
-            .style(super::widgets::surface);
-            let recent = recent_logs(
-                &status.action_log_entries,
-                layout.summary_height,
-                &self.recent_log_widths,
+            }
+            PowerSourceReading::Collecting => ("dashboard.collecting", None),
+            PowerSourceReading::Unavailable => ("dashboard.power_source_unavailable", None),
+        };
+        let count = entries.as_ref().map(Vec::len);
+        let mut title = row![super::widgets::heading(
+            t!("dashboard.enabled_features").to_string(),
+            design::typography::SECTION,
+        )]
+        .spacing(design::space::SMALL)
+        .align_y(iced::Center);
+        if let Some(count) = count {
+            title = title.push(
+                container(text(count.to_string()).size(design::typography::CAPTION))
+                    .padding([2, 8])
+                    .style(move |theme| super::widgets::indicator_chip(theme, count > 0)),
             );
-            if layout.columns > 1 {
-                body = body.push(row![enabled, recent].spacing(super::widgets::CARD_GAP));
-            } else {
-                body = body.push(enabled).push(recent);
-            }
-            if layout.fits {
-                super::scrolling::vertical_gutter(body)
-                    .width(Fill)
-                    .height(Fill)
-                    .into()
-            } else {
-                scrollable(body).id("home-content").height(Fill).into()
-            }
-        })
-        .into()
+        }
+        let master = button(
+            text(
+                if settings.general.enabled {
+                    t!("dashboard.master_switch_enabled")
+                } else {
+                    t!("dashboard.master_switch_disabled")
+                }
+                .to_string(),
+            )
+            .size(design::typography::CAPTION),
+        )
+        .padding(0)
+        .style(super::widgets::quiet)
+        .on_press(Message::Navigate(Page::WinderustBehaviour));
+        let mut features = column![title, master].spacing(design::space::TIGHT);
+        if count == Some(0) {
+            features = features
+                .push(text(t!("dashboard.no_enabled_features").to_string()).style(text::secondary));
+        }
+        for (page, detail) in entries.into_iter().flatten() {
+            features = features.push(
+                button(
+                    row![
+                        container(iced::widget::Space::new())
+                            .width(8)
+                            .height(8)
+                            .style(|theme: &Theme| container::Style {
+                                background: Some(theme.palette().success.into()),
+                                border: iced::border::rounded(4),
+                                ..Default::default()
+                            }),
+                        text(page.label())
+                            .size(design::typography::SECONDARY)
+                            .width(Fill),
+                        text(detail)
+                            .size(design::typography::CAPTION)
+                            .style(text::secondary),
+                    ]
+                    .spacing(design::space::SMALL)
+                    .align_y(iced::Center),
+                )
+                .width(Fill)
+                .padding([6, 4])
+                .style(super::widgets::quiet)
+                .on_press(Message::Navigate(page)),
+            );
+        }
+
+        let plan = super::power_plan_control::current_plan_name(&runtime.power_plan_status, plans);
+        let body = column![
+            text(t!(source).to_string()).size(design::typography::SECONDARY),
+            column![
+                text(t!("common.current_power_plan").to_string())
+                    .size(design::typography::CAPTION)
+                    .style(text::secondary),
+                text(plan)
+                    .size(design::typography::BODY)
+                    .wrapping(text::Wrapping::WordOrGlyph),
+            ]
+            .spacing(design::space::TIGHT),
+            iced::widget::rule::horizontal(1),
+            features,
+            iced::widget::rule::horizontal(1),
+            recent_logs(&runtime.action_log_entries, &self.recent_log_widths),
+        ]
+        .spacing(design::space::MEDIUM)
+        .width(Fill);
+        scrollable(container(body).padding([0, design::space::MEDIUM as u16]))
+            .id("dashboard-status")
+            .height(Fill)
+            .width(Fill)
+            .into()
     }
+
     fn chart_card(
         &self,
         kind: ChartKind,
         chart: Chart,
-        height: f32,
         sample: Sample,
+        wide: bool,
     ) -> Element<'static, Message> {
-        let (title, first, second, first_value, second_value) = match kind {
+        let (title, total, secondary) = match kind {
             ChartKind::Cpu => (
-                t!("home.by_cpu_load"),
-                t!("home.cpu_load"),
-                t!("home.cpu_frequency"),
-                String::new(),
-                cpu_frequency_label(sample.cpu.frequency_mhz),
+                t!("dashboard.by_cpu_load"),
+                usage_percentage_label(sample.cpu.percent),
+                sample
+                    .cpu
+                    .frequency_mhz
+                    .map(|mhz| cpu_frequency_label(Some(mhz))),
             ),
             ChartKind::Memory => (
-                t!("home.memory_usage"),
-                t!("home.memory_used"),
-                t!("home.memory_available"),
-                memory_usage_value_label(sample.memory),
-                memory_available_value_label(sample.memory),
+                t!("dashboard.memory_usage"),
+                usage_percentage_label(sample.memory.percent),
+                sample
+                    .memory
+                    .used_physical_bytes
+                    .zip(sample.memory.total_physical_bytes)
+                    .map(|_| memory_usage_value_label(sample.memory)),
             ),
             ChartKind::Io => (
-                t!("home.io_usage"),
-                t!("home.io_read"),
-                t!("home.io_write"),
-                io_rate_label(sample.io.read_bytes_per_second),
-                io_rate_label(sample.io.write_bytes_per_second),
+                t!("dashboard.io_usage"),
+                io_rate_label(sample.io.bytes_per_second),
+                None,
             ),
             ChartKind::Network => (
-                t!("home.network_usage"),
-                t!("home.network_download"),
-                t!("home.network_upload"),
-                io_rate_label(sample.network.download_bytes_per_second),
-                io_rate_label(sample.network.upload_bytes_per_second),
+                t!("dashboard.network_usage"),
+                io_rate_label(sample.network.bytes_per_second),
+                None,
             ),
         };
-        let total = match kind {
-            ChartKind::Cpu => usage_percentage_label(sample.cpu.percent),
-            ChartKind::Memory => usage_percentage_label(sample.memory.percent),
-            ChartKind::Io => io_rate_label(sample.io.bytes_per_second),
-            ChartKind::Network => io_rate_label(sample.network.bytes_per_second),
-        };
-        let labels = match kind {
-            ChartKind::Cpu => [
-                format!("{first} (%)"),
-                t!("home.cpu_frequency_relative").to_string(),
-            ],
-            ChartKind::Memory => [format!("{title} (%)"), String::new()],
-            ChartKind::Io | ChartKind::Network => {
-                [format!("{first} (B/s)"), format!("{second} (B/s)")]
-            }
-        };
-        let mut legend = row![].spacing(design::space::LARGE);
-        for (series, label) in labels.into_iter().enumerate() {
-            if !label.is_empty() {
-                legend = legend.push(
-                    row![
-                        chart_key(series, 8),
-                        text(label).size(design::typography::BADGE),
-                    ]
-                    .spacing(design::space::CONTROL)
-                    .align_y(iced::Center),
-                );
-            }
-        }
         let tip = chart
             .readout(self, self.hovered[kind as usize])
             .map(ChartReadout::tooltip)
@@ -579,107 +492,122 @@ impl Model {
             .is_some_and(|inspection| inspection.at.is_none())
             && chart.history_time(None, true).is_none();
         let inspecting = history.is_some() || empty_history;
-        // Chart tooltip content owns its inset background and cursor spacing.
+        let mut label = row![
+            chart_key(0, 6),
+            super::widgets::heading(title.into_owned(), design::typography::SECONDARY)
+                .line_height(iced::Pixels(14.0))
+                .width(Fill),
+        ]
+        .spacing(design::space::TIGHT)
+        .align_y(iced::Center);
+        if wide {
+            let ceiling = match kind {
+                ChartKind::Cpu => Some("100%".to_owned()),
+                ChartKind::Memory => self
+                    .latest
+                    .memory
+                    .total_physical_bytes
+                    .map(format_memory_capacity),
+                ChartKind::Io | ChartKind::Network => chart
+                    .samples
+                    .iter()
+                    .flatten()
+                    .any(ChartSample::has_reading)
+                    .then(|| format_bytes_per_second(chart.maximum)),
+            };
+            if let Some(ceiling) = ceiling {
+                label = label.push(
+                    text(ceiling)
+                        .size(design::typography::BADGE)
+                        .line_height(iced::Pixels(14.0))
+                        .style(text::secondary),
+                );
+            }
+        }
+        let plot_height = if wide {
+            WIDE_METRIC_PLOT_HEIGHT
+        } else {
+            METRIC_PLOT_HEIGHT
+        };
         let plot = iced::widget::tooltip(
-            canvas(chart).width(Fill).height((height - 136.0).max(64.0)),
+            canvas(chart).width(Fill).height(plot_height),
             tip,
             iced::widget::tooltip::Position::FollowCursor,
         )
         .padding(0)
         .delay(std::time::Duration::ZERO)
         .style(|_| container::Style::default());
-        let is_io = matches!(kind, ChartKind::Io | ChartKind::Network);
-        let (right_label, right_value, primary): (_, _, Element<'static, Message>) =
-            if let Some(history) = history {
-                let mut values = column![].spacing(design::space::TIGHT);
-                for (series, label) in history.values.into_iter().enumerate() {
-                    if let Some(label) = label {
-                        values = values.push(chart_metric(label, series));
-                    }
-                }
-                (
-                    t!("home.chart_history_at", time = history.time).into_owned(),
-                    String::new(),
-                    values.into(),
-                )
-            } else if empty_history {
-                (
-                    t!("home.chart_history").into_owned(),
-                    String::new(),
-                    text(t!("home.chart_history_empty").into_owned())
+        let readings = if let Some(history) = history {
+            let mut values =
+                column![
+                    text(t!("dashboard.chart_history_at", time = history.time).into_owned())
+                        .size(design::typography::BADGE)
+                        .line_height(iced::Pixels(13.0))
                         .style(text::secondary)
-                        .into(),
-                )
-            } else if is_io {
-                let details = column![
-                    chart_metric(format!("{first}: {first_value}"), 0),
-                    chart_metric(format!("{second}: {second_value}"), 1),
-                ]
-                .spacing(design::space::TIGHT);
-                (t!("home.io_total").into_owned(), total, details.into())
+                ];
+            for (series, label) in history.values.into_iter().enumerate() {
+                if let Some(label) = label {
+                    values = values.push(chart_metric(label, series));
+                }
+            }
+            values
+        } else if empty_history {
+            column![
+                text(t!("dashboard.chart_history").into_owned())
+                    .size(design::typography::BADGE)
+                    .style(text::secondary),
+                text(t!("dashboard.chart_history_empty").into_owned())
+                    .size(design::typography::CAPTION),
+            ]
+        } else {
+            let (number, unit) = metric_value_parts(&total);
+            let value_size = if unit.is_empty() {
+                design::typography::BODY
             } else {
-                let details = column![
-                    super::widgets::heading(total, design::typography::TITLE),
-                    text(if kind == ChartKind::Memory {
-                        format!("{first}: {first_value}")
-                    } else {
-                        String::new()
-                    })
-                    .size(design::typography::CAPTION)
-                    .style(text::secondary),
-                ]
-                .spacing(design::space::TIGHT);
-                (second.into_owned(), second_value, details.into())
+                26
             };
-        let mut secondary =
-            column![
-                super::widgets::heading(right_value, design::typography::DIALOG_TITLE).style(
-                    move |theme: &Theme| text::Style {
-                        color: Some(if kind == ChartKind::Cpu {
-                            chart_text_color(theme, 1)
-                        } else {
-                            theme.palette().text
-                        }),
-                    }
-                )
-            ]
-            .spacing(design::space::TIGHT)
-            .align_x(iced::Right);
-        if kind == ChartKind::Memory && !inspecting {
-            let amount = sample.memory.system_commit.map_or_else(
-                || t!("common.unknown").into_owned(),
-                |commit| memory_range_label(commit.committed_bytes, commit.limit_bytes),
-            );
-            secondary = secondary.push(
-                text(t!("home.memory_committed", amount = amount).into_owned())
-                    .size(design::typography::CAPTION)
-                    .style(text::secondary),
-            );
-        }
-        let card = container(
-            column![
-                row![
-                    super::widgets::heading(title.to_string(), design::typography::SECTION)
-                        .width(Fill),
-                    text(right_label)
-                        .size(design::typography::CAPTION)
+            let mut primary = row![text(number.to_owned())
+                .size(value_size)
+                .line_height(iced::Pixels(29.0))
+                .font(design::typography::DEFAULT_FONT),]
+            .spacing(design::space::TINY)
+            .align_y(iced::Bottom);
+            if !unit.is_empty() {
+                primary = primary.push(
+                    container(
+                        text(unit.to_owned())
+                            .size(design::typography::CAPTION)
+                            .line_height(iced::Pixels(16.0))
+                            .style(text::secondary),
+                    )
+                    .padding(iced::Padding::ZERO.bottom(3)),
+                );
+            }
+            let mut values = column![primary];
+            if let Some(secondary) = secondary {
+                values = values.push(
+                    text(secondary)
+                        .size(design::typography::BADGE)
+                        .line_height(iced::Pixels(13.0))
                         .style(text::secondary),
-                ]
+                );
+            }
+            values
+        };
+        let readings = container(readings).height(METRIC_READOUT_HEIGHT).clip(true);
+        let body: Element<'_, Message> = if wide {
+            row![readings.width(METRIC_READOUT_WIDTH), plot]
+                .spacing(design::space::TIGHT)
                 .align_y(iced::Center)
-                .spacing(design::space::SMALL),
-                row![container(primary).width(Fill), secondary]
-                    .height(55)
-                    .align_y(iced::Top)
-                    .spacing(design::space::SMALL),
-                plot,
-                legend,
-            ]
-            .spacing(design::space::TIGHT),
-        )
-        .padding(design::space::LARGE as u16)
-        .height(height)
-        .width(Fill)
-        .style(super::widgets::surface);
+                .into()
+        } else {
+            column![readings.width(Fill), plot].into()
+        };
+        let card = container(column![label, body].spacing(design::space::TIGHT))
+            .padding(design::space::SMALL as u16)
+            .height(METRIC_CARD_HEIGHT)
+            .width(Fill)
+            .style(super::widgets::surface);
         super::motion::wrap_keys(
             card.into(),
             kind.focus_id(),
@@ -772,12 +700,18 @@ impl Model {
         });
         let maximum = match kind {
             ChartKind::Cpu | ChartKind::Memory => 100.0,
-            _ => samples
-                .iter()
-                .flatten()
-                .flat_map(|sample| sample.reading)
-                .flatten()
-                .fold(1.0, f64::max),
+            ChartKind::Io | ChartKind::Network => {
+                let peak = samples
+                    .iter()
+                    .flatten()
+                    .map(|sample| sample.reading.iter().flatten().sum())
+                    .fold(1.0, f64::max);
+                let decade = 10.0_f64.powf(peak.log10().floor());
+                [decade, decade * 2.0, decade * 5.0, decade * 10.0]
+                    .into_iter()
+                    .find(|&ceiling| ceiling >= peak)
+                    .unwrap_or(peak)
+            }
         };
         let inspected = self
             .inspection_for(kind)
@@ -819,11 +753,17 @@ impl RecentLogWidths {
 
 fn recent_logs<'a>(
     logs: &'a Arc<Vec<ActionLogEntry>>,
-    height: f32,
     widths: &'a RefCell<RecentLogWidths>,
 ) -> Element<'a, Message> {
     widths.borrow_mut().reset_for(logs);
-    let mut rows = column![];
+    let mut rows = column![super::widgets::heading(
+        t!("dashboard.recent_logs").to_string(),
+        design::typography::SECTION,
+    )]
+    .spacing(design::space::TIGHT);
+    if logs.is_empty() {
+        rows = rows.push(text(t!("action_log.empty").to_string()).style(text::secondary));
+    }
     for (index, entry) in logs.iter().rev().take(RECENT_LOG_LIMIT).enumerate() {
         rows = rows.push(
             responsive(move |size| {
@@ -831,51 +771,11 @@ fn recent_logs<'a>(
             })
             .height(iced::Shrink),
         );
-        rows = rows.push(iced::widget::rule::horizontal(1));
     }
-    let content: Element<'_, Message> = if logs.is_empty() {
-        container(
-            text(t!("action_log.empty").to_string())
-                .align_x(iced::Center)
-                .style(text::secondary),
-        )
-        .padding(design::space::SMALL as u16)
-        .center_x(Fill)
-        .center_y(Fill)
-        .into()
-    } else {
-        scrollable(rows).id("home-recent-logs").height(Fill).into()
-    };
-    container(super::widgets::action_card(
-        column![
-            super::widgets::heading(
-                t!("home.recent_logs").to_string(),
-                design::typography::SECTION
-            ),
-            iced::widget::rule::horizontal(1),
-            content,
-            row![
-                iced::widget::Space::new().width(Fill),
-                button(
-                    container(
-                        row![
-                            text(t!("home.details").to_string()),
-                            super::navigation::glyph("icons/chevron-right.svg")
-                        ]
-                        .spacing(design::space::SMALL)
-                        .align_y(iced::Center)
-                    )
-                    .center_y(Fill)
-                )
-                .height(design::BUTTON_HEIGHT)
-                .on_press(Message::Navigate(Page::ActionLog)),
-            ],
-        ]
-        .spacing(design::space::SMALL),
-        Some(Message::Navigate(Page::ActionLog)),
-    ))
-    .width(Fill)
-    .height(height)
+    rows.push(
+        super::widgets::action_button(Page::ActionLog.label())
+            .on_press(Message::Navigate(Page::ActionLog)),
+    )
     .into()
 }
 fn recent_log_row(
@@ -883,8 +783,8 @@ fn recent_log_row(
     width: f32,
     measured_width: &mut Option<f32>,
 ) -> Element<'static, Message> {
-    const TIME_WIDTH: f32 = 64.0;
-    const LEVEL_WIDTH: f32 = 64.0;
+    const TIME_WIDTH: f32 = 54.0;
+    const LEVEL_WIDTH: f32 = 42.0;
     const PADDING: [u16; 2] = [6, 4];
     let level = entry.result.level();
     let description = format!(
@@ -906,7 +806,17 @@ fn recent_log_row(
             design::typography::DEFAULT_FONT,
         )
     });
-    let tooltip = (description_width > available).then(|| text(description.clone()));
+    let (description, tooltip) = if description_width > available {
+        let fitted = super::widgets::fitted_text_with_font(
+            &description,
+            available,
+            design::typography::CAPTION,
+            design::typography::DEFAULT_FONT,
+        );
+        (fitted, Some(text(description)))
+    } else {
+        (description, None)
+    };
     let row = button(
         row![
             text(super::action_log::action_log_time_label(
@@ -958,10 +868,10 @@ pub(super) enum ChartKind {
 impl ChartKind {
     pub(super) fn focus_id(self) -> &'static str {
         match self {
-            Self::Cpu => "home-chart-cpu",
-            Self::Memory => "home-chart-memory",
-            Self::Io => "home-chart-disk-io",
-            Self::Network => "home-chart-network-io",
+            Self::Cpu => "dashboard-chart-cpu",
+            Self::Memory => "dashboard-chart-memory",
+            Self::Io => "dashboard-chart-disk-io",
+            Self::Network => "dashboard-chart-network-io",
         }
     }
 
@@ -1045,7 +955,7 @@ fn chart_colors(theme: &Theme) -> [iced::Color; 2] {
         iced::theme::palette::mix(palette.primary, palette.text, 0.5),
     ]
     .map(|color| {
-        // Leave room for 8-bit rounding and both translucent area fills.
+        // Leave room for 8-bit rounding and the translucent area fill.
         if color.relative_contrast(background) >= 3.5 {
             color
         } else {
@@ -1099,7 +1009,8 @@ fn chart_text_color(theme: &Theme, series: usize) -> iced::Color {
 
 fn chart_metric(label: String, series: usize) -> iced::widget::Text<'static> {
     text(label)
-        .size(design::typography::SECTION)
+        .size(design::typography::BADGE)
+        .line_height(iced::Pixels(13.0))
         .style(move |theme| text::Style {
             color: Some(chart_text_color(theme, series)),
         })
@@ -1108,6 +1019,7 @@ fn chart_metric(label: String, series: usize) -> iced::widget::Text<'static> {
 struct ChartReadout {
     time: String,
     values: [Option<String>; 2],
+    memory_details: Option<[String; 3]>,
 }
 
 impl ChartReadout {
@@ -1127,6 +1039,9 @@ impl ChartReadout {
                     .align_y(iced::Center),
                 );
             }
+        }
+        for detail in self.memory_details.into_iter().flatten() {
+            content = content.push(text(detail).size(design::typography::CAPTION));
         }
         row![
             iced::widget::Space::new().width(12),
@@ -1179,7 +1094,8 @@ impl Chart {
     fn readout(&self, model: &Model, slot: Option<usize>) -> Option<ChartReadout> {
         let slot = slot?;
         let sample = self.sample_at(slot)?;
-        let labels = self.kind.tooltip_labels(model.history_sample(slot)?);
+        let observed = model.history_sample(slot)?;
+        let labels = self.kind.tooltip_labels(observed);
         let time = sample
             .captured_at
             .map(|time| {
@@ -1195,10 +1111,13 @@ impl Chart {
                 .to_string()
             });
         let names = match self.kind {
-            ChartKind::Cpu => [t!("home.by_cpu_load"), t!("home.cpu_frequency")],
-            ChartKind::Memory => [t!("home.memory_usage"), "".into()],
-            ChartKind::Io => [t!("home.io_read"), t!("home.io_write")],
-            ChartKind::Network => [t!("home.network_download"), t!("home.network_upload")],
+            ChartKind::Cpu => [t!("dashboard.by_cpu_load"), t!("dashboard.cpu_frequency")],
+            ChartKind::Memory => [t!("dashboard.memory_usage"), "".into()],
+            ChartKind::Io => [t!("dashboard.io_read"), t!("dashboard.io_write")],
+            ChartKind::Network => [
+                t!("dashboard.network_download"),
+                t!("dashboard.network_upload"),
+            ],
         };
         let values = std::array::from_fn(|series| {
             let name = &names[series];
@@ -1209,8 +1128,33 @@ impl Chart {
             };
             (!name.is_empty()).then(|| format!("{name}: {label}"))
         });
-        Some(ChartReadout { time, values })
+        let memory_details = (self.kind == ChartKind::Memory).then(|| {
+            let memory = observed.memory;
+            let used = t!("dashboard.memory_used");
+            let available = t!("dashboard.memory_available");
+            let commit = memory.system_commit.map_or_else(
+                || t!("common.unknown").into_owned(),
+                |commit| memory_range_label(commit.committed_bytes, commit.limit_bytes),
+            );
+            [
+                format!("{used}: {}", memory_usage_value_label(memory)),
+                format!("{available}: {}", memory_available_value_label(memory)),
+                t!("dashboard.memory_committed", amount = commit).into_owned(),
+            ]
+        });
+        Some(ChartReadout {
+            time,
+            values,
+            memory_details,
+        })
     }
+}
+
+fn chart_plot_size(bounds: Rectangle) -> iced::Size {
+    iced::Size::new(
+        (bounds.width - 1.0).max(1.0),
+        (bounds.height - 1.0).max(1.0),
+    )
 }
 
 impl canvas::Program<Message> for Chart {
@@ -1223,19 +1167,16 @@ impl canvas::Program<Message> for Chart {
         cursor: mouse::Cursor,
     ) -> Option<iced::widget::Action<Message>> {
         let hovered = &mut state.hovered;
+        let plot = chart_plot_size(bounds);
         let next = if matches!(event, canvas::Event::Mouse(mouse::Event::CursorLeft)) {
             None
         } else {
             cursor
                 .position_in(bounds)
-                .filter(|point| {
-                    point.y <= (bounds.height - 28.0).max(0.0)
-                        && point.x <= (bounds.width - CHART_AXIS_WIDTH).max(1.0)
-                })
+                .filter(|point| point.y <= plot.height && point.x <= plot.width)
                 .and_then(|point| {
                     self.sample_near(
-                        (1.0 - (point.x / (bounds.width - CHART_AXIS_WIDTH).max(1.0)) as f64)
-                            * HISTORY_WINDOW.as_secs_f64(),
+                        (1.0 - (point.x / plot.width) as f64) * HISTORY_WINDOW.as_secs_f64(),
                     )
                 })
         };
@@ -1286,16 +1227,11 @@ impl Chart {
             bounds.size(),
             theme.extended_palette().background.weak.color,
         );
-        let height = (bounds.height - 28.0).max(1.0);
-        let width = (bounds.width - CHART_AXIS_WIDTH).max(1.0);
+        let iced::Size { width, height } = chart_plot_size(bounds);
         let contrast = design::is_contrast(theme);
         let grid = theme.extended_palette().background.strong.color;
-        let grid = if contrast {
-            grid.scale_alpha(0.32)
-        } else {
-            grid
-        };
-        for fraction in [0.0, 0.5, 1.0] {
+        let grid = grid.scale_alpha(if contrast { 0.32 } else { 0.55 });
+        for fraction in [0.0, 1.0] {
             frame.stroke(
                 &canvas::Path::line(
                     Point::new(0.0, height * fraction),
@@ -1303,39 +1239,6 @@ impl Chart {
                 ),
                 canvas::Stroke::default().with_color(grid),
             );
-            let value = self.maximum * (1.0 - fraction as f64);
-            frame.fill_text(canvas::Text {
-                content: match self.kind {
-                    ChartKind::Cpu | ChartKind::Memory => format!("{value:.0}%"),
-                    ChartKind::Io | ChartKind::Network => format_bytes_per_second(value),
-                },
-                position: Point::new(
-                    width + 6.0,
-                    (height * fraction - 6.0).clamp(0.0, height - 12.0),
-                ),
-                color: super::widgets::muted_color(theme),
-                size: 10.0.into(),
-                ..Default::default()
-            });
-        }
-        for (index, age) in [60, 45, 30, 15, 0].into_iter().enumerate() {
-            let x = width * index as f32 / 4.0;
-            frame.stroke(
-                &canvas::Path::line(Point::new(x, 0.0), Point::new(x, height)),
-                canvas::Stroke::default().with_color(grid),
-            );
-            frame.fill_text(canvas::Text {
-                content: format!("{age}s"),
-                position: Point::new(x, height + 5.0),
-                align_x: if index == 4 {
-                    iced::alignment::Horizontal::Right.into()
-                } else {
-                    iced::alignment::Horizontal::Left.into()
-                },
-                color: super::widgets::muted_color(theme),
-                size: 10.0.into(),
-                ..Default::default()
-            });
         }
         let series_count = if self.kind == ChartKind::Memory { 1 } else { 2 };
         let colors = chart_colors(theme);
@@ -1365,7 +1268,7 @@ impl Chart {
                     frame.fill(&chart_point(first, 2.0, dashed), color);
                     continue;
                 };
-                if !contrast {
+                if !contrast && series == 0 {
                     let area = canvas::Path::new(|path| {
                         path.move_to(Point::new(first.x, height));
                         for point in points() {
@@ -1418,7 +1321,18 @@ impl Chart {
 fn usage_percentage_label(percent: Option<f32>) -> String {
     percent
         .map(|percent| format!("{percent:.1}%"))
-        .unwrap_or_else(|| t!("home.collecting").to_string())
+        .unwrap_or_else(|| t!("dashboard.collecting").to_string())
+}
+
+fn metric_value_parts(label: &str) -> (&str, &str) {
+    if let Some(number) = label.strip_suffix('%') {
+        (number, "%")
+    } else {
+        label
+            .rsplit_once(' ')
+            .filter(|(_, unit)| unit.ends_with("/s"))
+            .unwrap_or((label, ""))
+    }
 }
 
 fn cpu_frequency_label(frequency_mhz: Option<u32>) -> String {
@@ -1430,7 +1344,7 @@ fn cpu_frequency_label(frequency_mhz: Option<u32>) -> String {
                 format!("{frequency_mhz} MHz")
             }
         })
-        .unwrap_or_else(|| t!("home.collecting").to_string())
+        .unwrap_or_else(|| t!("dashboard.collecting").to_string())
 }
 
 fn memory_usage_value_label(snapshot: MemoryUsageSnapshot) -> String {
@@ -1438,7 +1352,7 @@ fn memory_usage_value_label(snapshot: MemoryUsageSnapshot) -> String {
         .used_physical_bytes
         .zip(snapshot.total_physical_bytes)
         .map_or_else(
-            || t!("home.collecting").into_owned(),
+            || t!("dashboard.collecting").into_owned(),
             |(used, total)| memory_range_label(used, total),
         )
 }
@@ -1465,14 +1379,14 @@ fn memory_range_label(used: u64, total: u64) -> String {
 fn memory_available_value_label(snapshot: MemoryUsageSnapshot) -> String {
     match (snapshot.total_physical_bytes, snapshot.used_physical_bytes) {
         (Some(total), Some(used)) => format_memory_capacity(total.saturating_sub(used)),
-        _ => t!("home.collecting").to_string(),
+        _ => t!("dashboard.collecting").to_string(),
     }
 }
 
 fn io_rate_label(bytes_per_second: Option<f64>) -> String {
     bytes_per_second
         .map(format_bytes_per_second)
-        .unwrap_or_else(|| t!("home.collecting").to_string())
+        .unwrap_or_else(|| t!("dashboard.collecting").to_string())
 }
 
 fn format_memory_capacity(bytes: u64) -> String {
@@ -1583,7 +1497,11 @@ fn cpu_allocation_detail(status: &CpuAllocationSnapshot) -> String {
     if status.observation_paused {
         observation_pause_detail(status.last_error.is_some())
     } else {
-        t!("home.adjusted_count", count = status.adjusted_processes).into_owned()
+        t!(
+            "dashboard.adjusted_count",
+            count = status.adjusted_processes
+        )
+        .into_owned()
     }
 }
 
@@ -1596,7 +1514,7 @@ fn priority_observation_detail(
     if paused {
         observation_pause_detail(failed)
     } else if enabled {
-        t!("home.adjusted_count", count = adjusted).to_string()
+        t!("dashboard.adjusted_count", count = adjusted).to_string()
     } else {
         t!("common.unknown").to_string()
     }
@@ -1646,9 +1564,9 @@ fn enabled_features(
         ByActivity,
         by_activity,
         t!(match activity {
-            ActivityState::Active => "home.activity_active",
-            ActivityState::Idle => "home.activity_idle",
-            ActivityState::Unknown => "home.activity_unknown",
+            ActivityState::Active => "dashboard.activity_active",
+            ActivityState::Idle => "dashboard.activity_idle",
+            ActivityState::Unknown => "dashboard.activity_unknown",
         })
         .to_string()
     );
@@ -1670,7 +1588,11 @@ fn enabled_features(
         if cpu_limiter.observation_paused {
             observation_pause_detail(cpu_limiter.last_error.is_some())
         } else {
-            t!("home.limited_count", count = cpu_limiter.limited_processes).into_owned()
+            t!(
+                "dashboard.limited_count",
+                count = cpu_limiter.limited_processes
+            )
+            .into_owned()
         }
     );
     feature!(
@@ -1687,7 +1609,7 @@ fn enabled_features(
         InstanceBalancing,
         instance_balancing,
         t!(
-            "home.adjusted_count",
+            "dashboard.adjusted_count",
             count = status.instance_balancing.adjusted_processes
         )
         .to_string()
@@ -1706,7 +1628,7 @@ fn enabled_features(
             t!("sidebar_status.paused").into_owned()
         } else if efficiency.enabled {
             t!(
-                "home.throttled_count",
+                "dashboard.throttled_count",
                 count = efficiency.throttled_processes
             )
             .into_owned()
@@ -1718,7 +1640,7 @@ fn enabled_features(
         AppSuspension,
         app_suspension,
         t!(
-            "home.suspended_count",
+            "dashboard.suspended_count",
             count = status.app_suspension.suspended_processes
         )
         .to_string()
@@ -1731,7 +1653,7 @@ fn enabled_features(
             t!(if adaptive.last_error.is_some() {
                 "common.error"
             } else {
-                "home.power_source_unavailable"
+                "dashboard.power_source_unavailable"
             })
             .into_owned()
         } else if !settings.adaptive_engine_process.has_enabled_policies() {
@@ -1748,7 +1670,11 @@ fn enabled_features(
         } else if !adaptive.enabled {
             t!("common.unknown").into_owned()
         } else {
-            t!("home.adjusted_count", count = adaptive.adjusted_processes).into_owned()
+            t!(
+                "dashboard.adjusted_count",
+                count = adaptive.adjusted_processes
+            )
+            .into_owned()
         }
     );
     let process_priority = &status.process_priority;
@@ -1808,7 +1734,7 @@ fn enabled_features(
             .to_string()
         } else if gpu_priority.enabled {
             t!(
-                "home.adjusted_count",
+                "dashboard.adjusted_count",
                 count = gpu_priority.adjusted_processes
             )
             .to_string()
@@ -1851,7 +1777,11 @@ fn enabled_features(
             }
             MemoryTrimStatus::WaitingForMemoryLoad { .. } => t!("common.waiting").into_owned(),
             MemoryTrimStatus::Error(_) => observation_pause_detail(true),
-            _ => t!("home.trimmed_count", count = memory_trim.trimmed_processes).into_owned(),
+            _ => t!(
+                "dashboard.trimmed_count",
+                count = memory_trim.trimmed_processes
+            )
+            .into_owned(),
         }
     );
     feature!(
@@ -1912,7 +1842,7 @@ mod tests {
             (PowerSourceProfile::PluggedIn, t!("common.unknown")),
             (
                 PowerSourceProfile::OnBattery,
-                t!("home.adjusted_count", count = 4),
+                t!("dashboard.adjusted_count", count = 4),
             ),
         ] {
             let cards = enabled_features(
@@ -1928,7 +1858,7 @@ mod tests {
         runtime.adaptive_engine_process.source = None;
         runtime.adaptive_engine_process.waiting_for_power_source = true;
         for (error, detail) in [
-            (None, "home.power_source_unavailable"),
+            (None, "dashboard.power_source_unavailable"),
             (Some("restore failed".into()), "common.error"),
         ] {
             runtime.adaptive_engine_process.last_error = error;
@@ -2011,22 +1941,25 @@ mod tests {
         for entry in [
             (Page::ByRunningApp, "example.exe".into()),
             (Page::ByCpuLoad, "42.5%".into()),
-            (Page::ByActivity, t!("home.activity_active").to_string()),
+            (
+                Page::ByActivity,
+                t!("dashboard.activity_active").to_string(),
+            ),
             (
                 Page::CpuSetsSoft,
-                t!("home.adjusted_count", count = 7).to_string(),
+                t!("dashboard.adjusted_count", count = 7).to_string(),
             ),
             (
                 Page::InstanceBalancing,
-                t!("home.adjusted_count", count = 2).to_string(),
+                t!("dashboard.adjusted_count", count = 2).to_string(),
             ),
             (
                 Page::AppSuspension,
-                t!("home.suspended_count", count = 3).to_string(),
+                t!("dashboard.suspended_count", count = 3).to_string(),
             ),
             (
                 Page::MemoryTrim,
-                t!("home.trimmed_count", count = 0).to_string(),
+                t!("dashboard.trimmed_count", count = 0).to_string(),
             ),
         ] {
             assert!(expected.contains(&entry));
@@ -2155,10 +2088,7 @@ mod tests {
         fn plot_bounds(node: &layout::Node, offset: Point, height: f32) -> Option<Rectangle> {
             let bounds = node.bounds();
             let origin = Point::new(offset.x + bounds.x, offset.y + bounds.y);
-            if node.children().is_empty()
-                && (bounds.height - height).abs() < 0.01
-                && bounds.width > 200.0
-            {
+            if node.children().is_empty() && (bounds.height - height).abs() < 0.01 {
                 Some(Rectangle::new(origin, bounds.size()))
             } else {
                 node.children()
@@ -2166,13 +2096,13 @@ mod tests {
                     .find_map(|child| plot_bounds(child, origin, height))
             }
         }
-        for (kind, light, height, fraction) in [
-            (ChartKind::Cpu, true, 244.0, 0.55),
-            (ChartKind::Cpu, false, 244.0, 0.55),
-            (ChartKind::Cpu, false, 200.0, 0.98),
-            (ChartKind::Memory, false, 244.0, 0.55),
-            (ChartKind::Io, false, 244.0, 0.55),
-            (ChartKind::Network, false, 244.0, 0.55),
+        for (kind, light, width, fraction) in [
+            (ChartKind::Cpu, true, 640.0, 0.55),
+            (ChartKind::Cpu, false, 320.0, 0.55),
+            (ChartKind::Cpu, false, 180.0, 0.98),
+            (ChartKind::Memory, false, 320.0, 0.55),
+            (ChartKind::Io, false, 320.0, 0.55),
+            (ChartKind::Network, false, 320.0, 0.55),
         ] {
             let theme = Theme::custom_with_fn(
                 "preview",
@@ -2181,18 +2111,24 @@ mod tests {
             );
             let slot = (fraction * (HISTORY_LEN - 1) as f32).round() as usize;
             model.hover_chart(kind, Some(slot));
-            let mut view = model.chart_card(kind, model.chart(kind), height, model.latest);
+            let wide = width >= WIDE_METRIC_CARD_WIDTH;
+            let mut view = model.chart_card(kind, model.chart(kind), model.latest, wide);
             let mut renderer = Renderer::new(design::typography::FONT, iced::Pixels(14.0));
-            let viewport = Rectangle::with_size(iced::Size::new(640.0, 280.0));
+            let viewport = Rectangle::with_size(iced::Size::new(width, 280.0));
             let mut tree = Tree::new(&view);
             let node = view.as_widget_mut().layout(
                 &mut tree,
                 &renderer,
                 &layout::Limits::new(iced::Size::ZERO, viewport.size()),
             );
-            let plot = plot_bounds(&node, Point::ORIGIN, (height - 136.0).max(64.0)).unwrap();
+            let plot_height = if wide {
+                WIDE_METRIC_PLOT_HEIGHT
+            } else {
+                METRIC_PLOT_HEIGHT
+            };
+            let plot = plot_bounds(&node, Point::ORIGIN, plot_height as f32).unwrap();
             let position = Point::new(
-                plot.x + (plot.width - CHART_AXIS_WIDTH) * fraction,
+                plot.x + chart_plot_size(plot).width * fraction,
                 plot.y + 12.0,
             );
             let cursor = mouse::Cursor::Available(position);
@@ -2244,8 +2180,8 @@ mod tests {
                         && bounds.y + bounds.height <= viewport.height
                 );
                 assert!(
-                    bounds.y < plot.y + plot.height - 28.0,
-                    "Tooltip floats above the time axis"
+                    bounds.y < plot.y + plot.height,
+                    "Tooltip remains beside or above the plotted reading"
                 );
                 renderer.with_layer(viewport, |renderer| {
                     overlay.draw(renderer, &theme, &style, Layout::new(&tip), cursor);
@@ -2301,8 +2237,8 @@ mod tests {
 
         let renderer = Renderer::new(design::typography::FONT, iced::Pixels(14.0));
         let kind = ChartKind::Io;
-        for width in [306.0, 568.0] {
-            let viewport = Rectangle::with_size(iced::Size::new(width, 200.0));
+        for width in [128.0, 306.0] {
+            let viewport = Rectangle::with_size(iced::Size::new(width, METRIC_CARD_HEIGHT as f32));
             let mut model = Model::default();
             model.populate_smoke_history();
             let mut tree = Tree::empty();
@@ -2337,7 +2273,8 @@ mod tests {
             ] {
                 let chart = model.chart(kind);
                 let expected = chart.readout(&model, chart.inspected);
-                let mut view = model.chart_card(kind, chart, 200.0, model.latest);
+                let mut view =
+                    model.chart_card(kind, chart, model.latest, width >= WIDE_METRIC_CARD_WIDTH);
                 tree.diff(&view);
                 let node = view.as_widget_mut().layout(
                     &mut tree,
@@ -2350,16 +2287,19 @@ mod tests {
                 view.as_widget_mut()
                     .operate(&mut tree, layout, &renderer, &mut labels);
                 if let Some(history) = expected {
-                    assert!(labels
-                        .0
-                        .contains(&t!("home.chart_history_at", time = history.time).into_owned()));
+                    assert!(labels.0.contains(
+                        &t!("dashboard.chart_history_at", time = history.time).into_owned()
+                    ));
                     assert!(history
                         .values
                         .into_iter()
                         .flatten()
                         .all(|value| labels.0.contains(&value)));
                 } else {
-                    assert!(labels.0.contains(&t!("home.io_total").into_owned()));
+                    let reading = io_rate_label(model.latest.io.bytes_per_second);
+                    let (number, unit) = metric_value_parts(&reading);
+                    assert!(labels.0.contains(&number.to_owned()));
+                    assert!(labels.0.contains(&unit.to_owned()));
                 }
                 if focus {
                     view.as_widget_mut().operate(
@@ -2443,10 +2383,10 @@ mod tests {
         assert_eq!(
             chart.readout(&model, chart.inspected).unwrap().values,
             [
-                Some(format!("{}: 0 B/s", t!("home.io_read"))),
+                Some(format!("{}: 0 B/s", t!("dashboard.io_read"))),
                 Some(format!(
                     "{}: {}",
-                    t!("home.io_write"),
+                    t!("dashboard.io_write"),
                     t!("common.unavailable")
                 )),
             ]
@@ -2594,8 +2534,8 @@ mod tests {
                 .reading[1],
             Some(100.0)
         );
-        assert_eq!(model.chart(ChartKind::Io).maximum, 20.0);
-        assert_eq!(model.chart(ChartKind::Network).maximum, 100.0);
+        assert_eq!(model.chart(ChartKind::Io).maximum, 50.0);
+        assert_eq!(model.chart(ChartKind::Network).maximum, 200.0);
         model.record(Sample {
             captured_at: at(661),
             ..Default::default()
@@ -2757,9 +2697,9 @@ mod tests {
         };
         let render = |chart: Chart| {
             let mut renderer = Renderer::new(design::typography::FONT, iced::Pixels(14.0));
-            let bounds = Rectangle::with_size(iced::Size::new(664.0, 128.0));
+            let bounds = Rectangle::with_size(iced::Size::new(601.0, 101.0));
             let viewport = iced::advanced::graphics::Viewport::with_physical_size(
-                iced::Size::new(664, 128),
+                iced::Size::new(601, 101),
                 1.0,
             );
             renderer.reset(bounds);
@@ -2772,8 +2712,8 @@ mod tests {
             ) {
                 renderer.draw_geometry(geometry);
             }
-            let mut pixels = tiny_skia::Pixmap::new(664, 128).unwrap();
-            let mut mask = tiny_skia::Mask::new(664, 128).unwrap();
+            let mut pixels = tiny_skia::Pixmap::new(601, 101).unwrap();
+            let mut mask = tiny_skia::Mask::new(601, 101).unwrap();
             renderer.draw(
                 &mut pixels.as_mut(),
                 &mut mask,
@@ -2889,27 +2829,42 @@ mod tests {
     }
 
     #[test]
-    fn dashboard_fits_short_and_tall_workspaces_without_shrinking_text() {
-        for (width, height, columns) in [
-            (1100.0, 600.0, 2),
-            (1400.0, 640.0, 4),
-            (1400.0, 820.0, 2),
-            (760.0, 880.0, 2),
-            (650.0, 1500.0, 1),
-        ] {
-            let layout = DashboardLayout::for_size(iced::Size::new(width, height));
-            assert_eq!(layout.columns, columns);
-            assert!(layout.fits, "Dashboard should fit {width}x{height}");
-            assert!(layout.chart_height >= 200.0);
-            assert!(layout.summary_height >= 160.0);
-        }
-        for size in [iced::Size::new(900.0, 400.0), iced::Size::new(650.0, 800.0)] {
-            assert!(
-                !DashboardLayout::for_size(size).fits,
-                "Small workspaces retain page scrolling"
+    fn dashboard_metrics_fit_one_row_even_beside_the_status_panel() {
+        use iced::advanced::{layout, widget::Tree, Layout};
+        let renderer = Renderer::new(design::typography::FONT, iced::Pixels(14.0));
+        let mut model = Model::default();
+        model.populate_smoke_history();
+        for width in [536.0, 880.0, 1400.0] {
+            let mut view = model.metrics();
+            let mut tree = Tree::new(&view);
+            let node = view.as_widget_mut().layout(
+                &mut tree,
+                &renderer,
+                &layout::Limits::new(iced::Size::ZERO, iced::Size::new(width, 500.0)),
             );
+            assert_eq!(
+                node.bounds().size(),
+                iced::Size::new(width, METRIC_CARD_HEIGHT as f32)
+            );
+            let cards: Vec<_> = Layout::new(&node)
+                .children()
+                .next()
+                .unwrap()
+                .children()
+                .map(|card| card.bounds())
+                .collect();
+            assert_eq!(cards.len(), 4);
+            assert!(cards
+                .windows(2)
+                .all(|pair| pair[0].x + pair[0].width < pair[1].x));
+            assert!(cards
+                .iter()
+                .all(|card| (card.width - cards[0].width).abs() < 0.1
+                    && card.y == cards[0].y
+                    && card.height == cards[0].height));
         }
     }
+
     #[test]
     fn dashboard_uses_available_memory_and_decimal_network_bytes() {
         assert_eq!(io_rate_label(Some(1_000_000.0)), "1.0 MB/s");
@@ -2921,7 +2876,7 @@ mod tests {
             }),
             "9.7 GB"
         );
-        assert_eq!(io_rate_label(None), t!("home.collecting").to_string());
+        assert_eq!(io_rate_label(None), t!("dashboard.collecting").to_string());
     }
     #[test]
     fn disk_chart_preserves_available_directions_without_a_total() {
@@ -2958,7 +2913,7 @@ mod tests {
             ..Default::default()
         });
         let chart = model.chart(ChartKind::Network);
-        assert_eq!(chart.maximum, 1_000_000.0);
+        assert_eq!(chart.maximum, 2_000_000.0);
         assert_eq!(
             chart.sample_at(HISTORY_LEN - 1).unwrap().reading,
             [Some(1_000_000.0), Some(500_000.0)]
@@ -2994,10 +2949,10 @@ mod tests {
         use canvas::Program;
         use iced::advanced::{graphics::geometry::Renderer as _, renderer::Renderer as _};
         let mut renderer = Renderer::new(design::typography::FONT, iced::Pixels(14.0));
-        let bounds = Rectangle::with_size(iced::Size::new(320.0, 110.0));
+        let bounds = Rectangle::with_size(iced::Size::new(257.0, 83.0));
         let viewport =
-            iced::advanced::graphics::Viewport::with_physical_size(iced::Size::new(320, 110), 1.0);
-        let mut mask = tiny_skia::Mask::new(320, 110).unwrap();
+            iced::advanced::graphics::Viewport::with_physical_size(iced::Size::new(257, 83), 1.0);
+        let mut mask = tiny_skia::Mask::new(257, 83).unwrap();
         let mut images = Vec::new();
         let point = |slot, value| {
             Some(ChartSample {
@@ -3034,7 +2989,7 @@ mod tests {
             ) {
                 renderer.draw_geometry(geometry);
             }
-            let mut pixels = tiny_skia::Pixmap::new(320, 110).unwrap();
+            let mut pixels = tiny_skia::Pixmap::new(257, 83).unwrap();
             renderer.draw(
                 &mut pixels.as_mut(),
                 &mut mask,
@@ -3083,16 +3038,16 @@ mod tests {
         use canvas::Program;
         use iced::advanced::{graphics::geometry::Renderer as _, renderer::Renderer as _};
         let mut renderer = Renderer::new(design::typography::FONT, iced::Pixels(14.0));
-        let bounds = Rectangle::with_size(iced::Size::new(320.0, 110.0));
+        let bounds = Rectangle::with_size(iced::Size::new(257.0, 38.0));
         let viewport =
-            iced::advanced::graphics::Viewport::with_physical_size(iced::Size::new(320, 110), 1.0);
-        let mut pixels = tiny_skia::Pixmap::new(320, 110).unwrap();
-        let mut mask = tiny_skia::Mask::new(320, 110).unwrap();
+            iced::advanced::graphics::Viewport::with_physical_size(iced::Size::new(257, 38), 1.0);
+        let mut pixels = tiny_skia::Pixmap::new(257, 38).unwrap();
+        let mut mask = tiny_skia::Mask::new(257, 38).unwrap();
         let mut previous = Vec::new();
         let mut state = ChartState::default();
         use ChartKind::{Cpu, Memory};
         let normal = bounds.size();
-        let small = iced::Size::new(300.0, 100.0);
+        let small = iced::Size::new(220.0, 36.0);
         let accent_theme = |accent| {
             Theme::custom_with_fn(
                 "accent",
@@ -3191,7 +3146,7 @@ mod tests {
             let mut frame = canvas::Frame::new(&renderer, size);
             chart.draw_chart(&mut frame, &theme, chart_bounds, hovered);
             renderer.draw_geometry(frame.into_geometry());
-            let mut full = tiny_skia::Pixmap::new(320, 110).unwrap();
+            let mut full = tiny_skia::Pixmap::new(257, 38).unwrap();
             renderer.draw(
                 &mut full.as_mut(),
                 &mut mask,
@@ -3222,7 +3177,7 @@ mod tests {
             kind: ChartKind::Cpu,
             inspected: None,
         };
-        let bounds = Rectangle::with_size(iced::Size::new(590.0, 110.0));
+        let bounds = Rectangle::with_size(iced::Size::new(527.0, METRIC_PLOT_HEIGHT as f32));
         let mut state = ChartState::default();
         let mut move_to = |x, y| {
             let position = Point::new(x, y);
@@ -3278,16 +3233,17 @@ mod tests {
                     assert!(color.relative_contrast(background.weak.color) >= 3.0);
                     assert!(color.relative_contrast(background.neutral.color) >= 3.0);
                 }
-                let blend = |base, fill| {
-                    super::super::animated_controls::color(base, fill, CHART_FILL_ALPHA)
-                };
                 let quantize = |color: Color| {
                     let [r, g, b, _] = color.into_rgba8();
                     Color::from_rgb8(r, g, b)
                 };
-                let overlap = quantize(blend(blend(background.weak.color, first), second));
-                assert!(quantize(blend(first, second)).relative_contrast(overlap) >= 3.0);
-                assert!(quantize(second).relative_contrast(overlap) >= 3.0);
+                let fill = quantize(super::super::animated_controls::color(
+                    background.weak.color,
+                    first,
+                    CHART_FILL_ALPHA,
+                ));
+                assert!(quantize(first).relative_contrast(fill) >= 3.0);
+                assert!(quantize(second).relative_contrast(fill) >= 3.0);
             }
         }
         for light in [false, true] {
@@ -3330,8 +3286,8 @@ mod tests {
             }),
             inspected: None,
         };
-        let size = iced::Size::new(320, 110);
-        let bounds = Rectangle::with_size(iced::Size::new(320.0, 110.0));
+        let size = iced::Size::new(257, 83);
+        let bounds = Rectangle::with_size(iced::Size::new(257.0, 83.0));
         let mut renderer = Renderer::new(design::typography::FONT, iced::Pixels(14.0));
         renderer.reset(bounds);
         for geometry in chart.draw(
@@ -3344,7 +3300,7 @@ mod tests {
             renderer.draw_geometry(geometry);
         }
         let rgba = renderer.screenshot(size, 1.0, iced::Color::BLACK);
-        let pixel = |x: usize, y: usize| rgba[(y * 320 + x) * 4];
+        let pixel = |x: usize, y: usize| rgba[(y * 257 + x) * 4];
         let bright = |y| (12..244).filter(|&x| pixel(x, y) > 180).count();
         assert_eq!(bright(20), 232, "the first series is a solid stroke");
         let second = bright(61);
@@ -3352,11 +3308,12 @@ mod tests {
             (100..190).contains(&second),
             "the second series has visible dashes and gaps: {second}"
         );
-        let grid = pixel(17, 40).max(pixel(17, 41));
+        let grid = pixel(17, 0).max(pixel(17, 81)).max(pixel(17, 82));
         assert!(
             (1..130).contains(&grid),
-            "the grid stays visible and subdued: {grid}"
+            "the horizontal guides stay visible and subdued: {grid}"
         );
+        assert_eq!(pixel(17, 41), 0, "the plot interior is clear");
     }
 
     #[test]

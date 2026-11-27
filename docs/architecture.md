@@ -126,8 +126,9 @@ remain available in Git history rather than in the active documentation set.
   in typed commands and services; UI drafts do not belong in `RuntimeCore`.
 - `src/ui/`: page editors and views. `widgets.rs` supplies shared controls,
   `status_rail.rs` presents runtime status, and `navigation.rs` owns workspace
-  navigation, page lists, and history. `process_list.rs` owns table sorting,
-  grouping, and pending actions.
+  navigation, page lists, and history. `dashboard.rs` presents system telemetry
+  and the Dashboard Status tab. `process_list.rs` owns the Dashboard's process
+  table, sorting, grouping, and pending actions.
 - `src/ui/process_rules.rs`: shared process eligibility and rule-construction helpers.
 - `src/ui.rs`: page enum, section grouping, labels, and small UI-independent helpers.
 - `src/config/settings.rs`: persisted settings structs and defaults;
@@ -239,8 +240,8 @@ Selecting a workspace opens its landing page. Workspaces with child pages show
 their destinations in a contextual list to the left of the editor. Editor tabs
 show views within the selected page.
 
-- Home: dashboard.
-- Process List: process table and per-process policy surface.
+- Dashboard opens at startup and shows system telemetry, the process table,
+  and per-process policy controls.
 - Watchdog includes Resource Thresholds, Memory Trim, Keep Running, Sleep
   Prevention, Instance Limits, and App Suspension.
 - Power Plan Control includes By Focus, By Running App, By CPU Load, By Activity, By Time, Adaptive Processor Power, and Advanced Power Plan Tuning.

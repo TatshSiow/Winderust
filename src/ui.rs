@@ -10,10 +10,10 @@ mod app_suspension;
 mod by_activity;
 mod cpu_allocation;
 mod cpu_limiter;
+mod dashboard;
 mod design;
 mod efficiency_mode;
 mod feature_tabs;
-mod home;
 mod hotkeys;
 mod instance_balancing;
 mod instance_limits;
@@ -50,7 +50,7 @@ pub(crate) mod process_rules;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Page {
-    Home,
+    Dashboard,
     PowerPlanControl,
     Watchdog,
     CpuControl,
@@ -66,7 +66,6 @@ pub enum Page {
     DynamicPriorityBoost,
     CpuLimiter,
     CpuSetsSoft,
-    ProcessList,
     AdaptiveEngine,
     EfficiencyMode,
     AppSuspension,
@@ -97,8 +96,7 @@ pub struct PageSection {
     pub pages: &'static [Page],
 }
 
-const HOME_PAGES: [Page; 1] = [Page::Home];
-const PROCESS_LIST_PAGES: [Page; 1] = [Page::ProcessList];
+const DASHBOARD_PAGES: [Page; 1] = [Page::Dashboard];
 const POWER_PLAN_CONTROL_PAGES: [Page; 7] = [
     Page::ByFocus,
     Page::ByRunningApp,
@@ -140,14 +138,10 @@ const SETTINGS_PAGES: [Page; 3] = [
 ];
 const ABOUT_PAGES: [Page; 1] = [Page::About];
 const ADVANCED_CONTROLS_PAGES: [Page; 2] = [Page::TimerResolution, Page::Win32PrioritySeparation];
-const PAGE_SECTIONS: [PageSection; 10] = [
+const PAGE_SECTIONS: [PageSection; 9] = [
     PageSection {
-        landing_page: Page::Home,
-        pages: &HOME_PAGES,
-    },
-    PageSection {
-        landing_page: Page::ProcessList,
-        pages: &PROCESS_LIST_PAGES,
+        landing_page: Page::Dashboard,
+        pages: &DASHBOARD_PAGES,
     },
     PageSection {
         landing_page: Page::Watchdog,
@@ -210,7 +204,7 @@ impl Page {
 
     pub fn label(self) -> String {
         match self {
-            Self::Home => t!("nav.home"),
+            Self::Dashboard => t!("nav.dashboard"),
             Self::PowerPlanControl => t!("nav.power_plan_control"),
             Self::Watchdog => t!("nav.watchdog"),
             Self::CpuControl => t!("nav.cpu_control"),
@@ -226,7 +220,6 @@ impl Page {
             Self::DynamicPriorityBoost => t!("nav.dynamic_priority_boost"),
             Self::CpuLimiter => t!("nav.cpu_limiter"),
             Self::CpuSetsSoft => t!("nav.cpu_sets_soft"),
-            Self::ProcessList => t!("nav.process_list"),
             Self::AdaptiveEngine => t!("nav.adaptive_engine"),
             Self::EfficiencyMode => t!("nav.efficiency_mode"),
             Self::AppSuspension => t!("nav.app_suspension"),
@@ -260,8 +253,7 @@ impl Page {
 
     pub const fn section_landing_page(self) -> Page {
         match self {
-            Self::Home => Self::Home,
-            Self::ProcessList => Self::ProcessList,
+            Self::Dashboard => Self::Dashboard,
             Self::Watchdog
             | Self::ResourceThresholds
             | Self::MemoryTrim
@@ -340,14 +332,13 @@ mod tests {
         assert!(Page::AdaptiveProcessorPower.supports_power_source_profiles());
         assert!(Page::ByFocus.supports_power_source_profiles());
         assert!(Page::TimerResolution.supports_power_source_profiles());
-        assert!(!Page::Home.supports_power_source_profiles());
+        assert!(!Page::Dashboard.supports_power_source_profiles());
         assert!(!Page::Watchdog.supports_power_source_profiles());
         for page in WATCHDOG_PAGES {
             assert!(!page.supports_power_source_profiles(), "{page:?}");
         }
         assert!(!Page::InstanceBalancing.supports_power_source_profiles());
         assert!(!Page::PowerPlanControl.supports_power_source_profiles());
-        assert!(!Page::ProcessList.supports_power_source_profiles());
         assert!(!Page::ActionLog.supports_power_source_profiles());
         assert!(!Page::WinderustBehaviour.supports_power_source_profiles());
         assert!(!Page::About.supports_power_source_profiles());

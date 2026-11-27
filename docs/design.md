@@ -25,9 +25,9 @@ Winderust is an operational Windows power and process-control utility. The UI sh
 
 Prefer visible state, compact controls, and predictable rows. Use restrained accent-derived chrome, light/dark finely outlined panels, and more panel spacing; preserve dense operational tables.
 
-- Keep the workflow predictable. Home shows current conditions, feature pages edit
-  rules, the side panel shows live status and secondary controls, and Action Log
-  records outcomes.
+- Keep the workflow predictable. Dashboard shows current conditions and running
+  processes, feature pages edit rules, the Side panel shows live status and
+  secondary controls, and Action Log records outcomes.
 - Make settings easy to discover through navigation and search. Put common actions
   first and reveal advanced options where users need them.
 - Distinguish a switch's configured state, an unsaved edit, and the last verified
@@ -55,7 +55,10 @@ Prefer visible state, compact controls, and predictable rows. Use restrained acc
   Search. Help explains the valid combinations and that enabling the shortcut
   keeps Winderust in the notification area. Show conflicts and registration
   failures in text. Save commits the selection and Esc cancels recording.
-- Center the shared header and content canvas between the optional page list and Side panel, with shared padding and a 1440px width cap. Every page reserves the same 48px page title area and 32px toolbar, including pages with no power-source selectors, so page content starts at a stable position.
+- Center the shared header and content canvas between the optional page list and
+  Side panel, with shared padding and a 1440px width cap. Reserve a 48px page
+  title area and a 32px toolbar so page content starts at a stable position.
+  Dashboard uses the title area and starts its metric strip below it.
 - The right Side panel docks beside the editor, reserving its own width. Use a 320px dock on wide windows and on standalone pages. When the window is narrower than 1280 logical pixels and the page list is visible, reduce the dock to 280px to leave more room for the editor. Both areas remain interactive. Start closed and retain its open state throughout navigation, search, focus changes, and settings edits. Close through the title-bar toggle or the panel's Close button. Pages with no panel content use the available editor width and preserve the session's open preference for the next supported page. Dialogs cover the work area.
 - The title-bar toggle shows the side panel's current state and is inactive while a modal is open or the page has no panel. The in-panel Close button returns keyboard focus to the title-bar toggle.
 - Navigation labels and page sections live in `src/ui.rs`; page rendering
@@ -159,7 +162,9 @@ hover/press; background shading supplies feedback.
 
 ## Process List
 
-- The process list is a dense table, not a card grid. Refresh automatically about once per second only while its page is shown and the window is not hidden to tray. Its command row contains search and process count; omit manual refresh and population pause controls.
+- Dashboard's Process List uses a dense table. Refresh automatically about once
+  per second while Dashboard is visible. Its command row contains search and
+  process count.
 - Show Process List action results in a bottom-center toast over the editor,
   above any floating Save or update card. Dismiss successes after five seconds
   and leave errors visible until dismissed or replaced. Keep feedback from
@@ -409,7 +414,7 @@ hover/press; background shading supplies feedback.
 
 ### Watchdog
 
-- Place Watchdog after Process List in the workspace row. Show Resource
+- Place Watchdog after Dashboard in the workspace row. Show Resource
   Thresholds, Memory Trim, Keep Running, Sleep Prevention, Instance Limits,
   and App Suspension in that order. Reuse the existing landing-page cards and
   link each one to its own editor. Keep feature actions and help in the central
@@ -600,22 +605,47 @@ hover/press; background shading supplies feedback.
 ## Current reference layout
 
 - The user-approved 2026-10-30 dashboard direction guides the palette, spacing, and metric hierarchy. The App Shell section owns current navigation and window behavior.
-- Use 16px card padding, 12px card gaps, regular Segoe UI body text at 14px, 13px Side panel labels, semibold headings, and prominent 28px dashboard values. Describe text rendering in terms of advanced shaping, system font fallback, and DPI-aware software rendering.
+- Use 16px standard card padding, 12px card gaps, regular Segoe UI body text at 14px, 13px Side panel labels, and semibold headings. Describe text rendering in terms of advanced shaping, system font fallback, and DPI-aware software rendering.
 - Show the current page name as an 18px semibold title.
-- Home uses a two-by-two chart grid above Enabled Features and Recent Logs. Shared content is capped at 1440px.
 - Dense virtual process and log tables retain borderless tiled backgrounds and existing row geometry.
 - Keep System/Light/Dark/AMOLED and custom/system accent behavior. Do not infer new telemetry or optimization guarantees from the reference image.
 
-## Home dashboard
+## Dashboard
 
-- Follow the latest dashboard reference: a 2x2 CPU/RAM/Disk I/O/Network I/O chart grid, then equal-width Enabled Features and Recent Logs panels. Adapt card heights to available content height. Use four metric columns at widths of at least 1280px and heights below 680px, two columns from 720px wide, otherwise one column. Omit redundant dashboard subtitles at every size. Keep chart cards at least 200px high and summary panels at least 160px high; retain page scrolling only when these readable minimums cannot fit; the feature and log lists scroll independently.
-- Charts show 60 seconds of real history with axes and legends. Hover shows a floating tooltip with the actual sample timestamp and named series values, plus a dashed crosshair and point markers. Clamp the tooltip to the viewport, including compact charts. CPU headers show Usage on the left and Frequency on the right. Render only recorded chart samples: missing history stays blank, actual zero samples remain visible. Sampling pauses and unavailable readings leave gaps instead of moving older values forward or connecting across the missing interval. RAM headers show Usage with a Used label and used/total capacity on the left and Available on the right. Disk and Network I/O headers show their two named, curve-colored metrics on the left and Total on the right. Network uses decimal byte rates, matching Disk I/O. CPU frequency is explicitly relative on the shared percentage scale, with the current GHz value shown separately.
+- Open Dashboard at startup. Put a compact row of CPU, RAM, Disk I/O, and
+  Network I/O charts above Process List. Give the process table the remaining
+  height and keep its own scrolling, search, and row actions.
+- Give every usage card the same height, with the metric label and live reading
+  at consistent positions. Set the unit in smaller text beside the value. On
+  wide cards, put a taller sparkline beside the reading and align its scale
+  label with the chart's right edge. On narrower cards, put the plot below the
+  reading and hide the scale label. Draw only the upper and lower guides and
+  tint the area under the primary series.
+- Compact charts show 60 seconds of recorded history without axes. Hover shows
+  the sample timestamp and named series values in a floating tooltip, with a
+  dashed crosshair and point markers on the plot. Keep tooltips within the viewport.
+  Show gaps when samples are unavailable or paused, and retain recorded zeros.
+  Use decimal byte rates for disk and network. Round their scales up to cover
+  the peak combined rate in the displayed history. Plot CPU frequency relative to
+  its reference frequency on the shared percentage scale and show the current
+  GHz reading separately.
 - Tab reaches charts in reading order. Left or Right starts at the newest recorded reading, then moves to older or newer readings and skips gaps. The focused chart displays the selected timestamp and named values in its header without changing card height. The selection stays on the same observation as new samples arrive. Escape restores the current readings, and the header returns to current readings when the selected observation ages out.
-- RAM Usage charts physical memory. Its live header also shows system committed memory against the current Windows commit limit, alongside the physical used and available values.
+- RAM Usage charts physical memory. Show physical memory used and total in the
+  live reading. Include physical memory used and available, and system commit
+  against the Windows commit limit, in the chart tooltip.
 - Position chart samples by elapsed time, retaining fractional seconds. Allow up to 1.5 seconds between consecutive valid observations for one-second sampling with dispatch and worker jitter; larger intervals and explicit unavailable readings break the curves. Hover selects the nearest recorded observation before checking that channel's availability.
-- Windows contrast themes use a solid first series and a dashed second series, with round and square markers in the plots, legends, and tooltips. Keep the grid subdued and leave the plot background clear so the curves stay readable when Windows supplies the same color for both series.
-- While a sample is overdue, headers show Collecting and history continues to age while Home is visible.
-- Enabled Features and Recent Logs preserve card height and fixed headers in both empty and populated states. Enabled Features has no View All footer; Recent Logs retains its Details footer. Center empty messages in the remaining content area; populated lists use inset scrolling with space for the scrollbar and links to their full pages. Recent Logs shows compact INFO (Applied/Restored), WARN (Skipped), and ERROR (Failed) levels derived from actual Action Log entries, preserving the outcome in the description. The Log table keeps Level and Result separate; its level filters, capture thresholds, and CSV level field share the same mapping and short labels in both languages. Never fabricate log events. Keep unavailable telemetry and empty logs honest.
+- Windows contrast themes use a solid first series and a dashed second series,
+  with round and square markers in the plots and readouts. Leave the plot
+  background clear so both curves stay readable with the same Windows color.
+- While a sample is overdue, show Collecting and continue aging the history
+  while Dashboard is visible.
+- In the Side panel, show the power source, current power plan, Enabled Features,
+  and Recent Logs under Status. List up to five recent entries and link to Action
+  Log. Use Settings for process filters, grouping, columns, and units.
+- Recent Logs shows compact INFO (Applied/Restored), WARN (Skipped), and ERROR
+  (Failed) levels from recorded Action Log entries. The Log table keeps Level
+  and Result separate. Its level filters, capture thresholds, and CSV level
+  field share the same mapping and short labels in both languages.
 - In the focused Log table, Left and Right reveal offscreen columns. Page Up,
   Page Down, Home, and End move through the rows.
 - In Log, search by process name or exact PID. Search combines with level
@@ -624,14 +654,15 @@ hover/press; background shading supplies feedback.
   entries after Save. Level Filter changes the table, and Export Log uses
   the full recorded snapshot.
 - Keep category shortcuts in navigation and global search; omit the old dashboard shortcut grid.
-- Dashboard sampling runs only while Home is selected and the window is not hidden to tray. Do not add manual Pause/Resume metrics controls; background automation retains its independent monitoring.
+- Dashboard sampling and process refresh run only while Dashboard is selected
+  and the window is visible. Background automation retains its independent
+  monitoring.
 - After a sampling gap exceeds 1.5 seconds, CPU Usage, Disk I/O, and Network I/O
   start a fresh rate baseline. The first reading shows Collecting until a
   fresh interval supplies a rate.
 - Enabled Features uses the sampled Windows power source to select the displayed
   profile. Show the feature count when the power source is known. The feature
   editors retain their selected profile.
-
 
 ## Verification
 
