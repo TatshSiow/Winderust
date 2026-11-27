@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org).
 
 ## Unreleased
 
+## 0.12.0-alpha - 2026-11-27
+
+### Added
+
+- Interrupt Timing captures Windows DPC and ISR activity, displays a timeline and per-CPU totals when available, and exports JSON reports.
+- Power Plan Control supports manual plan switching and can match executable names in By Focus and By Running App rules.
+- Adaptive Processor Power has an independent switch, presets, energy-performance preference tuning, and optional core-parking floors.
+- Added a system-wide Show Winderust shortcut, support for Windows contrast themes, and temporary keep-awake and keep-display-on timers.
+
+### Changed
+
+- Dashboard combines live CPU, memory, disk, and network charts with Process List. The table adds CPU Time, Private Commit, GPU Usage, and dedicated and shared GPU memory columns.
+- Search is now an input in the center of the title bar. Workspace navigation replaces breadcrumbs, and the labeled Side panel toggle is at the right of the navigation row.
+- Resource Thresholds combines sustained CPU and working-set usage by executable path. It adds name and wildcard alerts, match previews, and a Trim memory response for exact-path working-set rules.
+- Adaptive Engine adds placement-only restraint and configurable pressure, timing, and protection settings. CPU Limiter adds affinity limits for sustained CPU load.
+- Advanced Power Plan Tuning stages edits, verifies the applied values, and can restore saved values through its review dialog.
+
+### Fixed
+
+- Hardened restoration for managed process settings and temporary power plans. Added readback checks for active-plan changes and tests for interrupted recovery.
+- Improved keyboard navigation and focus handling in search, menus, and dialogs.
+
+### Upgrade notes
+
+Back up `settings.toml` beside the executable and any exported presets before updating.
+
+- Recreate Background Efficiency settings and rules in Efficiency Mode on each power profile where you used them.
+- Enable Adaptive Processor Power separately if you previously used Adaptive Engine to adjust processor power settings.
+- Review notification-only Watchdog rules. Choose **Alert** for Resource Thresholds rules whose response was **No action**.
+- Review any On Battery overrides for App Suspension, Memory Trim, and Sleep Prevention. These features now share settings across power sources.
+
 ## 0.11.0-alpha - 2026-11-16
 
 ### Added

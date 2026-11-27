@@ -42,7 +42,7 @@
 - CPU Control - CPU Limiter, CPU Sets (Soft), Processor Affinity (Hard), and Cache Domain presets.
 - Priority Control - Process Priority, Thread Priority, Dynamic Priority Boost, I/O Priority, GPU Priority, and Memory Priority. Efficiency Mode sets power-efficiency preferences by app and window state.
 - Watchdog groups app automation features.
-  - Resource Thresholds - CPU and memory alerts for combined usage by path or for individual process instances. Terminate and Restart require Combined by path, an exact executable path, and an At or above threshold.
+  - Resource Thresholds - alert on sustained CPU or working-set usage combined by executable path. Trim memory, Terminate, and Restart require an exact executable path. Trim memory is available for working-set rules.
   - Memory Trim - trim idle process working sets with optional focus and visible-window exclusions.
   - Keep Running - relaunch selected desktop apps after their last instance exits. Start the app yourself once to arm its rule.
   - Sleep Prevention - ask Windows to stay awake while selected apps run, with an option to keep the display on.
