@@ -376,7 +376,7 @@ pub(super) fn view<'a>(
         ));
         if settings
             .adaptive_engine_process
-            .limit_background_processors_enabled
+            .background_processor_limit_enabled()
         {
             let key = match adaptive.filter(|status| status.enabled) {
                 Some(status) if status.observation_paused => "sidebar_status.paused",
@@ -1436,6 +1436,40 @@ mod tests {
             .iter()
             .any(|text| text == "could not restore process allocation"));
         assert!(rail.iter().any(|text| text == "42.0%"));
+    }
+
+    #[test]
+    fn adaptive_background_limit_rail_follows_effective_restraint_scope() {
+        use crate::config::AdaptiveRestraintPriority;
+
+        let mut settings = Settings::default();
+        settings.adaptive_engine.enabled = true;
+        settings
+            .adaptive_engine_process
+            .limit_background_processors_enabled = true;
+        settings
+            .adaptive_engine_process
+            .limit_background_processors_during_restraint = true;
+        let runtime = RuntimeStatusSnapshot::default();
+        let label = t!("adaptive_engine_process.limit_background_processors");
+        let shows_limit = |settings: &Settings| {
+            rail_text(view(Page::AdaptiveEngine, settings, &runtime, &[], Some(true)).unwrap())
+                .iter()
+                .any(|text| text == label.as_ref())
+        };
+        assert!(!shows_limit(&settings));
+
+        settings
+            .adaptive_engine_process
+            .cpu_pressure_restraint_enabled = true;
+        assert!(shows_limit(&settings));
+
+        settings
+            .adaptive_engine_process
+            .limit_background_processors_enabled = false;
+        settings.adaptive_engine_process.restraint_priority =
+            AdaptiveRestraintPriority::ProcessorPlacementOnly;
+        assert!(shows_limit(&settings));
     }
 
     #[test]

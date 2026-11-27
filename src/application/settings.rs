@@ -417,6 +417,16 @@ impl SettingsEditor {
         field: fn(&mut Settings) -> &mut bool,
         enabled: bool,
     ) -> SettingsResult<bool> {
+        self.patch_feature_profile(profile, |settings| {
+            set_enabled_value(field(settings), enabled)
+        })
+    }
+
+    pub(crate) fn patch_feature_profile(
+        &mut self,
+        profile: PowerSourceProfile,
+        apply: impl Fn(&mut Settings) -> bool,
+    ) -> SettingsResult<bool> {
         self.coordinator.apply_runtime_patch(
             &mut self.draft,
             self.coordinator.persisted_revision,
@@ -427,7 +437,7 @@ impl SettingsEditor {
                     PowerSourceProfile::PluggedIn => settings,
                     PowerSourceProfile::OnBattery => settings.battery_profile_mut(),
                 };
-                set_enabled_value(field(settings), enabled)
+                apply(settings)
             },
         )
     }

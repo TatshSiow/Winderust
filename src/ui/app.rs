@@ -1868,6 +1868,14 @@ impl WinderustApp {
                 });
             }
             Message::PollInterruptTiming => self.interrupt_timing.poll(),
+            Message::Adaptive(adaptive_engine::Message::TuningTab(tab)) => {
+                if self.adaptive.select_tab(tab) {
+                    return iced::widget::operation::snap_to(
+                        adaptive_engine::CONTENT_ID,
+                        iced::widget::scrollable::RelativeOffset::START,
+                    );
+                }
+            }
             Message::Adaptive(message) => {
                 if matches!(
                     message,
@@ -2266,7 +2274,11 @@ impl WinderustApp {
                                 tray_error = true;
                                 continue;
                             };
-                            if page.supports_power_source_profiles() {
+                            if page == Page::AdaptiveEngine {
+                                self.settings.patch_feature_profile(profile, |settings| {
+                                    adaptive_engine::set_enabled(settings, enabled)
+                                })
+                            } else if page.supports_power_source_profiles() {
                                 self.settings.set_feature_enabled(profile, field, enabled)
                             } else {
                                 self.settings.set_shared_feature_enabled(field, enabled)

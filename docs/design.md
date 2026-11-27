@@ -217,15 +217,21 @@ hover/press; background shading supplies feedback.
 - The Settings Files card explains each file action before its picker opens. Export includes
   unsaved settings edits. A valid import replaces the active settings immediately and requires
   a clean settings draft.
-- Within Adaptive Engine, CPU Behaviour has no separate master switch;
-  CPU Pressure Restraint, Limit Background Processors, and Dynamic Resource Zones own independent switches and retain their
-  configuration while Adaptive Engine is off.
-- In short Adaptive Engine workspaces, the feature toggle, preset picker, and
-  editor tabs scroll with the selected tab. Keep the power-source toolbar and
-  page header outside this scroll area.
-- Adaptive Engine uses the right-rail Status / Presets tabs. Built-in presets are read-only. Custom presets can be added, renamed, refreshed from the current CPU Behaviour tuning, and deleted. The live page also exposes Custom Rules. The preset editor spans the available modal width and keeps its own draft.
-- Keep Restore defaults in the live Preset card on the CPU Behaviour tab. It stages
-  the selected source's factory tuning through the shared Save and Discard flow.
+- Adaptive Engine opens on Setup. Group the enable switch, CPU preset, and the
+  selected preset's practical effect in one card. First enable stages Balanced
+  when the selected source has factory tuning. Show a message if the engine is
+  enabled with no CPU policy configured.
+- Setup puts collapsible CPU settings below the preset card. The Exclusions tab
+  contains Exclude service hosts and per-app exclusions. Interrupt Timing has
+  its own tab. In short workspaces the tabs scroll with their content. In taller
+  workspaces the enable switch and preset picker stay visible while tuning cards
+  scroll. Keep the power-source toolbar and page header outside.
+- The Status and Presets rail tabs share the preset library across power sources.
+  Built-in previews show the same brief explanation as Setup. Custom preset
+  editors retain a separate draft and show the tuning directly. Keep Exclude
+  service hosts visible in the preset editor because presets capture it. Preset
+  selection and enablement stage changes for the selected source through the
+  shared Save and Discard flow.
 - Priority Control uses Focus / Visible Window / Background dropdown columns and expandable detail cards. Turning a row off does not lock its configuration. Runtime precedence and protection rules live in [Runtime contracts](runtime-contracts.md).
 - Place a Protect child processes switch inside each Priority Control feature's
   Foreground Detection and Visible Window Detection cards. Both switches
@@ -484,7 +490,7 @@ hover/press; background shading supplies feedback.
   with an opaque preview. Picker changes apply only on
   submit; Cancel, Escape, focus loss, and navigation discard them. Saved-color
   menus retain Escape/outside-click/focus-loss dismissal and reset with their item.
-- Adaptive Engine Priority Control keeps each control's advanced options in its own
+- Priority Control keeps each control's advanced options in its own
   expandable row under Focus, Visible Window, and Background. Process and Memory
   Priority include detection/preservation controls. Detection falls through to the
   next tier without changing CPU restraint's focus protection. Process Priority
@@ -549,14 +555,22 @@ hover/press; background shading supplies feedback.
 - Keep breadcrumbs anchored at the top left. Power-source selectors stay beneath the breadcrumb.
 - Quit confirmation is centered over a dimmed window. With unsaved changes show Cancel, Save and quit, and Quit without saving; otherwise show Cancel and Quit. Shutdown errors stay visible.
 
-- Adaptive Engine CPU Behaviour presents Pressure source and its threshold together in Shared Detection and Timing. Time above threshold, restrained priority, Maximum restraint time, and idle settings belong inside the expandable CPU Pressure Restraint card. Limit Background Processors and Dynamic Resource Zones keep their controls under independent toggle headers with visible descriptions. Keep disclosure state separate for the live and preset editors. Zoning keeps its 1-99 foreground share and visible throughput warning. The limiter percentage always refers to background capacity, and its allocation method remains editable when zones are enabled. Show verified zoning status and counts.
-- Exclude service hosts belongs in Shared Detection and Timing because it covers all three policies.
-  In Limit Background Processors, place the CPU allocation method first. Reduce affinity (Hard)
+- CPU triggers and recovery groups the monitored CPU readings and thresholds with the
+  Busy app threshold, sample interval, and candidate limit. Its App recovery section groups the
+  recovery threshold, minimum hold, and recovery duration shared by restraint and
+  independent background processor limits. CPU Pressure Restraint groups its
+  action and scheduling effects first, then restraint-specific timing and idle
+  behavior, then protections. Limit Background Processors and Dynamic Resource
+  Zones have separate toggle headers with visible descriptions. Keep disclosure
+  state separate for live and preset editors.
+  Zoning keeps its 1–99 foreground share and visible throughput warning. The
+  limiter percentage refers to background capacity, and its allocation method
+  remains editable when zones are enabled. Show verified zoning status and counts.
+- In Limit Background Processors, show Only during CPU Pressure Restraint and its
+  prerequisite before the allocation method in live and preset editors. Reduce affinity (Hard)
   shows a removal count in place of all fixed processor-selection controls. The two hard methods
   show Preserve custom affinity and Restore affinity before restart inside the same expandable
   card. The restart control describes its scope under Resource Thresholds.
-  Place Only during CPU Pressure Restraint in that card, with its prerequisite visible in the
-  setting description in live and preset editors.
 - Restraint action, Restraint I/O priority, and Energy-efficient scheduling sit together in
   CPU Pressure Restraint. Processor placement only shows its allocation method and
   selection through Limit Background Processors and hides the priority adjuncts.

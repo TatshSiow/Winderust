@@ -3099,44 +3099,43 @@ impl AdaptiveEngineProcessSettings {
             || self.dynamic_resource_zones_enabled
     }
 
-    pub(crate) fn restore_cpu_behaviour_defaults(&mut self) {
-        let defaults = Self::default();
-        self.cpu_pressure_restraint_enabled = defaults.cpu_pressure_restraint_enabled;
-        self.limit_background_processors_enabled = defaults.limit_background_processors_enabled;
+    pub(crate) fn copy_cpu_behaviour_from(&mut self, tuning: &Self) {
+        self.cpu_pressure_restraint_enabled = tuning.cpu_pressure_restraint_enabled;
+        self.limit_background_processors_enabled = tuning.limit_background_processors_enabled;
         self.limit_background_processors_during_restraint =
-            defaults.limit_background_processors_during_restraint;
-        self.dynamic_resource_zones_enabled = defaults.dynamic_resource_zones_enabled;
-        self.dynamic_resource_zone_settings = defaults.dynamic_resource_zone_settings;
-        self.cpu_allocation_method = defaults.cpu_allocation_method;
-        self.preserve_custom_affinity = defaults.preserve_custom_affinity;
-        self.restore_child_affinity = defaults.restore_child_affinity;
+            tuning.limit_background_processors_during_restraint;
+        self.dynamic_resource_zones_enabled = tuning.dynamic_resource_zones_enabled;
+        self.dynamic_resource_zone_settings = tuning.dynamic_resource_zone_settings.clone();
+        self.cpu_allocation_method = tuning.cpu_allocation_method;
+        self.preserve_custom_affinity = tuning.preserve_custom_affinity;
+        self.restore_child_affinity = tuning.restore_child_affinity;
         self.restore_affinity_before_managed_restart =
-            defaults.restore_affinity_before_managed_restart;
-        self.processors_to_remove = defaults.processors_to_remove;
-        self.background_processor_selection = defaults.background_processor_selection;
-        self.processor_limit_percent = defaults.processor_limit_percent;
-        self.specific_processors = defaults.specific_processors;
-        self.pressure_source = defaults.pressure_source;
-        self.exclude_service_hosts = defaults.exclude_service_hosts;
+            tuning.restore_affinity_before_managed_restart;
+        self.processors_to_remove = tuning.processors_to_remove;
+        self.background_processor_selection = tuning.background_processor_selection;
+        self.processor_limit_percent = tuning.processor_limit_percent;
+        self.specific_processors = tuning.specific_processors.clone();
+        self.pressure_source = tuning.pressure_source;
+        self.exclude_service_hosts = tuning.exclude_service_hosts;
         self.foreground_or_system_cpu_threshold_percent =
-            defaults.foreground_or_system_cpu_threshold_percent;
-        self.foreground_cpu_threshold_percent = defaults.foreground_cpu_threshold_percent;
-        self.background_app_cpu_threshold_percent = defaults.background_app_cpu_threshold_percent;
-        self.cpu_recovery_threshold_percent = defaults.cpu_recovery_threshold_percent;
-        self.reaction_time_ms = defaults.reaction_time_ms;
-        self.restraint_trigger_time_ms = defaults.restraint_trigger_time_ms;
-        self.pause_restraint_when_idle = defaults.pause_restraint_when_idle;
-        self.restraint_idle_timeout_seconds = defaults.restraint_idle_timeout_seconds;
-        self.restraint_priority = defaults.restraint_priority;
-        self.restraint_io_priority = defaults.restraint_io_priority;
-        self.restraint_energy_efficient_scheduling = defaults.restraint_energy_efficient_scheduling;
-        self.protect_focused_app = defaults.protect_focused_app;
-        self.protect_focused_children = defaults.protect_focused_children;
-        self.protect_non_normal_priority = defaults.protect_non_normal_priority;
-        self.minimum_restraint_time_ms = defaults.minimum_restraint_time_ms;
-        self.maximum_restraint_time_ms = defaults.maximum_restraint_time_ms;
-        self.cpu_recovery_time_seconds = defaults.cpu_recovery_time_seconds;
-        self.maximum_restrained_apps = defaults.maximum_restrained_apps;
+            tuning.foreground_or_system_cpu_threshold_percent;
+        self.foreground_cpu_threshold_percent = tuning.foreground_cpu_threshold_percent;
+        self.background_app_cpu_threshold_percent = tuning.background_app_cpu_threshold_percent;
+        self.cpu_recovery_threshold_percent = tuning.cpu_recovery_threshold_percent;
+        self.reaction_time_ms = tuning.reaction_time_ms;
+        self.restraint_trigger_time_ms = tuning.restraint_trigger_time_ms;
+        self.pause_restraint_when_idle = tuning.pause_restraint_when_idle;
+        self.restraint_idle_timeout_seconds = tuning.restraint_idle_timeout_seconds;
+        self.restraint_priority = tuning.restraint_priority;
+        self.restraint_io_priority = tuning.restraint_io_priority;
+        self.restraint_energy_efficient_scheduling = tuning.restraint_energy_efficient_scheduling;
+        self.protect_focused_app = tuning.protect_focused_app;
+        self.protect_focused_children = tuning.protect_focused_children;
+        self.protect_non_normal_priority = tuning.protect_non_normal_priority;
+        self.minimum_restraint_time_ms = tuning.minimum_restraint_time_ms;
+        self.maximum_restraint_time_ms = tuning.maximum_restraint_time_ms;
+        self.cpu_recovery_time_seconds = tuning.cpu_recovery_time_seconds;
+        self.maximum_restrained_apps = tuning.maximum_restrained_apps;
     }
 
     pub(crate) fn excludes_executable_name(&self, name: &str) -> bool {

@@ -52,7 +52,7 @@
 - Process List - inspect running processes, apply controls, and edit per-app rules.
 - Action Log - review action history and export it to CSV.
 - Win32 Priority Separation - adjust Windows scheduler time slices and foreground boost, with backup and restore.
-- Interrupt Timing - capture DPC and ISR activity under Adaptive Engine’s CPU Behaviour tab. View the capture timeline or export the report to JSON.
+- Interrupt Timing - capture DPC and ISR activity in Adaptive Engine. View the capture timeline or export the report to JSON.
 
 ## Getting started
 

@@ -35,7 +35,9 @@ const CPU_LIMITER_PROCESSORS_COMPACT: usize = 118;
 const ADAPTIVE_NAME_PATTERN: usize = 119;
 const RESOURCE_NAME_INPUT: usize = 120;
 const APP_SUSPENSION_FOCUS_OFF: usize = 121;
-const EXTRA_STATES: usize = 122;
+const ADAPTIVE_RESTRAINT_RECOVERY: usize = 122;
+const ADAPTIVE_SETUP_ENABLED: usize = 123;
+const EXTRA_STATES: usize = 124;
 pub(super) struct Run {
     pages: Vec<Page>,
     remaining: VecDeque<usize>,
@@ -84,9 +86,26 @@ impl Run {
                 .chain([extra_start, extra_start + 18])
                 .collect()
         } else if std::env::args().any(|arg| arg == "--adaptive-restraint-only") {
-            [6, 7, 9, ADAPTIVE_NAME_PATTERN]
-                .into_iter()
-                .map(|extra| extra_start + extra)
+            std::iter::once(0)
+                .chain(
+                    (0..extra_start)
+                        .filter(|index| pages[index % pages.len()] == Page::AdaptiveEngine),
+                )
+                .chain(
+                    [
+                        4,
+                        6,
+                        7,
+                        9,
+                        10,
+                        92,
+                        93,
+                        ADAPTIVE_NAME_PATTERN,
+                        ADAPTIVE_RESTRAINT_RECOVERY,
+                        ADAPTIVE_SETUP_ENABLED,
+                    ]
+                    .map(|extra| extra_start + extra),
+                )
                 .collect()
         } else if std::env::args().any(|arg| arg == "--resource-thresholds-only") {
             [
@@ -186,6 +205,8 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                     | MEMORY_TRIM_UNKNOWN
                     | KEEP_AWAKE_ACTIVE
                     | APP_SUSPENSION_FOCUS_OFF
+                    | ADAPTIVE_RESTRAINT_RECOVERY
+                    | ADAPTIVE_SETUP_ENABLED
                     | GPU_MEMORY_COMPACT
                     | CPU_LIMITER_AFFINITY_COMPACT
                     | CPU_LIMITER_PROCESSORS_COMPACT
@@ -202,7 +223,13 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             ) => Page::CpuLimiter,
             Some(2) => Page::SettingsHome,
             Some(3) => Page::Home,
-            Some(4 | 6..=10 | ADAPTIVE_NAME_PATTERN) => Page::AdaptiveEngine,
+            Some(
+                4
+                | 6..=10
+                | ADAPTIVE_NAME_PATTERN
+                | ADAPTIVE_RESTRAINT_RECOVERY
+                | ADAPTIVE_SETUP_ENABLED,
+            ) => Page::AdaptiveEngine,
             Some(5 | 70 | 71) => Page::AdaptiveProcessorPower,
             Some(11 | MEMORY_TRIM_PARTIAL | MEMORY_TRIM_UNKNOWN) => Page::MemoryTrim,
             Some(RAIL_RESIZE_TALL) => Page::AdvancedControls,
@@ -786,11 +813,17 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             if index <= 10 {
                 use adaptive_engine::{Message as AdaptiveMessage, TuningGroup, TuningTab};
                 if index == 4 {
+                    app.settings
+                        .adaptive_engine_process
+                        .background_app_cpu_threshold_percent = 8;
+                    app.settings
+                        .adaptive_engine_process
+                        .cpu_recovery_threshold_percent = 10;
                     let _ = app.update(Message::Adaptive(AdaptiveMessage::TuningTab(
-                        TuningTab::CpuBehaviour,
+                        TuningTab::Setup,
                     )));
                     let _ = app.update(Message::Adaptive(AdaptiveMessage::Collapse(
-                        TuningGroup::SharedDetection,
+                        TuningGroup::CpuTriggers,
                     )));
                 } else if index == 5 {
                     use adaptive_processor_power::{BuiltInPreset, Message as PowerMessage, Tab};
@@ -839,6 +872,12 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                     app.settings
                         .adaptive_engine_process
                         .limit_background_processors_enabled = true;
+                    app.settings
+                        .adaptive_engine_process
+                        .limit_background_processors_during_restraint = index == 9;
+                    app.settings
+                        .adaptive_engine_process
+                        .cpu_pressure_restraint_enabled = false;
                     let _ = app.update(Message::Adaptive(AdaptiveMessage::Toggle(
                         |settings, enabled| {
                             settings.adaptive_engine_process.restore_child_affinity = enabled;
@@ -850,7 +889,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                         index == 9
                     );
                     let _ = app.update(Message::Adaptive(AdaptiveMessage::TuningTab(
-                        TuningTab::CpuBehaviour,
+                        TuningTab::Setup,
                     )));
                     let _ = app.update(Message::Adaptive(AdaptiveMessage::Collapse(
                         TuningGroup::BackgroundProcessors,
@@ -894,7 +933,8 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             let prefix = if extra == Some(7) { "worker" } else { "helper" };
             let initial = app.settings.adaptive_engine_process.custom_rules.len();
             for message in [
-                AdaptiveMessage::TuningTab(TuningTab::CustomRules),
+                AdaptiveMessage::Cancel,
+                AdaptiveMessage::TuningTab(TuningTab::Exclusions),
                 AdaptiveMessage::MatchBy(ExclusionMatchBy::NamePattern),
                 AdaptiveMessage::ExecutableNamePattern(format!("{prefix}-*.exe")),
                 AdaptiveMessage::AddExclusion,
@@ -974,7 +1014,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
         }
         if extra == Some(24) {
             let _ = app.update(Message::Adaptive(adaptive_engine::Message::TuningTab(
-                adaptive_engine::TuningTab::CpuBehaviour,
+                adaptive_engine::TuningTab::Setup,
             )));
             let _ = app.update(Message::Adaptive(adaptive_engine::Message::Collapse(
                 adaptive_engine::TuningGroup::ResourceZones,
@@ -1270,6 +1310,55 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             let _ = app.update(Message::SidePanelTab(SidePanelTab::Status));
             assert_eq!(app.side_panel_tab, SidePanelTab::Status);
         }
+        if extra == Some(ADAPTIVE_RESTRAINT_RECOVERY) {
+            use adaptive_engine::{Message as AdaptiveMessage, TuningGroup, TuningTab};
+
+            app.adaptive.reset_drafts();
+            let _ = app.update(Message::Adaptive(AdaptiveMessage::TuningTab(
+                TuningTab::Setup,
+            )));
+            let _ = app.update(Message::Adaptive(AdaptiveMessage::Collapse(
+                TuningGroup::CpuTriggers,
+            )));
+        }
+        if extra == Some(ADAPTIVE_SETUP_ENABLED) {
+            use adaptive_engine::{Message as AdaptiveMessage, TuningTab};
+
+            let mut settings = crate::config::Settings::default();
+            settings.general = app.settings.global().general.clone();
+            settings.general.enabled = false;
+            app.settings = SettingsEditor::with_settings(settings);
+            app.power_source = PowerSourceProfile::PluggedIn;
+            app.adaptive.reset_drafts();
+
+            let before = app.settings.runtime_settings_snapshot().value;
+            let _ = app.update(Message::PowerSource(PowerSourceProfile::OnBattery));
+            let _ = app.update(Message::Adaptive(AdaptiveMessage::TuningTab(
+                TuningTab::Setup,
+            )));
+            let _ = app.update(Message::Adaptive(AdaptiveMessage::SetEnabled(true)));
+            assert_eq!(
+                app.settings.selected_power_source(),
+                PowerSourceProfile::OnBattery
+            );
+            assert!(app.settings.adaptive_engine.enabled);
+            assert!(
+                app.settings
+                    .adaptive_engine_process
+                    .cpu_pressure_restraint_enabled
+            );
+            assert_eq!(app.settings.adaptive_engine_process.reaction_time_ms, 1_500);
+            assert_eq!(
+                app.settings.global().adaptive_engine,
+                before.adaptive_engine
+            );
+            assert_eq!(
+                app.settings.global().adaptive_engine_process,
+                before.adaptive_engine_process
+            );
+            assert_eq!(app.settings.runtime_settings_snapshot().value, before);
+            assert!(app.pending_settings_changes());
+        }
         if matches!(extra, Some(84..=85)) {
             use adaptive_engine::{Message as AdaptiveMessage, TuningGroup, TuningTab};
 
@@ -1290,12 +1379,12 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                     enabled,
                 )));
                 let _ = app.update(Message::Adaptive(AdaptiveMessage::Collapse(
-                    TuningGroup::SharedDetection,
+                    TuningGroup::CpuTriggers,
                 )));
                 let _ = app.update(Message::ToggleSidePanel);
-                TuningTab::CpuBehaviour
+                TuningTab::Setup
             } else {
-                TuningTab::CustomRules
+                TuningTab::Exclusions
             };
             let pending = app.settings.adaptive_engine_process.clone();
             let _ = app.update(Message::Adaptive(AdaptiveMessage::TuningTab(tab)));
@@ -1410,9 +1499,22 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
         }
         if matches!(extra, Some(92..=93)) {
             use crate::backend::interrupt_timing::InterruptTimingReport;
+            use adaptive_engine::{Message as AdaptiveMessage, TuningTab};
 
             let _ = app.update(Message::CpuLimiter(cpu_limiter::Message::CancelRule));
             app.adaptive.reset_drafts();
+            let before = app.settings.runtime_settings_snapshot().value;
+            let draft = app.settings.adaptive_engine_process.clone();
+            let source = app.settings.selected_power_source();
+            let _ = app.update(Message::Adaptive(AdaptiveMessage::TuningTab(
+                TuningTab::Setup,
+            )));
+            let _ = app.update(Message::Adaptive(AdaptiveMessage::TuningTab(
+                TuningTab::InterruptTiming,
+            )));
+            assert_eq!(app.settings.adaptive_engine_process, draft);
+            assert_eq!(app.settings.selected_power_source(), source);
+            assert_eq!(app.settings.runtime_settings_snapshot().value, before);
             let modules = if extra == Some(92) {
                 vec![serde_json::from_value(serde_json::json!({
                     "kind": "DPC",
@@ -1542,6 +1644,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                 | GPU_MEMORY_COMPACT
                 | CPU_LIMITER_AFFINITY_COMPACT
                 | CPU_LIMITER_PROCESSORS_COMPACT
+                | ADAPTIVE_SETUP_ENABLED
                 | 7
                 | 9
                 | ADAPTIVE_NAME_PATTERN,
@@ -1559,7 +1662,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             Some(32) => iced::Size::new(1920.0, 720.0),
             Some(33 | RAIL_RESIZE_TALL) => iced::Size::new(900.0, 1000.0),
             Some(34) => iced::Size::new(1536.0, 960.0),
-            Some(70) => iced::Size::new(1120.0, 920.0),
+            Some(4 | 70 | ADAPTIVE_RESTRAINT_RECOVERY) => iced::Size::new(1120.0, 920.0),
             _ => iced::Size::new(
                 if extra.is_some_and(|i| i >= 13) {
                     1920.0
@@ -1674,17 +1777,15 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             iced::widget::scrollable::RelativeOffset { x: 0.0, y: 1.0 },
         ));
     }
-    if matches!(
-        extra,
-        Some(6 | 7 | 9 | 84 | 92..=93 | ADAPTIVE_NAME_PATTERN)
-    ) && run.ticks == 3
-    {
+    if matches!(extra, Some(4 | 6 | 7 | 9 | 84 | ADAPTIVE_NAME_PATTERN)) && run.ticks == 3 {
+        let y = match extra {
+            Some(4) => 0.55,
+            Some(9) => 0.92,
+            _ => 1.0,
+        };
         return Some(iced::widget::operation::snap_to(
-            "adaptive-engine-content",
-            iced::widget::scrollable::RelativeOffset {
-                x: 0.0,
-                y: if extra == Some(9) { 0.92 } else { 1.0 },
-            },
+            adaptive_engine::CONTENT_ID,
+            iced::widget::scrollable::RelativeOffset { x: 0.0, y },
         ));
     }
     if run.ticks

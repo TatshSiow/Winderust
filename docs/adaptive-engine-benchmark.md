@@ -173,11 +173,11 @@ background retained throughput, package power, and action stability as a Pareto
 trade-off. A higher paired percentage does not mean one preset beats another
 when each percentage has a different adjacent Stock denominator.
 
-## Synthetic Preset Model
+## Historical Synthetic Preset Model
 
-These cases model combinations of scheduler and processor-power controls.
-See [Adaptive Engine presets](adaptive-engine-implementation.md#presets) for
-the built-in CPU Behaviour settings used by the release runtime.
+These combinations include processor power and direct priority settings. They
+describe the synthetic runner, with its own names and assumptions. The current
+Adaptive Engine presets are defined in the [implementation guide](adaptive-engine-implementation.md#presets).
 
 | Preset | Benchmark model |
 | --- | --- |

@@ -23,49 +23,62 @@ use the shared automation runtime and foreground demand observations.
 
 The System Bottleneck rail is diagnostic. It uses total CPU, busiest logical processor, and
 busiest GPU engine readings. The diagnostic pauses in the tray and starts a fresh observation
-when the window returns. CPU Behaviour and power-plan rules keep their own sampling schedules.
+when the window returns. Adaptive Engine policies and power-plan rules keep their own sampling schedules.
 
 ## Presets
 
-The preset definitions live in `src/ui/adaptive_presets.rs` and apply CPU Behaviour settings.
+Setup contains the enable switch, CPU preset, and expandable controls for CPU
+triggers, app recovery, and the individual policies. Enabling a power source with
+factory tuning stages Balanced. Choose a preset to replace the selected source's
+tuning, then Save to apply. Exclusions and Interrupt Timing have their own tabs.
+
+The preset definitions live in `src/ui/adaptive_presets.rs`.
 
 Power Save, Balanced, Performance, and Speed select scheduling values. Custom
-presets capture CPU Behaviour tuning, including its three switches and both
-allocation configurations. Applying a preset leaves Adaptive Processor Power,
-the master switch, and custom rules under their own controls. Existing custom
-preset records retain their stored power values when CPU Behaviour tuning is edited.
+presets capture tuning, including the three policy switches, both allocation
+configurations, and Exclude service hosts. Applying a preset leaves Adaptive
+Processor Power, the master switch, and per-app exclusions under their own
+controls. Preset matching also uses those tuning values. Older nested Priority
+Control fields retain their settings-file representation and have no effect on
+preset selection or application. Existing custom preset records retain their
+stored power values when tuning is edited.
 
-Power Save and Balanced use the System only pressure source and temporarily lower
-eligible apps to Below Normal priority. Windows and separate CPU allocation rules
-handle processor placement. Balanced checks every 1.5 seconds and starts at 75%
-total CPU. Power Save checks every 2.5 seconds and starts at 85% to stay inactive
-during lighter work.
-Both require an eligible background app to stay over its own threshold for one
-sampling interval before applying restraint.
+| Preset | Pressure source and threshold | Sample interval | Minimum hot duration | CPU policy |
+| --- | --- | ---: | ---: | --- |
+| Power Save | System only, 85% | 2.5 s | 2.5 s | Temporary Below Normal and energy-efficient scheduling, up to 4 apps |
+| Balanced | System only, 75% | 1.5 s | 1.5 s | Temporary Below Normal with unrestricted placement, up to 4 apps |
+| Performance | System or foreground, 60% | 750 ms | First hot sample | 75% foreground zone and an independent 90% background placement fallback, up to 8 candidates |
+| Speed | System only, 35% | 500 ms | 500 ms | Temporary Below Normal and an 85% background placement limit during verified restraint, up to 12 apps |
 
-Power Save, Balanced, and Performance use a three-second recovery interval.
-Speed uses four seconds. During continued CPU pressure, recovery starts after
-the minimum hold ends and requires app CPU use to stay at or below the recovery
-threshold for the full interval. The next evaluation releases the claim.
-Speed samples every 500 ms and waits one second above the per-app threshold
-before restraining. It qualifies apps at 8% of one logical CPU and allows
-recovery at or below 7%, so small variations in the sampled CPU counter can
-settle without restarting recovery.
+Power Save uses the longest sampling interval and lets Windows favor efficient
+frequencies and cores for restrained background apps. Slower background completion
+is an intended tradeoff. Balanced uses temporary priority restraint to preserve
+responsiveness and keep the full processor pool available. Performance favors a
+busy foreground app under contention. Speed reacts sooner and keeps the full
+processor pool available to the foreground app, with energy-efficient scheduling
+off. Both placement presets use CPU Sets (Soft). The background placement
+percentages refer to the pool available to each eligible app.
+
+Performance turns CPU Pressure Restraint off and uses the first valid hot CPU
+interval for independent placement.
+Power Save and Balanced qualify background apps at 10% of one logical processor.
+Performance and Speed use 8%. App recovery thresholds are 5%, 5%, 4%, and 7%
+respectively. Power Save and Balanced require three seconds of cool samples
+after the minimum hold. Speed requires four. Performance uses the recovery
+threshold to release independent placement.
+Idle priority, Very Low I/O priority, and pause on idle are available in custom
+tuning. Continuous priority and Efficiency Mode rules have separate controls.
 
 Custom edits remain in the modal draft until saved. Built-ins are read-only.
 Disabled policies remain editable.
 
-Restore defaults stages the factory CPU Behaviour settings for the selected power
-source. Its Custom Rules, the Adaptive Engine master switch, the other power
-source, and Adaptive Processor Power retain their own settings. Save commits the
-draft and Discard restores the last saved tuning.
-
-Custom Rules can exclude an exact executable path, an exact executable name, or
+Exclusions can match an exact executable path, an exact executable name, or
 an executable name pattern. Patterns use `*` for any number of characters and
 `?` for one. Both name selectors match case-insensitively across directories.
-Process Details shows name coverage and directs users to Custom Rules to edit it.
+Process Details shows name coverage and directs users to Exclusions to edit it.
+Exclude service hosts is also on this tab and stays available when editing a preset.
 
-CPU Behaviour has shared detection/timing followed by three independent policies:
+Setup places the shared CPU triggers and recovery card above three independent policies.
 
 - **CPU Pressure Restraint** acts on apps with sustained CPU demand during aggregate
   CPU pressure. Its action selects Below Normal priority, Idle priority, or
@@ -90,9 +103,9 @@ CPU Behaviour has shared detection/timing followed by three independent policies
   hard-affinity assignment before Resource Thresholds creates a replacement. The replacement
   can inherit the parent’s restored affinity. This applies to Winderust-managed restarts.
 - **Dynamic Resource Zones (Experimental)** uses separate settings and complementary CPU Sets (Soft).
-  The Performance preset enables zoning; Speed, Balanced, and Power Save leave it off.
+  The Performance preset enables zoning. Speed, Balanced, and Power Save leave it off.
 
-Shared Detection and Timing can use total system CPU, foreground-group CPU, either reading, or
+CPU triggers can use total system CPU, foreground-group CPU, either reading, or
 both readings. Either and Both can use a separate foreground CPU threshold. Each selected signal
 has a release boundary five percentage points below its own threshold. The foreground-group
 reading is a share of total system CPU capacity. Background-app CPU demand is measured against
@@ -103,9 +116,16 @@ first pass after pressure falls keep their normal observation paths. Adaptive
 Processor Power still collects foreground demand when its own settings need it.
 Optional Exclude service hosts protects detected active service processes, Session 0,
 and processes whose session could not be determined. It applies to all three policies.
-Minimum restraint time is shared by CPU Pressure Restraint and Limit Background
-Processors. It is entered in milliseconds, with zero allowing recovery without
-a minimum hold. Recovery time still controls how long low CPU use must persist.
+App recovery applies to CPU Pressure Restraint and independent background
+processor limits. Minimum restraint time is entered in milliseconds, with zero
+allowing recovery without a minimum hold. The hold applies during continued
+aggregate pressure and while the process is eligible. The lower of the recovery
+threshold and the app CPU trigger defines the cutoff. Usage at or above the app
+trigger still counts as hot. CPU recovery time measures how long usage must
+remain low before CPU Pressure Restraint ends. Independent placement releases
+when recovery begins, and Adaptive Engine continues tracking the cooling app
+for the configured duration. CPU Pressure Restraint also uses Busy time before
+restraint, Maximum restraint time, and the optional idle pause.
 
 Zoning requires fresh foreground observations outside startup grace and current hot eligible
 background competition. Excluded, protected, unavailable, overridden, and suppressed targets do
@@ -161,14 +181,14 @@ migration or copying from the limiter is performed.
 - Efficiency Mode and Adaptive Engine policy submit typed claims through RuntimeCore. Each
   controller revalidates exact identity, access, protection, and cross-session policy before a
   mutation.
-- Adaptive Engine checks CPU pressure at the configured reaction interval whenever any CPU
-  Behaviour policy is enabled. It checks foreground identity and samples CPU use before scanning
+- Adaptive Engine checks CPU pressure at the configured CPU sample interval whenever
+  any CPU policy is enabled. It checks foreground identity and samples CPU use before scanning
   for background candidates under pressure. Quiet passes still reconcile existing claims.
   Foreground and process lifecycle events may schedule an immediate safety pass to release
   obsolete foreground roles.
   Restraint requires at least two valid hot observations for the same process
-  instance and a continuous Time above threshold. Reaction time controls
-  sampling. The default for both is one second. Restraint submits a temporary
+  instance and the configured Busy time before restraint. CPU sample interval
+  controls sampling. The default for both is one second. Restraint submits a temporary
   priority claim for a process at Normal priority by default. Below Normal is the
   default action and Idle is optional. Turning off Protect non-Normal priority
   allows lowering a known priority above the selected action and restores the
@@ -233,7 +253,7 @@ migration or copying from the limiter is performed.
   claim is released or Winderust shuts down. The watchdog independently restores committed
   externally persistent state after an abnormal exit.
 - Adaptive Processor Power samples foreground workload, aggregate CPU use and per-processor load
-  at its own 500 ms cadence, including when all CPU Behaviour policies are off. It reuses the
+  at its own 500 ms cadence, including when all Adaptive Engine CPU policies are off. It reuses the
   foreground process generations and counters when both consumers run in the same cycle.
   A known foreground workload below 25% and system usage at or above 75% select Background
   Pressure outside Focus and Launch. CPU Pressure Restraint tuning controls priority claims.

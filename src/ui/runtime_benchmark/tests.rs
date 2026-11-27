@@ -23,13 +23,26 @@ fn benchmark_cases_change_only_the_named_tuning() {
         settings_for("DefaultPCores").unwrap(),
         settings_for("Default").unwrap()
     );
-    assert!(
-        settings_for("SpeedRestraint")
-            .unwrap()
-            .adaptive_engine_process
-            .cpu_pressure_restraint_enabled
-    );
+    expected.adaptive_engine.adaptive_processor_power_enabled = true;
+    expected
+        .adaptive_engine_process
+        .limit_background_processors_enabled = false;
+    assert_eq!(settings_for("SpeedRestraint").unwrap(), expected);
     assert!(settings_for("unknown").is_err());
+
+    for (case, preset) in [
+        ("PowerSavePowerOff", BuiltInAdaptiveEnginePreset::PowerSave),
+        ("BalancedPowerOff", BuiltInAdaptiveEnginePreset::Balanced),
+        (
+            "PerformancePowerOff",
+            BuiltInAdaptiveEnginePreset::Performance,
+        ),
+    ] {
+        let mut expected = Settings::default();
+        apply_built_in_adaptive_engine_preset(&mut expected, preset);
+        expected.adaptive_engine.enabled = true;
+        assert_eq!(settings_for(case).unwrap(), expected);
+    }
 }
 
 #[test]
@@ -145,6 +158,7 @@ fn balanced_request_changes_only_explicit_overrides() {
         "dynamic_resource_zones_enabled": true,
         "limit_background_processors_enabled": false,
         "cpu_pressure_restraint_enabled": true,
+        "restraint_energy_efficient_scheduling": true,
         "background_app_cpu_threshold_percent": 100,
         "maximum_restrained_apps": 32,
         "foreground_or_system_cpu_threshold_percent": 1,
@@ -158,6 +172,7 @@ fn balanced_request_changes_only_explicit_overrides() {
         process.dynamic_resource_zones_enabled = true;
         process.limit_background_processors_enabled = false;
         process.cpu_pressure_restraint_enabled = true;
+        process.restraint_energy_efficient_scheduling = true;
         process.background_app_cpu_threshold_percent = 100;
         process.maximum_restrained_apps = 32;
         process.foreground_or_system_cpu_threshold_percent = 1;

@@ -60,11 +60,18 @@ the Speed settings with Adaptive Processor Power disabled. Each case must restor
 the original plan and complete runtime/watchdog shutdown before the next case.
 The matrix stops on failure, leaving runtime and recovery helper cleanup intact.
 
-CPU Pressure Restraint stays off in those cases. The optional `SpeedRestraint`
-case enables temporary process priority restraint. The host waits for verified
+Speed and SpeedPowerOff use temporary Below Normal priority and limit processors
+only during verified restraint. The optional `SpeedRestraint` case runs Speed
+with processor placement disabled. To compare the CPU presets with a fixed Windows
+power plan, pass `-Cases Default,PowerSavePowerOff,BalancedPowerOff,PerformancePowerOff,SpeedPowerOff`.
+Those cases apply the named Adaptive Engine preset with Adaptive Processor Power
+off. The host waits for verified
 ownership of the managed power plan when Adaptive Processor Power is enabled and
 for unpaused process observations when any Adaptive Engine policy is enabled.
 For a power-only run, set `adaptive_engine_enabled` to `false` in `request.json`.
+For an isolated EcoQoS comparison, use `PowerSavePowerOff` with
+`restraint_energy_efficient_scheduling` set to `false` and `true` in matched
+runs. Check completed work and package energy per unit of work alongside watts.
 The exported settings, sampled pressure state, final runtime status, binary hash, raw CSV and
 transcript accompany every run under `target/throughput-*`. The host measures the
 headless engine, has a ten-minute timeout, and retains the normal single-instance

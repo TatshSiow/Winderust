@@ -919,8 +919,8 @@ Read the relevant section before changing feature policy, ownership, restoration
   preserves timer-resolution settings, and yields to saved Efficiency Mode, manual choices,
   or external execution-speed control. Restoration uses the original raw power state.
 - CPU Pressure Restraint qualifies a process after at least two valid hot samples
-  and the configured Time above threshold. Reaction time sets sampling
-  cadence independently. The pressure source determines which aggregate CPU readings
+  and the configured Busy time before restraint. CPU sample interval sets
+  sampling cadence independently. CPU usage to watch determines which aggregate CPU readings
   qualify or maintain pressure. Combined sources can use separate system and foreground
   thresholds, with a five-point release band per signal. Zero CPU usage cannot
   sustain pressure. An override is dormant in single-signal modes. Foreground identity
@@ -940,16 +940,20 @@ Read the relevant section before changing feature policy, ownership, restoration
 - When Exclude service hosts is enabled, Adaptive Engine excludes observable active
   service hosts, known service accounts, and Session 0 or unknown-session processes. Unavailable
   service inventory pauses the process policies and restores managed state.
-- Adaptive Engine Custom Rules match exact executable names, exact paths, or
+- Adaptive Engine Exclusions match exact executable names, exact paths, or
   executable name patterns. Both name selectors use the observed basename
   across directories. Exact path rules and automatic
   failure exclusions retain their path scope. The process identity required for
   any scheduling change is verified independently of the exclusion selector.
-- Adaptive Engine uses the shared right-rail Status / Presets pattern. Presets apply CPU Behaviour tuning while preserving master switches, exclusions, and Adaptive Processor Power settings.
+- Adaptive Engine uses the shared right-rail Status / Presets pattern. Applying a
+  preset stages tuning for the selected source and preserves the master switch,
+  per-app exclusions, and Adaptive Processor Power settings. Enabling from
+  factory tuning selects Balanced for that source. Setup stages the change for
+  Save, and the tray switch applies it through the existing immediate settings patch.
 
 ## Interrupt Timing
 
-- Run diagnostic in Adaptive Engine's CPU Behaviour tab starts a five-second,
+- Run diagnostic in Adaptive Engine's Interrupt Timing tab starts a five-second,
   in-memory trace even when Adaptive Engine is off. It changes no settings or
   scheduling rules. The result shows up to five rows by routine module and
   interrupt type, ranked by inclusive time. Event loss, buffer loss, and invalid
@@ -1181,7 +1185,7 @@ Read the relevant section before changing feature policy, ownership, restoration
 - CPU Pressure Restraint, Limit Background Processors, and Dynamic Resource Zones are independent Adaptive Engine producers. Zones-only work must keep AC/Battery automation alive without enabling priority/efficiency assists.
 - The limiter owns its existing percentage, selector, custom mask, and soft/hard method. `dynamic_resource_zone_settings` owns the separate zone share, selector, and custom mask. Speed defaults zoning off; Performance retains zoning on.
 - Zones require fresh eligible foreground and hot background competition outside startup grace. One combined Adaptive generation applies background first, requires verified effective placement, then applies foreground. Loss of competition withdraws foreground immediately on reconciliation; partial failure resolves to the independently eligible limiter or no allocation, retaining controller cleanup/backoff.
-- When enabled CPU Behaviour or its ordered By Running App exclusion selectors differ between
+- When enabled Adaptive Engine tuning or its ordered By Running App exclusion selectors differ between
   A/C and battery, unknown power source pauses Adaptive Engine's process policies and releases
   only their CPU placement and priority claims. Restoration keeps the controllers' existing retry
   cadence. On reconfiguration or source recovery, Adaptive yields one pass if a pending By Running

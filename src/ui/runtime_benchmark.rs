@@ -33,6 +33,7 @@ struct BenchmarkRequest {
     dynamic_resource_zones_enabled: Option<bool>,
     limit_background_processors_enabled: Option<bool>,
     cpu_pressure_restraint_enabled: Option<bool>,
+    restraint_energy_efficient_scheduling: Option<bool>,
     background_app_cpu_threshold_percent: Option<u8>,
     maximum_restrained_apps: Option<u8>,
     foreground_or_system_cpu_threshold_percent: Option<u8>,
@@ -83,6 +84,9 @@ impl BenchmarkRequest {
         if let Some(value) = self.cpu_pressure_restraint_enabled {
             process.cpu_pressure_restraint_enabled = value;
         }
+        if let Some(value) = self.restraint_energy_efficient_scheduling {
+            process.restraint_energy_efficient_scheduling = value;
+        }
         if let Some(value) = self.background_app_cpu_threshold_percent {
             if !(1..=100).contains(&value) {
                 return Err("Background app CPU threshold must be 1..=100".to_owned());
@@ -107,6 +111,17 @@ impl BenchmarkRequest {
 
 fn settings_for(case: &str) -> Result<Settings, String> {
     let mut settings = Settings::default();
+    let process_only = match case {
+        "PowerSavePowerOff" => Some(BuiltInAdaptiveEnginePreset::PowerSave),
+        "BalancedPowerOff" => Some(BuiltInAdaptiveEnginePreset::Balanced),
+        "PerformancePowerOff" => Some(BuiltInAdaptiveEnginePreset::Performance),
+        _ => None,
+    };
+    if let Some(preset) = process_only {
+        apply_built_in_adaptive_engine_preset(&mut settings, preset);
+        settings.adaptive_engine.enabled = true;
+        return Ok(settings);
+    }
     match case {
         "Default" | "DefaultPCores" => settings.general.enabled = false,
         "Balanced" => {
@@ -138,9 +153,11 @@ fn settings_for(case: &str) -> Result<Settings, String> {
                     100,
                     power::ProcessorBoostMode::Aggressive,
                 );
-            settings
-                .adaptive_engine_process
-                .cpu_pressure_restraint_enabled = case == "SpeedRestraint";
+            if case == "SpeedRestraint" {
+                settings
+                    .adaptive_engine_process
+                    .limit_background_processors_enabled = false;
+            }
         }
         _ => return Err(format!("Unknown benchmark case: {case}")),
     }

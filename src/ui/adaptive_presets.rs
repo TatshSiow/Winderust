@@ -1,4 +1,3 @@
-// Pure tuning semantics extracted from ui/app/shared/presets.rs.
 use crate::config::*;
 use rust_i18n::t;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -15,6 +14,15 @@ impl BuiltInAdaptiveEnginePreset {
         Self::Performance,
         Self::Speed,
     ];
+
+    pub(super) const fn help_key(self) -> &'static str {
+        match self {
+            Self::PowerSave => "adaptive_engine.preset_power_save_help",
+            Self::Balanced => "adaptive_engine.preset_balanced_help",
+            Self::Performance => "adaptive_engine.preset_performance_help",
+            Self::Speed => "adaptive_engine.preset_speed_help",
+        }
+    }
 }
 
 pub(super) fn built_in_adaptive_engine_preset_label(preset: BuiltInAdaptiveEnginePreset) -> String {
@@ -60,40 +68,17 @@ pub(super) fn capture_adaptive_engine_preset(
 }
 
 pub(super) fn apply_adaptive_engine_preset(settings: &mut Settings, preset: &AdaptiveEnginePreset) {
-    let exclusions = std::mem::take(&mut settings.adaptive_engine_process.custom_rules);
-    let io_exclusions =
-        std::mem::take(&mut settings.adaptive_engine_process.io_priority.exclusions);
-    let thread_exclusions =
-        std::mem::take(&mut settings.adaptive_engine_process.thread_priority.exclusions);
-    let dynamic_boost_exclusions = std::mem::take(
-        &mut settings
-            .adaptive_engine_process
-            .dynamic_priority_boost
-            .exclusions,
-    );
-    let gpu_exclusions =
-        std::mem::take(&mut settings.adaptive_engine_process.gpu_priority.exclusions);
-    settings.adaptive_engine_process = preset.adaptive_engine_process.clone();
-    settings.adaptive_engine_process.custom_rules = exclusions;
-    settings.adaptive_engine_process.io_priority.exclusions = io_exclusions;
-    settings.adaptive_engine_process.thread_priority.exclusions = thread_exclusions;
     settings
         .adaptive_engine_process
-        .dynamic_priority_boost
-        .exclusions = dynamic_boost_exclusions;
-    settings.adaptive_engine_process.gpu_priority.exclusions = gpu_exclusions;
+        .copy_cpu_behaviour_from(&preset.adaptive_engine_process);
 }
 
 pub(super) fn comparable_adaptive_engine_process_tuning(
     settings: &AdaptiveEngineProcessSettings,
 ) -> AdaptiveEngineProcessSettings {
-    let mut settings = settings.clone();
-    settings.custom_rules.clear();
-    settings.io_priority.exclusions.clear();
-    settings.thread_priority.exclusions.clear();
-    settings.dynamic_priority_boost.exclusions.clear();
-    settings.gpu_priority.exclusions.clear();
-    settings
+    let mut tuning = AdaptiveEngineProcessSettings::default();
+    tuning.copy_cpu_behaviour_from(settings);
+    tuning
 }
 
 pub(super) fn background_processor_selection_label(
@@ -125,304 +110,58 @@ pub(super) fn apply_adaptive_engine_process_preset(
     settings: &mut AdaptiveEngineProcessSettings,
     preset: BuiltInAdaptiveEnginePreset,
 ) {
-    let values = adaptive_engine_process_preset_values(preset);
-    let priority_restraint = matches!(
-        preset,
-        BuiltInAdaptiveEnginePreset::PowerSave | BuiltInAdaptiveEnginePreset::Balanced
-    );
-    if priority_restraint {
-        settings.cpu_pressure_restraint_enabled = true;
-    }
-    settings.process_priority_enabled = values.process_priority_enabled;
-    settings.process_priority_foreground_detection_enabled = true;
-    settings.process_priority_visible_window_detection_enabled = true;
-    settings.process_priority_preserve_foreground = false;
-    settings.process_priority_preserve_visible_window = false;
-    settings.process_priority_preserve_background = false;
-    settings.background_efficiency_enabled = values.background_efficiency_enabled;
-    settings.focus_process_background_efficiency_override_enabled = true;
-    settings.visible_window_background_efficiency_override_enabled = true;
-    settings.focus_process_background_efficiency_mode = false;
-    settings.visible_window_background_efficiency_mode = false;
-    settings.background_efficiency_mode = values.background_efficiency_mode;
-    settings.focus_process_priority = values.focus_process_priority;
-    settings.background_priority = values.background_priority;
-    settings.visible_window_priority = values.visible_window_priority;
-    settings.io_priority = io_priority_preset_values(values);
-    settings.thread_priority = thread_priority_preset_values(preset);
-    settings.dynamic_priority_boost = dynamic_priority_boost_preset_values(preset);
-    settings.gpu_priority = gpu_priority_preset_values(preset);
-    settings.memory_priority_enabled = values.memory_priority_enabled;
-    settings.memory_priority_foreground_detection_enabled = true;
-    settings.memory_priority_visible_window_detection_enabled = true;
-    settings.memory_priority_preserve_foreground = true;
-    settings.memory_priority_preserve_visible_window = true;
-    settings.memory_priority_preserve_background = true;
-    settings.focus_process_memory_priority = values.focus_process_memory_priority;
-    settings.visible_window_memory_priority = values.visible_window_memory_priority;
-    settings.background_memory_priority = values.background_memory_priority;
-    settings.limit_background_processors_enabled = values.limit_background_processors_enabled;
-    settings.limit_background_processors_during_restraint = false;
-    settings.dynamic_resource_zones_enabled = values.dynamic_resource_zones_enabled;
-    settings.dynamic_resource_zone_settings = DynamicResourceZoneSettings::default();
-    settings.preserve_custom_affinity = false;
-    settings.restore_child_affinity = false;
-    settings.restore_affinity_before_managed_restart = false;
-    settings.processors_to_remove = default_processors_to_remove();
-    settings.background_processor_selection = values.background_processor_selection;
-    settings.processor_limit_percent = values.processor_limit_percent;
-    settings.pressure_source = if priority_restraint {
-        AdaptivePressureSource::System
-    } else {
-        AdaptivePressureSource::default()
-    };
-    settings.exclude_service_hosts = false;
-    settings.foreground_or_system_cpu_threshold_percent =
-        values.foreground_or_system_cpu_threshold_percent;
-    settings.foreground_cpu_threshold_percent = None;
-    settings.background_app_cpu_threshold_percent = values.background_app_cpu_threshold_percent;
-    settings.cpu_recovery_threshold_percent = values.cpu_recovery_threshold_percent;
-    settings.reaction_time_ms = values.reaction_time_ms;
-    settings.restraint_trigger_time_ms = values.restraint_trigger_time_ms;
-    settings.pause_restraint_when_idle = false;
-    settings.restraint_idle_timeout_seconds = DEFAULT_ADAPTIVE_RESTRAINT_IDLE_TIMEOUT_SECONDS;
-    settings.restraint_priority = AdaptiveRestraintPriority::default();
-    settings.restraint_io_priority = AdaptiveRestraintIoPriority::default();
-    settings.restraint_energy_efficient_scheduling = false;
-    settings.protect_focused_app = true;
-    settings.protect_focused_children = true;
-    settings.protect_non_normal_priority = true;
-    settings.minimum_restraint_time_ms = values.minimum_restraint_time_ms;
-    settings.maximum_restraint_time_ms = 0;
-    settings.cpu_recovery_time_seconds = values.cpu_recovery_time_seconds;
-    settings.maximum_restrained_apps = values.maximum_restrained_apps;
-}
+    use BuiltInAdaptiveEnginePreset::{Balanced, Performance, PowerSave, Speed};
 
-#[derive(Clone, Copy)]
-pub(super) struct AdaptiveEngineProcessPresetValues {
-    pub(super) process_priority_enabled: bool,
-    pub(super) background_efficiency_enabled: bool,
-    pub(super) background_efficiency_mode: bool,
-    pub(super) focus_process_priority: ProcessPrioritySetting,
-    pub(super) background_priority: ProcessPrioritySetting,
-    pub(super) visible_window_priority: ProcessPrioritySetting,
-    pub(super) focus_process_io_priority: ProcessIoPrioritySetting,
-    pub(super) visible_window_io_priority: ProcessIoPrioritySetting,
-    pub(super) io_priority_enabled: bool,
-    pub(super) background_io_priority: ProcessIoPriority,
-    pub(super) memory_priority_enabled: bool,
-    pub(super) focus_process_memory_priority: ProcessMemoryPrioritySetting,
-    pub(super) visible_window_memory_priority: ProcessMemoryPrioritySetting,
-    pub(super) background_memory_priority: ProcessMemoryPrioritySetting,
-    pub(super) limit_background_processors_enabled: bool,
-    pub(super) dynamic_resource_zones_enabled: bool,
-    pub(super) background_processor_selection: BackgroundProcessorSelection,
-    pub(super) processor_limit_percent: u8,
-    pub(super) foreground_or_system_cpu_threshold_percent: u8,
-    pub(super) background_app_cpu_threshold_percent: u8,
-    pub(super) cpu_recovery_threshold_percent: u8,
-    pub(super) reaction_time_ms: u64,
-    pub(super) restraint_trigger_time_ms: u64,
-    pub(super) minimum_restraint_time_ms: u64,
-    pub(super) cpu_recovery_time_seconds: u64,
-    pub(super) maximum_restrained_apps: u8,
-}
-
-pub(super) fn adaptive_engine_process_preset_values(
-    preset: BuiltInAdaptiveEnginePreset,
-) -> AdaptiveEngineProcessPresetValues {
-    match preset {
-        BuiltInAdaptiveEnginePreset::PowerSave | BuiltInAdaptiveEnginePreset::Balanced => {
-            let power_save = preset == BuiltInAdaptiveEnginePreset::PowerSave;
+    let tuning = match preset {
+        PowerSave | Balanced => {
+            let power_save = preset == PowerSave;
             let interval_ms = if power_save { 2_500 } else { 1_500 };
-            AdaptiveEngineProcessPresetValues {
-                process_priority_enabled: true,
-                background_efficiency_enabled: true,
-                background_efficiency_mode: true,
-                focus_process_priority: ProcessPrioritySetting::AboveNormal,
-                background_priority: ProcessPrioritySetting::BelowNormal,
-                visible_window_priority: ProcessPrioritySetting::Normal,
-                focus_process_io_priority: ProcessIoPrioritySetting::Normal,
-                visible_window_io_priority: ProcessIoPrioritySetting::Low,
-                io_priority_enabled: false,
-                background_io_priority: ProcessIoPriority::Low,
-                memory_priority_enabled: false,
-                focus_process_memory_priority: ProcessMemoryPrioritySetting::Default,
-                visible_window_memory_priority: ProcessMemoryPrioritySetting::Default,
-                background_memory_priority: ProcessMemoryPrioritySetting::Low,
-                limit_background_processors_enabled: false,
-                dynamic_resource_zones_enabled: false,
-                background_processor_selection: BackgroundProcessorSelection::LeastUsed,
+            AdaptiveEngineProcessSettings {
+                cpu_pressure_restraint_enabled: true,
                 processor_limit_percent: 60,
+                pressure_source: AdaptivePressureSource::System,
                 foreground_or_system_cpu_threshold_percent: if power_save { 85 } else { 75 },
                 background_app_cpu_threshold_percent: 10,
                 cpu_recovery_threshold_percent: 5,
                 reaction_time_ms: interval_ms,
                 restraint_trigger_time_ms: interval_ms,
+                restraint_energy_efficient_scheduling: power_save,
                 minimum_restraint_time_ms: 2_000,
                 cpu_recovery_time_seconds: 3,
-                maximum_restrained_apps: 4,
+                ..Default::default()
             }
         }
-        BuiltInAdaptiveEnginePreset::Performance => AdaptiveEngineProcessPresetValues {
-            process_priority_enabled: true,
-            background_efficiency_enabled: true,
-            background_efficiency_mode: true,
-            focus_process_priority: ProcessPrioritySetting::AboveNormal,
-            background_priority: ProcessPrioritySetting::BelowNormal,
-            visible_window_priority: ProcessPrioritySetting::Normal,
-            focus_process_io_priority: ProcessIoPrioritySetting::Normal,
-            visible_window_io_priority: ProcessIoPrioritySetting::Low,
-            io_priority_enabled: true,
-            background_io_priority: ProcessIoPriority::VeryLow,
-            memory_priority_enabled: true,
-            focus_process_memory_priority: ProcessMemoryPrioritySetting::Normal,
-            visible_window_memory_priority: ProcessMemoryPrioritySetting::BelowNormal,
-            background_memory_priority: ProcessMemoryPrioritySetting::VeryLow,
+        Performance => AdaptiveEngineProcessSettings {
             limit_background_processors_enabled: true,
             dynamic_resource_zones_enabled: true,
-            background_processor_selection: BackgroundProcessorSelection::LeastUsed,
-            processor_limit_percent: 75,
+            processor_limit_percent: 90,
             foreground_or_system_cpu_threshold_percent: 60,
             background_app_cpu_threshold_percent: 8,
             cpu_recovery_threshold_percent: 4,
             reaction_time_ms: 750,
             restraint_trigger_time_ms: 750,
-            minimum_restraint_time_ms: 3_000,
             cpu_recovery_time_seconds: 3,
             maximum_restrained_apps: 8,
+            ..Default::default()
         },
-        BuiltInAdaptiveEnginePreset::Speed => AdaptiveEngineProcessPresetValues {
-            process_priority_enabled: true,
-            background_efficiency_enabled: true,
-            background_efficiency_mode: true,
-            focus_process_priority: ProcessPrioritySetting::AboveNormal,
-            background_priority: ProcessPrioritySetting::Idle,
-            visible_window_priority: ProcessPrioritySetting::BelowNormal,
-            focus_process_io_priority: ProcessIoPrioritySetting::High,
-            visible_window_io_priority: ProcessIoPrioritySetting::Normal,
-            io_priority_enabled: true,
-            background_io_priority: ProcessIoPriority::VeryLow,
-            memory_priority_enabled: true,
-            focus_process_memory_priority: ProcessMemoryPrioritySetting::Normal,
-            visible_window_memory_priority: ProcessMemoryPrioritySetting::Medium,
-            background_memory_priority: ProcessMemoryPrioritySetting::VeryLow,
+        Speed => AdaptiveEngineProcessSettings {
+            cpu_pressure_restraint_enabled: true,
             limit_background_processors_enabled: true,
-            dynamic_resource_zones_enabled: false,
-            background_processor_selection: BackgroundProcessorSelection::LeastUsed,
-            processor_limit_percent: 75,
+            limit_background_processors_during_restraint: true,
+            processor_limit_percent: 85,
+            pressure_source: AdaptivePressureSource::System,
             foreground_or_system_cpu_threshold_percent: 35,
             background_app_cpu_threshold_percent: 8,
             cpu_recovery_threshold_percent: 7,
             reaction_time_ms: 500,
-            restraint_trigger_time_ms: 1_000,
+            restraint_trigger_time_ms: 500,
             minimum_restraint_time_ms: 5_000,
             cpu_recovery_time_seconds: 4,
             maximum_restrained_apps: 12,
+            ..Default::default()
         },
-    }
-}
-
-pub(super) fn io_priority_preset_values(
-    values: AdaptiveEngineProcessPresetValues,
-) -> IoPrioritySettings {
-    IoPrioritySettings {
-        child_protection: Default::default(),
-        enabled: values.io_priority_enabled,
-        foreground_detection_enabled: true,
-        foreground_priority: values.focus_process_io_priority,
-        visible_window_detection_enabled: true,
-        visible_window_priority: values.visible_window_io_priority,
-        background_priority: values.background_io_priority.into(),
-        preserve_foreground_priority: true,
-        preserve_visible_window_priority: true,
-        preserve_background_priority: true,
-        exclusions: Vec::new(),
-    }
-}
-
-pub(super) fn thread_priority_preset_values(
-    preset: BuiltInAdaptiveEnginePreset,
-) -> ThreadPrioritySettings {
-    ThreadPrioritySettings {
-        child_protection: Default::default(),
-        enabled: matches!(
-            preset,
-            BuiltInAdaptiveEnginePreset::Performance | BuiltInAdaptiveEnginePreset::Speed
-        ),
-        foreground_detection_enabled: true,
-        foreground_priority: if preset == BuiltInAdaptiveEnginePreset::Speed {
-            ProcessThreadPrioritySetting::Highest
-        } else {
-            ProcessThreadPrioritySetting::Default
-        },
-        visible_window_detection_enabled: true,
-        visible_window_priority: if preset == BuiltInAdaptiveEnginePreset::Speed {
-            ProcessThreadPrioritySetting::Normal
-        } else {
-            ProcessThreadPrioritySetting::Default
-        },
-        background_priority: if preset == BuiltInAdaptiveEnginePreset::Speed {
-            ProcessThreadPrioritySetting::Idle
-        } else {
-            ProcessThreadPrioritySetting::BelowNormal
-        },
-        preserve_foreground_priority: true,
-        preserve_visible_window_priority: true,
-        preserve_background_priority: true,
-        exclusions: Vec::new(),
-    }
-}
-
-pub(super) fn dynamic_priority_boost_preset_values(
-    preset: BuiltInAdaptiveEnginePreset,
-) -> DynamicPriorityBoostSettings {
-    DynamicPriorityBoostSettings {
-        child_protection: Default::default(),
-        enabled: matches!(
-            preset,
-            BuiltInAdaptiveEnginePreset::Performance | BuiltInAdaptiveEnginePreset::Speed
-        ),
-        foreground_detection_enabled: true,
-        foreground_boost: ProcessDynamicPriorityBoostSetting::Enabled,
-        visible_window_detection_enabled: true,
-        visible_window_boost: ProcessDynamicPriorityBoostSetting::Default,
-        background_boost: ProcessDynamicPriorityBoostSetting::Disabled,
-        exclusions: Vec::new(),
-    }
-}
-
-pub(super) fn gpu_priority_preset_values(
-    preset: BuiltInAdaptiveEnginePreset,
-) -> GpuPrioritySettings {
-    GpuPrioritySettings {
-        child_protection: Default::default(),
-        enabled: matches!(
-            preset,
-            BuiltInAdaptiveEnginePreset::Performance | BuiltInAdaptiveEnginePreset::Speed
-        ),
-        foreground_detection_enabled: true,
-        foreground_priority: if preset == BuiltInAdaptiveEnginePreset::Speed {
-            ProcessGpuPrioritySetting::High
-        } else {
-            ProcessGpuPrioritySetting::Default
-        },
-        visible_window_detection_enabled: true,
-        visible_window_priority: if preset == BuiltInAdaptiveEnginePreset::Speed {
-            ProcessGpuPrioritySetting::Normal
-        } else {
-            ProcessGpuPrioritySetting::Default
-        },
-        background_priority: if preset == BuiltInAdaptiveEnginePreset::Speed {
-            ProcessGpuPrioritySetting::Idle
-        } else {
-            ProcessGpuPrioritySetting::BelowNormal
-        },
-        preserve_foreground_priority: true,
-        preserve_visible_window_priority: true,
-        preserve_background_priority: true,
-        exclusions: Vec::new(),
-    }
+    };
+    settings.copy_cpu_behaviour_from(&tuning);
 }
 
 #[cfg(test)]
@@ -464,14 +203,24 @@ mod tests {
     fn built_in_presets_set_restraint_timing_and_reset_advanced_controls() {
         for (
             preset,
-            (dwell_ms, minimum_ms, recovery_secs, hot_percent, recovery_percent, system_threshold),
+            (
+                dwell_ms,
+                minimum_ms,
+                recovery_secs,
+                hot_percent,
+                recovery_percent,
+                system_threshold,
+                processor_limit,
+            ),
         ) in BuiltInAdaptiveEnginePreset::ALL.into_iter().zip([
-            (2_500, 2_000, 3, 10, 5, Some(85)),
-            (1_500, 2_000, 3, 10, 5, Some(75)),
-            (750, 3_000, 3, 8, 4, None),
-            (1_000, 5_000, 4, 8, 7, None),
+            (2_500, 2_000, 3, 10, 5, Some(85), 60),
+            (1_500, 2_000, 3, 10, 5, Some(75), 60),
+            (750, 3_000, 3, 8, 4, None, 90),
+            (500, 5_000, 4, 8, 7, Some(35), 85),
         ]) {
             let mut settings = AdaptiveEngineProcessSettings {
+                cpu_pressure_restraint_enabled: system_threshold.is_none(),
+                dynamic_resource_zones_enabled: true,
                 pause_restraint_when_idle: true,
                 restraint_idle_timeout_seconds: 120,
                 pressure_source: AdaptivePressureSource::System,
@@ -486,6 +235,14 @@ mod tests {
                 minimum_restraint_time_ms: 2_100,
                 maximum_restraint_time_ms: 10_000,
                 cpu_allocation_method: CpuAllocationMethod::ReduceAffinity,
+                specific_processors: crate::cpu_topology::CpuSelection::new(
+                    vec![crate::cpu_topology::ProcessorId {
+                        group: 0,
+                        number: 1,
+                    }],
+                    None,
+                )
+                .unwrap(),
                 limit_background_processors_during_restraint: true,
                 preserve_custom_affinity: true,
                 restore_child_affinity: true,
@@ -495,28 +252,41 @@ mod tests {
             };
             apply_adaptive_engine_process_preset(&mut settings, preset);
             assert_eq!(settings.restraint_trigger_time_ms, dwell_ms);
+            assert_eq!(settings.processor_limit_percent, processor_limit);
             assert_eq!(settings.background_app_cpu_threshold_percent, hot_percent);
             assert_eq!(settings.cpu_recovery_threshold_percent, recovery_percent);
             assert!(!settings.pause_restraint_when_idle);
             assert_eq!(settings.restraint_idle_timeout_seconds, 300);
             if let Some(threshold) = system_threshold {
                 assert!(settings.cpu_pressure_restraint_enabled);
-                assert!(!settings.limit_background_processors_enabled);
                 assert_eq!(settings.pressure_source, AdaptivePressureSource::System);
                 assert_eq!(
                     settings.foreground_or_system_cpu_threshold_percent,
                     threshold
                 );
-                assert_eq!(settings.reaction_time_ms, dwell_ms);
             } else {
+                assert!(!settings.cpu_pressure_restraint_enabled);
                 assert_eq!(settings.pressure_source, AdaptivePressureSource::Either);
             }
+            assert_eq!(
+                settings.limit_background_processors_enabled,
+                matches!(
+                    preset,
+                    BuiltInAdaptiveEnginePreset::Performance | BuiltInAdaptiveEnginePreset::Speed
+                )
+            );
+            assert_eq!(settings.reaction_time_ms, dwell_ms);
+            assert_eq!(
+                settings.dynamic_resource_zones_enabled,
+                preset == BuiltInAdaptiveEnginePreset::Performance
+            );
             assert_eq!(settings.foreground_cpu_threshold_percent, None);
             assert!(!settings.exclude_service_hosts);
             assert_eq!(
                 settings.cpu_allocation_method,
-                CpuAllocationMethod::ReduceAffinity
+                CpuAllocationMethod::CpuSetsSoft
             );
+            assert!(settings.specific_processors.is_empty());
             assert!(!settings.preserve_custom_affinity);
             assert!(!settings.restore_child_affinity);
             assert!(!settings.restore_affinity_before_managed_restart);
@@ -528,12 +298,18 @@ mod tests {
             assert_eq!(settings.minimum_restraint_time_ms, minimum_ms);
             assert_eq!(settings.cpu_recovery_time_seconds, recovery_secs);
             assert_eq!(settings.maximum_restraint_time_ms, 0);
-            assert!(!settings.limit_background_processors_during_restraint);
+            assert_eq!(
+                settings.background_processor_limit_scoped(),
+                preset == BuiltInAdaptiveEnginePreset::Speed
+            );
             assert_eq!(
                 settings.restraint_io_priority,
                 AdaptiveRestraintIoPriority::Unchanged
             );
-            assert!(!settings.restraint_energy_efficient_scheduling);
+            assert_eq!(
+                settings.restraint_energy_efficient_scheduling,
+                preset == BuiltInAdaptiveEnginePreset::PowerSave
+            );
             assert!(settings.protect_focused_app);
             assert!(settings.protect_focused_children);
             assert!(settings.protect_non_normal_priority);
@@ -575,36 +351,6 @@ mod tests {
         settings
             .adaptive_engine_process
             .restraint_idle_timeout_seconds = 120;
-        settings
-            .adaptive_engine_process
-            .process_priority_foreground_detection_enabled = false;
-        settings
-            .adaptive_engine_process
-            .process_priority_visible_window_detection_enabled = false;
-        settings
-            .adaptive_engine_process
-            .process_priority_preserve_foreground = true;
-        settings
-            .adaptive_engine_process
-            .process_priority_preserve_visible_window = true;
-        settings
-            .adaptive_engine_process
-            .process_priority_preserve_background = true;
-        settings
-            .adaptive_engine_process
-            .memory_priority_foreground_detection_enabled = false;
-        settings
-            .adaptive_engine_process
-            .memory_priority_visible_window_detection_enabled = false;
-        settings
-            .adaptive_engine_process
-            .memory_priority_preserve_foreground = false;
-        settings
-            .adaptive_engine_process
-            .memory_priority_preserve_visible_window = false;
-        settings
-            .adaptive_engine_process
-            .memory_priority_preserve_background = false;
         let preset = capture_adaptive_engine_preset(&settings, "Custom".into());
         let encoded = toml::to_string(&preset).unwrap();
         let decoded: AdaptiveEnginePreset = toml::from_str(&encoded).unwrap();
@@ -614,32 +360,25 @@ mod tests {
             restored.adaptive_engine_process,
             settings.adaptive_engine_process
         );
+    }
 
-        apply_adaptive_engine_process_preset(
-            &mut restored.adaptive_engine_process,
-            BuiltInAdaptiveEnginePreset::Balanced,
-        );
-        let defaults = AdaptiveEngineProcessSettings::default();
-        assert_eq!(
-            restored
-                .adaptive_engine_process
-                .process_priority_foreground_detection_enabled,
-            defaults.process_priority_foreground_detection_enabled
-        );
-        assert!(
-            !restored
-                .adaptive_engine_process
-                .process_priority_preserve_background
-        );
-        assert!(
-            restored
-                .adaptive_engine_process
-                .memory_priority_visible_window_detection_enabled
-        );
-        assert!(
-            restored
-                .adaptive_engine_process
-                .memory_priority_preserve_background
-        );
+    #[test]
+    fn presets_ignore_inactive_nested_priority_controls_and_keep_exclusions() {
+        let mut settings = Settings::default();
+        apply_built_in_adaptive_engine_preset(&mut settings, BuiltInAdaptiveEnginePreset::Balanced);
+        let original = capture_adaptive_engine_preset(&settings, "Custom".into());
+        let live = &mut settings.adaptive_engine_process;
+        live.process_priority_foreground_detection_enabled = false;
+        live.thread_priority.enabled = true;
+        live.custom_rules
+            .push(AdaptiveEngineExclusionRule::exact_name("worker.exe"));
+        let expected = live.clone();
+
+        let captured = capture_adaptive_engine_preset(&settings, original.name.clone());
+        assert_eq!(original, captured);
+
+        apply_adaptive_engine_preset(&mut settings, &original);
+        apply_built_in_adaptive_engine_preset(&mut settings, BuiltInAdaptiveEnginePreset::Balanced);
+        assert_eq!(settings.adaptive_engine_process, expected);
     }
 }
