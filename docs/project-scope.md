@@ -24,9 +24,9 @@ Process Lasso is a useful comparison point, not the target to clone. Prefer smal
   Boost, I/O Priority, GPU Priority, and Memory Priority. Efficiency Mode
   applies Windows EcoQoS and Idle process priority by app and window state.
 - Memory Trim.
-- Resource Thresholds with sustained CPU and memory thresholds and Windows notifications by
-  path or process instance. Terminate and Restart require Combined by path, an
-  exact executable path, and an At or above threshold.
+- Resource Thresholds with sustained CPU and working-set memory thresholds and
+  optional Windows notifications. Measurements combine eligible instances by
+  executable path. Trim Memory, Terminate, and Restart require an exact path rule.
 - Timer Resolution rules tied to foreground apps.
 - Sleep Prevention rules for running apps, with separate display requests.
 - Keep Running rules for opt-in relaunch after the last eligible instance of a

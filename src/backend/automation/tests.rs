@@ -10,7 +10,9 @@ use crate::config::{
     TimerResolutionRule, WeekdaySetting,
 };
 
+mod instance_limits_native;
 mod keep_running_native;
+mod memory_trim_native;
 
 fn runtime_settings(snapshot: Settings) -> RuntimeSettingsSnapshot {
     runtime_settings_with_runtime_and_persisted_revisions(

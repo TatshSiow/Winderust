@@ -103,6 +103,20 @@ These checks do not suspend Windows or change saved settings or power plans.
 They establish accepted requests and clean release, not actual idle sleep,
 Modern Standby expiry, lid behavior, or resume after a real sleep transition.
 
+## Process List Memory Trim check
+
+The ignored native check sends the same targeted trim command as Process List.
+It reads Windows working-set sizes for two disposable workers, verifies that the
+action targets the selected PID, and checks that the selected worker can read its
+data again after the working set is reduced.
+
+```powershell
+cargo test --locked --bin winderust native_process_list_trim_releases_resident_pages_and_refills -- --ignored --nocapture --test-threads=1
+```
+
+The check needs ordinary access to its child processes. Host memory pressure,
+automatic trim policy, and workload throughput require separate measurements.
+
 ## Energy performance preference check
 
 The ignored native test changes the AC and battery values on a copy of a regular
@@ -128,6 +142,15 @@ cargo test --locked control::instance_limits::tests::native_counts_only_the_sele
 
 It changes no process settings, privileges or power plans. It establishes full-path
 matching on local files, not atomic process counts or universal filesystem support.
+
+The ignored runtime check enables a limit of one for an exact fixture path and
+observes an excess with two workers alive. It then closes one worker and observes
+recovery with the surviving worker still running. It uses the production worker
+and Windows event watcher with notifications off.
+
+```powershell
+cargo test --locked --bin winderust native_instance_limits_reports_excess_and_recovery_without_stopping_workers -- --ignored --nocapture --test-threads=1
+```
 
 ## Instance Balancing checks
 
