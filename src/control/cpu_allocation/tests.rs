@@ -2957,7 +2957,7 @@ fn cpu_allocation_live_apply_and_clean_release() -> Result<(), String> {
         .ok_or_else(|| "SystemRoot is unavailable.".to_owned())?;
     executable_path.push(r"System32\PING.EXE");
     let child = Command::new(&executable_path)
-        .args(["-t", "127.0.0.1"])
+        .args(["-n", "30", "127.0.0.1"])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -3041,6 +3041,7 @@ fn cpu_allocation_live_apply_and_clean_release() -> Result<(), String> {
                 .0,
             baseline_affinity
         );
+        println!("Processor Affinity (Hard) applied and restored in processor group 0.");
     }
 
     let (_, process) = coordinator
@@ -3100,6 +3101,7 @@ fn cpu_allocation_live_apply_and_clean_release() -> Result<(), String> {
                 .0,
             baseline_affinity
         );
+        println!("Adaptive Engine affinity reduced and restored in processor group 0.");
     }
     let mut per_group = BTreeMap::new();
     for record in coordinator
@@ -3110,15 +3112,22 @@ fn cpu_allocation_live_apply_and_clean_release() -> Result<(), String> {
         let processor = record.processor();
         per_group.entry(processor.group).or_insert(processor);
     }
-    if per_group.is_empty() {
-        return Err("CPU Set inventory is empty.".to_owned());
-    }
+    let active_groups: Vec<_> = topology.groups().iter().map(|group| group.number).collect();
+    let inventory_groups: Vec<_> = per_group.keys().copied().collect();
+    assert_eq!(
+        inventory_groups, active_groups,
+        "CPU Set inventory must cover every active processor group"
+    );
     let selection = CpuSelection::bind(&topology, per_group.into_values().collect())
         .map_err(|error| error.to_string())?;
     let mut expected_cpu_sets = CpuSetInventory::default()
         .ids(&mut coordinator.platform, selection.processors())
         .map_err(|error| error.to_string())?;
     normalize_cpu_set_ids(&mut expected_cpu_sets);
+    assert_ne!(
+        expected_cpu_sets, baseline_cpu_sets,
+        "the worker must start with different CPU Sets to verify a placement change"
+    );
     coordinator
         .apply_policy_claim(
             &mut CpuSetInventory::default(),
@@ -3156,6 +3165,7 @@ fn cpu_allocation_live_apply_and_clean_release() -> Result<(), String> {
         .map_err(|error| error.to_string())?;
     normalize_cpu_set_ids(&mut observed);
     assert_eq!(observed, baseline_cpu_sets);
+    println!("CPU Sets (Soft) applied and restored for processor groups {active_groups:?}.");
     Ok(())
 }
 

@@ -124,6 +124,27 @@ deadline does not cancel blocking Windows calls. Test recovery transport does no
 establish watchdog acknowledgement or crash recovery; direct ticks do not prove
 outer scheduler timing, actual thread residency or performance benefits.
 
+## CPU Allocation checks
+
+The ignored native check applies CPU Sets (Soft) to a bounded, disposable
+`ping.exe` worker. It selects a CPU Set in every active processor group, requires the
+requested IDs to differ from the worker's initial CPU Sets, and verifies the
+applied IDs and exact restoration of the initial IDs through Windows readback.
+
+```powershell
+cargo test --locked cpu_allocation_live_apply_and_clean_release -- --ignored --nocapture --test-threads=1
+```
+
+The check reports the verified group IDs and whether it exercised Processor
+Affinity (Hard) and Adaptive Engine affinity reduction. Those affinity cases
+require a single active group 0 and a reducible inherited affinity mask. The
+Adaptive Engine case also requires empty initial CPU Sets and a system mask
+covering the whole group. Use a host with multiple active processor groups for
+cross-group CPU Sets coverage.
+Actual thread residency requires a separate workload measurement. The check
+changes only the disposable worker's placement and leaves saved settings and
+power plans untouched.
+
 ## CPU Limiter mechanism comparison
 
 The `runtime-benchmark` feature also provides a disposable-worker comparison of
