@@ -1255,7 +1255,6 @@ power_plan_control:
   automation_disabled: "Automation is off"
   paused_on_ac: "Automation paused while plugged in"
   waiting_for_observation: "Waiting for required observations"
-  no_rule_selects_plan: "No rule currently selects a plan"
   switch_plan_help: "Select a plan to switch immediately."
   choose_plan: "Choose a power plan"
   switching: "Switching…"

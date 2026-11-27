@@ -100,23 +100,28 @@ pub(super) fn view(
         can_select.then_some("power_plan_control.switch_plan_help")
     };
     let selector = manual_switch(plans, can_select, loading, current, help);
-    let (detail, failed) = if status.active_plan_read_error.is_some() {
-        (
+    let detail = if status.active_plan_read_error.is_some() {
+        Some((
             t!("power_plan_control.active_plan_read_failed").into_owned(),
             true,
-        )
+        ))
     } else {
         automation_detail(status, plans, current, automation_enabled)
     };
-    let status = text(detail)
-        .width(Fill)
-        .size(design::typography::SECONDARY)
-        .style(if failed {
-            text::danger
-        } else {
-            text::secondary
-        });
-    widgets::settings_card(column![selector, status].spacing(design::space::TINY)).into()
+    let mut body = column![selector].spacing(design::space::TINY);
+    if let Some((detail, failed)) = detail {
+        body = body.push(
+            text(detail)
+                .width(Fill)
+                .size(design::typography::SECONDARY)
+                .style(if failed {
+                    text::danger
+                } else {
+                    text::secondary
+                }),
+        );
+    }
+    widgets::settings_card(body).into()
 }
 
 pub(super) fn status_view<M: 'static>(
@@ -125,16 +130,22 @@ pub(super) fn status_view<M: 'static>(
     automation_enabled: bool,
 ) -> Element<'static, M> {
     let current = current_plan_guid(status, plans);
-    let (automation, failed) = status_automation_detail(status, plans, current, automation_enabled);
     let mut summary = column![
         widgets::setting_title("common.current_power_plan"),
         text(current_plan_name(status, plans)).wrapping(text::Wrapping::WordOrGlyph),
-        widgets::setting_title("power_plan_control.automation"),
-        text(automation)
-            .style(if failed { text::danger } else { text::default })
-            .wrapping(text::Wrapping::WordOrGlyph),
     ]
     .spacing(design::space::SMALL);
+    if let Some((automation, failed)) =
+        status_automation_detail(status, plans, current, automation_enabled)
+    {
+        summary = summary
+            .push(widgets::setting_title("power_plan_control.automation"))
+            .push(
+                text(automation)
+                    .style(if failed { text::danger } else { text::default })
+                    .wrapping(text::Wrapping::WordOrGlyph),
+            );
+    }
     if let Some(error) = status
         .active_plan_read_error
         .as_deref()
@@ -239,17 +250,17 @@ fn automation_detail(
     plans: &[PowerPlan],
     current: Option<&str>,
     automation_enabled: bool,
-) -> (String, bool) {
+) -> Option<(String, bool)> {
     if !status.restoring_previous
         && (!automation_enabled || status.decision_state == Some(DecisionState::Disabled))
     {
-        return (
+        return Some((
             t!("power_plan_control.automation_disabled").into_owned(),
             false,
-        );
+        ));
     }
     let failed = status.owner == Some(PowerPlanOwner::OrdinaryAutomation) && status.apply_failed;
-    let mut detail = rule_description(status, current.is_some());
+    let mut detail = rule_description(status).unwrap_or_default();
     if let Some(target) = status
         .target_guid
         .as_deref()
@@ -262,9 +273,12 @@ fn automation_detail(
         } else {
             "power_plan_control.requested_plan"
         };
-        detail.push_str(&format!(" · {}", t!(key, plan = plan)));
+        if !detail.is_empty() {
+            detail.push_str(" · ");
+        }
+        detail.push_str(&t!(key, plan = plan));
     }
-    (detail, failed)
+    (!detail.is_empty()).then_some((detail, failed))
 }
 
 fn status_automation_detail(
@@ -272,16 +286,16 @@ fn status_automation_detail(
     plans: &[PowerPlan],
     current: Option<&str>,
     automation_enabled: bool,
-) -> (String, bool) {
+) -> Option<(String, bool)> {
     if managed_by_adaptive_processor_power(status, plans) {
-        return (t!("nav.adaptive_processor_power").to_string(), false);
+        return Some((t!("nav.adaptive_processor_power").to_string(), false));
     }
-    let (mut detail, failed) = automation_detail(status, plans, current, automation_enabled);
+    let (mut detail, failed) = automation_detail(status, plans, current, automation_enabled)?;
     let cpu_load_match = status.cpu_load_match.filter(|_| automation_enabled);
     if let Some(reason) = cpu_load_match_label(cpu_load_match) {
         detail.push_str(&format!(" · {reason}"));
     }
-    (detail, failed)
+    Some((detail, failed))
 }
 
 fn cpu_load_match_label(cpu_load_match: Option<ByCpuLoadMatch>) -> Option<String> {
@@ -294,9 +308,9 @@ fn cpu_load_match_label(cpu_load_match: Option<ByCpuLoadMatch>) -> Option<String
     Some(t!(key).to_string())
 }
 
-fn rule_description(status: &PowerPlanStatus, current_known: bool) -> String {
+fn rule_description(status: &PowerPlanStatus) -> Option<String> {
     if status.restoring_previous {
-        return t!("power_plan_control.previous_plan_restoration").to_string();
+        return Some(t!("power_plan_control.previous_plan_restoration").to_string());
     }
     let ordinary = status.owner == Some(PowerPlanOwner::OrdinaryAutomation);
     let mode = status.decision_state.and_then(|state| match state {
@@ -304,18 +318,17 @@ fn rule_description(status: &PowerPlanStatus, current_known: bool) -> String {
         _ => plan_mode_label(state),
     });
     if let Some(mode) = mode {
-        return indexed_mode_label(mode, status.rule_index.filter(|_| ordinary));
+        return Some(indexed_mode_label(
+            mode,
+            status.rule_index.filter(|_| ordinary),
+        ));
     }
-    t!(match status.decision_state {
+    let key = match status.decision_state {
         Some(DecisionState::PausedWhilePluggedIn) => "power_plan_control.paused_on_ac",
-        Some(DecisionState::WaitingForObservation) => {
-            "power_plan_control.waiting_for_observation"
-        }
-        Some(_) => "power_plan_control.no_rule_selects_plan",
-        None if current_known => "power_plan_control.no_rule_selects_plan",
-        None => "common.unknown",
-    })
-    .to_string()
+        Some(DecisionState::WaitingForObservation) => "power_plan_control.waiting_for_observation",
+        _ => return None,
+    };
+    Some(t!(key).to_string())
 }
 
 fn plan_mode_label(state: DecisionState) -> Option<String> {
@@ -494,37 +507,48 @@ mod tests {
     }
 
     #[test]
-    fn current_plan_summary_explains_when_automation_is_inactive() {
+    fn current_plan_summary_omits_idle_automation_and_explains_why_it_is_unavailable() {
         for (enabled, restoring_previous, decision_state, key) in [
-            (false, false, None, "power_plan_control.automation_disabled"),
+            (
+                false,
+                false,
+                None,
+                Some("power_plan_control.automation_disabled"),
+            ),
             (
                 false,
                 true,
                 None,
-                "power_plan_control.previous_plan_restoration",
+                Some("power_plan_control.previous_plan_restoration"),
             ),
             (
                 true,
                 false,
                 Some(DecisionState::Disabled),
-                "power_plan_control.automation_disabled",
+                Some("power_plan_control.automation_disabled"),
             ),
             (
                 true,
                 false,
                 Some(DecisionState::PausedWhilePluggedIn),
-                "power_plan_control.paused_on_ac",
+                Some("power_plan_control.paused_on_ac"),
             ),
-            (true, false, None, "power_plan_control.no_rule_selects_plan"),
+            (true, false, None, None),
+            (true, false, Some(DecisionState::NoPowerPlanSelected), None),
         ] {
             let status = PowerPlanStatus {
                 decision_state,
                 restoring_previous,
                 ..PowerPlanStatus::default()
             };
+            let expected = key.map(|key| (t!(key).into_owned(), false));
             assert_eq!(
                 automation_detail(&status, &[], Some("balanced"), enabled),
-                (t!(key).into_owned(), false),
+                expected
+            );
+            assert_eq!(
+                status_automation_detail(&status, &[], Some("balanced"), enabled),
+                expected
             );
         }
     }
@@ -537,7 +561,7 @@ mod tests {
             rule_index: Some(0),
             ..PowerPlanStatus::default()
         };
-        let (summary, _) = automation_detail(&status, &[], None, true);
+        let (summary, _) = automation_detail(&status, &[], None, true).unwrap();
         for (selection, key) in [
             (ByCpuLoadMatch::Condition, None),
             (
@@ -553,13 +577,13 @@ mod tests {
             status.cpu_load_match = Some(selection);
             assert_eq!(
                 automation_detail(&status, &[], None, true),
-                (summary.clone(), false)
+                Some((summary.clone(), false))
             );
             let expected =
                 key.map_or_else(|| summary.clone(), |key| format!("{summary} · {}", t!(key)));
             assert_eq!(
                 status_automation_detail(&status, &[], None, true),
-                (expected, false)
+                Some((expected, false))
             );
         }
     }

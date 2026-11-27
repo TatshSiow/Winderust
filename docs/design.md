@@ -282,7 +282,8 @@ hover/press; background shading supplies feedback.
   every power-plan rail uses Status, Current power plan, Successful actions, and Failed actions.
   Power-plan actions are recorded only after the controller verifies the Windows plan transition.
 - The Power Plan Control landing page shows the active Windows plan in a compact
-  selector with an automation summary. Choosing a different plan requests a
+  selector. Show a summary when automation selects, pauses, waits, restores,
+  or reports an error. Choosing a different plan requests a
   switch immediately. Keep showing the verified active plan and disable the
   selector until the switch finishes. Unsaved automation settings remain in the
   draft. If a read fails, show the read failure in the automation summary.

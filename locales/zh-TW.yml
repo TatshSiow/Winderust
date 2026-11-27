@@ -1258,7 +1258,6 @@ power_plan_control:
   automation_disabled: "自動化已關閉"
   paused_on_ac: "插電期間暫停自動切換"
   waiting_for_observation: "等待必要的觀測資料"
-  no_rule_selects_plan: "目前沒有規則選擇電源計畫"
   switch_plan_help: "選取後立即切換電源計畫。"
   choose_plan: "選擇電源計畫"
   switching: "切換中…"
